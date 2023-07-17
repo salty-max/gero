@@ -1,5 +1,7 @@
 import {
   ADD_REG_REG,
+  CAL_LIT,
+  CAL_REG,
   JMP_NOT_EQ,
   MOV_LIT_REG,
   MOV_MEM_REG,
@@ -8,6 +10,7 @@ import {
   POP,
   PSH_LIT,
   PSH_REG,
+  RET,
 } from "./instructions"
 import { logWithFormat } from "./logger"
 import { createMemory } from "./memory"
@@ -18,11 +21,14 @@ import {
   ANSI_COLOR_RESET,
 } from "./util"
 
+const GENERIC_REGISTERS_COUNT = 8
+
 export class CPU {
   private memory: DataView // DataView for accessing memory
   private registerNames: Array<string> = [] // Array to store register names
   private registers: DataView // DataView to manage registers
   private registerMap: Record<string, number> // Mapping of register names to memory addresses
+  private stackFrameSize: number = 0 // The internal stack frame size pointer
 
   constructor(memory: DataView) {
     this.memory = memory
@@ -30,16 +36,9 @@ export class CPU {
     this.registerNames = [
       "ip", // Instruction pointer
       "acc", // Accumulator
-      "r1", // General-purpose register 1
-      "r2", // General-purpose register 2
-      "r3", // General-purpose register 3
-      "r4", // General-purpose register 4
-      "r5", // General-purpose register 5
-      "r6", // General-purpose register 6
-      "r7", // General-purpose register 7
-      "r8", // General-purpose register 8
+      ...Array.from({ length: GENERIC_REGISTERS_COUNT }, (_, i) => `r${i + 1}`),
       "sp", // Stack pointer
-      "fp", // Frame pointer
+      "fp", // Stack frame pointer
     ]
 
     this.registers = createMemory(this.registerNames.length * 2) // Create DataView for registers
@@ -53,14 +52,14 @@ export class CPU {
 
     // Set stack pointers to the very end of the memory
     // First -1 is because a 16bit value is 2 bytes long
-    // Second -1 is becquse memory is zero-based
+    // Second -1 is because memory is zero-based
     this.setRegister("sp", memory.byteLength - 1 - 1)
     this.setRegister("fp", memory.byteLength - 1 - 1)
   }
 
   debug() {
     logWithFormat(
-      "----------------\nREGISTER\n----------------\n",
+      "REGISTER\n----------------\n",
       ANSI_COLOR_BOLD,
       ANSI_COLOR_GREEN
     )
@@ -72,22 +71,23 @@ export class CPU {
           .padStart(4, "0")}${ANSI_COLOR_RESET}`
       )
     })
+    console.log()
   }
 
-  viewMemoryAt(address: number) {
-    const next8Bytes = Array.from({ length: 8 }, (_, i) => {
+  viewMemoryAt(address: number, n = 8) {
+    const nextNBytes = Array.from({ length: n }, (_, i) => {
       return this.memory.getUint8(address + i)
     }).map((v) => `0x${v.toString(16).padStart(2, "0")}`)
 
     logWithFormat(
-      "----------------\nMEMORY AT\n----------------\n",
+      "MEMORY AT\n----------------\n",
       ANSI_COLOR_BOLD,
       ANSI_COLOR_GREEN
     )
     console.log(
       `${ANSI_COLOR_BLUE}${ANSI_COLOR_BOLD}0x${address
         .toString(16)
-        .padStart(4, "0")}${ANSI_COLOR_RESET}: ${next8Bytes.join(" ")}`
+        .padStart(4, "0")}${ANSI_COLOR_RESET}: ${nextNBytes.join(" ")}`
     )
   }
 
@@ -154,6 +154,26 @@ export class CPU {
 
     this.memory.setUint16(spAddress, value)
     this.setRegister("sp", spAddress - 2)
+    this.stackFrameSize += 2
+  }
+
+  /**
+   * Push registers' state onto the stack
+   */
+  pushState() {
+    // Push generic registers' current state onto the stack
+    for (let i = 1; i <= GENERIC_REGISTERS_COUNT; i++) {
+      this.push(this.getRegister(`r${i}`))
+    }
+    // Push instruction pointer onto the stack as a return address for the subroutine
+    this.push(this.getRegister("ip"))
+    // Push current stack frame size + 2 bytes for this pointer
+    this.push(this.stackFrameSize + 2)
+
+    // Set frame pointer to current stack pointer
+    this.setRegister("fp", this.getRegister("sp"))
+    // Reset stack frame size pointer to allow another subroutine to use it
+    this.stackFrameSize = 0
   }
 
   /**
@@ -164,8 +184,30 @@ export class CPU {
     const nextSpAddress = this.getRegister("sp") + 2
 
     this.setRegister("sp", nextSpAddress)
+    this.stackFrameSize -= 2
 
     return this.memory.getUint16(nextSpAddress)
+  }
+
+  /**
+   * Fill registers with stacked state and reset stack pointers
+   */
+  popState() {
+    const framePointerAddress = this.getRegister("fp")
+    this.setRegister("sp", framePointerAddress)
+    this.stackFrameSize = this.pop()
+    const currentStackFrameSize = this.stackFrameSize
+
+    this.setRegister("ip", this.pop())
+    for (let i = GENERIC_REGISTERS_COUNT; i >= 1; i--) {
+      this.setRegister(`r${i}`, this.pop())
+    }
+
+    const nArgs = this.pop()
+    for (let i = 0; i < nArgs; i++) {
+      this.pop()
+    }
+    this.setRegister("fp", framePointerAddress + currentStackFrameSize)
   }
 
   /**
@@ -188,7 +230,6 @@ export class CPU {
         const register = this.fetchRegisterIndex()
 
         this.registers.setUint16(register, literal)
-
         return
       }
       // Move value between registers
@@ -198,7 +239,6 @@ export class CPU {
         const value = this.registers.getUint16(registerFrom)
 
         this.registers.setUint16(registerTo, value)
-
         return
       }
       // Move value from a register to a memory address
@@ -208,7 +248,6 @@ export class CPU {
         const value = this.registers.getUint16(registerFrom)
 
         this.memory.setUint16(address, value)
-
         return
       }
       // Move a value in memory to specified register
@@ -218,7 +257,6 @@ export class CPU {
         const value = this.memory.getUint16(address)
 
         this.registers.setUint16(registerTo, value)
-
         return
       }
       // Add two values in specified registers and outputs in acc
@@ -229,7 +267,6 @@ export class CPU {
         const registerValue2 = this.registers.getUint16(r2 * 2)
 
         this.setRegister("acc", registerValue1 + registerValue2)
-
         return
       }
       // Jumps to specified address if value is not equal to acc
@@ -248,7 +285,6 @@ export class CPU {
         const value = this.fetch16()
 
         this.push(value)
-
         return
       }
       // Push a register value onto the stack
@@ -257,7 +293,6 @@ export class CPU {
         const value = this.registers.getUint16(registerFrom)
 
         this.push(value)
-
         return
       }
       // Pop a value from the stack into a register
@@ -266,7 +301,28 @@ export class CPU {
         const value = this.pop()
 
         this.registers.setUint16(registerIndex, value)
+        return
+      }
+      // Call a subroutine from a memory address
+      case CAL_LIT: {
+        const address = this.fetch16()
 
+        this.pushState()
+        this.setRegister("ip", address)
+        return
+      }
+      // Call a subroutine from a register
+      case CAL_REG: {
+        const registerIndex = this.fetchRegisterIndex()
+        const address = this.registers.getUint16(registerIndex)
+
+        this.pushState()
+        this.setRegister("ip", address)
+        return
+      }
+      // Return from subroutine
+      case RET: {
+        this.popState()
         return
       }
     }

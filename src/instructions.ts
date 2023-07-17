@@ -7,3 +7,6 @@ export const JMP_NOT_EQ   = 0x15
 export const PSH_LIT      = 0x17
 export const PSH_REG      = 0x18
 export const POP          = 0x1A
+export const CAL_LIT      = 0x5E
+export const CAL_REG      = 0x5F
+export const RET          = 0x60
