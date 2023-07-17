@@ -1,6 +1,18 @@
-import { ADD_REG_REG, MOV_LIT_R1, MOV_LIT_R2 } from "./instructions"
+import {
+  ADD_REG_REG,
+  MOV_LIT_REG,
+  MOV_MEM_REG,
+  MOV_REG_MEM,
+  MOV_REG_REG,
+} from "./instructions"
+import { logWithFormat } from "./logger"
 import { createMemory } from "./memory"
-import { ANSI_COLOR_BLUE, ANSI_COLOR_RESET } from "./util"
+import {
+  ANSI_COLOR_BLUE,
+  ANSI_COLOR_BOLD,
+  ANSI_COLOR_GREEN,
+  ANSI_COLOR_RESET,
+} from "./util"
 
 export class CPU {
   private memory: DataView // DataView for accessing memory
@@ -30,19 +42,40 @@ export class CPU {
         map[name] = i * 2 // Assign memory address to each register
         return map
       },
-      {},
+      {}
     )
   }
 
   debug() {
-    console.log("----------------")
+    process.stdout.write(ANSI_COLOR_GREEN)
+    logWithFormat(
+      "----------------\nREGISTER\n----------------\n",
+      ANSI_COLOR_BOLD,
+      ANSI_COLOR_GREEN
+    )
     this.registerNames.forEach((name) => {
       console.log(
-        `${name}: ${ANSI_COLOR_BLUE}0x${this.getRegister(name)
+        `${name}: ${ANSI_COLOR_BLUE}${ANSI_COLOR_BOLD}0x${this.getRegister(name)
           .toString(16)
-          .padStart(4, "0")}${ANSI_COLOR_RESET}`,
+          .padStart(4, "0")}${ANSI_COLOR_RESET}`
       )
     })
+  }
+
+  viewMemoryAt(address: number) {
+    const next8Bytes = Array.from({ length: 8 }, (_, i) => {
+      return this.memory.getUint8(address + i)
+    }).map((v) => `0x${v.toString(16).padStart(2, "0")}`)
+    logWithFormat(
+      "----------------\nMEMORY AT\n----------------\n",
+      ANSI_COLOR_BOLD,
+      ANSI_COLOR_GREEN
+    )
+    console.log(
+      `${ANSI_COLOR_BLUE}${ANSI_COLOR_BOLD}0x${address
+        .toString(16)
+        .padStart(4, "0")}${ANSI_COLOR_RESET}: ${next8Bytes.join(" ")}`
+    )
   }
 
   /**
@@ -101,14 +134,31 @@ export class CPU {
    */
   execute(instruction: number) {
     switch (instruction) {
-      case MOV_LIT_R1: {
+      case MOV_LIT_REG: {
         const literal = this.fetch16()
-        this.setRegister("r1", literal)
+        const register = (this.fetch() % this.registerNames.length) * 2
+        this.registers.setUint16(register, literal)
         return
       }
-      case MOV_LIT_R2: {
-        const literal = this.fetch16()
-        this.setRegister("r2", literal)
+      case MOV_REG_REG: {
+        const registerFrom = (this.fetch() % this.registerNames.length) * 2
+        const registerTo = (this.fetch() % this.registerNames.length) * 2
+        const value = this.registers.getUint16(registerFrom)
+        this.registers.setUint16(registerTo, value)
+        return
+      }
+      case MOV_REG_MEM: {
+        const registerFrom = (this.fetch() % this.registerNames.length) * 2
+        const address = this.fetch16()
+        const value = this.registers.getUint16(registerFrom)
+        this.memory.setUint16(address, value)
+        return
+      }
+      case MOV_MEM_REG: {
+        const address = this.fetch16()
+        const registerTo = (this.fetch() % this.registerNames.length) * 2
+        const value = this.memory.getUint16(address)
+        this.registers.setUint16(registerTo, value)
         return
       }
       case ADD_REG_REG: {
