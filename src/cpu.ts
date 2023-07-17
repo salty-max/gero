@@ -5,6 +5,9 @@ import {
   MOV_MEM_REG,
   MOV_REG_MEM,
   MOV_REG_REG,
+  POP,
+  PSH_LIT,
+  PSH_REG,
 } from "./instructions"
 import { logWithFormat } from "./logger"
 import { createMemory } from "./memory"
@@ -35,6 +38,8 @@ export class CPU {
       "r6", // General-purpose register 6
       "r7", // General-purpose register 7
       "r8", // General-purpose register 8
+      "sp", // Stack pointer
+      "fp", // Frame pointer
     ]
 
     this.registers = createMemory(this.registerNames.length * 2) // Create DataView for registers
@@ -45,15 +50,21 @@ export class CPU {
       },
       {}
     )
+
+    // Set stack pointers to the very end of the memory
+    // First -1 is because a 16bit value is 2 bytes long
+    // Second -1 is becquse memory is zero-based
+    this.setRegister("sp", memory.byteLength - 1 - 1)
+    this.setRegister("fp", memory.byteLength - 1 - 1)
   }
 
   debug() {
-    process.stdout.write(ANSI_COLOR_GREEN)
     logWithFormat(
       "----------------\nREGISTER\n----------------\n",
       ANSI_COLOR_BOLD,
       ANSI_COLOR_GREEN
     )
+
     this.registerNames.forEach((name) => {
       console.log(
         `${name}: ${ANSI_COLOR_BLUE}${ANSI_COLOR_BOLD}0x${this.getRegister(name)
@@ -67,6 +78,7 @@ export class CPU {
     const next8Bytes = Array.from({ length: 8 }, (_, i) => {
       return this.memory.getUint8(address + i)
     }).map((v) => `0x${v.toString(16).padStart(2, "0")}`)
+
     logWithFormat(
       "----------------\nMEMORY AT\n----------------\n",
       ANSI_COLOR_BOLD,
@@ -114,7 +126,9 @@ export class CPU {
   fetch(): number {
     const nextInstructionAddress = this.getRegister("ip")
     const instruction = this.memory.getUint8(nextInstructionAddress)
+
     this.setRegister("ip", nextInstructionAddress + 1)
+
     return instruction
   }
 
@@ -125,8 +139,41 @@ export class CPU {
   fetch16(): number {
     const nextInstructionAddress = this.getRegister("ip")
     const instruction = this.memory.getUint16(nextInstructionAddress)
+
     this.setRegister("ip", nextInstructionAddress + 2)
+
     return instruction
+  }
+
+  /**
+   * Push a value onto the stack and then decrement stack pointer
+   * @param value - Value to push
+   */
+  push(value: number) {
+    const spAddress = this.getRegister("sp")
+
+    this.memory.setUint16(spAddress, value)
+    this.setRegister("sp", spAddress - 2)
+  }
+
+  /**
+   * Pop a value from the stack and returns it
+   * @returns The popped value
+   */
+  pop(): number {
+    const nextSpAddress = this.getRegister("sp") + 2
+
+    this.setRegister("sp", nextSpAddress)
+
+    return this.memory.getUint16(nextSpAddress)
+  }
+
+  /**
+   * Fetches the register index
+   * @returns The fetched index
+   */
+  fetchRegisterIndex() {
+    return (this.fetch() % this.registerNames.length) * 2
   }
 
   /**
@@ -138,7 +185,7 @@ export class CPU {
       // Add value to register
       case MOV_LIT_REG: {
         const literal = this.fetch16()
-        const register = (this.fetch() % this.registerNames.length) * 2
+        const register = this.fetchRegisterIndex()
 
         this.registers.setUint16(register, literal)
 
@@ -146,8 +193,8 @@ export class CPU {
       }
       // Move value between registers
       case MOV_REG_REG: {
-        const registerFrom = (this.fetch() % this.registerNames.length) * 2
-        const registerTo = (this.fetch() % this.registerNames.length) * 2
+        const registerFrom = this.fetchRegisterIndex()
+        const registerTo = this.fetchRegisterIndex()
         const value = this.registers.getUint16(registerFrom)
 
         this.registers.setUint16(registerTo, value)
@@ -156,7 +203,7 @@ export class CPU {
       }
       // Move value from a register to a memory address
       case MOV_REG_MEM: {
-        const registerFrom = (this.fetch() % this.registerNames.length) * 2
+        const registerFrom = this.fetchRegisterIndex()
         const address = this.fetch16()
         const value = this.registers.getUint16(registerFrom)
 
@@ -167,7 +214,7 @@ export class CPU {
       // Move a value in memory to specified register
       case MOV_MEM_REG: {
         const address = this.fetch16()
-        const registerTo = (this.fetch() % this.registerNames.length) * 2
+        const registerTo = this.fetchRegisterIndex()
         const value = this.memory.getUint16(address)
 
         this.registers.setUint16(registerTo, value)
@@ -193,6 +240,32 @@ export class CPU {
         if (value !== this.getRegister("acc")) {
           this.setRegister("ip", address)
         }
+
+        return
+      }
+      // Push a value onto the stack
+      case PSH_LIT: {
+        const value = this.fetch16()
+
+        this.push(value)
+
+        return
+      }
+      // Push a register value onto the stack
+      case PSH_REG: {
+        const registerFrom = this.fetchRegisterIndex()
+        const value = this.registers.getUint16(registerFrom)
+
+        this.push(value)
+
+        return
+      }
+      // Pop a value from the stack into a register
+      case POP: {
+        const registerIndex = this.fetchRegisterIndex()
+        const value = this.pop()
+
+        this.registers.setUint16(registerIndex, value)
 
         return
       }
