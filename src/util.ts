@@ -15,4 +15,6 @@ export enum Register {
   R6,
   R7,
   R8,
+  SP,
+  FP,
 }
