@@ -286,7 +286,7 @@ export class CPU {
   execute(instruction: number) {
     switch (instruction) {
       /**
-       * Move Literal to Register (MOV_LIT_REG) operation.
+       * Move Literal to Register (MOV_LIT_REG) instruction.
        * Fetches a literal 16-bit value and a register index from the instruction stream,
        * and then sets the fetched literal value into the specified register.
        */
@@ -298,7 +298,7 @@ export class CPU {
         return
       }
       /**
-       * Move Register to Register (MOV_REG_REG) operation.
+       * Move Register to Register (MOV_REG_REG) instruction.
        * Fetches two register indexes from the instruction stream,
        * reads the value from the first (source) register,
        * and then sets that value into the second (destination) register.
@@ -312,7 +312,7 @@ export class CPU {
         return
       }
       /**
-       * Move Register to Memory (MOV_REG_MEM) operation.
+       * Move Register to Memory (MOV_REG_MEM) instruction.
        * Fetches a register index and a memory address from the instruction stream,
        * reads the value from the specified register,
        * and then sets that value into the specified memory address.
@@ -326,7 +326,7 @@ export class CPU {
         return
       }
       /**
-       * Move Memory to Register (MOV_MEM_REG) operation.
+       * Move Memory to Register (MOV_MEM_REG) instruction.
        * Fetches a memory address and a register index from the instruction stream,
        * reads the value from the specified memory address,
        * and then sets that value into the specified register.
@@ -340,7 +340,7 @@ export class CPU {
         return
       }
       /**
-       * Add Register to Register (ADD_REG_REG) operation.
+       * Add Register to Register (ADD_REG_REG) instruction.
        * Fetches two register indexes from the instruction stream,
        * reads the values from the two registers,
        * adds these values, and then stores the result into the accumulator (acc) register.
@@ -355,7 +355,7 @@ export class CPU {
         return
       }
       /**
-       * Jump if Not Equal (JMP_NOT_EQ) operation.
+       * Jump if Not Equal (JMP_NOT_EQ) instruction.
        * Fetches a literal 16-bit value and a memory address from the instruction stream,
        * then compares the fetched value with the value in the accumulator (acc) register.
        * If the values are not equal, it sets the instruction pointer (ip) register to the fetched memory address,
@@ -372,7 +372,7 @@ export class CPU {
         return
       }
       /**
-       * Push Literal (PSH_LIT) operation.
+       * Push Literal (PSH_LIT) instruction.
        * Fetches a literal 16-bit value from the instruction stream,
        * and then pushes it onto the stack.
        */
@@ -383,7 +383,7 @@ export class CPU {
         return
       }
       /**
-       * Push Register (PSH_REG) operation.
+       * Push Register (PSH_REG) instruction.
        * Fetches a register index from the instruction stream,
        * reads the value from the specified register,
        * and then pushes it onto the stack.
