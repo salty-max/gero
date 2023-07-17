@@ -6,10 +6,6 @@
   "repository": "https://github.com/salty-max/gero",
   "author": "Maxime Blanc",
   "license": "MIT",
-  "engines": {
-    "node": "~18.16",
-    "npm": "~9.5"
-  },
   "scripts": {
     "start": "ts-node dist/index.js",
     "build": "tsc",
