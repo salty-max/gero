@@ -212,10 +212,10 @@ export class CPU {
 
   /**
    * Fetches the next 8-bit instruction from memory and increment the instruction pointer.
-   *
+   * @private
    * @returns {number} - The fetched 8-bit instruction.
    */
-  fetch(): number {
+  private fetch(): number {
     const nextInstructionAddress = this.getRegister("ip")
     const instruction = this.memory.getUint8(nextInstructionAddress)
 
@@ -226,10 +226,10 @@ export class CPU {
 
   /**
    * Fetches the next 16-bit instruction (or a data word) from memory and increment the instruction pointer.
-   *
+   * @private
    * @returns {number} - The fetched 16-bit instruction or data word.
    */
-  fetch16(): number {
+  private fetch16(): number {
     const nextInstructionAddress = this.getRegister("ip")
     const instruction = this.memory.getUint16(nextInstructionAddress)
 
@@ -240,10 +240,10 @@ export class CPU {
 
   /**
    * Pushes a 16-bit value onto the stack and decrement the stack pointer.
-   *
+   * @private
    * @param {number} value - The 16-bit value to push onto the stack.
    */
-  push(value: number) {
+  private push(value: number) {
     const spAddress = this.getRegister("sp")
 
     this.memory.setUint16(spAddress, value)
@@ -253,8 +253,9 @@ export class CPU {
 
   /**
    * Saves the current CPU state (registers and return address) onto the stack.
+   * @private
    */
-  pushState() {
+  private pushState() {
     // Push generic registers' current state onto the stack
     for (let i = 1; i <= GENERIC_REGISTERS_COUNT; i++) {
       this.push(this.getRegister(`r${i}`))
@@ -272,10 +273,10 @@ export class CPU {
 
   /**
    * Pops a 16-bit value from the stack and increment the stack pointer.
-   *
+   * @private
    * @returns {number} - The popped 16-bit value.
    */
-  pop(): number {
+  private pop(): number {
     const nextSpAddress = this.getRegister("sp") + 2
 
     this.setRegister("sp", nextSpAddress)
@@ -286,8 +287,9 @@ export class CPU {
 
   /**
    * Restores the CPU state (registers and return address) from the stack.
+   * @private
    */
-  popState() {
+  private popState() {
     const framePointerAddress = this.getRegister("fp")
     this.setRegister("sp", framePointerAddress)
     this.stackFrameSize = this.pop()
@@ -307,20 +309,20 @@ export class CPU {
 
   /**
    * Fetches the next byte from memory, interpret it as a register index, and return it.
-   *
+   * @private
    * @returns {number} - The fetched register index.
    */
-  fetchRegisterIndex() {
+  private fetchRegisterIndex() {
     return (this.fetch() % this.registerNames.length) * 2
   }
 
   /**
    * Executes a given instruction.
-   *
+   * @private
    * @param {number} instruction - The opcode of the instruction to execute.
    * @returns {boolean} Whether the computation should stop
    */
-  execute(instruction: number): boolean {
+  private execute(instruction: number): boolean {
     switch (instruction) {
       /**
        * Move Literal to Register (MOV_LIT_REG) instruction.
