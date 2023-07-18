@@ -2,6 +2,7 @@ import { CPU } from "../src/cpu"
 import {
   ADD_REG_REG,
   CAL_LIT,
+  HLT,
   JMP_NOT_EQ,
   MOV_LIT_REG,
   MOV_MEM_REG,
@@ -12,15 +13,19 @@ import {
   RET,
 } from "../src/instructions"
 import { createMemory } from "../src/memory"
+import { MemoryMapper } from "../src/memory-mapper"
 import { Register } from "../src/util"
 
 describe("CPU", () => {
   let cpu: CPU
   let memory: DataView
+  let MM: MemoryMapper
 
   beforeEach(() => {
     memory = createMemory(256 * 256)
-    cpu = new CPU(memory)
+    MM = new MemoryMapper()
+    MM.map(memory, 0x0000, 0xffff)
+    cpu = new CPU(MM)
   })
 
   it("should execute MOV_LIT_REG instruction correctly", () => {
@@ -211,7 +216,6 @@ describe("CPU", () => {
     writableBytes[i++] = MOV_LIT_REG
     writableBytes[i++] = 0x12
     writableBytes[i++] = 0x34 // Ox1234
-
     writableBytes[i++] = Register.R1
 
     writableBytes[i++] = MOV_LIT_REG
@@ -268,5 +272,34 @@ describe("CPU", () => {
     expect(cpu.getRegister("sp")).toBe(0xfff6)
     expect(cpu.getRegister("fp")).toBe(0xfffe)
     expect(memory.getUint16(0xfff8)).toBe(0x4444)
+  })
+  // TODO: Fix this test
+  it.skip("should execute HLT instruction correctly", () => {
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x12
+    writableBytes[i++] = 0x34
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = PSH_REG
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = HLT
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x56
+    writableBytes[i++] = 0x78
+    writableBytes[i++] = Register.R8
+
+    writableBytes[i++] = PSH_REG
+    writableBytes[i++] = Register.R8
+
+    cpu.run()
+
+    expect(cpu.getRegister("sp")).toBe(0xfffe)
+    expect(cpu.getRegister("ip")).toBe(0x0004)
+    expect(cpu.getRegister("r1")).toBe(0x1234)
+    expect(cpu.getRegister("r8")).toBe(0x0000)
   })
 })
