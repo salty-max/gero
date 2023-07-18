@@ -35,8 +35,19 @@
  * - XOR_REG_LIT:       0x32, Xor Register by Literal
  * - XOR_REG_REG:       0x33, Xor Register by Register
  * - NOT:               0x34, Not
- * Jump instructions
- * - JMP_NOT_EQ:        0x41, Jump if Not Equal
+ * Branching instructions
+ * - JEQ_REG:           0x3E, Jump if Equal (Register)
+ * - JEQ_LIT:           0x3F, Jump if Equal (Literal)
+ * - JNE_REG:           0x40, Jump if Not Equal (Register)
+ * - JNE_LIT:           0x41, Jump if Not Equal (Literal)
+ * - JLT_REG:           0x42, Jump if Lesser Than (Register)
+ * - JLT_LIT:           0x43, Jump if Lesser Than (Literal)
+ * - JGT_REG:           0x44, Jump if Greater Than (Register)
+ * - JGT_LIT:           0x45, Jump if Greater Than (Literal)
+ * - JLE_REG:           0x46, Jump if Lesser Than Or Equal (Register)
+ * - JLE_LIT:           0x47, Jump if Lesser Than Or Equal (Literal)
+ * - JGE_REG:           0x48, Jump if Greater Than Or Equal (Register)
+ * - JGE_LIT:           0x49, Jump if Greater Than  Or Equal(Literal)
  * Stack instructions
  * - PSH_LIT:           0x17, Push Literal
  * - PSH_REG:           0x18, Push Register
@@ -242,11 +253,88 @@ export const XOR_REG_REG = 0x33;
 export const NOT = 0x34;
 
 /**
- * Instruction code for 'Jump if Not Equal'.
+ * Instruction code for 'Jump if Not Equal (JEQ_REG)'.
  * @constant
  * @type {number}
  */
-export const JMP_NOT_EQ = 0x41;
+
+export const JEQ_REG = 0x3E;
+/**
+ * Instruction code for 'Jump if Equal (JEQ_LIT)'.
+ * @constant
+ * @type {number}
+ */
+export const JEQ_LIT = 0x3F;
+
+/**
+ * Instruction code for 'Jump if Equal (JNE_REG)'.
+ * @constant
+ * @type {number}
+ */
+
+export const JNE_REG = 0x40;
+/**
+ * Instruction code for 'Jump if Not Equal (JNE_LIT)'.
+ * @constant
+ * @type {number}
+ */
+export const JNE_LIT = 0x41;
+
+/**
+ * Instruction code for 'Jump if Lesser Than (JLT_REG)'.
+ * @constant
+ * @type {number}
+ */
+
+export const JLT_REG = 0x42;
+/**
+ * Instruction code for 'Jump if Lesser Than (JLT_LIT)'.
+ * @constant
+ * @type {number}
+ */
+export const JLT_LIT = 0x43;
+
+/**
+ * Instruction code for 'Jump if Greater Than (JGT_REG)'.
+ * @constant
+ * @type {number}
+ */
+
+export const JGT_REG = 0x44;
+/**
+ * Instruction code for 'Jump if Greater Than (JGT_LIT)'.
+ * @constant
+ * @type {number}
+ */
+export const JGT_LIT = 0x45;
+
+/**
+ * Instruction code for 'Jump if Lesser Than Or Equal (JLE_REG)'.
+ * @constant
+ * @type {number}
+ */
+
+export const JLE_REG = 0x46;
+/**
+ * Instruction code for 'Jump if Lesser Than Or Equal (JLE_LIT)'.
+ * @constant
+ * @type {number}
+ */
+export const JLE_LIT = 0x47;
+
+/**
+ * Instruction code for 'Jump if Greater Than Or Equal (JGE_REG)'.
+ * @constant
+ * @type {number}
+ */
+
+export const JGE_REG = 0x48;
+/**
+ * Instruction code for 'Jump if Greater Than Or Equal (JGE_LIT)'.
+ * @constant
+ * @type {number}
+ */
+export const JGE_LIT = 0x49;
 
 /**
  * Instruction code for 'Push Literal'.

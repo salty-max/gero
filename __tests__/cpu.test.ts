@@ -8,7 +8,18 @@ import {
   DEC_REG,
   HLT,
   INC_REG,
-  JMP_NOT_EQ,
+  JEQ_LIT,
+  JEQ_REG,
+  JGE_LIT,
+  JGE_REG,
+  JGT_LIT,
+  JGT_REG,
+  JLE_LIT,
+  JLE_REG,
+  JLT_LIT,
+  JLT_REG,
+  JNE_LIT,
+  JNE_REG,
   LSF_REG_LIT,
   LSF_REG_REG,
   MOV_LIT_MEM,
@@ -531,38 +542,431 @@ describe("Instructions", () => {
 
     expect(cpu.getRegister("acc")).toBe(0xedcb)
   })
-  it("should execute JMP_NOT_EQ instruction correctly", () => {
+  it("should execute JNE_REG instruction correctly", () => {
     memory.setUint16(0x0100, 0x0000)
 
     const writableBytes = new Uint8Array(memory.buffer)
     let i = 0
 
-    writableBytes[i++] = MOV_MEM_REG
-    writableBytes[i++] = 0x01
-    writableBytes[i++] = 0x00 // 0x0100
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
     writableBytes[i++] = Register.R1
 
     writableBytes[i++] = MOV_LIT_REG
     writableBytes[i++] = 0x00
-    writableBytes[i++] = 0x01 // 0x0001
+    writableBytes[i++] = 0x02 // 0x0002
     writableBytes[i++] = Register.R2
 
-    writableBytes[i++] = ADD_REG_REG
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x05 // 0x0005
+    writableBytes[i++] = Register.R3
+
+    writableBytes[i++] = MUL_REG_REG
     writableBytes[i++] = Register.R1
     writableBytes[i++] = Register.R2
 
-    writableBytes[i++] = MOV_REG_MEM
-    writableBytes[i++] = Register.ACC
+    writableBytes[i++] = JNE_REG
+    writableBytes[i++] = Register.R3
     writableBytes[i++] = 0x01
     writableBytes[i++] = 0x00 // 0x0100
 
-    writableBytes[i++] = JMP_NOT_EQ
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JNE_LIT instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JNE_LIT
     writableBytes[i++] = 0x00
     writableBytes[i++] = 0x03 // 0x0003
-    writableBytes[i++] = 0x00
-    writableBytes[i++] = 0x00 // 0x0000
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
 
-    expect(cpu.getRegister("ip")).toBe(0x0000)
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JEQ_REG instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x04 // 0x0004
+    writableBytes[i++] = Register.R3
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JEQ_REG
+    writableBytes[i++] = Register.R3
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JEQ_LIT instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JEQ_LIT
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x04 // 0x0004
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JLT_REG instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x03 // 0x0003
+    writableBytes[i++] = Register.R3
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JLT_REG
+    writableBytes[i++] = Register.R3
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JLT_LIT instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JLT_LIT
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x03 // 0x0003
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JGT_REG instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x05 // 0x0005
+    writableBytes[i++] = Register.R3
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JGT_REG
+    writableBytes[i++] = Register.R3
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JGT_LIT instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JGT_LIT
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x05 // 0x0005
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JLE_REG instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x03 // 0x0003
+    writableBytes[i++] = Register.R3
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JLE_REG
+    writableBytes[i++] = Register.R3
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JLE_LIT instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JLE_LIT
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x03 // 0x0003
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JGE_REG instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x05 // 0x0005
+    writableBytes[i++] = Register.R3
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JGE_REG
+    writableBytes[i++] = Register.R3
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
+  })
+  it("should execute JGE_LIT instruction correctly", () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R1
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02 // 0x0002
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    writableBytes[i++] = JGE_LIT
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x05 // 0x0005
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("ip")).toBe(0x0100)
   })
   it("should execute PSH_LIT instruction correctly", () => {
     const writableBytes = new Uint8Array(memory.buffer)

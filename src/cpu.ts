@@ -17,7 +17,18 @@ import {
   DEC_REG,
   HLT,
   INC_REG,
-  JMP_NOT_EQ,
+  JEQ_LIT,
+  JEQ_REG,
+  JGE_LIT,
+  JGE_REG,
+  JGT_LIT,
+  JGT_REG,
+  JLE_LIT,
+  JLE_REG,
+  JLT_LIT,
+  JLT_REG,
+  JNE_LIT,
+  JNE_REG,
   LSF_REG_LIT,
   LSF_REG_REG,
   MOV_LIT_MEM,
@@ -703,17 +714,235 @@ export class CPU {
         return false
       }
       /**
-       * Jump if Not Equal (JMP_NOT_EQ) instruction.
+       * Jump if Not Equal (JNE_REG) instruction.
+       * Fetches a register index from the instruction stream,
+       * reads the value from the specified register (v),
+       * fetches a memory address (address),
+       * and compares the value in the register with the accumulator (acc) register.
+       * If the values are not equal, the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JNE_REG: {
+        const r = this.fetchRegisterIndex()
+        const v = this.registers.getUint16(r)
+        const address = this.fetch16()
+
+        if (v !== this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Not Equal (JNE_LIT) instruction.
        * Fetches a literal 16-bit value and a memory address from the instruction stream,
        * then compares the fetched value with the value in the accumulator (acc) register.
        * If the values are not equal, it sets the instruction pointer (ip) register to the fetched memory address,
        * effectively causing a jump to a new location in the instruction stream.
        */
-      case JMP_NOT_EQ: {
+      case JNE_LIT: {
         const value = this.fetch16()
         const address = this.fetch16()
 
         if (value !== this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Equal (JEQ_REG) instruction.
+       * Fetches a register index from the instruction stream,
+       * reads the value from the specified register (v),
+       * fetches a memory address (address),
+       * and compares the value in the register with the accumulator (acc) register.
+       * If the values are equal, the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JEQ_REG: {
+        const r = this.fetchRegisterIndex()
+        const v = this.registers.getUint16(r)
+        const address = this.fetch16()
+
+        if (v === this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Equal (JEQ_LIT) instruction.
+       * Fetches a literal 16-bit value (value),
+       * fetches a memory address (address),
+       * and compares the literal value with the accumulator (acc) register.
+       * If the values are equal, the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JEQ_LIT: {
+        const value = this.fetch16()
+        const address = this.fetch16()
+
+        if (value === this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Less Than (JLT_REG) instruction.
+       * Fetches a register index from the instruction stream,
+       * reads the value from the specified register (v),
+       * fetches a memory address (address),
+       * and compares the value in the register with the accumulator (acc) register.
+       * If the value in the register is less than the value in the accumulator,
+       * the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JLT_REG: {
+        const r = this.fetchRegisterIndex()
+        const v = this.registers.getUint16(r)
+        const address = this.fetch16()
+
+        if (v < this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Less Than (JLT_LIT) instruction.
+       * Fetches a literal 16-bit value (value),
+       * fetches a memory address (address),
+       * and compares the literal value with the accumulator (acc) register.
+       * If the literal value is less than the value in the accumulator,
+       * the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JLT_LIT: {
+        const value = this.fetch16()
+        const address = this.fetch16()
+
+        if (value < this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Greater Than (JGT_REG) instruction.
+       * Fetches a register index from the instruction stream,
+       * reads the value from the specified register (v),
+       * fetches a memory address (address),
+       * and compares the value in the register with the accumulator (acc) register.
+       * If the value in the register is greater than the value in the accumulator,
+       * the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JGT_REG: {
+        const r = this.fetchRegisterIndex()
+        const v = this.registers.getUint16(r)
+        const address = this.fetch16()
+
+        if (v > this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Greater Than (JGT_LIT) instruction.
+       * Fetches a literal 16-bit value (value),
+       * fetches a memory address (address),
+       * and compares the literal value with the accumulator (acc) register.
+       * If the literal value is greater than the value in the accumulator,
+       * the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JGT_LIT: {
+        const value = this.fetch16()
+        const address = this.fetch16()
+
+        if (value > this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Less Than or Equal (JLE_REG) instruction.
+       * Fetches a register index from the instruction stream,
+       * reads the value from the specified register (v),
+       * fetches a memory address (address),
+       * and compares the value in the register with the accumulator (acc) register.
+       * If the value in the register is less than or equal to the value in the accumulator,
+       * the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JLE_REG: {
+        const r = this.fetchRegisterIndex()
+        const v = this.registers.getUint16(r)
+        const address = this.fetch16()
+
+        if (v <= this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Less Than or Equal (JLE_LIT) instruction.
+       * Fetches a literal 16-bit value (value),
+       * fetches a memory address (address),
+       * and compares the literal value with the accumulator (acc) register.
+       * If the literal value is less than or equal to the value in the accumulator,
+       * the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JLE_LIT: {
+        const value = this.fetch16()
+        const address = this.fetch16()
+
+        if (value <= this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Greater Than or Equal (JGE_REG) instruction.
+       * Fetches a register index from the instruction stream,
+       * reads the value from the specified register (v),
+       * fetches a memory address (address),
+       * and compares the value in the register with the accumulator (acc) register.
+       * If the value in the register is greater than or equal to the value in the accumulator,
+       * the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JGE_REG: {
+        const r = this.fetchRegisterIndex()
+        const v = this.registers.getUint16(r)
+        const address = this.fetch16()
+
+        if (v >= this.getRegister("acc")) {
+          this.setRegister("ip", address)
+        }
+
+        return false
+      }
+      /**
+       * Jump if Greater Than or Equal (JGE_LIT) instruction.
+       * Fetches a literal 16-bit value (value),
+       * fetches a memory address (address),
+       * and compares the literal value with the accumulator (acc) register.
+       * If the literal value is greater than or equal to the value in the accumulator,
+       * the instruction pointer (ip) register is set to the fetched memory address,
+       * causing a jump to a new location in the instruction stream.
+       */
+      case JGE_LIT: {
+        const value = this.fetch16()
+        const address = this.fetch16()
+
+        if (value >= this.getRegister("acc")) {
           this.setRegister("ip", address)
         }
 
