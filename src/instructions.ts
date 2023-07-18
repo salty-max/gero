@@ -3,7 +3,7 @@
  * 
  * This file declares constants for various instruction codes used in the assembly language.
  * Each constant is associated with a specific byte code which represents a unique instruction.
- * The relations between the labels and the byte codes are as follows:
+ * The relations between the labels OR the byte codes are as follows:
  * 
  * Move instructions
  * - MOV_LIT_REG:       0x10, Move Literal to Register
@@ -24,6 +24,18 @@
  * - INC_REG:           0x35, Increment Register
  * - DEC_REG:           0x36, Decrement Register
  * Logical instructions
+ * - LSF_REG_LIT:       0x26, Left shift Register by Literal
+ * - LSF_REG_REG:       0x27, Left shift Register by Register
+ * - RSF_REG_LIT:       0x2A, Right shift Register by Literal
+ * - RSF_REG_REG:       0x2B, Right shift Register by Register
+ * - AND_REG_LIT:       0x2E, And Register by Literal
+ * - AND_REG_REG:       0x2F, And Register by Register
+ * - OR_REG_LIT:        0x30, Or Register by Literal
+ * - OR_REG_REG:        0x31, Or Register by Register
+ * - XOR_REG_LIT:       0x32, Xor Register by Literal
+ * - XOR_REG_REG:       0x33, Xor Register by Register
+ * - NOT:               0x34, Not
+ * Jump instructions
  * - JMP_NOT_EQ:        0x41, Jump if Not Equal
  * Stack instructions
  * - PSH_LIT:           0x17, Push Literal
@@ -149,8 +161,85 @@ export const INC_REG = 0x35;
  * Instruction code for 'Decrement Register'.
  * @constant
  * @type {number}
- */
+*/
 export const DEC_REG = 0x36;
+
+/**
+ * Instruction code for 'Left shift Register by Literal'.
+ * @constant
+ * @type {number}
+ */
+export const LSF_REG_LIT = 0x26;
+
+/**
+ * Instruction code for 'Left shift Register by Register'.
+ * @constant
+ * @type {number}
+ */
+export const LSF_REG_REG = 0x27;
+
+/**
+ * Instruction code for 'Right shift Register by Literal'.
+ * @constant
+ * @type {number}
+ */
+export const RSF_REG_LIT = 0x2A;
+
+/**
+ * Instruction code for 'Right shift Register by Register'.
+ * @constant
+ * @type {number}
+ */
+export const RSF_REG_REG = 0x2B;
+
+/**
+ * Instruction code for 'And Register by Literal'.
+ * @constant
+ * @type {number}
+ */
+export const AND_REG_LIT = 0x2E;
+
+/**
+ * Instruction code for 'And Register by Register'.
+ * @constant
+ * @type {number}
+ */
+export const AND_REG_REG = 0x2F;
+
+/**
+ * Instruction code for 'Or Register by Literal'.
+ * @constant
+ * @type {number}
+ */
+export const OR_REG_LIT = 0x30;
+
+/**
+ * Instruction code for 'Or Register by Register'.
+ * @constant
+ * @type {number}
+ */
+export const OR_REG_REG = 0x31;
+
+/**
+ * Instruction code for 'Xor Register by Literal'.
+ * @constant
+ * @type {number}
+ */
+export const XOR_REG_LIT = 0x32;
+
+/**
+ * Instruction code for 'Xor Register by Register'.
+ * @constant
+ * @type {number}
+ */
+export const XOR_REG_REG = 0x33;
+
+/**
+ * Instruction code for 'Not'.
+ * @constant
+ * @type {number}
+ */
+export const NOT = 0x34;
 
 /**
  * Instruction code for 'Jump if Not Equal'.
