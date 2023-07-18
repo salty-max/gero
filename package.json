@@ -15,7 +15,7 @@
     "fmt": "prettier --write \"src/**/*.ts\"",
     "dev": "tsc --watch",
     "test": "jest",
-    "docs": "typedoc src"
+    "docs": "rm -rf docs && typedoc"
   },
   "devDependencies": {
     "@types/jest": "^29.5.3",

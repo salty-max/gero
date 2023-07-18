@@ -1,0 +1,9 @@
+{
+  "entryPointStrategy": "expand",
+  "entryPoints": ["src"],
+  "out": "docs",
+  "exclude": ["**/node_modules/**", "**/__tests__/*"],
+  "name": "Gero",
+  "readme": "README.md",
+  "excludePrivate": true
+}
