@@ -13,9 +13,12 @@ import {
   CAL_REG,
   HLT,
   JMP_NOT_EQ,
+  MOV_LIT_MEM,
+  MOV_LIT_OFF_REG,
   MOV_LIT_REG,
   MOV_MEM_REG,
   MOV_REG_MEM,
+  MOV_REG_PTR_REG,
   MOV_REG_REG,
   POP,
   PSH_LIT,
@@ -339,6 +342,51 @@ export class CPU {
         const address = this.fetch16()
         const registerTo = this.fetchRegisterIndex()
         const value = this.memory.getUint16(address)
+
+        this.registers.setUint16(registerTo, value)
+        return false
+      }
+      /**
+       * Move Literal to Memory (MOV_LIT_MEM) instruction.
+       * Fetches a literal 16-bit value and a memory address from the instruction stream,
+       * and then sets the fetched literal value into the specified memory address.
+       */
+      case MOV_LIT_MEM: {
+        const value = this.fetch16()
+        const address = this.fetch16()
+
+        this.memory.setUint16(address, value)
+        return false
+      }
+      /**
+       * Move Register* to Register (MOV_REG_PTR_REG) instruction.
+       * Fetches two register indexes from the instruction stream,
+       * reads a memory address from the first (source) register (treats it as a pointer),
+       * fetches the value from the fetched memory address,
+       * and then sets that value into the second (destination) register.
+       */
+      case MOV_REG_PTR_REG: {
+        const registerFrom = this.fetchRegisterIndex()
+        const registerTo = this.fetchRegisterIndex()
+        const ptr = this.registers.getUint16(registerFrom)
+        const value = this.memory.getUint16(ptr)
+
+        this.registers.setUint16(registerTo, value)
+        return false
+      }
+      /**
+       * Move Literal Offset to Register (MOV_LIT_OFF_REG) instruction.
+       * Fetches a base memory address and two register indexes from the instruction stream,
+       * reads an offset from the first (source) register,
+       * fetches the value from the memory address calculated by adding the offset to the base address,
+       * and then sets that value into the second (destination) register.
+       */
+      case MOV_LIT_OFF_REG: {
+        const baseAddress = this.fetch16()
+        const registerFrom = this.fetchRegisterIndex()
+        const registerTo = this.fetchRegisterIndex()
+        const offset = this.registers.getUint16(registerFrom)
+        const value = this.memory.getUint16(baseAddress + offset)
 
         this.registers.setUint16(registerTo, value)
         return false
