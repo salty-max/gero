@@ -1,16 +1,27 @@
 import { CPU } from "../src/cpu"
 import {
+  ADD_LIT_REG,
   ADD_REG_REG,
   CAL_LIT,
+  DEC_REG,
   HLT,
+  INC_REG,
   JMP_NOT_EQ,
+  MOV_LIT_MEM,
+  MOV_LIT_OFF_REG,
   MOV_LIT_REG,
   MOV_MEM_REG,
   MOV_REG_MEM,
+  MOV_REG_PTR_REG,
+  MUL_LIT_REG,
+  MUL_REG_REG,
   POP,
   PSH_LIT,
   PSH_REG,
   RET,
+  SUB_LIT_REG,
+  SUB_REG_LIT,
+  SUB_REG_REG,
 } from "../src/instructions"
 import { createMemory } from "../src/memory"
 import { MemoryMapper } from "../src/memory-mapper"
@@ -39,27 +50,6 @@ describe("CPU", () => {
     cpu.step()
 
     expect(cpu.getRegister("r1")).toBe(0x1234)
-  })
-  it("should execute ADD_REG_REG instruction correctly", () => {
-    const writableBytes = new Uint8Array(memory.buffer)
-    let i = 0
-    writableBytes[i++] = MOV_LIT_REG
-    writableBytes[i++] = 0x12
-    writableBytes[i++] = 0x34
-    writableBytes[i++] = Register.R1
-    writableBytes[i++] = MOV_LIT_REG
-    writableBytes[i++] = 0xab
-    writableBytes[i++] = 0xcd
-    writableBytes[i++] = Register.R2
-    writableBytes[i++] = ADD_REG_REG
-    writableBytes[i++] = Register.R1
-    writableBytes[i++] = Register.R2
-
-    cpu.step()
-    cpu.step()
-    cpu.step()
-
-    expect(cpu.getRegister("acc")).toBe(0xbe01)
   })
   it("should execute MOV_REG_MEM instruction correctly", () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -91,6 +81,233 @@ describe("CPU", () => {
     cpu.step()
 
     expect(cpu.getRegister("r1")).toBe(0x1234)
+  })
+  it("should execute MOV_LIT_MEM instruction correctly", () => {
+    memory.setUint16(0x0100, 0x1234)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+    writableBytes[i++] = MOV_LIT_MEM
+    writableBytes[i++] = 0x12
+    writableBytes[i++] = 0x34
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00
+
+    cpu.step()
+
+    expect(memory.getUint16(0x0100)).toBe(0x1234)
+  })
+  it("should execute MOV_REG_PTR_REG instruction correctly", () => {
+    memory.setUint16(0x0100, 0x1234)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0xab
+    writableBytes[i++] = 0xcd
+    writableBytes[i++] = Register.R2
+    writableBytes[i++] = MOV_REG_PTR_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("r2")).toBe(0x1234)
+  })
+  it("should execute MOV_LIT_OFF_REG instruction correctly", () => {
+    memory.setUint16(0x0102, 0x1234)
+
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = MOV_LIT_OFF_REG
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("r2")).toBe(0x1234)
+  })
+  it("should execute ADD_REG_REG instruction correctly", () => {
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x12
+    writableBytes[i++] = 0x34
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0xab
+    writableBytes[i++] = 0xcd
+    writableBytes[i++] = Register.R2
+    writableBytes[i++] = ADD_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("acc")).toBe(0xbe01)
+  })
+  it("should execute ADD_LIT_REG instruction correctly", () => {
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0xab
+    writableBytes[i++] = 0xcd
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = ADD_LIT_REG
+    writableBytes[i++] = 0x12
+    writableBytes[i++] = 0x34
+    writableBytes[i++] = Register.R1
+
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("acc")).toBe(0xbe01)
+  })
+  it("should execute SUB_LIT_REG instruction correctly", () => {
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x12
+    writableBytes[i++] = 0x34
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = SUB_LIT_REG
+    writableBytes[i++] = 0xab
+    writableBytes[i++] = 0xcd
+    writableBytes[i++] = Register.R1
+
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("acc")).toBe(0x9999)
+  })
+  it("should execute SUB_REG_LIT instruction correctly", () => {
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0xab
+    writableBytes[i++] = 0xcd
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = SUB_REG_LIT
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = 0x12
+    writableBytes[i++] = 0x34
+
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("acc")).toBe(0x9999)
+  })
+  it("should execute SUB_REG_REG instruction correctly", () => {
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0xab
+    writableBytes[i++] = 0xcd
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x12
+    writableBytes[i++] = 0x34
+    writableBytes[i++] = Register.R2
+    writableBytes[i++] = SUB_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("acc")).toBe(0x9999)
+  })
+  it("should execute MUL_LIT_REG instruction correctly", () => {
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = MUL_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x03
+    writableBytes[i++] = Register.R1
+
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("acc")).toBe(0x0006)
+  })
+  it("should execute MUL_REG_REG instruction correctly", () => {
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x03
+    writableBytes[i++] = Register.R2
+    writableBytes[i++] = MUL_REG_REG
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = Register.R2
+
+    cpu.step()
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("acc")).toBe(0x0006)
+  })
+  it("should execute INC_REG instruction correctly", () => {
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = INC_REG
+    writableBytes[i++] = Register.R1
+
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("r1")).toBe(0x0003)
+  })
+  it("should execute DEC_REG instruction correctly", () => {
+    const writableBytes = new Uint8Array(memory.buffer)
+    let i = 0
+
+    writableBytes[i++] = MOV_LIT_REG
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x02
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = DEC_REG
+    writableBytes[i++] = Register.R1
+
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister("r1")).toBe(0x0001)
   })
   it("should execute JMP_NOT_EQ instruction correctly", () => {
     memory.setUint16(0x0100, 0x0000)
