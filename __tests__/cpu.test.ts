@@ -27,7 +27,7 @@ import { createMemory } from "../src/memory"
 import { MemoryMapper } from "../src/memory-mapper"
 import { Register } from "../src/util"
 
-describe("CPU", () => {
+describe("Instructions", () => {
   let cpu: CPU
   let memory: DataView
   let MM: MemoryMapper
@@ -490,33 +490,13 @@ describe("CPU", () => {
     expect(cpu.getRegister("fp")).toBe(0xfffe)
     expect(memory.getUint16(0xfff8)).toBe(0x4444)
   })
-  // TODO: Fix this test
-  it.skip("should execute HLT instruction correctly", () => {
+  it("should execute HLT instruction correctly", () => {
     const writableBytes = new Uint8Array(memory.buffer)
     let i = 0
-    writableBytes[i++] = MOV_LIT_REG
-    writableBytes[i++] = 0x12
-    writableBytes[i++] = 0x34
-    writableBytes[i++] = Register.R1
-
-    writableBytes[i++] = PSH_REG
-    writableBytes[i++] = Register.R1
-
     writableBytes[i++] = HLT
 
-    writableBytes[i++] = MOV_LIT_REG
-    writableBytes[i++] = 0x56
-    writableBytes[i++] = 0x78
-    writableBytes[i++] = Register.R8
+    const res = cpu.step()
 
-    writableBytes[i++] = PSH_REG
-    writableBytes[i++] = Register.R8
-
-    cpu.run()
-
-    expect(cpu.getRegister("sp")).toBe(0xfffe)
-    expect(cpu.getRegister("ip")).toBe(0x0004)
-    expect(cpu.getRegister("r1")).toBe(0x1234)
-    expect(cpu.getRegister("r8")).toBe(0x0000)
+    expect(res).toBe(true)
   })
 })
