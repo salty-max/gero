@@ -3,12 +3,15 @@
  *
  * This class emulates a 16-bit CPU, operating on an array of 16-bit values as
  * memory. It includes a stack and an instruction set.
+ *
+ * @see CPU
  */
 
 import {
   ADD_REG_REG,
   CAL_LIT,
   CAL_REG,
+  HLT,
   JMP_NOT_EQ,
   MOV_LIT_REG,
   MOV_MEM_REG,
@@ -21,6 +24,7 @@ import {
 } from "./instructions"
 import { logWithFormat } from "./logger"
 import { createMemory } from "./memory"
+import { MemoryMapper } from "./memory-mapper"
 import {
   ANSI_COLOR_BLUE,
   ANSI_COLOR_BOLD,
@@ -35,11 +39,11 @@ const GENERIC_REGISTERS_COUNT = 8
  */
 export class CPU {
   /**
-   * The memory of the CPU, represented as a DataView.
+   * The memory of the CPU, represented as a MemoryMapper.
    * @private
-   * @type {DataView}
+   * @type {MemoryMapper}
    */
-  private memory: DataView
+  private memory: MemoryMapper
   /**
    * An array of register names for the CPU.
    * @private
@@ -67,10 +71,10 @@ export class CPU {
 
   /**
    * Constructor for the CPU class.
-   * @param {DataView} memory - The memory for the CPU.
+   * @param {MemoryMapper} memory - The memory for the CPU.
    * @constructor
    */
-  constructor(memory: DataView) {
+  constructor(memory: MemoryMapper) {
     this.memory = memory
 
     this.registerNames = [
@@ -94,15 +98,14 @@ export class CPU {
      * Initialize the "sp" (stack pointer) and "fp" (frame pointer) registers.
      * These pointers are set to point to the very end of the memory to initiate an empty stack,
      * which grows towards decreasing memory addresses.
-     * The first subtraction is memory stores 16-bit values rather than bytes.
-     * The second subtraction is because memory addresses are zero-based.
+     * They are initialized at 0xffff - 1 (0xfffe).
      */
-    this.setRegister("sp", memory.byteLength - 1 - 1)
-    this.setRegister("fp", memory.byteLength - 1 - 1)
+    this.setRegister("sp", 0xffff - 1)
+    this.setRegister("fp", 0xffff - 1)
   }
 
   /**
-   * Method to print current register state for debugging purposes.
+   * Prints current register state for debugging purposes.
    */
   debug() {
     logWithFormat(
@@ -122,7 +125,7 @@ export class CPU {
   }
 
   /**
-   * Method to view the n bytes in memory starting from a specific address for debugging purposes.
+   * Prints the n bytes in memory starting from a specific address for debugging purposes.
    *
    * @param {number} address - The starting memory address.
    * @param {number} [n=8] - Number of bytes to display.
@@ -145,7 +148,7 @@ export class CPU {
   }
 
   /**
-   * Method to retrieve the 16-bit value stored in a register by its name.
+   * Retrieves the 16-bit value stored in a register by its name.
    *
    * @param {string} name - Name of the register.
    * @returns {number} - The 16-bit value stored in the register.
@@ -160,7 +163,7 @@ export class CPU {
   }
 
   /**
-   * Method to store a 16-bit value into a register by its name.
+   * Stores a 16-bit value into a register by its name.
    *
    * @param {string} name - Name of the register.
    * @param {number} value - The 16-bit value to store in the register.
@@ -175,7 +178,7 @@ export class CPU {
   }
 
   /**
-   * Method to fetch the next 8-bit instruction from memory and increment the instruction pointer.
+   * Fetches the next 8-bit instruction from memory and increment the instruction pointer.
    *
    * @returns {number} - The fetched 8-bit instruction.
    */
@@ -189,7 +192,7 @@ export class CPU {
   }
 
   /**
-   * Method to fetch the next 16-bit instruction (or a data word) from memory and increment the instruction pointer.
+   * Fetches the next 16-bit instruction (or a data word) from memory and increment the instruction pointer.
    *
    * @returns {number} - The fetched 16-bit instruction or data word.
    */
@@ -203,7 +206,7 @@ export class CPU {
   }
 
   /**
-   * Method to push a 16-bit value onto the stack and decrement the stack pointer.
+   * Pushes a 16-bit value onto the stack and decrement the stack pointer.
    *
    * @param {number} value - The 16-bit value to push onto the stack.
    */
@@ -216,7 +219,7 @@ export class CPU {
   }
 
   /**
-   * Method to save the current CPU state (registers and return address) onto the stack.
+   * Saves the current CPU state (registers and return address) onto the stack.
    */
   pushState() {
     // Push generic registers' current state onto the stack
@@ -235,7 +238,7 @@ export class CPU {
   }
 
   /**
-   * Method to pop a 16-bit value from the stack and increment the stack pointer.
+   * Pops a 16-bit value from the stack and increment the stack pointer.
    *
    * @returns {number} - The popped 16-bit value.
    */
@@ -249,7 +252,7 @@ export class CPU {
   }
 
   /**
-   * Method to restore the CPU state (registers and return address) from the stack.
+   * Restores the CPU state (registers and return address) from the stack.
    */
   popState() {
     const framePointerAddress = this.getRegister("fp")
@@ -270,7 +273,7 @@ export class CPU {
   }
 
   /**
-   * Method to fetch the next byte from memory, interpret it as a register index, and return it.
+   * Fetches the next byte from memory, interpret it as a register index, and return it.
    *
    * @returns {number} - The fetched register index.
    */
@@ -279,11 +282,12 @@ export class CPU {
   }
 
   /**
-   * Method to execute a given instruction.
+   * Executes a given instruction.
    *
    * @param {number} instruction - The opcode of the instruction to execute.
+   * @returns {boolean} Whether the computation should stop
    */
-  execute(instruction: number) {
+  execute(instruction: number): boolean {
     switch (instruction) {
       /**
        * Move Literal to Register (MOV_LIT_REG) instruction.
@@ -295,7 +299,7 @@ export class CPU {
         const register = this.fetchRegisterIndex()
 
         this.registers.setUint16(register, literal)
-        return
+        return false
       }
       /**
        * Move Register to Register (MOV_REG_REG) instruction.
@@ -309,7 +313,7 @@ export class CPU {
         const value = this.registers.getUint16(registerFrom)
 
         this.registers.setUint16(registerTo, value)
-        return
+        return false
       }
       /**
        * Move Register to Memory (MOV_REG_MEM) instruction.
@@ -323,7 +327,7 @@ export class CPU {
         const value = this.registers.getUint16(registerFrom)
 
         this.memory.setUint16(address, value)
-        return
+        return false
       }
       /**
        * Move Memory to Register (MOV_MEM_REG) instruction.
@@ -337,7 +341,7 @@ export class CPU {
         const value = this.memory.getUint16(address)
 
         this.registers.setUint16(registerTo, value)
-        return
+        return false
       }
       /**
        * Add Register to Register (ADD_REG_REG) instruction.
@@ -346,13 +350,13 @@ export class CPU {
        * adds these values, and then stores the result into the accumulator (acc) register.
        */
       case ADD_REG_REG: {
-        const r1 = this.fetch()
-        const r2 = this.fetch()
-        const registerValue1 = this.registers.getUint16(r1 * 2)
-        const registerValue2 = this.registers.getUint16(r2 * 2)
+        const r1 = this.fetchRegisterIndex()
+        const r2 = this.fetchRegisterIndex()
+        const registerValue1 = this.registers.getUint16(r1)
+        const registerValue2 = this.registers.getUint16(r2)
 
         this.setRegister("acc", registerValue1 + registerValue2)
-        return
+        return false
       }
       /**
        * Jump if Not Equal (JMP_NOT_EQ) instruction.
@@ -369,7 +373,7 @@ export class CPU {
           this.setRegister("ip", address)
         }
 
-        return
+        return false
       }
       /**
        * Push Literal (PSH_LIT) instruction.
@@ -380,7 +384,7 @@ export class CPU {
         const value = this.fetch16()
 
         this.push(value)
-        return
+        return false
       }
       /**
        * Push Register (PSH_REG) instruction.
@@ -393,10 +397,10 @@ export class CPU {
         const value = this.registers.getUint16(registerFrom)
 
         this.push(value)
-        return
+        return false
       }
       /**
-       * Pop to Register (POP) operation.
+       * Pop to Register (POP) instruction.
        * Fetches a register index from the instruction stream,
        * pops a value from the stack,
        * and then sets the popped value into the specified register.
@@ -406,10 +410,10 @@ export class CPU {
         const value = this.pop()
 
         this.registers.setUint16(registerIndex, value)
-        return
+        return false
       }
       /**
-       * Call Literal (CAL_LIT) operation.
+       * Call Literal (CAL_LIT) instruction.
        * Fetches a memory address from the instruction stream,
        * pushes the current state onto the stack (for returning later),
        * and then sets the instruction pointer (ip) register to the fetched memory address,
@@ -420,10 +424,10 @@ export class CPU {
 
         this.pushState()
         this.setRegister("ip", address)
-        return
+        return false
       }
       /**
-       * Call Register (CAL_REG) operation.
+       * Call Register (CAL_REG) instruction.
        * Fetches a register index from the instruction stream,
        * reads a memory address from the specified register,
        * pushes the current state onto the stack (for returning later),
@@ -436,24 +440,44 @@ export class CPU {
 
         this.pushState()
         this.setRegister("ip", address)
-        return
+        return false
       }
       /**
-       * Return (RET) operation.
+       * Return (RET) instruction.
        * Pops the previously pushed state from the stack,
        * effectively causing a jump back to the location in the instruction stream from where the subroutine was called.
        */
       case RET: {
         this.popState()
-        return
+        return false
       }
+      /**
+       * Halt (HLT) instruction.
+       * Tells the CPU to stop all computation.
+       */
+      case HLT:
+        return true
+
+      default:
+        return false
     }
   }
 
   /**
-   * Method to execute a single step: fetch the next instruction and execute it.
+   * Executes a single step: fetch the next instruction and execute it.
    */
   step() {
-    this.execute(this.fetch())
+    const instruction = this.fetch()
+    return this.execute(instruction)
+  }
+
+  /**
+   * Executes all computations until HLT instruction.
+   */
+  run() {
+    const halt = this.step()
+    if (!halt) {
+      setImmediate(() => this.run())
+    }
   }
 }

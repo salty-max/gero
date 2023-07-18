@@ -10,11 +10,11 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": [
-    "src"
-  ],
-  "exclude": [
-    "node_modules",
-    "**/__tests__/*"
-  ]
+  "include": ["src"],
+  "exclude": ["node_modules", "**/__tests__/*"],
+  "typedocOptions": {
+    "entryPoints": ["./src/index.ts"],
+    "out": "docs",
+    "theme": "default"
+  }
 }
