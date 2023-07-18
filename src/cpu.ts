@@ -8,10 +8,13 @@
  */
 
 import {
+  ADD_LIT_REG,
   ADD_REG_REG,
   CAL_LIT,
   CAL_REG,
+  DEC_REG,
   HLT,
+  INC_REG,
   JMP_NOT_EQ,
   MOV_LIT_MEM,
   MOV_LIT_OFF_REG,
@@ -20,10 +23,15 @@ import {
   MOV_REG_MEM,
   MOV_REG_PTR_REG,
   MOV_REG_REG,
+  MUL_LIT_REG,
+  MUL_REG_REG,
   POP,
   PSH_LIT,
   PSH_REG,
   RET,
+  SUB_LIT_REG,
+  SUB_REG_LIT,
+  SUB_REG_REG,
 } from "./instructions"
 import { logWithFormat } from "./logger"
 import { createMemory } from "./memory"
@@ -404,6 +412,102 @@ export class CPU {
         const registerValue2 = this.registers.getUint16(r2)
 
         this.setRegister("acc", registerValue1 + registerValue2)
+        return false
+      }
+      // Add Literal to Register (ADD_LIT_REG) instruction.
+      // Fetches a literal 16-bit value and a register index from the instruction stream,
+      // reads the value from the fetched register,
+      // adds the literal to the fetched value, and then stores the result in the accumulator (acc) register.
+      case ADD_LIT_REG: {
+        const literal = this.fetch16()
+        const registerIndex = this.fetchRegisterIndex()
+        const value = this.registers.getUint16(registerIndex)
+
+        this.setRegister("acc", literal + value)
+        return false
+      }
+      // Subtract Literal from Register (SUB_LIT_REG) instruction.
+      // Fetches a literal 16-bit value and a register index from the instruction stream,
+      // reads the value from the fetched register,
+      // subtracts the fetched value from the literal, and then stores the result in the accumulator (acc) register.
+      case SUB_LIT_REG: {
+        const literal = this.fetch16()
+        const registerIndex = this.fetchRegisterIndex()
+        const value = this.registers.getUint16(registerIndex)
+
+        this.setRegister("acc", literal - value)
+        return false
+      }
+      // Subtract Literal from Register (SUB_REG_LIT) instruction.
+      // Fetches a register index and a literal 16-bit value from the instruction stream,
+      // reads the value from the fetched register,
+      // subtracts the literal from the fetched value, and then stores the result in the accumulator (acc) register.
+      case SUB_REG_LIT: {
+        const registerIndex = this.fetchRegisterIndex()
+        const literal = this.fetch16()
+        const value = this.registers.getUint16(registerIndex)
+
+        this.setRegister("acc", value - literal)
+        return false
+      }
+      // Subtract Register from Register (SUB_REG_REG) instruction.
+      // Fetches two register indexes from the instruction stream,
+      // reads the values from the two registers,
+      // subtracts the second value from the first one, and then stores the result in the accumulator (acc) register.
+      case SUB_REG_REG: {
+        const r1 = this.fetchRegisterIndex()
+        const r2 = this.fetchRegisterIndex()
+        const r1Value = this.registers.getUint16(r1)
+        const r2Value = this.registers.getUint16(r2)
+
+        this.setRegister("acc", r1Value - r2Value)
+        return false
+      }
+      // Multiply Literal with Register (MUL_LIT_REG) instruction.
+      // Fetches a literal 16-bit value and a register index from the instruction stream,
+      // reads the value from the fetched register,
+      // multiplies the literal with the fetched value, and then stores the result in the accumulator (acc) register.
+      case MUL_LIT_REG: {
+        const literal = this.fetch16()
+        const registerIndex = this.fetchRegisterIndex()
+        const value = this.registers.getUint16(registerIndex)
+
+        this.setRegister("acc", literal * value)
+        return false
+      }
+      // Multiply Register with Register (MUL_REG_REG) instruction.
+      // Fetches two register indexes from the instruction stream,
+      // reads the values from the two registers,
+      // multiplies the two values, and then stores the result in the accumulator (acc) register.
+      case MUL_REG_REG: {
+        const r1 = this.fetchRegisterIndex()
+        const r2 = this.fetchRegisterIndex()
+        const r1Value = this.registers.getUint16(r1)
+        const r2Value = this.registers.getUint16(r2)
+
+        this.setRegister("acc", r1Value * r2Value)
+        return false
+      }
+      // Increment Register (INC_REG) instruction.
+      // Fetches a register index from the instruction stream,
+      // reads the value from the fetched register,
+      // increments the fetched value, and then stores the result back into the register.
+      case INC_REG: {
+        const r = this.fetchRegisterIndex()
+        const value = this.registers.getUint16(r)
+
+        this.registers.setUint16(r, value + 1)
+        return false
+      }
+      // Decrement Register (DEC_REG) instruction.
+      // Fetches a register index from the instruction stream,
+      // reads the value from the fetched register,
+      // decrements the fetched value, and then stores the result back into the register.
+      case DEC_REG: {
+        const r = this.fetchRegisterIndex()
+        const value = this.registers.getUint16(r)
+
+        this.registers.setUint16(r, value - 1)
         return false
       }
       /**
