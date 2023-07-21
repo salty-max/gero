@@ -7,65 +7,18 @@
  * @see CPU
  */
 
-import {
-  ADD_LIT_REG,
-  ADD_REG_REG,
-  AND_REG_LIT,
-  AND_REG_REG,
-  CAL_LIT,
-  CAL_REG,
-  DEC_REG,
-  HLT,
-  INC_REG,
-  JEQ_LIT,
-  JEQ_REG,
-  JGE_LIT,
-  JGE_REG,
-  JGT_LIT,
-  JGT_REG,
-  JLE_LIT,
-  JLE_REG,
-  JLT_LIT,
-  JLT_REG,
-  JNE_LIT,
-  JNE_REG,
-  LSF_REG_LIT,
-  LSF_REG_REG,
-  MOV_LIT_MEM,
-  MOV_LIT_OFF_REG,
-  MOV_LIT_REG,
-  MOV_MEM_REG,
-  MOV_REG_MEM,
-  MOV_REG_PTR_REG,
-  MOV_REG_REG,
-  MUL_LIT_REG,
-  MUL_REG_REG,
-  NOT,
-  OR_REG_LIT,
-  OR_REG_REG,
-  POP,
-  PSH_LIT,
-  PSH_REG,
-  RET,
-  RSF_REG_LIT,
-  RSF_REG_REG,
-  SUB_LIT_REG,
-  SUB_REG_LIT,
-  SUB_REG_REG,
-  XOR_REG_LIT,
-  XOR_REG_REG,
-} from "./instructions"
-import { logWithFormat } from "./logger"
-import { createMemory } from "./memory"
-import { MemoryMapper } from "./memory-mapper"
+import instructions from '../instructions'
+import { logWithFormat } from '../util/logger'
+import { createMemory } from './memory'
+import { MemoryMapper } from './memory-mapper'
 import {
   ANSI_COLOR_BLUE,
   ANSI_COLOR_BOLD,
   ANSI_COLOR_GREEN,
   ANSI_COLOR_RESET,
-} from "./util"
-
-const GENERIC_REGISTERS_COUNT = 8
+  GENERIC_REGISTERS_COUNT,
+  REGISTER_NAMES,
+} from '../util/util'
 
 /**
  * Class that emulates a 16-bit CPU.
@@ -110,13 +63,7 @@ export class CPU {
   constructor(memory: MemoryMapper) {
     this.memory = memory
 
-    this.registerNames = [
-      "ip", // Instruction pointer
-      "acc", // Accumulator
-      ...Array.from({ length: GENERIC_REGISTERS_COUNT }, (_, i) => `r${i + 1}`), // Generic-purpose registers
-      "sp", // Stack pointer
-      "fp", // Stack frame pointer
-    ]
+    this.registerNames = REGISTER_NAMES
 
     this.registers = createMemory(this.registerNames.length * 2) // Create DataView for registers
     this.registerMap = this.registerNames.reduce(
@@ -133,8 +80,8 @@ export class CPU {
      * which grows towards decreasing memory addresses.
      * They are initialized at 0xffff - 1 (0xfffe).
      */
-    this.setRegister("sp", 0xffff - 1)
-    this.setRegister("fp", 0xffff - 1)
+    this.setRegister('sp', 0xffff - 1)
+    this.setRegister('fp', 0xffff - 1)
   }
 
   /**
@@ -142,7 +89,7 @@ export class CPU {
    */
   debug() {
     logWithFormat(
-      "REGISTER\n----------------\n",
+      'REGISTER\n----------------\n',
       ANSI_COLOR_BOLD,
       ANSI_COLOR_GREEN
     )
@@ -151,7 +98,7 @@ export class CPU {
       console.log(
         `${name}: ${ANSI_COLOR_BLUE}${ANSI_COLOR_BOLD}0x${this.getRegister(name)
           .toString(16)
-          .padStart(4, "0")}${ANSI_COLOR_RESET}`
+          .padStart(4, '0')}${ANSI_COLOR_RESET}`
       )
     })
     console.log()
@@ -166,17 +113,17 @@ export class CPU {
   viewMemoryAt(address: number, n = 8) {
     const nextNBytes = Array.from({ length: n }, (_, i) => {
       return this.memory.getUint8(address + i)
-    }).map((v) => `0x${v.toString(16).padStart(2, "0")}`)
+    }).map((v) => `0x${v.toString(16).padStart(2, '0')}`)
 
     logWithFormat(
-      "MEMORY AT\n----------------\n",
+      'MEMORY AT\n----------------\n',
       ANSI_COLOR_BOLD,
       ANSI_COLOR_GREEN
     )
     console.log(
       `${ANSI_COLOR_BLUE}${ANSI_COLOR_BOLD}0x${address
         .toString(16)
-        .padStart(4, "0")}${ANSI_COLOR_RESET}: ${nextNBytes.join(" ")}`
+        .padStart(4, '0')}${ANSI_COLOR_RESET}: ${nextNBytes.join(' ')}`
     )
   }
 
@@ -216,10 +163,10 @@ export class CPU {
    * @returns {number} - The fetched 8-bit instruction.
    */
   private fetch(): number {
-    const nextInstructionAddress = this.getRegister("ip")
+    const nextInstructionAddress = this.getRegister('ip')
     const instruction = this.memory.getUint8(nextInstructionAddress)
 
-    this.setRegister("ip", nextInstructionAddress + 1)
+    this.setRegister('ip', nextInstructionAddress + 1)
 
     return instruction
   }
@@ -230,10 +177,10 @@ export class CPU {
    * @returns {number} - The fetched 16-bit instruction or data word.
    */
   private fetch16(): number {
-    const nextInstructionAddress = this.getRegister("ip")
+    const nextInstructionAddress = this.getRegister('ip')
     const instruction = this.memory.getUint16(nextInstructionAddress)
 
-    this.setRegister("ip", nextInstructionAddress + 2)
+    this.setRegister('ip', nextInstructionAddress + 2)
 
     return instruction
   }
@@ -244,10 +191,10 @@ export class CPU {
    * @param {number} value - The 16-bit value to push onto the stack.
    */
   private push(value: number) {
-    const spAddress = this.getRegister("sp")
+    const spAddress = this.getRegister('sp')
 
     this.memory.setUint16(spAddress, value)
-    this.setRegister("sp", spAddress - 2)
+    this.setRegister('sp', spAddress - 2)
     this.stackFrameSize += 2
   }
 
@@ -261,12 +208,12 @@ export class CPU {
       this.push(this.getRegister(`r${i}`))
     }
     // Push instruction pointer onto the stack as a return address for the subroutine
-    this.push(this.getRegister("ip"))
+    this.push(this.getRegister('ip'))
     // Push current stack frame size + 2 bytes for this pointer
     this.push(this.stackFrameSize + 2)
 
     // Set frame pointer to current stack pointer
-    this.setRegister("fp", this.getRegister("sp"))
+    this.setRegister('fp', this.getRegister('sp'))
     // Reset stack frame size pointer to allow another subroutine to use it
     this.stackFrameSize = 0
   }
@@ -277,9 +224,9 @@ export class CPU {
    * @returns {number} - The popped 16-bit value.
    */
   private pop(): number {
-    const nextSpAddress = this.getRegister("sp") + 2
+    const nextSpAddress = this.getRegister('sp') + 2
 
-    this.setRegister("sp", nextSpAddress)
+    this.setRegister('sp', nextSpAddress)
     this.stackFrameSize -= 2
 
     return this.memory.getUint16(nextSpAddress)
@@ -290,12 +237,12 @@ export class CPU {
    * @private
    */
   private popState() {
-    const framePointerAddress = this.getRegister("fp")
-    this.setRegister("sp", framePointerAddress)
+    const framePointerAddress = this.getRegister('fp')
+    this.setRegister('sp', framePointerAddress)
     this.stackFrameSize = this.pop()
     const currentStackFrameSize = this.stackFrameSize
 
-    this.setRegister("ip", this.pop())
+    this.setRegister('ip', this.pop())
     for (let i = GENERIC_REGISTERS_COUNT; i >= 1; i--) {
       this.setRegister(`r${i}`, this.pop())
     }
@@ -304,7 +251,7 @@ export class CPU {
     for (let i = 0; i < nArgs; i++) {
       this.pop()
     }
-    this.setRegister("fp", framePointerAddress + currentStackFrameSize)
+    this.setRegister('fp', framePointerAddress + currentStackFrameSize)
   }
 
   /**
@@ -329,7 +276,7 @@ export class CPU {
        * Fetches a literal 16-bit value and a register index from the instruction stream,
        * and then sets the fetched literal value into the specified register.
        */
-      case MOV_LIT_REG: {
+      case instructions.MOV_LIT_REG.opcode: {
         const literal = this.fetch16()
         const register = this.fetchRegisterIndex()
 
@@ -342,7 +289,7 @@ export class CPU {
        * reads the value from the first (source) register,
        * and then sets that value into the second (destination) register.
        */
-      case MOV_REG_REG: {
+      case instructions.MOV_REG_REG.opcode: {
         const registerFrom = this.fetchRegisterIndex()
         const registerTo = this.fetchRegisterIndex()
         const value = this.registers.getUint16(registerFrom)
@@ -356,7 +303,7 @@ export class CPU {
        * reads the value from the specified register,
        * and then sets that value into the specified memory address.
        */
-      case MOV_REG_MEM: {
+      case instructions.MOV_REG_MEM.opcode: {
         const registerFrom = this.fetchRegisterIndex()
         const address = this.fetch16()
         const value = this.registers.getUint16(registerFrom)
@@ -370,7 +317,7 @@ export class CPU {
        * reads the value from the specified memory address,
        * and then sets that value into the specified register.
        */
-      case MOV_MEM_REG: {
+      case instructions.MOV_MEM_REG.opcode: {
         const address = this.fetch16()
         const registerTo = this.fetchRegisterIndex()
         const value = this.memory.getUint16(address)
@@ -383,7 +330,7 @@ export class CPU {
        * Fetches a literal 16-bit value and a memory address from the instruction stream,
        * and then sets the fetched literal value into the specified memory address.
        */
-      case MOV_LIT_MEM: {
+      case instructions.MOV_LIT_MEM.opcode: {
         const value = this.fetch16()
         const address = this.fetch16()
 
@@ -397,7 +344,7 @@ export class CPU {
        * fetches the value from the fetched memory address,
        * and then sets that value into the second (destination) register.
        */
-      case MOV_REG_PTR_REG: {
+      case instructions.MOV_REG_PTR_REG.opcode: {
         const registerFrom = this.fetchRegisterIndex()
         const registerTo = this.fetchRegisterIndex()
         const ptr = this.registers.getUint16(registerFrom)
@@ -413,7 +360,7 @@ export class CPU {
        * fetches the value from the memory address calculated by adding the offset to the base address,
        * and then sets that value into the second (destination) register.
        */
-      case MOV_LIT_OFF_REG: {
+      case instructions.MOV_LIT_OFF_REG.opcode: {
         const baseAddress = this.fetch16()
         const registerFrom = this.fetchRegisterIndex()
         const registerTo = this.fetchRegisterIndex()
@@ -429,13 +376,13 @@ export class CPU {
        * reads the values from the two registers,
        * adds these values, and then stores the result into the accumulator (acc) register.
        */
-      case ADD_REG_REG: {
+      case instructions.ADD_REG_REG.opcode: {
         const r1 = this.fetchRegisterIndex()
         const r2 = this.fetchRegisterIndex()
         const registerValue1 = this.registers.getUint16(r1)
         const registerValue2 = this.registers.getUint16(r2)
 
-        this.setRegister("acc", registerValue1 + registerValue2)
+        this.setRegister('acc', registerValue1 + registerValue2)
         return false
       }
       /**
@@ -444,12 +391,12 @@ export class CPU {
        * reads the value from the fetched register,
        * adds the literal to the fetched value, and then stores the result in the accumulator (acc) register.
        */
-      case ADD_LIT_REG: {
+      case instructions.ADD_LIT_REG.opcode: {
         const literal = this.fetch16()
         const registerIndex = this.fetchRegisterIndex()
         const value = this.registers.getUint16(registerIndex)
 
-        this.setRegister("acc", literal + value)
+        this.setRegister('acc', literal + value)
         return false
       }
       /**
@@ -458,12 +405,12 @@ export class CPU {
        * reads the value from the fetched register,
        * subtracts the fetched value from the literal, and then stores the result in the accumulator (acc) register.
        */
-      case SUB_LIT_REG: {
+      case instructions.SUB_LIT_REG.opcode: {
         const literal = this.fetch16()
         const registerIndex = this.fetchRegisterIndex()
         const value = this.registers.getUint16(registerIndex)
 
-        this.setRegister("acc", literal - value)
+        this.setRegister('acc', literal - value)
         return false
       }
       /**
@@ -472,12 +419,12 @@ export class CPU {
        * reads the value from the fetched register,
        * subtracts the literal from the fetched value, and then stores the result in the accumulator (acc) register.
        */
-      case SUB_REG_LIT: {
+      case instructions.SUB_REG_LIT.opcode: {
         const registerIndex = this.fetchRegisterIndex()
         const literal = this.fetch16()
         const value = this.registers.getUint16(registerIndex)
 
-        this.setRegister("acc", value - literal)
+        this.setRegister('acc', value - literal)
         return false
       }
       /**
@@ -486,13 +433,13 @@ export class CPU {
        * reads the values from the two registers,
        * subtracts the second value from the first one, and then stores the result in the accumulator (acc) register.
        */
-      case SUB_REG_REG: {
+      case instructions.SUB_REG_REG.opcode: {
         const r1 = this.fetchRegisterIndex()
         const r2 = this.fetchRegisterIndex()
         const r1Value = this.registers.getUint16(r1)
         const r2Value = this.registers.getUint16(r2)
 
-        this.setRegister("acc", r1Value - r2Value)
+        this.setRegister('acc', r1Value - r2Value)
         return false
       }
       /**
@@ -501,12 +448,12 @@ export class CPU {
        * reads the value from the fetched register,
        * multiplies the literal with the fetched value, and then stores the result in the accumulator (acc) register.
        */
-      case MUL_LIT_REG: {
+      case instructions.MUL_LIT_REG.opcode: {
         const literal = this.fetch16()
         const registerIndex = this.fetchRegisterIndex()
         const value = this.registers.getUint16(registerIndex)
 
-        this.setRegister("acc", literal * value)
+        this.setRegister('acc', literal * value)
         return false
       }
       /**
@@ -515,13 +462,13 @@ export class CPU {
        * reads the values from the two registers,
        * multiplies the two values, and then stores the result in the accumulator (acc) register.
        */
-      case MUL_REG_REG: {
+      case instructions.MUL_REG_REG.opcode: {
         const r1 = this.fetchRegisterIndex()
         const r2 = this.fetchRegisterIndex()
         const r1Value = this.registers.getUint16(r1)
         const r2Value = this.registers.getUint16(r2)
 
-        this.setRegister("acc", r1Value * r2Value)
+        this.setRegister('acc', r1Value * r2Value)
         return false
       }
       /**
@@ -530,7 +477,7 @@ export class CPU {
        * reads the value from the fetched register,
        * increments the fetched value, and then stores the result back into the register.
        */
-      case INC_REG: {
+      case instructions.INC_REG.opcode: {
         const r = this.fetchRegisterIndex()
         const value = this.registers.getUint16(r)
 
@@ -543,7 +490,7 @@ export class CPU {
        * reads the value from the fetched register,
        * decrements the fetched value, and then stores the result back into the register.
        */
-      case DEC_REG: {
+      case instructions.DEC_REG.opcode: {
         const r = this.fetchRegisterIndex()
         const value = this.registers.getUint16(r)
 
@@ -556,7 +503,7 @@ export class CPU {
        * Left shifts the value in the register by the specified literal value,
        * and then stores the result back into the register.
        */
-      case LSF_REG_LIT: {
+      case instructions.LSF_REG_LIT.opcode: {
         const r = this.fetchRegisterIndex()
         const literal = this.fetch()
         const rValue = this.registers.getUint16(r)
@@ -570,7 +517,7 @@ export class CPU {
        * Left shifts the value in the first register by the value in the second register,
        * and then stores the result back into the first register.
        */
-      case LSF_REG_REG: {
+      case instructions.LSF_REG_REG.opcode: {
         const r1 = this.fetchRegisterIndex()
         const r2 = this.fetchRegisterIndex()
         const v1 = this.registers.getUint16(r1)
@@ -585,7 +532,7 @@ export class CPU {
        * Right shifts the value in the register by the specified literal value,
        * and then stores the result back into the register.
        */
-      case RSF_REG_LIT: {
+      case instructions.RSF_REG_LIT.opcode: {
         const r = this.fetchRegisterIndex()
         const literal = this.fetch()
         const rValue = this.registers.getUint16(r)
@@ -599,7 +546,7 @@ export class CPU {
        * Right shifts the value in the first register by the value in the second register,
        * and then stores the result back into the first register.
        */
-      case RSF_REG_REG: {
+      case instructions.RSF_REG_REG.opcode: {
         const r1 = this.fetchRegisterIndex()
         const r2 = this.fetchRegisterIndex()
         const v1 = this.registers.getUint16(r1)
@@ -615,12 +562,12 @@ export class CPU {
        * and then stores the result in the accumulator (acc) register.
        */
 
-      case AND_REG_LIT: {
+      case instructions.AND_REG_LIT.opcode: {
         const r = this.fetchRegisterIndex()
         const literal = this.fetch()
         const rValue = this.registers.getUint16(r)
 
-        this.setRegister("acc", rValue & literal)
+        this.setRegister('acc', rValue & literal)
         return false
       }
       /**
@@ -629,13 +576,13 @@ export class CPU {
        * Performs a bitwise AND operation between the values in the two registers,
        * and then stores the result in the accumulator (acc) register.
        */
-      case AND_REG_REG: {
+      case instructions.AND_REG_REG.opcode: {
         const r1 = this.fetchRegisterIndex()
         const r2 = this.fetchRegisterIndex()
         const v1 = this.registers.getUint16(r1)
         const v2 = this.registers.getUint16(r2)
 
-        this.setRegister("acc", v1 & v2)
+        this.setRegister('acc', v1 & v2)
         return false
       }
       /**
@@ -644,12 +591,12 @@ export class CPU {
        * Performs a bitwise OR operation between the value in the register and the literal value,
        * and then stores the result in the accumulator (acc) register.
        */
-      case OR_REG_LIT: {
+      case instructions.OR_REG_LIT.opcode: {
         const r = this.fetchRegisterIndex()
         const literal = this.fetch()
         const rValue = this.registers.getUint16(r)
 
-        this.setRegister("acc", rValue | literal)
+        this.setRegister('acc', rValue | literal)
         return false
       }
       /**
@@ -658,13 +605,13 @@ export class CPU {
        * Performs a bitwise OR operation between the values in the two registers,
        * and then stores the result in the accumulator (acc) register.
        */
-      case OR_REG_REG: {
+      case instructions.OR_REG_REG.opcode: {
         const r1 = this.fetchRegisterIndex()
         const r2 = this.fetchRegisterIndex()
         const v1 = this.registers.getUint16(r1)
         const v2 = this.registers.getUint16(r2)
 
-        this.setRegister("acc", v1 | v2)
+        this.setRegister('acc', v1 | v2)
         return false
       }
       /**
@@ -673,12 +620,12 @@ export class CPU {
        * Performs a bitwise XOR operation between the value in the register and the literal value,
        * and then stores the result in the accumulator (acc) register.
        */
-      case XOR_REG_LIT: {
+      case instructions.XOR_REG_LIT.opcode: {
         const r = this.fetchRegisterIndex()
         const literal = this.fetch()
         const rValue = this.registers.getUint16(r)
 
-        this.setRegister("acc", rValue ^ literal)
+        this.setRegister('acc', rValue ^ literal)
         return false
       }
       /**
@@ -687,13 +634,13 @@ export class CPU {
        * Performs a bitwise XOR operation between the values in the two registers,
        * and then stores the result in the accumulator (acc) register.
        */
-      case XOR_REG_REG: {
+      case instructions.XOR_REG_REG.opcode: {
         const r1 = this.fetchRegisterIndex()
         const r2 = this.fetchRegisterIndex()
         const v1 = this.registers.getUint16(r1)
         const v2 = this.registers.getUint16(r2)
 
-        this.setRegister("acc", v1 ^ v2)
+        this.setRegister('acc', v1 ^ v2)
         return false
       }
       /**
@@ -708,11 +655,11 @@ export class CPU {
        * and sets the upper 16 bits to 0.
        * The final result is stored in the accumulator (acc) register.
        */
-      case NOT: {
+      case instructions.NOT.opcode: {
         const r = this.fetchRegisterIndex()
         const v = this.registers.getUint16(r)
 
-        this.setRegister("acc", ~v & 0xffff)
+        this.setRegister('acc', ~v & 0xffff)
         return false
       }
       /**
@@ -724,13 +671,13 @@ export class CPU {
        * If the values are not equal, the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JNE_REG: {
+      case instructions.JNE_REG.opcode: {
         const r = this.fetchRegisterIndex()
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v !== this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v !== this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -742,12 +689,12 @@ export class CPU {
        * If the values are not equal, it sets the instruction pointer (ip) register to the fetched memory address,
        * effectively causing a jump to a new location in the instruction stream.
        */
-      case JNE_LIT: {
+      case instructions.JNE_LIT.opcode: {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value !== this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value !== this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -761,13 +708,13 @@ export class CPU {
        * If the values are equal, the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JEQ_REG: {
+      case instructions.JEQ_REG.opcode: {
         const r = this.fetchRegisterIndex()
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v === this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v === this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -780,12 +727,12 @@ export class CPU {
        * If the values are equal, the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JEQ_LIT: {
+      case instructions.JEQ_LIT.opcode: {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value === this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value === this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -800,13 +747,13 @@ export class CPU {
        * the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JLT_REG: {
+      case instructions.JLT_REG.opcode: {
         const r = this.fetchRegisterIndex()
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v < this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v < this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -820,12 +767,12 @@ export class CPU {
        * the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JLT_LIT: {
+      case instructions.JLT_LIT.opcode: {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value < this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value < this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -840,13 +787,13 @@ export class CPU {
        * the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JGT_REG: {
+      case instructions.JGT_REG.opcode: {
         const r = this.fetchRegisterIndex()
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v > this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v > this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -860,12 +807,12 @@ export class CPU {
        * the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JGT_LIT: {
+      case instructions.JGT_LIT.opcode: {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value > this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value > this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -880,13 +827,13 @@ export class CPU {
        * the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JLE_REG: {
+      case instructions.JLE_REG.opcode: {
         const r = this.fetchRegisterIndex()
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v <= this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v <= this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -900,12 +847,12 @@ export class CPU {
        * the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JLE_LIT: {
+      case instructions.JLE_LIT.opcode: {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value <= this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value <= this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -920,13 +867,13 @@ export class CPU {
        * the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JGE_REG: {
+      case instructions.JGE_REG.opcode: {
         const r = this.fetchRegisterIndex()
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v >= this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v >= this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -940,12 +887,12 @@ export class CPU {
        * the instruction pointer (ip) register is set to the fetched memory address,
        * causing a jump to a new location in the instruction stream.
        */
-      case JGE_LIT: {
+      case instructions.JGE_LIT.opcode: {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value >= this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value >= this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -955,7 +902,7 @@ export class CPU {
        * Fetches a literal 16-bit value from the instruction stream,
        * and then pushes it onto the stack.
        */
-      case PSH_LIT: {
+      case instructions.PSH_LIT.opcode: {
         const value = this.fetch16()
 
         this.push(value)
@@ -967,7 +914,7 @@ export class CPU {
        * reads the value from the specified register,
        * and then pushes it onto the stack.
        */
-      case PSH_REG: {
+      case instructions.PSH_REG.opcode: {
         const registerFrom = this.fetchRegisterIndex()
         const value = this.registers.getUint16(registerFrom)
 
@@ -980,7 +927,7 @@ export class CPU {
        * pops a value from the stack,
        * and then sets the popped value into the specified register.
        */
-      case POP: {
+      case instructions.POP.opcode: {
         const registerIndex = this.fetchRegisterIndex()
         const value = this.pop()
 
@@ -994,11 +941,11 @@ export class CPU {
        * and then sets the instruction pointer (ip) register to the fetched memory address,
        * effectively causing a jump to a new location in the instruction stream.
        */
-      case CAL_LIT: {
+      case instructions.CAL_LIT.opcode: {
         const address = this.fetch16()
 
         this.pushState()
-        this.setRegister("ip", address)
+        this.setRegister('ip', address)
         return false
       }
       /**
@@ -1009,12 +956,12 @@ export class CPU {
        * and then sets the instruction pointer (ip) register to the read memory address,
        * effectively causing a jump to a new location in the instruction stream.
        */
-      case CAL_REG: {
+      case instructions.CAL_REG.opcode: {
         const registerIndex = this.fetchRegisterIndex()
         const address = this.registers.getUint16(registerIndex)
 
         this.pushState()
-        this.setRegister("ip", address)
+        this.setRegister('ip', address)
         return false
       }
       /**
@@ -1022,7 +969,7 @@ export class CPU {
        * Pops the previously pushed state from the stack,
        * effectively causing a jump back to the location in the instruction stream from where the subroutine was called.
        */
-      case RET: {
+      case instructions.RET.opcode: {
         this.popState()
         return false
       }
@@ -1030,7 +977,7 @@ export class CPU {
        * Halt (HLT) instruction.
        * Tells the CPU to stop all computation.
        */
-      case HLT:
+      case instructions.HLT.opcode:
         return true
 
       default:
