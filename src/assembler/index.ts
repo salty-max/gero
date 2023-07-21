@@ -4,21 +4,26 @@ import { Register } from '../util'
 import { Node } from './parser/types'
 import { parserResult } from './parser/util'
 
-// const exampleProgram = [
-//   'start:',
-//   ' mov $0A, &0050',
-//   'loop:',
-//   ' mov &0050, acc',
-//   ' dec acc',
-//   ' mov acc, &0050',
-//   ' inc r2',
-//   ' inc r2',
-//   ' inc r2',
-//   ' jne $00, &[!loop]',
-//   'end:',
-//   ' hlt',
-// ].join('\n')
+const exampleProgram = [
+  'start:',
+  ' mov $0A, &0050',
+  'loop:',
+  ' mov &0050, acc',
+  ' dec acc',
+  ' mov acc, &0050',
+  ' inc r2',
+  ' inc r2',
+  ' inc r2',
+  ' jne $00, &[!loop]',
+  'end:',
+  ' hlt',
+].join('\n')
 
+/**
+ * `parserProgram` parses a program string and returns machine code that can be executed by a virtual machine.
+ * @param {string} program - The program to be parsed.
+ * @returns {Array<number>} The resulting machine code, as an array of numeric values.
+ */
 export const parseProgram = (program: string): Array<number> => {
   const output = parser.run(program)
 
@@ -129,13 +134,32 @@ export const parseProgram = (program: string): Array<number> => {
   return machineCode
 }
 
-export const machineCode16 = (code: Array<number>) => {
+/**
+ * `machineCodeAsHex` converts an array of machine codes into a hexadecimal representation.
+ * @param {Array<number>} code - The array of machine codes to be converted.
+ * @returns {string} The resulting string of hexadecimal values.
+ */
+export const machineCodeAsHex = (code: Array<number>) => {
   return code
     .map((byte) => byte.toString(16).padStart(2, '0').toUpperCase())
     .join(' ')
 }
 
-export const machineCode10 = (code: Array<number>) => code.join(' ')
+/**
+ * `machineCodeAsBinary` converts an array of machine codes into a binary representation.
+ * @param {Array<number>} code - The array of machine codes to be converted.
+ * @returns {string} The resulting string of binary values.
+ */
+export const machineCodeAsBinary = (code: Array<number>) =>
+  code.map((byte) => byte.toString(2)).join(' ')
 
-// console.log(machineCode10(parseProgram(exampleProgram)))
-// console.log(machineCode16(parseProgram(exampleProgram)))
+/**
+ * `machineCodeAsDecimal` converts an array of machine codes into a decimal representation.
+ * @param {Array<number>} code - The array of machine codes to be converted.
+ * @returns {string} The resulting string of decimal values.
+ */
+export const machineCodeAsDecimal = (code: Array<number>) => code.join(' ')
+
+// console.log(machineCodeAsDecimal(parseProgram(exampleProgram)))
+// console.log(machineCodeAsHex(parseProgram(exampleProgram)))
+console.log(machineCodeAsBinary(parseProgram(exampleProgram)))
