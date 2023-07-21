@@ -57,6 +57,8 @@
  * - CAL_REG:           0x5F, Call Register
  * - RET:               0x60, Return
  * System instructions
+ * - INT:               0xFC, Interrupt
+ * - RTI:               0xFD, Return from Interrupt
  * - HLT:               0xFF, Halt
  *
  * Each byte code is represented in hexadecimal format.
@@ -416,6 +418,20 @@ export const meta: Array<IMeta> = [
     type: InstructionType.NO_ARGS,
     size: instructionSizes.NO_ARGS,
     mnemonic: 'ret',
+  },
+  {
+    instruction: 'INT',
+    opcode: 0xfc,
+    type: InstructionType.SINGLE_LIT,
+    size: instructionSizes.SINGLE_LIT,
+    mnemonic: 'int',
+  },
+  {
+    instruction: 'RET_INT',
+    opcode: 0xfd,
+    type: InstructionType.NO_ARGS,
+    size: instructionSizes.NO_ARGS,
+    mnemonic: 'rti',
   },
   {
     instruction: 'HLT',
