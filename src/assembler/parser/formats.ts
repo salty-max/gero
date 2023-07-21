@@ -67,18 +67,18 @@ export const regReg = (mnemonic: string, type: string) =>
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
 
-    const rFrom = run(register)
+    const r1 = run(register)
 
     run(P.optionalWhitespace)
     run(P.char(','))
     run(P.optionalWhitespace)
 
-    const rTo = run(register)
+    const r2 = run(register)
     run(P.optionalWhitespace)
 
     return instructionNode({
       instruction: type,
-      args: [rFrom, rTo],
+      args: [r1, r2],
     })
   })
 
@@ -135,6 +135,7 @@ export const memReg = (mnemonic: string, type: string) =>
     run(P.optionalWhitespace)
 
     const rTo = run(register)
+    run(P.optionalWhitespace)
 
     return instructionNode({
       instruction: type,

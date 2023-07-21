@@ -1,4 +1,4 @@
-import { meta, IMeta } from './meta'
+import { meta, IMeta, InstructionType } from './meta'
 
 const indexBy = (array: Array<IMeta>, prop: string) =>
   array.reduce((output: Record<string, IMeta>, item: IMeta) => {
@@ -6,4 +6,5 @@ const indexBy = (array: Array<IMeta>, prop: string) =>
     return output
   }, {})
 
+export { InstructionType }
 export default indexBy(meta, 'instruction')

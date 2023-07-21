@@ -7,7 +7,7 @@
  * @see CPU
  */
 
-import instructions from './instructions'
+import instructions from '../instructions'
 import { logWithFormat } from '../util/logger'
 import { createMemory } from './memory'
 import { MemoryMapper } from './memory-mapper'

@@ -1,5 +1,4 @@
 import instructions from './instructions'
-import { deepLog } from './util'
+import P from 'parsil'
 
-const res = instructions.run('hlt')
-deepLog(res)
+export default P.many(instructions)

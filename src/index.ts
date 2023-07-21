@@ -1,6 +1,6 @@
 import { createMemory } from './vm/memory'
 import { CPU } from './vm/cpu'
-import instructions from './vm/instructions'
+import instructions from './instructions'
 import { Register } from './util/util'
 import { MemoryMapper } from './vm/memory-mapper'
 import { createScreenDevice } from './devices/screen-device'

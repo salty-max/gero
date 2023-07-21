@@ -1,7 +1,7 @@
 import { Parser } from 'parsil'
 import { inspect } from 'util'
 
-export const deepLog = (x: unknown) =>
+export const deepLog = (x: any) =>
   console.log(
     inspect(x, {
       depth: Infinity,
@@ -9,7 +9,7 @@ export const deepLog = (x: unknown) =>
     })
   )
 
-export const asType = (type: string) => (value: unknown) => ({ type, value })
+export const asType = (type: string) => (value: any) => ({ type, value })
 
 export const mapJoin = (parser: Parser<string[]>) =>
   parser.map((items) => items.join(''))
