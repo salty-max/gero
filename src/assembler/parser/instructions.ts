@@ -52,17 +52,17 @@ export const rsf = P.choice([
 
 export const and = P.choice([
   regReg('and', 'AND_REG_REG'),
-  litReg('and', 'AND_LIT_REG'),
+  regLit('and', 'AND_REG_LIT'),
 ])
 
 export const or = P.choice([
   regReg('or', 'OR_REG_REG'),
-  litReg('or', 'OR_LIT_REG'),
+  regLit('or', 'OR_REG_LIT'),
 ])
 
 export const xor = P.choice([
   regReg('xor', 'XOR_REG_REG'),
-  litReg('xor', 'XOR_LIT_REG'),
+  regLit('xor', 'XOR_REG_LIT'),
 ])
 
 export const inc = singleReg('inc', 'INC_REG')
