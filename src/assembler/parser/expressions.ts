@@ -1,9 +1,9 @@
 import P from 'parsil'
 import { last, typifyGroupedExpr } from './util'
 import {
-  binaryOperation,
-  bracketExprType,
-  groupedExprType,
+  binaryOperationNode,
+  bracketExprNode,
+  groupedExprNode,
   Node,
 } from './types'
 import { hexLiteral, operator, variable } from './common'
@@ -49,9 +49,9 @@ const handleOperatorPrecedence = (expr: Node): Node => {
     }
   }
 
-  const newExpr = groupedExprType([
+  const newExpr = groupedExprNode([
     ...expr.value.slice(0, candidateExpr),
-    binaryOperation({
+    binaryOperationNode({
       a: handleOperatorPrecedence(expr.value[candidateExpr.a]),
       b: handleOperatorPrecedence(expr.value[candidateExpr.b]),
       op: candidateExpr.op,
@@ -162,5 +162,5 @@ export const bracketExpr = P.coroutine((run) => {
     }
   }
 
-  return bracketExprType(expr)
+  return bracketExprNode(expr)
 }).map(handleOperatorPrecedence)

@@ -2665,10 +2665,10 @@ parse-json@^5.2.0:
     json-parse-even-better-errors "^2.3.0"
     lines-and-columns "^1.1.6"
 
-parsil@^1.2.1:
-  version "1.2.1"
-  resolved "https://registry.yarnpkg.com/parsil/-/parsil-1.2.1.tgz#b3caa3d27c49963fecd44ee272a69aec5def8f4d"
-  integrity sha512-by1QYeHyeDiH0h2/5MUq0BGAxK5XTqrR3B8rXS9qenAvBrWlikPtcYtRL1hJKISV2jrjGX5QLfiQK0O159vGdw==
+parsil@^1.3.0:
+  version "1.3.0"
+  resolved "https://registry.yarnpkg.com/parsil/-/parsil-1.3.0.tgz#c3716d7ffa5f8c0c82991b14b1c24667274fa4cf"
+  integrity sha512-Na79IwC+XLpIkpB7B4ILbwi45mbY1zRIME5XAgY/fmDCK10uqM0VkToOjbifA6qTRBX6C/0cViTgBH6f3U0IMw==
 
 path-exists@^4.0.0:
   version "4.0.0"
