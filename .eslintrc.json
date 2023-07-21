@@ -27,6 +27,9 @@
   },
   "plugins": ["@typescript-eslint", "prettier", "jest"],
   "rules": {
-    "jest/no-disabled-tests": 0
+    "prettier/prettier": 0,
+    "jest/no-disabled-tests": 0,
+    "no-constant-condition": 0,
+    "@typescript-eslint/no-explicit-any": 0
   }
 }

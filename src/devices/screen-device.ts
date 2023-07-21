@@ -1,4 +1,4 @@
-import { Device } from "./memory-mapper"
+import { Device } from '../vm/memory-mapper'
 
 /**
  * @interface ScreenDevice

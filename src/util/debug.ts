@@ -1,9 +1,9 @@
-import readline from "readline"
-import { CPU } from "./cpu"
+import readline from 'readline'
+import { CPU } from '../vm/cpu'
 
 export const stepDebug = (cpu: CPU) => {
   cpu.debug()
-  cpu.viewMemoryAt(cpu.getRegister("ip"))
+  cpu.viewMemoryAt(cpu.getRegister('ip'))
   cpu.viewMemoryAt(0xffff - 1 - 42, 44)
 
   const rl = readline.createInterface({
@@ -11,10 +11,10 @@ export const stepDebug = (cpu: CPU) => {
     output: process.stdout,
   })
 
-  rl.on("line", () => {
+  rl.on('line', () => {
     cpu.step()
     cpu.debug()
-    cpu.viewMemoryAt(cpu.getRegister("ip"))
+    cpu.viewMemoryAt(cpu.getRegister('ip'))
     cpu.viewMemoryAt(0xffff - 1 - 42, 44)
   })
 }

@@ -1,4 +1,4 @@
-import { CPU } from "../src/cpu"
+import { CPU } from "../src/vm/cpu"
 import {
   ADD_LIT_REG,
   ADD_REG_REG,
@@ -44,10 +44,10 @@ import {
   SUB_REG_REG,
   XOR_REG_LIT,
   XOR_REG_REG,
-} from "../src/instructions"
-import { createMemory } from "../src/memory"
-import { MemoryMapper } from "../src/memory-mapper"
-import { Register } from "../src/util"
+} from "../src/vm/instructions"
+import { createMemory } from "../src/vm/memory"
+import { MemoryMapper } from "../src/vm/memory-mapper"
+import { Register } from "../src/util/util"
 
 describe("Instructions", () => {
   let cpu: CPU

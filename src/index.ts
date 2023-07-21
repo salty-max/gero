@@ -1,9 +1,9 @@
-import { createMemory } from "./memory"
-import { CPU } from "./cpu"
-import { HLT, MOV_LIT_REG, MOV_REG_MEM } from "./instructions"
-import { Register } from "./util"
-import { MemoryMapper } from "./memory-mapper"
-import { createScreenDevice } from "./screen-device"
+import { createMemory } from './vm/memory'
+import { CPU } from './vm/cpu'
+import { HLT, MOV_LIT_REG, MOV_REG_MEM } from './vm/instructions'
+import { Register } from './util/util'
+import { MemoryMapper } from './vm/memory-mapper'
+import { createScreenDevice } from './devices/screen-device'
 //import { stepDebug } from "./debug"
 
 const MM = new MemoryMapper()
@@ -31,11 +31,11 @@ const writeCharToScreen = (char: string, position: number, command = 0x00) => {
   writableBytes[i++] = position
 }
 
-writeCharToScreen(" ", 0, 0xff)
+writeCharToScreen(' ', 0, 0xff)
 
 for (let i = 0; i <= 0xff; i++) {
   const command = i % 2 == 0 ? 0x31 : 0x34
-  writeCharToScreen("*", i, command)
+  writeCharToScreen('*', i, command)
 }
 
 writableBytes[i++] = HLT

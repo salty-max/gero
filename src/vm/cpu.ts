@@ -54,18 +54,18 @@ import {
   SUB_REG_REG,
   XOR_REG_LIT,
   XOR_REG_REG,
-} from "./instructions"
-import { logWithFormat } from "./logger"
-import { createMemory } from "./memory"
-import { MemoryMapper } from "./memory-mapper"
+} from './instructions'
+import { logWithFormat } from '../util/logger'
+import { createMemory } from './memory'
+import { MemoryMapper } from './memory-mapper'
 import {
   ANSI_COLOR_BLUE,
   ANSI_COLOR_BOLD,
   ANSI_COLOR_GREEN,
   ANSI_COLOR_RESET,
-} from "./util"
-
-const GENERIC_REGISTERS_COUNT = 8
+  GENERIC_REGISTERS_COUNT,
+  REGISTER_NAMES,
+} from '../util/util'
 
 /**
  * Class that emulates a 16-bit CPU.
@@ -110,13 +110,7 @@ export class CPU {
   constructor(memory: MemoryMapper) {
     this.memory = memory
 
-    this.registerNames = [
-      "ip", // Instruction pointer
-      "acc", // Accumulator
-      ...Array.from({ length: GENERIC_REGISTERS_COUNT }, (_, i) => `r${i + 1}`), // Generic-purpose registers
-      "sp", // Stack pointer
-      "fp", // Stack frame pointer
-    ]
+    this.registerNames = REGISTER_NAMES
 
     this.registers = createMemory(this.registerNames.length * 2) // Create DataView for registers
     this.registerMap = this.registerNames.reduce(
@@ -133,8 +127,8 @@ export class CPU {
      * which grows towards decreasing memory addresses.
      * They are initialized at 0xffff - 1 (0xfffe).
      */
-    this.setRegister("sp", 0xffff - 1)
-    this.setRegister("fp", 0xffff - 1)
+    this.setRegister('sp', 0xffff - 1)
+    this.setRegister('fp', 0xffff - 1)
   }
 
   /**
@@ -142,7 +136,7 @@ export class CPU {
    */
   debug() {
     logWithFormat(
-      "REGISTER\n----------------\n",
+      'REGISTER\n----------------\n',
       ANSI_COLOR_BOLD,
       ANSI_COLOR_GREEN
     )
@@ -151,7 +145,7 @@ export class CPU {
       console.log(
         `${name}: ${ANSI_COLOR_BLUE}${ANSI_COLOR_BOLD}0x${this.getRegister(name)
           .toString(16)
-          .padStart(4, "0")}${ANSI_COLOR_RESET}`
+          .padStart(4, '0')}${ANSI_COLOR_RESET}`
       )
     })
     console.log()
@@ -166,17 +160,17 @@ export class CPU {
   viewMemoryAt(address: number, n = 8) {
     const nextNBytes = Array.from({ length: n }, (_, i) => {
       return this.memory.getUint8(address + i)
-    }).map((v) => `0x${v.toString(16).padStart(2, "0")}`)
+    }).map((v) => `0x${v.toString(16).padStart(2, '0')}`)
 
     logWithFormat(
-      "MEMORY AT\n----------------\n",
+      'MEMORY AT\n----------------\n',
       ANSI_COLOR_BOLD,
       ANSI_COLOR_GREEN
     )
     console.log(
       `${ANSI_COLOR_BLUE}${ANSI_COLOR_BOLD}0x${address
         .toString(16)
-        .padStart(4, "0")}${ANSI_COLOR_RESET}: ${nextNBytes.join(" ")}`
+        .padStart(4, '0')}${ANSI_COLOR_RESET}: ${nextNBytes.join(' ')}`
     )
   }
 
@@ -216,10 +210,10 @@ export class CPU {
    * @returns {number} - The fetched 8-bit instruction.
    */
   private fetch(): number {
-    const nextInstructionAddress = this.getRegister("ip")
+    const nextInstructionAddress = this.getRegister('ip')
     const instruction = this.memory.getUint8(nextInstructionAddress)
 
-    this.setRegister("ip", nextInstructionAddress + 1)
+    this.setRegister('ip', nextInstructionAddress + 1)
 
     return instruction
   }
@@ -230,10 +224,10 @@ export class CPU {
    * @returns {number} - The fetched 16-bit instruction or data word.
    */
   private fetch16(): number {
-    const nextInstructionAddress = this.getRegister("ip")
+    const nextInstructionAddress = this.getRegister('ip')
     const instruction = this.memory.getUint16(nextInstructionAddress)
 
-    this.setRegister("ip", nextInstructionAddress + 2)
+    this.setRegister('ip', nextInstructionAddress + 2)
 
     return instruction
   }
@@ -244,10 +238,10 @@ export class CPU {
    * @param {number} value - The 16-bit value to push onto the stack.
    */
   private push(value: number) {
-    const spAddress = this.getRegister("sp")
+    const spAddress = this.getRegister('sp')
 
     this.memory.setUint16(spAddress, value)
-    this.setRegister("sp", spAddress - 2)
+    this.setRegister('sp', spAddress - 2)
     this.stackFrameSize += 2
   }
 
@@ -261,12 +255,12 @@ export class CPU {
       this.push(this.getRegister(`r${i}`))
     }
     // Push instruction pointer onto the stack as a return address for the subroutine
-    this.push(this.getRegister("ip"))
+    this.push(this.getRegister('ip'))
     // Push current stack frame size + 2 bytes for this pointer
     this.push(this.stackFrameSize + 2)
 
     // Set frame pointer to current stack pointer
-    this.setRegister("fp", this.getRegister("sp"))
+    this.setRegister('fp', this.getRegister('sp'))
     // Reset stack frame size pointer to allow another subroutine to use it
     this.stackFrameSize = 0
   }
@@ -277,9 +271,9 @@ export class CPU {
    * @returns {number} - The popped 16-bit value.
    */
   private pop(): number {
-    const nextSpAddress = this.getRegister("sp") + 2
+    const nextSpAddress = this.getRegister('sp') + 2
 
-    this.setRegister("sp", nextSpAddress)
+    this.setRegister('sp', nextSpAddress)
     this.stackFrameSize -= 2
 
     return this.memory.getUint16(nextSpAddress)
@@ -290,12 +284,12 @@ export class CPU {
    * @private
    */
   private popState() {
-    const framePointerAddress = this.getRegister("fp")
-    this.setRegister("sp", framePointerAddress)
+    const framePointerAddress = this.getRegister('fp')
+    this.setRegister('sp', framePointerAddress)
     this.stackFrameSize = this.pop()
     const currentStackFrameSize = this.stackFrameSize
 
-    this.setRegister("ip", this.pop())
+    this.setRegister('ip', this.pop())
     for (let i = GENERIC_REGISTERS_COUNT; i >= 1; i--) {
       this.setRegister(`r${i}`, this.pop())
     }
@@ -304,7 +298,7 @@ export class CPU {
     for (let i = 0; i < nArgs; i++) {
       this.pop()
     }
-    this.setRegister("fp", framePointerAddress + currentStackFrameSize)
+    this.setRegister('fp', framePointerAddress + currentStackFrameSize)
   }
 
   /**
@@ -435,7 +429,7 @@ export class CPU {
         const registerValue1 = this.registers.getUint16(r1)
         const registerValue2 = this.registers.getUint16(r2)
 
-        this.setRegister("acc", registerValue1 + registerValue2)
+        this.setRegister('acc', registerValue1 + registerValue2)
         return false
       }
       /**
@@ -449,7 +443,7 @@ export class CPU {
         const registerIndex = this.fetchRegisterIndex()
         const value = this.registers.getUint16(registerIndex)
 
-        this.setRegister("acc", literal + value)
+        this.setRegister('acc', literal + value)
         return false
       }
       /**
@@ -463,7 +457,7 @@ export class CPU {
         const registerIndex = this.fetchRegisterIndex()
         const value = this.registers.getUint16(registerIndex)
 
-        this.setRegister("acc", literal - value)
+        this.setRegister('acc', literal - value)
         return false
       }
       /**
@@ -477,7 +471,7 @@ export class CPU {
         const literal = this.fetch16()
         const value = this.registers.getUint16(registerIndex)
 
-        this.setRegister("acc", value - literal)
+        this.setRegister('acc', value - literal)
         return false
       }
       /**
@@ -492,7 +486,7 @@ export class CPU {
         const r1Value = this.registers.getUint16(r1)
         const r2Value = this.registers.getUint16(r2)
 
-        this.setRegister("acc", r1Value - r2Value)
+        this.setRegister('acc', r1Value - r2Value)
         return false
       }
       /**
@@ -506,7 +500,7 @@ export class CPU {
         const registerIndex = this.fetchRegisterIndex()
         const value = this.registers.getUint16(registerIndex)
 
-        this.setRegister("acc", literal * value)
+        this.setRegister('acc', literal * value)
         return false
       }
       /**
@@ -521,7 +515,7 @@ export class CPU {
         const r1Value = this.registers.getUint16(r1)
         const r2Value = this.registers.getUint16(r2)
 
-        this.setRegister("acc", r1Value * r2Value)
+        this.setRegister('acc', r1Value * r2Value)
         return false
       }
       /**
@@ -620,7 +614,7 @@ export class CPU {
         const literal = this.fetch()
         const rValue = this.registers.getUint16(r)
 
-        this.setRegister("acc", rValue & literal)
+        this.setRegister('acc', rValue & literal)
         return false
       }
       /**
@@ -635,7 +629,7 @@ export class CPU {
         const v1 = this.registers.getUint16(r1)
         const v2 = this.registers.getUint16(r2)
 
-        this.setRegister("acc", v1 & v2)
+        this.setRegister('acc', v1 & v2)
         return false
       }
       /**
@@ -649,7 +643,7 @@ export class CPU {
         const literal = this.fetch()
         const rValue = this.registers.getUint16(r)
 
-        this.setRegister("acc", rValue | literal)
+        this.setRegister('acc', rValue | literal)
         return false
       }
       /**
@@ -664,7 +658,7 @@ export class CPU {
         const v1 = this.registers.getUint16(r1)
         const v2 = this.registers.getUint16(r2)
 
-        this.setRegister("acc", v1 | v2)
+        this.setRegister('acc', v1 | v2)
         return false
       }
       /**
@@ -678,7 +672,7 @@ export class CPU {
         const literal = this.fetch()
         const rValue = this.registers.getUint16(r)
 
-        this.setRegister("acc", rValue ^ literal)
+        this.setRegister('acc', rValue ^ literal)
         return false
       }
       /**
@@ -693,7 +687,7 @@ export class CPU {
         const v1 = this.registers.getUint16(r1)
         const v2 = this.registers.getUint16(r2)
 
-        this.setRegister("acc", v1 ^ v2)
+        this.setRegister('acc', v1 ^ v2)
         return false
       }
       /**
@@ -712,7 +706,7 @@ export class CPU {
         const r = this.fetchRegisterIndex()
         const v = this.registers.getUint16(r)
 
-        this.setRegister("acc", ~v & 0xffff)
+        this.setRegister('acc', ~v & 0xffff)
         return false
       }
       /**
@@ -729,8 +723,8 @@ export class CPU {
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v !== this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v !== this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -746,8 +740,8 @@ export class CPU {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value !== this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value !== this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -766,8 +760,8 @@ export class CPU {
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v === this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v === this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -784,8 +778,8 @@ export class CPU {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value === this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value === this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -805,8 +799,8 @@ export class CPU {
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v < this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v < this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -824,8 +818,8 @@ export class CPU {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value < this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value < this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -845,8 +839,8 @@ export class CPU {
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v > this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v > this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -864,8 +858,8 @@ export class CPU {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value > this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value > this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -885,8 +879,8 @@ export class CPU {
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v <= this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v <= this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -904,8 +898,8 @@ export class CPU {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value <= this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value <= this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -925,8 +919,8 @@ export class CPU {
         const v = this.registers.getUint16(r)
         const address = this.fetch16()
 
-        if (v >= this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (v >= this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -944,8 +938,8 @@ export class CPU {
         const value = this.fetch16()
         const address = this.fetch16()
 
-        if (value >= this.getRegister("acc")) {
-          this.setRegister("ip", address)
+        if (value >= this.getRegister('acc')) {
+          this.setRegister('ip', address)
         }
 
         return false
@@ -998,7 +992,7 @@ export class CPU {
         const address = this.fetch16()
 
         this.pushState()
-        this.setRegister("ip", address)
+        this.setRegister('ip', address)
         return false
       }
       /**
@@ -1014,7 +1008,7 @@ export class CPU {
         const address = this.registers.getUint16(registerIndex)
 
         this.pushState()
-        this.setRegister("ip", address)
+        this.setRegister('ip', address)
         return false
       }
       /**
