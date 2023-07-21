@@ -1,6 +1,6 @@
 import { createMemory } from './vm/memory'
 import { CPU } from './vm/cpu'
-import { HLT, MOV_LIT_REG, MOV_REG_MEM } from './vm/instructions'
+import instructions from './vm/instructions'
 import { Register } from './util/util'
 import { MemoryMapper } from './vm/memory-mapper'
 import { createScreenDevice } from './devices/screen-device'
@@ -20,12 +20,12 @@ const writableBytes = new Uint8Array(memory.buffer)
 let i = 0
 
 const writeCharToScreen = (char: string, position: number, command = 0x00) => {
-  writableBytes[i++] = MOV_LIT_REG
+  writableBytes[i++] = instructions.MOV_LIT_REG.opcode
   writableBytes[i++] = command
   writableBytes[i++] = char.charCodeAt(0)
   writableBytes[i++] = Register.R1
 
-  writableBytes[i++] = MOV_REG_MEM
+  writableBytes[i++] = instructions.MOV_REG_MEM.opcode
   writableBytes[i++] = Register.R1
   writableBytes[i++] = 0x30
   writableBytes[i++] = position
@@ -38,7 +38,7 @@ for (let i = 0; i <= 0xff; i++) {
   writeCharToScreen('*', i, command)
 }
 
-writableBytes[i++] = HLT
+writableBytes[i++] = instructions.HLT.opcode
 
 //stepDebug(cpu)
 
