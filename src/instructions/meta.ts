@@ -75,6 +75,7 @@ export enum InstructionType {
   NO_ARGS,
   SINGLE_REG,
   SINGLE_LIT,
+  SINGLE_ADDR,
 }
 
 const instructionSizes: Record<string, number> = {
@@ -292,7 +293,7 @@ export const meta: Array<IMeta> = [
   },
   {
     instruction: 'JEQ_REG',
-    opcode: 0x3,
+    opcode: 0x3e,
     type: InstructionType.REG_MEM,
     size: instructionSizes.REG_MEM,
     mnemonic: 'jeq',
@@ -306,7 +307,7 @@ export const meta: Array<IMeta> = [
   },
   {
     instruction: 'JNE_REG',
-    opcode: 0x4,
+    opcode: 0x40,
     type: InstructionType.REG_MEM,
     size: instructionSizes.REG_MEM,
     mnemonic: 'jne',
@@ -320,7 +321,7 @@ export const meta: Array<IMeta> = [
   },
   {
     instruction: 'JLT_REG',
-    opcode: 0x4,
+    opcode: 0x42,
     type: InstructionType.REG_MEM,
     size: instructionSizes.REG_MEM,
     mnemonic: 'jlt',
@@ -334,7 +335,7 @@ export const meta: Array<IMeta> = [
   },
   {
     instruction: 'JGT_REG',
-    opcode: 0x4,
+    opcode: 0x44,
     type: InstructionType.REG_MEM,
     size: instructionSizes.REG_MEM,
     mnemonic: 'jgt',
@@ -348,7 +349,7 @@ export const meta: Array<IMeta> = [
   },
   {
     instruction: 'JLE_REG',
-    opcode: 0x4,
+    opcode: 0x46,
     type: InstructionType.REG_MEM,
     size: instructionSizes.REG_MEM,
     mnemonic: 'jle',
@@ -362,7 +363,7 @@ export const meta: Array<IMeta> = [
   },
   {
     instruction: 'JGE_REG',
-    opcode: 0x4,
+    opcode: 0x48,
     type: InstructionType.REG_MEM,
     size: instructionSizes.REG_MEM,
     mnemonic: 'jge',

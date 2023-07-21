@@ -484,7 +484,6 @@ describe('Instructions', () => {
   it('should execute NOT instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
     let i = 0
-    console.log(~0x1234 & 0xffff)
     writableBytes[i++] = instructions.MOV_LIT_REG.opcode
     writableBytes[i++] = 0x12
     writableBytes[i++] = 0x34

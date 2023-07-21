@@ -2,22 +2,22 @@ import parser from './parser'
 import instructions, { InstructionType as I } from '../instructions'
 import { Register } from '../util'
 import { Node } from './parser/types'
-import { deepLog, parserResult } from './parser/util'
+import { parserResult } from './parser/util'
 
-const exampleProgram = [
-  'start:',
-  ' mov $0A, &0050',
-  'loop:',
-  ' mov &0050, acc',
-  ' dec acc',
-  ' mov acc, &0050',
-  ' inc r2',
-  ' inc r2',
-  ' inc r2',
-  ' jne $00, &[!loop]',
-  'end:',
-  ' hlt',
-].join('\n')
+// const exampleProgram = [
+//   'start:',
+//   ' mov $0A, &0050',
+//   'loop:',
+//   ' mov &0050, acc',
+//   ' dec acc',
+//   ' mov acc, &0050',
+//   ' inc r2',
+//   ' inc r2',
+//   ' inc r2',
+//   ' jne $00, &[!loop]',
+//   'end:',
+//   ' hlt',
+// ].join('\n')
 
 export const parseProgram = (program: string): Array<number> => {
   const output = parser.run(program)
@@ -121,17 +121,21 @@ export const parseProgram = (program: string): Array<number> => {
     if (I.SINGLE_LIT === metadata.type) {
       encodeLitOrMem(it.value.args[0])
     }
+    if (I.SINGLE_ADDR === metadata.type) {
+      encodeLitOrMem(it.value.args[0])
+    }
   })
 
   return machineCode
 }
 
-export const machineCode16 = (code: Array<number>) =>
-  code
-    .map((byte) => Number(byte).toString(16).padStart(2, '0').toUpperCase())
+export const machineCode16 = (code: Array<number>) => {
+  return code
+    .map((byte) => byte.toString(16).padStart(2, '0').toUpperCase())
     .join(' ')
+}
 
 export const machineCode10 = (code: Array<number>) => code.join(' ')
 
-deepLog(machineCode10(parseProgram(exampleProgram)))
-deepLog(machineCode16(parseProgram(exampleProgram)))
+// console.log(machineCode10(parseProgram(exampleProgram)))
+// console.log(machineCode16(parseProgram(exampleProgram)))

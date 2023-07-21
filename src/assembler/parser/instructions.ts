@@ -10,6 +10,7 @@ import {
   regMem,
   regPtrReg,
   regReg,
+  singleAddr,
   singleLit,
   singleReg,
 } from './formats'
@@ -107,7 +108,7 @@ export const psh = P.choice([
 export const pop = singleReg('pop', 'POP')
 
 export const cal = P.choice([
-  singleLit('cal', 'CAL_LIT'),
+  singleAddr('cal', 'CAL_LIT'),
   singleReg('cal', 'CAL_REG'),
 ])
 
