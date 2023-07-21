@@ -42,6 +42,20 @@ export const singleLit = (mnemonic: string, type: string) =>
     })
   })
 
+export const singleAddr = (mnemonic: string, type: string) =>
+  P.coroutine((run) => {
+    run(upperOrLowerStr(mnemonic))
+    run(P.whitespace)
+
+    const addr = run(P.choice([address, P.char('&').chain(() => bracketExpr)]))
+    run(P.optionalWhitespace)
+
+    return T.instructionNode({
+      instruction: type,
+      args: [addr],
+    })
+  })
+
 export const litReg = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
@@ -53,12 +67,12 @@ export const litReg = (mnemonic: string, type: string) =>
     run(P.char(','))
     run(P.optionalWhitespace)
 
-    const rTo = run(register)
+    const reg = run(register)
     run(P.optionalWhitespace)
 
     return T.instructionNode({
       instruction: type,
-      args: [lit, rTo],
+      args: [lit, reg],
     })
   })
 
@@ -87,7 +101,7 @@ export const regMem = (mnemonic: string, type: string) =>
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
 
-    const rFrom = run(register)
+    const reg = run(register)
 
     run(P.optionalWhitespace)
     run(P.char(','))
@@ -98,7 +112,7 @@ export const regMem = (mnemonic: string, type: string) =>
 
     return T.instructionNode({
       instruction: type,
-      args: [rFrom, addr],
+      args: [reg, addr],
     })
   })
 
