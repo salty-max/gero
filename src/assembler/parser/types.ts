@@ -5,16 +5,32 @@ export type Node = {
   value: any
 }
 
-export const instructionNode = asType('INSTRUCTION')
-export const registerNode = asType('REGISTER')
-export const hexLiteralNode = asType('HEX_LITERAL')
-export const addressNode = asType('ADDRESS')
-export const variableNode = asType('VARIABLE')
+const instructionNode = asType('INSTRUCTION')
+const registerNode = asType('REGISTER')
+const hexLiteralNode = asType('HEX_LITERAL')
+const addressNode = asType('ADDRESS')
+const variableNode = asType('VARIABLE')
+const labelNode = asType('LABEL')
 
-export const opPlus = asType('OP_PLUS')
-export const opMinus = asType('OP_MINUS')
-export const opMultiply = asType('OP_MULTIPLY')
+const opPlus = asType('OP_PLUS')
+const opMinus = asType('OP_MINUS')
+const opMultiply = asType('OP_MULTIPLY')
 
-export const binaryOperationNode = asType('BINARY_OPERATION')
-export const groupedExprNode = asType('GROUPED_EXPRESSION')
-export const bracketExprNode = asType('SQUARE_BRACKET_EXPRESSION')
+const binaryOperationNode = asType('BINARY_OPERATION')
+const groupedExprNode = asType('GROUPED_EXPRESSION')
+const bracketExprNode = asType('SQUARE_BRACKET_EXPRESSION')
+
+export default {
+  instructionNode,
+  registerNode,
+  hexLiteralNode,
+  addressNode,
+  variableNode,
+  labelNode,
+  opPlus,
+  opMinus,
+  opMultiply,
+  binaryOperationNode,
+  groupedExprNode,
+  bracketExprNode,
+}

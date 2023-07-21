@@ -1,32 +1,24 @@
 import P from 'parsil'
 import { REGISTER_NAMES } from '../../util'
 import { mapJoin } from './util'
-import {
-  addressNode,
-  hexLiteralNode,
-  opMinus,
-  opMultiply,
-  opPlus,
-  registerNode,
-  variableNode,
-} from './types'
+import T from './types'
 
 export const upperOrLowerStr = (s: string) =>
   P.choice([P.str(s.toUpperCase()), P.str(s.toLowerCase())])
 
 const registerParserArray = REGISTER_NAMES.map((r) => upperOrLowerStr(r))
 
-export const register = P.choice(registerParserArray).map(registerNode)
+export const register = P.choice(registerParserArray).map(T.registerNode)
 
 export const hexDigit = P.regex(/^[0-9A-Fa-f]/)
 
 export const hexLiteral = P.char('$')
   .chain(() => mapJoin(P.manyOne(hexDigit)))
-  .map(hexLiteralNode)
+  .map(T.hexLiteralNode)
 
 export const address = P.char('&')
   .chain(() => mapJoin(P.manyOne(hexDigit)))
-  .map(addressNode)
+  .map(T.addressNode)
 
 export const validIdentifier = mapJoin(
   P.sequenceOf([
@@ -37,10 +29,18 @@ export const validIdentifier = mapJoin(
 
 export const variable = P.char('!')
   .chain(() => validIdentifier)
-  .map(variableNode)
+  .map(T.variableNode)
 
 export const operator = P.choice([
-  P.char('+').map(opPlus),
-  P.char('-').map(opMinus),
-  P.char('*').map(opMultiply),
+  P.char('+').map(T.opPlus),
+  P.char('-').map(T.opMinus),
+  P.char('*').map(T.opMultiply),
 ])
+
+export const label = P.sequenceOf([
+  validIdentifier,
+  P.char(':'),
+  P.optionalWhitespace,
+])
+  .map(([label]) => label)
+  .map(T.labelNode)

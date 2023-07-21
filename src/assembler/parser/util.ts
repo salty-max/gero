@@ -1,4 +1,4 @@
-import { Parser } from 'parsil'
+import { Parser, ResultType, isOk } from 'parsil'
 import { inspect } from 'util'
 
 export const deepLog = (x: any) =>
@@ -27,4 +27,12 @@ export const typifyGroupedExpr = (expr: any) => {
       return el
     })
   )
+}
+
+export const parserResult = (res: ResultType<any, any>) => {
+  if (isOk(res)) {
+    return res
+  } else {
+    throw new Error(res.error)
+  }
 }
