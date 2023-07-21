@@ -53,13 +53,26 @@ export class CPU {
    * @type {number}
    */
   private stackFrameSize: number = 0
+  /**
+   * @private
+   * @type {number}
+   * The memory address at which the interrupt vector table starts.
+   */
+  private interruptVectorAddress: number = 0x1000
+  /**
+   * @private
+   * @type {boolean}
+   * Indicates whether the CPU is currently in an interrupt handler.
+   * This is used for managing interrupts.
+   */
+  private isInInterruptHanlder: boolean = false
 
   /**
    * Constructor for the CPU class.
    * @param {MemoryMapper} memory - The memory for the CPU.
    * @constructor
    */
-  constructor(memory: MemoryMapper) {
+  constructor(memory: MemoryMapper, interruptVectorAddress = 0x1000) {
     this.memory = memory
 
     this.registerNames = REGISTER_NAMES
@@ -72,6 +85,13 @@ export class CPU {
       },
       {}
     )
+
+    // Set the starting address of the interrupt vector table.
+    this.interruptVectorAddress = interruptVectorAddress
+
+    // Initialize the interrupt mask (im) register.
+    // By setting it to 0xffff, all interrupts are unmasked and hence enabled by default.
+    this.setRegister('im', 0xffff)
 
     /**
      * Initialize the "sp" (stack pointer) and "fp" (frame pointer) registers.
@@ -260,6 +280,50 @@ export class CPU {
    */
   private fetchRegisterIndex() {
     return (this.fetch() % this.registerNames.length) * 2
+  }
+
+  /**
+   * Handles interrupts by verifying their 'mask' and if they are unmasked,
+   * it retrieves the address of the interrupt from the interrupt vector and sets the Instruction Pointer (IP) to that address.
+   * @param {number} value - The interrupt number that is to be handled.
+   * @returns {boolean} Returns false if the interrupt is masked, otherwise it does not return a value.
+   */
+  handleInterrupt(value: number) {
+    // Calculate the interrupt vector index,
+    // this is necessary to ensure the interrupt value does not exceed the size of the interrupt vector (15).
+    const interruptVectorIndex = value % 0xf
+
+    // Check if the interrupt is unmasked.
+    // The operation '1 << interruptVectorIndex' generates a number with only one bit set at the position corresponding to the interruptVectorIndex.
+    // Bitwise AND operation '&' with the interrupt mask determines if the interrupt is unmasked.
+    const isUnmasked = Boolean(
+      (1 << interruptVectorIndex) & this.getRegister('im')
+    )
+    // If interrupt is masked, return false
+    if (!isUnmasked) {
+      return false
+    }
+
+    // Calculate the address pointer in the interrupt vector.
+    // The interrupt vector is a table that contains addresses of interrupt handlers.
+    // Each entry takes 2 bytes, so we multiply the index by 2 to get the correct address in the interrupt vector.
+    const addressPtr = this.interruptVectorAddress + interruptVectorIndex * 2
+    // Get the address of the interrupt handler from the interrupt vector by reading 2 bytes (16 bits) from the memory.
+    const address = this.memory.getUint16(addressPtr)
+
+    // Check if we are not already in an interrupt handler
+    if (!this.isInInterruptHanlder) {
+      // Push 0 for the number of arguments. This is done to comply with the calling convention.
+      // This value will be popped off the stack inside the interrupt handler.
+      this.push(0)
+      // Push the current state onto the stack. This saves the current execution state so that it can be restored when the interrupt handler returns.
+      this.pushState()
+    }
+
+    // Set the flag to indicate we are in an interrupt handler. This prevents nested interrupt handling.
+    this.isInInterruptHanlder = true
+    // Set the instruction pointer to the interrupt handler address, which effectively transfers control to the interrupt handler.
+    this.setRegister('ip', address)
   }
 
   /**
@@ -969,6 +1033,24 @@ export class CPU {
        * effectively causing a jump back to the location in the instruction stream from where the subroutine was called.
        */
       case instructions.RET.opcode: {
+        this.popState()
+        return false
+      }
+      /**
+       * Interrupt (INT) instruction.
+       * Triggers a software interrupt.
+       */
+      case instructions.INT.opcode: {
+        const interruptValue = this.fetch16()
+        this.handleInterrupt(interruptValue)
+        return false
+      }
+      /**
+       * Return from Interrupt (RTI) instruction.
+       * Returns from an interrupt handler
+       */
+      case instructions.RET_INT.opcode: {
+        this.isInInterruptHanlder = false
         this.popState()
         return false
       }

@@ -75,12 +75,14 @@ Subroutines instructions</li>
 <li>CAL_REG:           0x5F, Call Register</li>
 <li>RET:               0x60, Return
 System instructions</li>
+<li>INT:               0xFC, Interrupt</li>
+<li>RTI:               0xFD, Return from Interrupt</li>
 <li>HLT:               0xFF, Halt</li>
 </ul>
 <p>Each byte code is represented in hexadecimal format.</p>
 </div></section><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L65">instructions/meta.ts:65</a></li></ul></aside>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L67">instructions/meta.ts:67</a></li></ul></aside>
 <section class="tsd-panel-group tsd-index-group">
 <section class="tsd-panel tsd-index-panel">
 <details class="tsd-index-content tsd-index-accordion" open><summary class="tsd-accordion-summary tsd-index-summary">
@@ -108,67 +110,67 @@ System instructions</li>
 <h3 class="tsd-anchor-link"><span>LIT_<wbr/>MEM</span><a href="#LIT_MEM" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><g stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round" id="icon-anchor"><path stroke="none" d="M0 0h24v24H0z" fill="none"></path><path d="M10 14a3.5 3.5 0 0 0 5 0l4 -4a3.5 3.5 0 0 0 -5 -5l-.5 .5"></path><path d="M14 10a3.5 3.5 0 0 0 -5 0l-4 4a3.5 3.5 0 0 0 5 5l.5 -.5"></path></g></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">LIT_<wbr/>MEM</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">6</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L72">instructions/meta.ts:72</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L74">instructions/meta.ts:74</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="LIT_OFF_REG" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>LIT_<wbr/>OFF_<wbr/>REG</span><a href="#LIT_OFF_REG" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">LIT_<wbr/>OFF_<wbr/>REG</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">8</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L74">instructions/meta.ts:74</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L76">instructions/meta.ts:76</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="LIT_REG" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>LIT_<wbr/>REG</span><a href="#LIT_REG" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">LIT_<wbr/>REG</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">0</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L66">instructions/meta.ts:66</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L68">instructions/meta.ts:68</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="MEM_REG" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>MEM_<wbr/>REG</span><a href="#MEM_REG" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">MEM_<wbr/>REG</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">5</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L71">instructions/meta.ts:71</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L73">instructions/meta.ts:73</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="NO_ARGS" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>NO_<wbr/>ARGS</span><a href="#NO_ARGS" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">NO_<wbr/>ARGS</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">9</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L75">instructions/meta.ts:75</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L77">instructions/meta.ts:77</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="REG_LIT" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>REG_<wbr/>LIT</span><a href="#REG_LIT" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">REG_<wbr/>LIT</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">1</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L67">instructions/meta.ts:67</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L69">instructions/meta.ts:69</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="REG_LIT_8" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>REG_<wbr/>LIT_<wbr/>8</span><a href="#REG_LIT_8" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">REG_<wbr/>LIT_<wbr/>8</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">2</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L68">instructions/meta.ts:68</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L70">instructions/meta.ts:70</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="REG_MEM" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>REG_<wbr/>MEM</span><a href="#REG_MEM" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">REG_<wbr/>MEM</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">4</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L70">instructions/meta.ts:70</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L72">instructions/meta.ts:72</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="REG_PTR_REG" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>REG_<wbr/>PTR_<wbr/>REG</span><a href="#REG_PTR_REG" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">REG_<wbr/>PTR_<wbr/>REG</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">7</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L73">instructions/meta.ts:73</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L75">instructions/meta.ts:75</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="REG_REG" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>REG_<wbr/>REG</span><a href="#REG_REG" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">REG_<wbr/>REG</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">3</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L69">instructions/meta.ts:69</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L71">instructions/meta.ts:71</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="SINGLE_ADDR" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>SINGLE_<wbr/>ADDR</span><a href="#SINGLE_ADDR" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">SINGLE_<wbr/>ADDR</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">12</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L78">instructions/meta.ts:78</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L80">instructions/meta.ts:80</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="SINGLE_LIT" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>SINGLE_<wbr/>LIT</span><a href="#SINGLE_LIT" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">SINGLE_<wbr/>LIT</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">11</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L77">instructions/meta.ts:77</a></li></ul></aside></section>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L79">instructions/meta.ts:79</a></li></ul></aside></section>
 <section class="tsd-panel tsd-member"><a id="SINGLE_REG" class="tsd-anchor"></a>
 <h3 class="tsd-anchor-link"><span>SINGLE_<wbr/>REG</span><a href="#SINGLE_REG" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24"><use href="#icon-anchor"></use></svg></a></h3>
 <div class="tsd-signature"><span class="tsd-kind-enum-member">SINGLE_<wbr/>REG</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">10</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/salty-max/gero/blob/5fd6e16/src/instructions/meta.ts#L76">instructions/meta.ts:76</a></li></ul></aside></section></section></div>
+<li>Defined in <a href="https://github.com/salty-max/gero/blob/6b793ae/src/instructions/meta.ts#L78">instructions/meta.ts:78</a></li></ul></aside></section></section></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">

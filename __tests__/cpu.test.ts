@@ -1074,7 +1074,6 @@ describe('Instructions', () => {
     const writableBytes = new Uint8Array(memory.buffer)
     let i = 0
     writableBytes[i++] = instructions.HLT.opcode
-
     const res = cpu.step()
 
     expect(res).toBe(true)

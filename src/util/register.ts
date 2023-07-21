@@ -12,6 +12,7 @@ export const Register: Record<string, number> = {
   SP: 10,
   FP: 11,
   MB: 12,
+  IM: 13,
 }
 
 export type MappedRegister = {
@@ -26,4 +27,6 @@ export const REGISTER_NAMES = [
   ...Array.from({ length: GENERIC_REGISTERS_COUNT }, (_, i) => `r${i + 1}`), // Generic-purpose registers
   'sp', // Stack pointer
   'fp', // Stack frame pointer
+  'mb', // Memory bank index
+  'im', // Interrupt Mask
 ]
