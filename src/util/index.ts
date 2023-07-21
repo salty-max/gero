@@ -1,3 +1,3 @@
 export * from './debug'
 export * from './logger'
-export * from './util'
+export * from './register'

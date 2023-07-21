@@ -11,13 +11,12 @@ import instructions from '../instructions'
 import { logWithFormat } from '../util/logger'
 import { createMemory } from './memory'
 import { MemoryMapper } from './memory-mapper'
+import { GENERIC_REGISTERS_COUNT, REGISTER_NAMES } from '../util/register'
 import {
   ANSI_COLOR_BLUE,
   ANSI_COLOR_BOLD,
   ANSI_COLOR_GREEN,
   ANSI_COLOR_RESET,
-  GENERIC_REGISTERS_COUNT,
-  REGISTER_NAMES,
 } from '../util/util'
 
 /**

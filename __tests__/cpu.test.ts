@@ -2,7 +2,7 @@ import { CPU } from '../src/vm/cpu'
 import instructions from '../src/instructions'
 import { createMemory } from '../src/vm/memory'
 import { MemoryMapper } from '../src/vm/memory-mapper'
-import { Register } from '../src/util/util'
+import { Register } from '../src/util/register'
 
 describe('Instructions', () => {
   let cpu: CPU
