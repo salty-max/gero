@@ -20,6 +20,9 @@ const binaryOperationNode = asType('BINARY_OPERATION')
 const groupedExprNode = asType('GROUPED_EXPRESSION')
 const bracketExprNode = asType('SQUARE_BRACKET_EXPRESSION')
 
+const dataNode = asType('DATA')
+const constantNode = asType('CONSTANT')
+
 export default {
   instructionNode,
   registerNode,
@@ -33,4 +36,6 @@ export default {
   binaryOperationNode,
   groupedExprNode,
   bracketExprNode,
+  dataNode,
+  constantNode,
 }
