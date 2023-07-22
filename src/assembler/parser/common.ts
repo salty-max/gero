@@ -6,6 +6,13 @@ import T from './types'
 export const upperOrLowerStr = (s: string) =>
   P.choice([P.str(s.toUpperCase()), P.str(s.toLowerCase())])
 
+export const optionalWhitespaceSurrounded = P.between(
+  P.optionalWhitespace,
+  P.optionalWhitespace
+)
+
+export const commaSeparated = P.sepBy(optionalWhitespaceSurrounded(P.char(',')))
+
 const registerParserArray = REGISTER_NAMES.map((r) => upperOrLowerStr(r))
 
 export const register = P.choice(registerParserArray).map(T.registerNode)
