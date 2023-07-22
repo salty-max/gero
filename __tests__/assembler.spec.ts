@@ -351,6 +351,24 @@ describe('constants', () => {
   })
 })
 
+describe('data', () => {
+  it('should handle data8 values as literals', () => {
+    const input = [`data8 bytes = { $01, $02, $03, $04 }`].join('\n')
+    const code = parseProgram(input)
+
+    expect(machineCodeAsHex(code)).toBe('0x01 0x02 0x03 0x04')
+  })
+
+  it('should handle data16 values as literals', () => {
+    const input = [`data16 words = { $0102, $0304, $0506, $0708 }`].join('\n')
+    const code = parseProgram(input)
+
+    expect(machineCodeAsHex(code)).toBe(
+      '0x01 0x02 0x03 0x04 0x05 0x06 0x07 0x08'
+    )
+  })
+})
+
 describe('program', () => {
   it('should correctly parse an entire program', () => {
     const exampleProgram = [
