@@ -136,7 +136,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0xbe01)
+    expect(cpu.getRegister('acu')).toBe(0xbe01)
   })
   it('should execute ADD_LIT_REG instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -154,7 +154,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0xbe01)
+    expect(cpu.getRegister('acu')).toBe(0xbe01)
   })
   it('should execute SUB_LIT_REG instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -172,7 +172,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x9999)
+    expect(cpu.getRegister('acu')).toBe(0x9999)
   })
   it('should execute SUB_REG_LIT instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -190,7 +190,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x9999)
+    expect(cpu.getRegister('acu')).toBe(0x9999)
   })
   it('should execute SUB_REG_REG instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -212,7 +212,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x9999)
+    expect(cpu.getRegister('acu')).toBe(0x9999)
   })
   it('should execute MUL_LIT_REG instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -230,7 +230,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x0006)
+    expect(cpu.getRegister('acu')).toBe(0x0006)
   })
   it('should execute MUL_REG_REG instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -252,7 +252,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x0006)
+    expect(cpu.getRegister('acu')).toBe(0x0006)
   })
   it('should execute INC_REG instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -379,7 +379,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x0034)
+    expect(cpu.getRegister('acu')).toBe(0x0034)
   })
   it('should execute AND_REG_REG instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -401,7 +401,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x0034)
+    expect(cpu.getRegister('acu')).toBe(0x0034)
   })
   it('should execute OR_REG_LIT instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -418,7 +418,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x12ff)
+    expect(cpu.getRegister('acu')).toBe(0x12ff)
   })
   it('should execute OR_REG_REG instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -440,7 +440,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x12ff)
+    expect(cpu.getRegister('acu')).toBe(0x12ff)
   })
   it('should execute XOR_REG_LIT instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -457,7 +457,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x12cb)
+    expect(cpu.getRegister('acu')).toBe(0x12cb)
   })
   it('should execute XOR_REG_REG instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -479,7 +479,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0x12cb)
+    expect(cpu.getRegister('acu')).toBe(0x12cb)
   })
   it('should execute NOT instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.buffer)
@@ -494,7 +494,7 @@ describe('Instructions', () => {
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acc')).toBe(0xedcb)
+    expect(cpu.getRegister('acu')).toBe(0xedcb)
   })
   it('should execute JNE_REG instruction correctly', () => {
     memory.setUint16(0x0100, 0x0000)

@@ -1,6 +1,6 @@
 export const Register: Record<string, number> = {
   IP: 0,
-  ACC: 1,
+  ACU: 1,
   R1: 2,
   R2: 3,
   R3: 4,
@@ -23,7 +23,7 @@ export const GENERIC_REGISTERS_COUNT = 8
 
 export const REGISTER_NAMES = [
   'ip', // Instruction pointer
-  'acc', // Accumulator
+  'acu', // Accumulator
   ...Array.from({ length: GENERIC_REGISTERS_COUNT }, (_, i) => `r${i + 1}`), // Generic-purpose registers
   'sp', // Stack pointer
   'fp', // Stack frame pointer

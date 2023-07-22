@@ -289,7 +289,7 @@ describe('instructions', () => {
   })
 
   it('should parse POP correctly', () => {
-    const input = 'pop acc'
+    const input = 'pop acu'
     const code = parseProgram(input)
 
     expect(machineCodeAsHex(code)).toBe('0x1A 0x01')
@@ -375,9 +375,9 @@ describe('program', () => {
       'start:',
       ' mov $0A, &0050',
       'loop:',
-      ' mov &0050, acc',
-      ' dec acc',
-      ' mov acc, &0050',
+      ' mov &0050, acu',
+      ' dec acu',
+      ' mov acu, &0050',
       ' inc r2',
       ' inc r2',
       ' inc r2',
