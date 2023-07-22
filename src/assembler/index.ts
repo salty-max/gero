@@ -8,7 +8,7 @@ import { Register } from '../util'
 import { Export, Node, Struct } from './parser/types'
 import { parserResult } from './parser/util'
 import {
-  ANSI_COLOR_BLUE,
+  //ANSI_COLOR_BLUE,
   ANSI_COLOR_BOLD,
   ANSI_COLOR_RESET,
 } from '../util/util'
