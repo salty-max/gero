@@ -14,6 +14,11 @@ export type Struct = {
   members: Record<string, Member>
 }
 
+export type Export = {
+  type: string
+  value: string
+}
+
 const instructionNode = asType('INSTRUCTION')
 const registerNode = asType('REGISTER')
 const hexLiteralNode = asType('HEX_LITERAL')
@@ -33,6 +38,9 @@ const dataNode = asType('DATA')
 const constantNode = asType('CONSTANT')
 const structNode = asType('STRUCT')
 const interpretAsNode = asType('INTERPRET_AS')
+const moduleExportPathNode = asType('MODULE_EXPORT_PATH')
+const importDeclarationNode = asType('IMPORT_DECLARATION')
+const topLevelModuleNode = asType('TOP_LEVEL_MODULE')
 
 export default {
   instructionNode,
@@ -51,4 +59,7 @@ export default {
   constantNode,
   structNode,
   interpretAsNode,
+  moduleExportPathNode,
+  importDeclarationNode,
+  topLevelModuleNode,
 }
