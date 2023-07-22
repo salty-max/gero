@@ -14,6 +14,18 @@ export type Struct = {
   members: Record<string, Member>
 }
 
+export type Export = {
+  type: string
+  value: string
+}
+
+export type Module = {
+  machineCode: number[]
+  symbols: Record<string, number>
+  exports: Record<string, Export>
+  structs: Record<string, Struct>
+}
+
 const instructionNode = asType('INSTRUCTION')
 const registerNode = asType('REGISTER')
 const hexLiteralNode = asType('HEX_LITERAL')
