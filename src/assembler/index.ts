@@ -27,11 +27,11 @@ const exampleProgram = [
 
 /**
  * `parserProgram` parses a program string and returns machine code that can be executed by a virtual machine.
- * @param {string} program - The program to be parsed.
+ * @param {string} asmCode - The program to be parsed.
  * @returns {Array<number>} The resulting machine code, as an array of numeric values.
  */
-export const parseProgram = (program: string): Array<number> => {
-  const output = parser.run(program)
+export const assemble = (asmCode: string): Array<number> => {
+  const output = parser.run(asmCode)
 
   if (output.isError) {
     throw new Error(output.error)
@@ -89,6 +89,21 @@ export const parseProgram = (program: string): Array<number> => {
     const highByte = (hexVal & 0xff00) >> 8
     const lowByte = hexVal & 0x00ff
     machineCode.push(highByte, lowByte)
+  }
+
+  const encodeLitOrMem8 = (lit: Node) => {
+    // Determine the value of the literal based on its type (variable or immediate)
+    let hexVal
+    if (lit.type === 'VARIABLE') {
+      // Resolve the label address for variables
+      if (!(lit.value in symbols)) {
+        throw new Error(`label '${lit.value}' was not resolved`)
+      }
+      hexVal = symbols[lit.value]
+    } else {
+      hexVal = parseInt(lit.value, 16)
+    }
+    machineCode.push(hexVal & 0xff)
   }
 
   const encodeLit8 = (lit: Node) => {
@@ -165,12 +180,16 @@ export const parseProgram = (program: string): Array<number> => {
       encodeReg(node.value.args[0])
       encodeLit8(node.value.args[1])
     }
-    if ([I.REG_PTR_REG, I.REG_REG].includes(metadata.type)) {
+    if ([I.REG_PTR_REG, I.REG_REG_PTR, I.REG_REG].includes(metadata.type)) {
       encodeReg(node.value.args[0])
       encodeReg(node.value.args[1])
     }
     if (I.LIT_MEM === metadata.type) {
       encodeLitOrMem(node.value.args[0])
+      encodeLitOrMem(node.value.args[1])
+    }
+    if (I.LIT_MEM_8 === metadata.type) {
+      encodeLitOrMem8(node.value.args[0])
       encodeLitOrMem(node.value.args[1])
     }
     if (I.LIT_OFF_REG === metadata.type) {
@@ -219,5 +238,5 @@ export const machineCodeAsBinary = (code: Array<number>) =>
 export const machineCodeAsDecimal = (code: Array<number>) => code.join(' ')
 
 //console.log(machineCodeAsDecimal(parseProgram(exampleProgram)))
-console.log(machineCodeAsHex(parseProgram(exampleProgram)))
+console.log(machineCodeAsHex(assemble(exampleProgram)))
 //console.log(machineCodeAsBinary(parseProgram(exampleProgram)))

@@ -95,11 +95,11 @@ export class MemoryMapper {
    *
    * @returns A function to unmap the region.
    */
-  map(device: Device, start: number, end: number, remap = true) {
+  map(device: Device, start: number, size: number, remap = true) {
     const region: Region = {
       device,
       start,
-      end,
+      end: start + size - 1,
       remap,
     }
 
@@ -178,5 +178,9 @@ export class MemoryMapper {
     // If the region should be remapped, adjust the address
     const finalAddress = region.remap ? address - region.start : address
     region.device.setUint8(finalAddress, value)
+  }
+
+  load(startAddress: number, data: number[]) {
+    data.forEach((byte, offset) => this.setUint8(startAddress + offset, byte))
   }
 }

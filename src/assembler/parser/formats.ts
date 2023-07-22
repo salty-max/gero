@@ -197,6 +197,26 @@ export const regPtrReg = (mnemonic: string, type: string) =>
     })
   })
 
+export const regRegPtr = (mnemonic: string, type: string) =>
+  P.coroutine((run) => {
+    run(upperOrLowerStr(mnemonic))
+    run(P.whitespace)
+
+    const rFrom = run(register)
+
+    run(P.optionalWhitespace)
+    run(P.char(','))
+    run(P.optionalWhitespace)
+
+    const rTo = run(P.char('&').chain(() => register))
+    run(P.optionalWhitespace)
+
+    return T.instructionNode({
+      instruction: type,
+      args: [rFrom, rTo],
+    })
+  })
+
 export const litOffReg = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))

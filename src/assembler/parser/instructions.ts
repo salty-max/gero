@@ -9,6 +9,7 @@ import {
   regLit,
   regMem,
   regPtrReg,
+  regRegPtr,
   regReg,
   singleAddr,
   singleLit,
@@ -21,9 +22,22 @@ export const mov = P.choice([
   litReg('mov', 'MOV_LIT_REG'),
   memReg('mov', 'MOV_MEM_REG'),
   regMem('mov', 'MOV_REG_MEM'),
+  regMem('mov', 'MOVL_REG_MEM'),
+  regMem('mov', 'MOVH_REG_MEM'),
   litMem('mov', 'MOV_LIT_MEM'),
   regPtrReg('mov', 'MOV_REG_PTR_REG'),
 ])
+
+export const mov8 = P.choice([
+  memReg('mov8', 'MOV8_MEM_REG'),
+  litMem('mov8', 'MOV8_LIT_MEM'),
+  regPtrReg('mov8', 'MOV8_REG_PTR_REG'),
+  regRegPtr('mov8', 'MOV8_REG_REG_PTR'),
+])
+
+export const movl = regMem('movl', 'MOVL_REG_MEM')
+
+export const movh = regMem('movh', 'MOVH_REG_MEM')
 
 export const add = P.choice([
   regReg('add', 'ADD_REG_REG'),
@@ -117,6 +131,9 @@ export const hlt = noArgs('hlt', 'HLT')
 
 export default P.choice([
   mov,
+  mov8,
+  movl,
+  movh,
   add,
   sub,
   mul,
