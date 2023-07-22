@@ -326,9 +326,9 @@ export const machineCodeAsBinary = (code: Array<number>) =>
  */
 export const machineCodeAsDecimal = (code: Array<number>) => code.join(' ')
 
-assemble('asm/main.mod').then((program) =>
-  console.log(machineCodeAsHex(program, ANSI_COLOR_BLUE))
-)
+// assemble('asm/main.mod').then((program) =>
+//   console.log(machineCodeAsHex(program, ANSI_COLOR_BLUE))
+// )
 
 //console.log(machineCodeAsDecimal(parseProgram(exampleProgram)))
 //console.log(machineCodeAsBinary(parseProgram(exampleProgram)))
