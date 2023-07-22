@@ -1,45 +1,38 @@
+import path from 'path'
+import { promisify } from 'util'
+import fs from 'fs'
+
 import parser from './parser'
 import instructions, { InstructionType as I } from '../instructions'
 import { Register } from '../util'
-import { Node, Struct } from './parser/types'
+import { Export, Node, Struct } from './parser/types'
 import { parserResult } from './parser/util'
 import {
-  ANSI_COLOR_BLUE,
+  //ANSI_COLOR_BLUE,
   ANSI_COLOR_BOLD,
   ANSI_COLOR_RESET,
 } from '../util/util'
+//import { topLevelModule } from './parser/module'
 
-const exampleProgram = [
-  'data16 myRectangle = { $A3, $1B, $04, $10 }',
-  'struct Rectangle {',
-  '  x: $2,',
-  '  y: $2,',
-  '  w: $2,',
-  '  h: $2,',
-  '}',
-  'start:',
-  ' mov &[ <Rectangle> myRectangle.y ], r1',
-  'end:',
-  ' hlt',
-]
-  .join('\n')
-  .trim()
+const readFileAsync = promisify(fs.readFile)
 
 /**
- * `parserProgram` parses a program string and returns machine code that can be executed by a virtual machine.
- * @param {string} asmCode - The program to be parsed.
- * @returns {Array<number>} The resulting machine code, as an array of numeric values.
+ * `processModule` parses a module string and returns machine code that can be executed by a virtual machine.
+ * @param module string
+ * @param loc number
+ * @returns A tuple of machine code, symbols, structs, and exports
  */
-export const assemble = (asmCode: string): Array<number> => {
-  const output = parser.run(asmCode)
+const processModule = (module: string, loc: number) => {
+  const output = parser.run(module)
 
   if (output.isError) {
     throw new Error(output.error)
   }
 
   const machineCode: Array<number> = []
-  const symbols: Record<string, number> = {}
+  const symbols: Record<string, number> = { loc }
   const structs: Record<string, Struct> = {}
+  const exports: Record<string, Export> = {}
   let currentAddress = 0
 
   // Step 1: Collect symbols and calculate the size of each instruction
@@ -53,6 +46,10 @@ export const assemble = (asmCode: string): Array<number> => {
         }
         // Record the address of each label
         symbols[node.value] = currentAddress
+
+        if (node.value.isExport) {
+          exports[node.value.name] = { type: 'symbol', value: node.value.name }
+        }
         break
       case 'CONSTANT': {
         if (node.value in symbols || node.value in structs) {
@@ -62,6 +59,13 @@ export const assemble = (asmCode: string): Array<number> => {
         }
         // Record the value of each constant
         symbols[node.value.name] = parseInt(node.value.value.value, 16) & 0xffff
+
+        if (node.value.isExport) {
+          exports[node.value.name] = {
+            type: 'symbol',
+            value: node.value.name,
+          }
+        }
         break
       }
       case 'DATA': {
@@ -72,6 +76,14 @@ export const assemble = (asmCode: string): Array<number> => {
         }
         // Record the address of each data array
         symbols[node.value.name] = currentAddress
+
+        if (node.value.isExport) {
+          exports[node.value.name] = {
+            type: 'symbol',
+            value: node.value.name,
+          }
+        }
+
         // Increment the current address based on the size of the data array
         const sizeInBytes = node.value.size === 16 ? 2 : 1
         // Multiply the size of the data array by the number of values in the array
@@ -98,6 +110,13 @@ export const assemble = (asmCode: string): Array<number> => {
             size: parseInt(value.value, 16) & 0xffff,
           }
           offset += structs[node.value.name].members[key].size
+        }
+
+        if (node.value.isExport) {
+          exports[node.value.name] = {
+            type: 'struct',
+            value: node.value.name,
+          }
         }
         break
       }
@@ -155,20 +174,17 @@ export const assemble = (asmCode: string): Array<number> => {
     const lowByte = hexVal & 0x00ff
     machineCode.push(highByte, lowByte)
   }
-
   const encodeLit8 = (lit: Node) => {
     const hexVal = getNodeValue(lit)
     // Push the 8-bit value to the machineCode array
     const byte = hexVal & 0x00ff
     machineCode.push(byte)
   }
-
   const encodeReg = (reg: Node) => {
     // Map the register string to its corresponding numeric value and push it to the machineCode array
     const mappedReg = Register[reg.value.toUpperCase()]
     machineCode.push(mappedReg)
   }
-
   const encodeData8 = (data: Node) => {
     for (const byte of data.value.values) {
       // Parse the hexadecimal value and push it to the machineCode array
@@ -177,7 +193,6 @@ export const assemble = (asmCode: string): Array<number> => {
       machineCode.push(parsed & 0xff)
     }
   }
-
   const encodeData16 = (data: Node) => {
     for (const byte of data.value.values) {
       // Parse the hexadecimal value and push it to the machineCode array
@@ -194,7 +209,8 @@ export const assemble = (asmCode: string): Array<number> => {
     if (
       node.type === 'LABEL' ||
       node.type === 'CONSTANT' ||
-      node.type === 'STRUCT'
+      node.type === 'STRUCT' ||
+      node.type === 'TOP_LEVEL_MODULE'
     )
       return
 
@@ -257,6 +273,28 @@ export const assemble = (asmCode: string): Array<number> => {
 }
 
 /**
+ * `assembleFile` parses a main module and all of its imports and returns machine code that can be executed by a virtual machine.
+ * @param {string} mainModulePath - The main file path.
+ * @returns {Promise<{ machineCode: number[], symbols: Record<string, number>, structs: Record<string, Struct>, exports: Record<string, Export> }>} The resulting machine code, symbols, structs, and exports.
+ */
+export const assemble = async (mainModulePath: string) => {
+  const cwd = process.cwd()
+  const joinedPath = path.join(cwd, mainModulePath)
+
+  // Allow the process to fail if the file cannot be read
+  const mainFile = await readFileAsync(joinedPath, 'utf8')
+
+  return processModule(mainFile, 0)
+}
+
+/**
+ * `assembleString` parses a module string and returns machine code that can be executed by a virtual machine.
+ * @param program The program string to be assembled.
+ * @returns {Module} The resulting machine code, symbols, structs, and exports.
+ */
+export const assembleString = (program: string) => processModule(program, 0)
+
+/**
  * `machineCodeAsHex` converts an array of machine codes into a hexadecimal representation.
  * @param {Array<number>} code - The array of machine codes to be converted.
  * @returns {string} The resulting string of hexadecimal values.
@@ -288,6 +326,11 @@ export const machineCodeAsBinary = (code: Array<number>) =>
  */
 export const machineCodeAsDecimal = (code: Array<number>) => code.join(' ')
 
+// assemble('asm/main.mod').then((program) =>
+//   console.log(machineCodeAsHex(program, ANSI_COLOR_BLUE))
+// )
+
 //console.log(machineCodeAsDecimal(parseProgram(exampleProgram)))
-console.log(machineCodeAsHex(assemble(exampleProgram), ANSI_COLOR_BLUE))
 //console.log(machineCodeAsBinary(parseProgram(exampleProgram)))
+
+export { processModule }
