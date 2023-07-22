@@ -1,24 +1,24 @@
 import parser from './parser'
 import instructions, { InstructionType as I } from '../instructions'
 import { Register } from '../util'
-import { Node } from './parser/types'
+import { Node, Struct } from './parser/types'
 import { parserResult } from './parser/util'
+import {
+  ANSI_COLOR_BLUE,
+  ANSI_COLOR_BOLD,
+  ANSI_COLOR_RESET,
+} from '../util/util'
 
 const exampleProgram = [
-  'constant code_constant = $C0DE',
-  '+data8 bytes = { $01, $02, $03, $04 }',
-  'data16 words = { $0102, $0304, $0506, $0708 }',
+  'data16 myRectangle = { $A3, $1B, $04, $10 }',
+  'struct Rectangle {',
+  '  x: $2,',
+  '  y: $2,',
+  '  w: $2,',
+  '  h: $2,',
+  '}',
   'start:',
-  ' mov $0A, &0050',
-  ' mov [!code_constant], &1234',
-  'loop:',
-  ' mov &0050, acu',
-  ' dec acu',
-  ' mov acu, &0050',
-  ' inc r2',
-  ' inc r2',
-  ' inc r2',
-  ' jne $00, &[!loop]',
+  ' mov &[ <Rectangle> myRectangle.y ], r1',
   'end:',
   ' hlt',
 ]
@@ -39,21 +39,37 @@ export const assemble = (asmCode: string): Array<number> => {
 
   const machineCode: Array<number> = []
   const symbols: Record<string, number> = {}
+  const structs: Record<string, Struct> = {}
   let currentAddress = 0
 
   // Step 1: Collect symbols and calculate the size of each instruction
   parserResult(output).result.forEach((node: Node) => {
     switch (node.type) {
       case 'LABEL':
+        if (node.value in symbols || node.value in structs) {
+          throw new Error(
+            `Can't create label '${node.value}' because a binding with the same name already exists`
+          )
+        }
         // Record the address of each label
         symbols[node.value] = currentAddress
         break
       case 'CONSTANT': {
+        if (node.value in symbols || node.value in structs) {
+          throw new Error(
+            `Can't create constant '${node.value}' because a binding with the same name already exists`
+          )
+        }
         // Record the value of each constant
         symbols[node.value.name] = parseInt(node.value.value.value, 16) & 0xffff
         break
       }
       case 'DATA': {
+        if (node.value in symbols || node.value in structs) {
+          throw new Error(
+            `Can't create data '${node.value}' because a binding with the same name already exists`
+          )
+        }
         // Record the address of each data array
         symbols[node.value.name] = currentAddress
         // Increment the current address based on the size of the data array
@@ -64,60 +80,84 @@ export const assemble = (asmCode: string): Array<number> => {
         currentAddress += totalSizeInBytes
         break
       }
+      case 'STRUCT': {
+        if (node.value in symbols || node.value in structs) {
+          throw new Error(
+            `Can't create struct '${node.value}' because a binding with the same name already exists`
+          )
+        }
+
+        structs[node.value.name] = {
+          members: {},
+        }
+
+        let offset = 0
+        for (const { key, value } of node.value.members) {
+          structs[node.value.name].members[key] = {
+            offset,
+            size: parseInt(value.value, 16) & 0xffff,
+          }
+          offset += structs[node.value.name].members[key].size
+        }
+        break
+      }
       default: {
         // Look up the metadata for each instruction
         const metadata = instructions[node.value.instruction]
         // Increment the current address based on the size of the instruction
         currentAddress += metadata.size
+        break
       }
     }
   })
 
-  const encodeLitOrMem = (lit: Node) => {
+  const getNodeValue = (node: Node) => {
     // Determine the value of the literal based on its type (variable or immediate)
-    let hexVal
-    if (lit.type === 'VARIABLE') {
-      // Resolve the label address for variables
-      if (!(lit.value in symbols)) {
-        throw new Error(`label '${lit.value}' was not resolved`)
+    switch (node.type) {
+      case 'VARIABLE':
+        // Resolve the label address for variables
+        if (!(node.value in symbols)) {
+          throw new Error(`label '${node.value}' was not resolved`)
+        }
+        return symbols[node.value]
+      case 'ADDRESS':
+      case 'HEX_LITERAL': {
+        return parseInt(node.value, 16)
       }
-      hexVal = symbols[lit.value]
-    } else {
-      hexVal = parseInt(lit.value, 16)
+      case 'INTERPRET_AS': {
+        const struct = structs[node.value.struct]
+        if (!struct) {
+          throw new Error(`struct '${node.value.struct}' was not resolved`)
+        }
+
+        const member = struct.members[node.value.property]
+        if (!member) {
+          throw new Error(
+            `struct '${node.value.struct}' does not have a property '${node.value.property}'`
+          )
+        }
+
+        if (!(node.value.symbol in symbols)) {
+          throw new Error(`symbol '${node.value.symbol}' was not resolved`)
+        }
+        const symbol = symbols[node.value.symbol]
+        return symbol + member.offset
+      }
+      default:
+        throw new Error(`Unexpected node type: ${node.type}`)
     }
+  }
+
+  const encodeLitOrMem = (lit: Node) => {
+    const hexVal = getNodeValue(lit)
     // Split the value into two bytes (high and low byte) and push them to the machineCode array
     const highByte = (hexVal & 0xff00) >> 8
     const lowByte = hexVal & 0x00ff
     machineCode.push(highByte, lowByte)
   }
 
-  const encodeLitOrMem8 = (lit: Node) => {
-    // Determine the value of the literal based on its type (variable or immediate)
-    let hexVal
-    if (lit.type === 'VARIABLE') {
-      // Resolve the label address for variables
-      if (!(lit.value in symbols)) {
-        throw new Error(`label '${lit.value}' was not resolved`)
-      }
-      hexVal = symbols[lit.value]
-    } else {
-      hexVal = parseInt(lit.value, 16)
-    }
-    machineCode.push(hexVal & 0xff)
-  }
-
   const encodeLit8 = (lit: Node) => {
-    // Determine the value of the literal based on its type (variable or immediate)
-    let hexVal
-    if (lit.type === 'VARIABLE') {
-      // Resolve the label address for variables
-      if (!(lit.value in symbols)) {
-        throw new Error(`label '${lit.value}' was not resolved`)
-      }
-      hexVal = symbols[lit.value]
-    } else {
-      hexVal = parseInt(lit.value, 16)
-    }
+    const hexVal = getNodeValue(lit)
     // Push the 8-bit value to the machineCode array
     const byte = hexVal & 0x00ff
     machineCode.push(byte)
@@ -151,7 +191,12 @@ export const assemble = (asmCode: string): Array<number> => {
   // Step 2: Encode each instruction and its arguments into machine code
   parserResult(output).result.forEach((node: Node) => {
     // Skip symbols
-    if (node.type === 'LABEL' || node.type === 'CONSTANT') return
+    if (
+      node.type === 'LABEL' ||
+      node.type === 'CONSTANT' ||
+      node.type === 'STRUCT'
+    )
+      return
 
     if (node.type === 'DATA') {
       if (node.value.size === 8) {
@@ -189,7 +234,7 @@ export const assemble = (asmCode: string): Array<number> => {
       encodeLitOrMem(node.value.args[1])
     }
     if (I.LIT_MEM_8 === metadata.type) {
-      encodeLitOrMem8(node.value.args[0])
+      encodeLit8(node.value.args[0])
       encodeLitOrMem(node.value.args[1])
     }
     if (I.LIT_OFF_REG === metadata.type) {
@@ -216,9 +261,15 @@ export const assemble = (asmCode: string): Array<number> => {
  * @param {Array<number>} code - The array of machine codes to be converted.
  * @returns {string} The resulting string of hexadecimal values.
  */
-export const machineCodeAsHex = (code: Array<number>) => {
+export const machineCodeAsHex = (code: Array<number>, color?: string) => {
   return code
-    .map((byte) => `0x${byte.toString(16).padStart(2, '0').toUpperCase()}`)
+    .map(
+      (byte) =>
+        `0x${color ? color + ANSI_COLOR_BOLD : ''}${byte
+          .toString(16)
+          .padStart(2, '0')
+          .toUpperCase()}${color ? ANSI_COLOR_RESET : ''}`
+    )
     .join(' ')
 }
 
@@ -238,5 +289,5 @@ export const machineCodeAsBinary = (code: Array<number>) =>
 export const machineCodeAsDecimal = (code: Array<number>) => code.join(' ')
 
 //console.log(machineCodeAsDecimal(parseProgram(exampleProgram)))
-console.log(machineCodeAsHex(assemble(exampleProgram)))
+console.log(machineCodeAsHex(assemble(exampleProgram), ANSI_COLOR_BLUE))
 //console.log(machineCodeAsBinary(parseProgram(exampleProgram)))

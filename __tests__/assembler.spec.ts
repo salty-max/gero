@@ -416,6 +416,29 @@ describe('data', () => {
   })
 })
 
+describe('structs', () => {
+  it('should handle correctly fetch value from struct property', () => {
+    const input = [
+      'data16 myRectangle = { $A3, $1B, $04, $10 }',
+      'struct Rectangle {',
+      '  x: $2,',
+      '  y: $2,',
+      '  w: $2,',
+      '  h: $2,',
+      '}',
+      'start:',
+      ' mov &[ <Rectangle> myRectangle.y ], r1',
+    ]
+      .join('\n')
+      .trim()
+    const code = assemble(input)
+
+    expect(machineCodeAsHex(code)).toBe(
+      '0x00 0xA3 0x00 0x1B 0x00 0x04 0x00 0x10 0x13 0x00 0x02 0x02'
+    )
+  })
+})
+
 describe('program', () => {
   it('should correctly parse an entire program', () => {
     const exampleProgram = [
