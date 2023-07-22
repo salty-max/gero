@@ -12,7 +12,14 @@
  * - MOV_MEM_REG:       0x13, Move Memory to Register
  * - MOV_LIT_MEM:       0x14, Move Literal to Memory
  * - MOV_REG_PTR_REG:   0x15, Move Register* to Register
- * - MOV_LIT_OFF_REG:   0x16, Move Value at [Literal + Register] to Register
+ * - MOV_REG_REG_PTR:   0x16, Move Register to Register*
+ * - MOV_LIT_OFF_REG:   0x17, Move Value at [Literal + Register] to Register
+ * - MOV8_LIT_REG:      0x70, Move 8-bit Literal to Register
+ * - MOV8_MEM_REG:      0x71, Move 8-bit Memory to Register
+ * - MOVL_REG_MEM:      0x72, Move Low 8-bit Register to Memory
+ * - MOVH_REG_MEM:      0x73, Move High 8-bit Register to Memory
+ * - MOV8_REG_PTR_REG:  0x74, Move 8-bit Register* to Register
+ * - MOV8_REG_REG_PTR:  0x75, Move 8-bit Register to Register*
  * Arithmetic instructions
  * - ADD_LIT_REG:       0x1B, Add Literal to Register
  * - ADD_REG_REG:       0x1C, Add Register to Register
@@ -49,8 +56,8 @@
  * - JGE_REG:           0x48, Jump if Greater Than Or Equal (Register)
  * - JGE_LIT:           0x49, Jump if Greater Than  Or Equal(Literal)
  * Stack instructions
- * - PSH_LIT:           0x17, Push Literal
- * - PSH_REG:           0x18, Push Register
+ * - PSH_LIT:           0x18, Push Literal
+ * - PSH_REG:           0x19, Push Register
  * - POP:               0x1A, Pop to Register
  * Subroutines instructions
  * - CAL_LIT:           0x5E, Call Literal
@@ -72,12 +79,14 @@ export enum InstructionType {
   REG_MEM,
   MEM_REG,
   LIT_MEM,
+  LIT_MEM_8,
   REG_PTR_REG,
   LIT_OFF_REG,
   NO_ARGS,
   SINGLE_REG,
   SINGLE_LIT,
   SINGLE_ADDR,
+  REG_REG_PTR,
 }
 
 const instructionSizes: Record<string, number> = {
@@ -88,11 +97,13 @@ const instructionSizes: Record<string, number> = {
   REG_MEM: 4,
   MEM_REG: 5,
   LIT_MEM: 5,
+  LIT_MEM_8: 4,
   REG_PTR_REG: 3,
   LIT_OFF_REG: 5,
   NO_ARGS: 1,
   SINGLE_REG: 2,
   SINGLT_LIT: 3,
+  REG_REG_PTR: 3,
 }
 
 export interface IMeta {
@@ -104,6 +115,48 @@ export interface IMeta {
 }
 
 export const meta: Array<IMeta> = [
+  {
+    instruction: 'MOV8_LIT_MEM',
+    opcode: 0x70,
+    type: InstructionType.LIT_MEM_8,
+    size: instructionSizes.LIT_MEM_8,
+    mnemonic: 'mov8',
+  },
+  {
+    instruction: 'MOV8_MEM_REG',
+    opcode: 0x71,
+    type: InstructionType.MEM_REG,
+    size: instructionSizes.MEM_REG,
+    mnemonic: 'mov8',
+  },
+  {
+    instruction: 'MOVL_REG_MEM',
+    opcode: 0x72,
+    type: InstructionType.REG_MEM,
+    size: instructionSizes.REG_MEM,
+    mnemonic: 'movl',
+  },
+  {
+    instruction: 'MOVH_REG_MEM',
+    opcode: 0x73,
+    type: InstructionType.REG_MEM,
+    size: instructionSizes.REG_MEM,
+    mnemonic: 'movh',
+  },
+  {
+    instruction: 'MOV8_REG_PTR_REG',
+    opcode: 0x74,
+    type: InstructionType.REG_PTR_REG,
+    size: instructionSizes.REG_PTR_REG,
+    mnemonic: 'mov8',
+  },
+  {
+    instruction: 'MOV8_REG_REG_PTR',
+    opcode: 0x75,
+    type: InstructionType.REG_REG_PTR,
+    size: instructionSizes.REG_REG_PTR,
+    mnemonic: 'mov8',
+  },
   {
     instruction: 'MOV_LIT_REG',
     opcode: 0x10,
@@ -147,8 +200,15 @@ export const meta: Array<IMeta> = [
     mnemonic: 'mov',
   },
   {
-    instruction: 'MOV_LIT_OFF_REG',
+    instruction: 'MOV_REG_REG_PTR',
     opcode: 0x16,
+    type: InstructionType.REG_REG_PTR,
+    size: instructionSizes.REG_REG_PTR,
+    mnemonic: 'mov',
+  },
+  {
+    instruction: 'MOV_LIT_OFF_REG',
+    opcode: 0x17,
     type: InstructionType.LIT_OFF_REG,
     size: instructionSizes.LIT_OFF_REG,
     mnemonic: 'mov',
@@ -379,14 +439,14 @@ export const meta: Array<IMeta> = [
   },
   {
     instruction: 'PSH_LIT',
-    opcode: 0x17,
+    opcode: 0x18,
     type: InstructionType.SINGLE_LIT,
     size: instructionSizes.SINGLE_LIT,
     mnemonic: 'psh',
   },
   {
     instruction: 'PSH_REG',
-    opcode: 0x18,
+    opcode: 0x19,
     type: InstructionType.SINGLE_REG,
     size: instructionSizes.SINGLE_REG,
     mnemonic: 'psh',

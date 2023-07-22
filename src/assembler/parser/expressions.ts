@@ -2,6 +2,9 @@ import P from 'parsil'
 import { last, typifyGroupedExpr } from './util'
 import T, { Node } from './types'
 import { hexLiteral, operator, variable } from './common'
+import { interpretAs } from './interpret-as'
+
+const expression = P.choice([hexLiteral, variable, interpretAs])
 
 // Function to handle operator precedence in a given expression
 const handleOperatorPrecedence = (expr: Node): Node => {
@@ -116,7 +119,7 @@ export const groupedExpr = P.coroutine((run) => {
           state = State.OPEN_PAREN
         } else {
           // Parse the element (operand) and move to the state of expecting an operator or closing parenthesis
-          last(stack).push(run(P.choice([hexLiteral, variable])))
+          last(stack).push(run(expression))
           run(P.optionalWhitespace)
           state = State.OPERATOR_OR_CLOSING_PAREN
         }
@@ -160,7 +163,7 @@ export const bracketExpr = P.coroutine((run) => {
   while (true) {
     if (state === State.EXPECT_ELEMENT) {
       // Parse the element (operand) and move to the state of expecting an operator
-      const result = run(P.choice([groupedExpr, hexLiteral, variable]))
+      const result = run(P.choice([groupedExpr, expression]))
       expr.push(result)
       state = State.EXPECT_OPERATOR
       run(P.optionalWhitespace)

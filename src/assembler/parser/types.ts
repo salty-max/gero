@@ -5,6 +5,15 @@ export type Node = {
   value: any
 }
 
+export type Member = {
+  offset: number
+  size: number
+}
+
+export type Struct = {
+  members: Record<string, Member>
+}
+
 const instructionNode = asType('INSTRUCTION')
 const registerNode = asType('REGISTER')
 const hexLiteralNode = asType('HEX_LITERAL')
@@ -22,6 +31,8 @@ const bracketExprNode = asType('SQUARE_BRACKET_EXPRESSION')
 
 const dataNode = asType('DATA')
 const constantNode = asType('CONSTANT')
+const structNode = asType('STRUCT')
+const interpretAsNode = asType('INTERPRET_AS')
 
 export default {
   instructionNode,
@@ -38,4 +49,6 @@ export default {
   bracketExprNode,
   dataNode,
   constantNode,
+  structNode,
+  interpretAsNode,
 }
