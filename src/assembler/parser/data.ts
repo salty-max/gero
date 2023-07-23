@@ -1,4 +1,4 @@
-import P from 'parsil'
+import * as P from 'parsil'
 import { commaSeparated, hexLiteral, validIdentifier } from './common'
 import T from './types'
 

@@ -1,13 +1,6 @@
 import { Parser, ResultType, isOk } from 'parsil'
-import { inspect } from 'util'
 
-export const deepLog = (x: any) =>
-  console.log(
-    inspect(x, {
-      depth: Infinity,
-      colors: true,
-    })
-  )
+export const deepLog = (x: any) => console.log(JSON.stringify(x, null, 2))
 
 export const asType = (type: string) => (value: any) => ({ type, value })
 
@@ -35,4 +28,18 @@ export const parserResult = (res: ResultType<any, any>) => {
   } else {
     throw new Error(res.error)
   }
+}
+
+export function readFileAsync(file: File) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.onload = () => {
+      resolve(reader.result)
+    }
+
+    reader.onerror = reject
+
+    reader.readAsText(file)
+  })
 }

@@ -1,4 +1,4 @@
-import P from 'parsil'
+import * as P from 'parsil'
 import { last, typifyGroupedExpr } from './util'
 import T, { Node } from './types'
 import { hexLiteral, operator, variable } from './common'
