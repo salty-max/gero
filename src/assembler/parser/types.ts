@@ -26,6 +26,11 @@ export type Module = {
   structs: Record<string, Struct>
 }
 
+export type Program = {
+  machineCode: number[]
+  symbols: Record<string, number>
+}
+
 const instructionNode = asType('INSTRUCTION')
 const registerNode = asType('REGISTER')
 const hexLiteralNode = asType('HEX_LITERAL')

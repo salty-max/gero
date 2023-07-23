@@ -3,7 +3,7 @@ import path from 'path'
 import parser from './parser'
 import instructions, { InstructionType as I } from '../instructions'
 import { Register } from '../util'
-import { Export, Node, Struct } from './parser/types'
+import { Export, Node, Program, Struct } from './parser/types'
 import { parserResult } from './parser/util'
 import {
   //ANSI_COLOR_BLUE,
@@ -18,7 +18,7 @@ import {
  * @param loc number
  * @returns A tuple of machine code, symbols, structs, and exports
  */
-const processModule = (module: string, loc = 0) => {
+const processModule = (module: string, loc = 0): Program => {
   const output = parser.run(module)
 
   if (output.isError) {
@@ -271,9 +271,12 @@ const processModule = (module: string, loc = 0) => {
 /**
  * `assembleFile` parses a main module and all of its imports and returns machine code that can be executed by a virtual machine.
  * @param {string} mainModulePath - The main file path.
- * @returns {Promise<{ machineCode: number[], symbols: Record<string, number>, structs: Record<string, Struct>, exports: Record<string, Export> }>} The resulting machine code, symbols, structs, and exports.
+ * @returns {Promise<Program>} The resulting machine code, symbols, structs, and exports.
  */
-export const assemble = async (mainModulePath: string, offset = 0) => {
+export const assemble = async (
+  mainModulePath: string,
+  offset = 0
+): Promise<Program> => {
   const cwd = process.cwd()
   const joinedPath = path.join(cwd, mainModulePath)
 
@@ -288,7 +291,7 @@ export const assemble = async (mainModulePath: string, offset = 0) => {
  * @param program The program string to be assembled.
  * @returns {Module} The resulting machine code, symbols, structs, and exports.
  */
-export const assembleString = (program: string, offset = 0) =>
+export const assembleString = (program: string, offset = 0): Program =>
   processModule(program, offset)
 
 /**

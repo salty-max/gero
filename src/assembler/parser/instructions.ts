@@ -127,6 +127,7 @@ export const cal = P.choice([
 ])
 
 export const ret = noArgs('ret', 'RET')
+export const rti = noArgs('rti', 'RETURN_INTERRUPT')
 export const hlt = noArgs('hlt', 'HLT')
 
 export default P.choice([
@@ -155,5 +156,6 @@ export default P.choice([
   pop,
   cal,
   ret,
+  rti,
   hlt,
 ])

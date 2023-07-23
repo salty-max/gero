@@ -1,0 +1,22 @@
+data8 array = { $00, $02 }
+data16 array = { $0000, $0000 }
+constant const = $00
+
+start:
+
+wait:
+  mov [!wait], ip
+
+after_frame:
+  rti
+
+loop:
+  mov &0050, acu
+  dec acu
+  mov acu, &0050
+  inc r2
+  inc r2
+  inc r2
+  jne $00, &[!loop]
+end:
+  hlt

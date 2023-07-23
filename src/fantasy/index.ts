@@ -1,4 +1,4 @@
-import { assembleString } from '../assembler'
+import { assemble } from '../assembler'
 import { CPU, MemoryMapper, createRAM, createROM } from '../vm'
 import { SCREEN_H, SCREEN_W, SPRITE_SIZE, TILE_SIZE } from './config'
 import { Display, Renderer, Tile } from './graphics'
@@ -128,31 +128,20 @@ for (let i = 0; i < TILE_MEMORY_SIZE; i += TILE_SIZE) {
 // Define the start of the game code in memory
 const CODE_OFFSET = 0x2668
 
-// Use the assembly string to generate machine code and symbols for the game
-const { machineCode, symbols } = assembleString(
-  `
-start:
-
-wait:
-  mov [!wait], ip
-
-after_frame:
-  rti
-`.trim(),
-  CODE_OFFSET
-)
-
-// Load the machine code into memory at the specified offset
-machineCode.forEach((byte: number, i: number) =>
-  MM.setUint8(CODE_OFFSET + i, byte)
-)
-
 // Define the offset in memory for interrupt vector
 const INTERRUPT_VECTOR_OFFSET = 0x2000
 
-// Set the start of the game code and the end of a frame in the interrupt vector
-MM.setUint16(INTERRUPT_VECTOR_OFFSET, CODE_OFFSET)
-MM.setUint16(INTERRUPT_VECTOR_OFFSET + 2, symbols.after_frame)
+// Use the assembly string to generate machine code and symbols for the game
+assemble('frogger/main.asb', CODE_OFFSET).then(({ machineCode, symbols }) => {
+  // Load the machine code into memory at the specified offset
+  machineCode.forEach((byte: number, i: number) =>
+    MM.setUint8(CODE_OFFSET + i, byte)
+  )
+
+  // Set the start of the game code and the end of a frame in the interrupt vector
+  MM.setUint16(INTERRUPT_VECTOR_OFFSET, CODE_OFFSET)
+  MM.setUint16(INTERRUPT_VECTOR_OFFSET + 2, symbols.after_frame)
+})
 
 // Create a new CPU and point it to the interrupt vector in memory
 const cpu = new CPU(MM, INTERRUPT_VECTOR_OFFSET)
