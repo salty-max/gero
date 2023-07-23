@@ -1,170 +1,227 @@
-// Import colours from external module
-import { colours } from './colours'
+import { assembleString } from '../assembler'
+import { CPU, MemoryMapper, createRAM, createROM } from '../vm'
+import { SCREEN_H, SCREEN_W, SPRITE_SIZE, TILE_SIZE } from './config'
+import { Display, Renderer, Tile } from './graphics'
 
-// Define constant values for tile size, pixel density and scaling
-const TILE_WIDTH = 30
-const TILE_HEIGHT = Math.round((9 / 16) * TILE_WIDTH)
-const PIXELS_PER_TILE = 8
-const SCALE_FACTOR = 6
+// Define memory sizes for the different sections of the game memory
+// TILE_MEMORY_SIZE corresponds to the space in memory allocated for the game tiles.
+const TILE_MEMORY_SIZE = 0x2000 // (8192 bytes)
+// RAM1_SIZE is used for the interrupt vector, sprites, background, and foreground
+const RAM1_SIZE = 0x20 + 0x200 + 0x200 + 0x200 // 0x0620 (1538 bytes)
+// INPUT_SIZE represents the memory size allocated for game inputs
+const INPUT_SIZE = 0x8 // (8 bytes)
+// RAM2_SIZE is for global settings, game code and data, and the stack
+const RAM2_SIZE = 0x10000 - TILE_MEMORY_SIZE - RAM1_SIZE - INPUT_SIZE // 0xd9d8 (55768 bytes)
 
-// Compute the width and height of the canvas
-const w = TILE_WIDTH * PIXELS_PER_TILE * SCALE_FACTOR
-const h = TILE_HEIGHT * PIXELS_PER_TILE * SCALE_FACTOR
+// Create the memory for different components of the game
+const tileMemory = createROM(TILE_MEMORY_SIZE)
+const RAMSegment1 = createRAM(RAM1_SIZE)
+const inputMemory = createROM(INPUT_SIZE)
+const RAMSegment2 = createRAM(RAM2_SIZE)
 
-// Grab the canvas element from the DOM and set its width and height
-const canvas = document.getElementById('screen') as HTMLCanvasElement
-canvas.width = w
-canvas.height = h
+// Create a new memory mapper and map the different sections of memory to it
+const MM = new MemoryMapper()
+MM.map(tileMemory, 0x0000, TILE_MEMORY_SIZE)
+MM.map(RAMSegment1, 0x2000, RAM1_SIZE)
+MM.map(inputMemory, 0x2620, INPUT_SIZE)
+MM.map(RAMSegment2, 0x2628, RAM2_SIZE)
 
-// Display class handles drawing on a specific canvas
-class Display {
-  private ctx: CanvasRenderingContext2D // 2D rendering context of the canvas
+// fullColourTile is a function that creates an array of length 32, where each element is a bitwise operation
+// involving the provided colour (i.e., shifting it left by 4 bits and combining it with the original colour).
+const fullColourTile = (colour: number) =>
+  Array.from({ length: TILE_SIZE }, () => (colour << 4) | colour)
 
-  constructor(canvas: HTMLCanvasElement) {
-    // Grab 2D context of the canvas
-    const ctx = canvas.getContext('2d')
-    // If we can't get the context, throw an error
-    if (!ctx) throw new Error('Could not get 2D context')
-    // If we got the context, store it in this object
-    this.ctx = ctx
-  }
+// fullColourTiles is an array that stores the full colour tile for each of the 16 possible colours.
+const fullColourTiles = []
+for (let i = 0; i < 16; i++) {
+  fullColourTiles.push(...fullColourTile(i))
+}
 
-  // Set the fill colour for the context
-  fill = ([r, g, b, a]: number[]): void => {
-    this.ctx.fillStyle = `rgba(${r},${g},${b},${a})`
-  }
+// Load fullColourTiles into the tile memory.
+tileMemory.load(fullColourTiles)
 
-  // Draw a pixel on the context
-  drawPixel = (x: number, y: number, c: number[]): void => {
-    this.fill(c) // Set fill colour
-    // Draw the rectangle (which is a pixel here due to scale)
-    this.ctx.fillRect(
-      x * SCALE_FACTOR,
-      y * SCALE_FACTOR,
-      SCALE_FACTOR,
-      SCALE_FACTOR
-    )
-  }
+// Define offsets for background and foreground in memory.
+const BACKGROUND_OFFSET = 0x2220
+const FOREGROUND_OFFSET = 0x2420
 
-  // Draw a tile on the context
-  drawTile = (x: number, y: number, tileData: number[]): void => {
-    // Iterate through each pixel in the tile
-    for (let oy = 0; oy < 8; oy++) {
-      for (let ox = 0; ox < 8; ox += 2) {
-        // Calculate the index for the colour data
-        const index = (oy * PIXELS_PER_TILE + ox) / 2
-        const byte = tileData[index]
+// Define the number of tiles along the x and y axes.
+const TILES_X = 32
+const TILES_Y = 16
 
-        // Extract the two colours for each pixel in the byte
-        const c1 = colours[byte >> 4]
-        const c2 = colours[byte & 0xf]
+// Loop over each tile in the grid and set its colour based on its position.
+// This creates a pattern in the grid.
+for (let i = 0; i < TILES_X * TILES_Y; i++) {
+  const x = i % TILES_X
+  const y = Math.floor(i / TILES_X)
 
-        // Draw each pixel on the context
-        this.drawPixel(x + ox, y + oy, c1)
-        this.drawPixel(x + ox + 1, y + oy, c2)
-      }
-    }
+  if ((x + y) % 2 === 0) {
+    MM.setUint8(BACKGROUND_OFFSET + i, 0xf)
+  } else if ((x + y) % 3 === 0) {
+    MM.setUint8(BACKGROUND_OFFSET + i, 0xa)
+  } else {
+    MM.setUint8(BACKGROUND_OFFSET + i, 0x4)
   }
 }
 
-// Create a new Display object for the main screen
-const screen = new Display(canvas)
+// Define the offset for the sprite table in memory.
+const SPRITE_TABLE_OFFSET = 0x2020
 
-// Tile class represents a tile, which is essentially a mini canvas
-class Tile {
-  canvas: HTMLCanvasElement
+// Populate the sprite table in memory with initial values.
+// Each sprite entry requires 16 bytes, of which only a part is set here.
+MM.setUint16(SPRITE_TABLE_OFFSET + 0, 0) // x-coordinate of sprite 0
+MM.setUint16(SPRITE_TABLE_OFFSET + 2, 32) // y-coordinate of sprite 0
+MM.setUint16(SPRITE_TABLE_OFFSET + 4, 6) // tile index of sprite 0
 
-  constructor(data: number[]) {
-    // Create a new canvas for this tile
-    this.canvas = document.createElement('canvas')
-    this.canvas.width = PIXELS_PER_TILE * SCALE_FACTOR
-    this.canvas.height = PIXELS_PER_TILE * SCALE_FACTOR
-    const display = new Display(this.canvas)
+MM.setUint16(16 + SPRITE_TABLE_OFFSET + 0, 64) // x-coordinate of sprite 1
+MM.setUint16(16 + SPRITE_TABLE_OFFSET + 2, 20) // y-coordinate of sprite 1
+MM.setUint16(16 + SPRITE_TABLE_OFFSET + 4, 2) // tile index of sprite 1
 
-    // Draw the tile data onto the canvas
-    display.drawTile(0, 0, data)
-  }
-}
-
-// Renderer class takes care of drawing tiles onto the main screen
-class Renderer {
-  ctx: CanvasRenderingContext2D // 2D rendering context of the canvas
-
-  constructor(canvas: HTMLCanvasElement) {
-    // Grab the 2D context
-    const ctx = canvas.getContext('2d')
-    if (!ctx) throw new Error('Could not get 2D context')
-    this.ctx = ctx
-  }
-
-  // Draw a tile onto the main screen at a grid aligned position
-  drawGridAlignedTile(x: number, y: number, tile: Tile) {
-    this.ctx.drawImage(
-      tile.canvas,
-      x * PIXELS_PER_TILE * SCALE_FACTOR,
-      y * PIXELS_PER_TILE * SCALE_FACTOR
-    )
-  }
-
-  // Draw a tile onto the main screen at a pixel aligned position
-  drawPixelAlignedTile(x: number, y: number, tile: Tile) {
-    this.ctx.drawImage(tile.canvas, x * SCALE_FACTOR, y * SCALE_FACTOR)
-  }
-
-  // Clear the main screen
-  clear() {
-    // Fill the screen with the first colour
-    screen.fill(colours[0])
-    // Draw a rectangle covering the entire canvas
-    this.ctx.fillRect(0, 0, w, h)
-  }
-}
-
-// Create different tiles using different colours
 /* prettier-ignore */
-const movingTile = new Tile([
-  0x00, 0x11, 0x22, 0x33,
-  0x00, 0x11, 0x22, 0x33,
-  0x44, 0x55, 0x66, 0x77,
-  0x44, 0x55, 0x66, 0x77,
-  0x88, 0x99, 0xaa, 0xbb,
-  0x88, 0x99, 0xaa, 0xbb,
-  0xcc, 0xdd, 0xee, 0xff,
-  0xcc, 0xdd, 0xee, 0xff,
-])
-const blackTile = new Tile(Array.from({ length: 32 }, () => 0xff))
-const blueTile = new Tile(Array.from({ length: 32 }, () => 0x33))
+const inputStates = [
+  0 /* UP */,
+  0 /* DOWN */,
+  0 /* LEFT */,
+  0 /* RIGHT */,
+  0 /* A */,
+  0 /* B */,
+  0 /* START */,
+  0 /* SELECT */,
+]
 
-// Create a new Renderer for the main screen
-const renderer = new Renderer(canvas)
-
-// Start position for the moving tile
-const pos = { x: 0, y: 0 }
-
-// The main draw loop
-const draw = () => {
-  // Clear the screen
-  renderer.clear()
-
-  // Draw the grid of black and blue tiles
-  for (let y = 0; y < TILE_HEIGHT; y++) {
-    for (let x = 0; x < TILE_WIDTH; x++) {
-      if ((x + y) % 2 === 0) {
-        renderer.drawGridAlignedTile(x, y, blackTile)
-      } else {
-        renderer.drawGridAlignedTile(x, y, blueTile)
-      }
-    }
+// Define a listener for keydown events. Depending on the key pressed, the corresponding input state is updated.
+// Each inputState corresponds to a different keypress action.
+document.addEventListener('keydown', (e) => {
+  switch (e.key) {
+    case 'ArrowUp':
+      inputStates[0] = 1 // UP
+      return
+    case 'ArrowDown':
+      inputStates[1] = 1 // DOWN
+      return
+    case 'ArrowLeft':
+      inputStates[2] = 1 // LEFT
+      return
+    case 'ArrowRight':
+      inputStates[3] = 1 // RIGHT
+      return
+    case 'z':
+      inputStates[4] = 1 // A
+      return
+    case 'x':
+      inputStates[5] = 1 // B
+      return
+    case 'Enter':
+      inputStates[6] = 1 // START
+      return
+    case 'Shift':
+      inputStates[7] = 1 // SELECT
+      return
   }
+})
 
-  // Update position for moving tile and draw it
-  pos.x = (pos.x + 1) % (TILE_WIDTH * PIXELS_PER_TILE)
-  pos.y = (pos.y + 1) % (TILE_HEIGHT * PIXELS_PER_TILE)
-  renderer.drawPixelAlignedTile(pos.x, pos.y, movingTile)
-
-  // Request the next animation frame
-  requestAnimationFrame(draw)
+// Create a cache for game tiles in memory
+const tileCache: Tile[] = []
+for (let i = 0; i < TILE_MEMORY_SIZE; i += TILE_SIZE) {
+  tileCache.push(new Tile(tileMemory.slice(i, i + TILE_SIZE)))
 }
 
-// Start the draw loop
-draw()
+// Define the start of the game code in memory
+const CODE_OFFSET = 0x2668
+
+// Use the assembly string to generate machine code and symbols for the game
+const { machineCode, symbols } = assembleString(
+  `
+start:
+
+wait:
+  mov [!wait], ip
+
+after_frame:
+  rti
+`.trim(),
+  CODE_OFFSET
+)
+
+// Load the machine code into memory at the specified offset
+machineCode.forEach((byte: number, i: number) =>
+  MM.setUint8(CODE_OFFSET + i, byte)
+)
+
+// Define the offset in memory for interrupt vector
+const INTERRUPT_VECTOR_OFFSET = 0x2000
+
+// Set the start of the game code and the end of a frame in the interrupt vector
+MM.setUint16(INTERRUPT_VECTOR_OFFSET, CODE_OFFSET)
+MM.setUint16(INTERRUPT_VECTOR_OFFSET + 2, symbols.after_frame)
+
+// Create a new CPU and point it to the interrupt vector in memory
+const cpu = new CPU(MM, INTERRUPT_VECTOR_OFFSET)
+
+// Set the target frames per second and the time allowed for each frame
+const FPS_TARGET = 30
+const TIME_PER_FRAME_MS = 1000 / FPS_TARGET
+// Define the number of CPU cycles to execute per animation frame
+const CYCLES_PER_ANIMATION_FRAME = 200
+
+// Create a new renderer for the game and attach it to the 'screen' canvas element
+const canvas = document.getElementById('screen') as HTMLCanvasElement
+canvas.width = SCREEN_W
+canvas.height = SCREEN_H
+const screen = new Display(canvas)
+const r = new Renderer(screen)
+let last = Date.now()
+
+const drawCallback = () => {
+  const now = Date.now() // Get the current time
+  const diff = now - last // Calculate the time elapsed since the last frame
+
+  // If enough time has passed to render a new frame
+  if (diff > TIME_PER_FRAME_MS) {
+    last = now // Update the timestamp of the last frame
+    inputMemory.load(inputStates) // Load the current state of the input into the input memory
+
+    // Reset the state of the input
+    for (let i = 0; i < inputStates.length; i++) {
+      inputStates[i] = 0
+    }
+
+    // Render the background tiles
+    for (let i = 0; i < TILES_X * TILES_Y; i++) {
+      const x = i % TILES_X
+      const y = Math.floor(i / TILES_X)
+      const tile = tileCache[MM.getUint8(BACKGROUND_OFFSET + i)]
+      r.drawGridAlignedTile(x, y, tile)
+    }
+
+    // Render the sprites
+    for (let i = 0; i < 32; i++) {
+      const spriteBase = SPRITE_TABLE_OFFSET + i * SPRITE_SIZE
+      const x = MM.getUint8(spriteBase + 0)
+      const y = MM.getUint8(spriteBase + 2)
+      const tile = MM.getUint8(spriteBase + 4) + MM.getUint8(spriteBase + 5)
+      r.drawPixelAlignedTile(x, y, tileCache[tile])
+    }
+
+    // Render the foreground tiles
+    for (let i = 0; i < TILES_X * TILES_Y; i++) {
+      const x = i % TILES_X
+      const y = Math.floor(i / TILES_X)
+      const tile = tileCache[MM.getUint8(FOREGROUND_OFFSET + i)]
+      r.drawGridAlignedTile(x, y, tile)
+    }
+
+    // Signal the CPU to handle an interrupt
+    cpu.handleInterrupt(1)
+  }
+
+  // Step the CPU for a certain number of cycles
+  for (let i = 0; i < CYCLES_PER_ANIMATION_FRAME; i++) {
+    cpu.step()
+  }
+
+  // Request the browser to call this function again when it's time to update the next frame
+  requestAnimationFrame(drawCallback)
+}
+
+// Start the main game loop
+drawCallback()

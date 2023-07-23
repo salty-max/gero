@@ -6,6 +6,11 @@
   "repository": "https://github.com/salty-max/gero",
   "author": "Maxime Blanc",
   "license": "MIT",
+  "browserslist": [
+    "last 1 chrome version",
+    "last 1 firefox version",
+    "last 1 safari version"
+  ],
   "scripts": {
     "clean": "rimraf dist",
     "dev": "vite",
@@ -25,8 +30,9 @@
     "eslint-config-prettier": "^8.8.0",
     "eslint-plugin-jest": "^27.2.3",
     "eslint-plugin-prettier": "^5.0.0",
+    "fast-text-encoding": "^1.0.6",
     "jest": "^29.6.1",
-    "parsil": "^1.5.0",
+    "parsil": "^1.5.2",
     "prettier": "^3.0.0",
     "rimraf": "^3.0.2",
     "ts-jest": "^29.1.1",

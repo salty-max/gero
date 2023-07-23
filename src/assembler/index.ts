@@ -1,6 +1,4 @@
 import path from 'path'
-import { promisify } from 'util'
-import fs from 'fs'
 
 import parser from './parser'
 import instructions, { InstructionType as I } from '../instructions'
@@ -14,15 +12,13 @@ import {
 } from '../util/util'
 //import { topLevelModule } from './parser/module'
 
-const readFileAsync = promisify(fs.readFile)
-
 /**
  * `processModule` parses a module string and returns machine code that can be executed by a virtual machine.
  * @param module string
  * @param loc number
  * @returns A tuple of machine code, symbols, structs, and exports
  */
-const processModule = (module: string, loc: number) => {
+const processModule = (module: string, loc = 0) => {
   const output = parser.run(module)
 
   if (output.isError) {
@@ -30,10 +26,10 @@ const processModule = (module: string, loc: number) => {
   }
 
   const machineCode: Array<number> = []
-  const symbols: Record<string, number> = { loc }
+  const symbols: Record<string, number> = {}
   const structs: Record<string, Struct> = {}
   const exports: Record<string, Export> = {}
-  let currentAddress = 0
+  let currentAddress = loc
 
   // Step 1: Collect symbols and calculate the size of each instruction
   parserResult(output).result.forEach((node: Node) => {
@@ -269,7 +265,7 @@ const processModule = (module: string, loc: number) => {
     }
   })
 
-  return machineCode
+  return { machineCode, symbols }
 }
 
 /**
@@ -277,14 +273,14 @@ const processModule = (module: string, loc: number) => {
  * @param {string} mainModulePath - The main file path.
  * @returns {Promise<{ machineCode: number[], symbols: Record<string, number>, structs: Record<string, Struct>, exports: Record<string, Export> }>} The resulting machine code, symbols, structs, and exports.
  */
-export const assemble = async (mainModulePath: string) => {
+export const assemble = async (mainModulePath: string, offset = 0) => {
   const cwd = process.cwd()
   const joinedPath = path.join(cwd, mainModulePath)
 
-  // Allow the process to fail if the file cannot be read
-  const mainFile = await readFileAsync(joinedPath, 'utf8')
+  const res = await fetch(joinedPath)
+  const mainFileString = await res.text()
 
-  return processModule(mainFile, 0)
+  return processModule(mainFileString, offset)
 }
 
 /**
@@ -292,7 +288,8 @@ export const assemble = async (mainModulePath: string) => {
  * @param program The program string to be assembled.
  * @returns {Module} The resulting machine code, symbols, structs, and exports.
  */
-export const assembleString = (program: string) => processModule(program, 0)
+export const assembleString = (program: string, offset = 0) =>
+  processModule(program, offset)
 
 /**
  * `machineCodeAsHex` converts an array of machine codes into a hexadecimal representation.
@@ -332,5 +329,3 @@ export const machineCodeAsDecimal = (code: Array<number>) => code.join(' ')
 
 //console.log(machineCodeAsDecimal(parseProgram(exampleProgram)))
 //console.log(machineCodeAsBinary(parseProgram(exampleProgram)))
-
-export { processModule }

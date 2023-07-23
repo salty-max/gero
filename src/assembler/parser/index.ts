@@ -2,7 +2,7 @@ import { label } from './common'
 import { constant } from './constant'
 import { data16, data8 } from './data'
 import instructions from './instructions'
-import P from 'parsil'
+import * as P from 'parsil'
 import { struct } from './struct'
 
 export default P.many(

@@ -1,4 +1,4 @@
-import P from 'parsil'
+import * as P from 'parsil'
 import T from './types'
 import { upperOrLowerStr, hexLiteral, register, address } from './common'
 import { bracketExpr } from './expressions'
