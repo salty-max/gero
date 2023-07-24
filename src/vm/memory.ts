@@ -21,6 +21,7 @@ export const createRAM = (sizeInBytes: number): Memory => {
   const ab = new ArrayBuffer(sizeInBytes)
   const dv = new DataView(ab)
   const bytes = new Uint8Array(ab)
+
   return {
     ab,
     load: (data: number[]) => data.forEach((d, i) => dv.setUint8(i, d)),

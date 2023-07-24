@@ -6,8 +6,6 @@ import T from './types'
 const upperOrLowerStr = (s: string) =>
   P.choice([P.str(s.toUpperCase()), P.str(s.toLowerCase())])
 
-const registerParserArray = REGISTER_NAMES.map((r) => upperOrLowerStr(r))
-
 const optionalWhitespaceSurrounded = P.between(
   P.optionalWhitespace,
   P.optionalWhitespace
@@ -15,7 +13,9 @@ const optionalWhitespaceSurrounded = P.between(
 
 const commaSeparated = P.sepBy(optionalWhitespaceSurrounded(P.char(',')))
 
-const register = P.choice(registerParserArray).map(T.registerNode)
+const register = P.choice(REGISTER_NAMES.map(upperOrLowerStr)).map(
+  T.registerNode
+)
 
 const hexDigit = P.regex(/^[0-9A-Fa-f]/)
 

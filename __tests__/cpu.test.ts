@@ -60,7 +60,7 @@ describe('Instructions', () => {
     expect(cpu.getRegister('r1')).toBe(0x1234)
   })
   it('should execute MOV_LIT_MEM instruction correctly', () => {
-    memory.setUint16(0x0100, 0x1234)
+    memory.setUint16(0x0100, 0x0020)
 
     const writableBytes = new Uint8Array(memory.ab)
     let i = 0
@@ -202,7 +202,7 @@ describe('Instructions', () => {
     expect(memory.getUint8(0x0200)).toBe(0xc0)
   })
   it('should execute MOV8_REG_PTR_REG instruction correctly', () => {
-    memory.setUint16(0x0100, 0x02)
+    memory.setUint8(0x0100, 0x02)
 
     const writableBytes = new Uint8Array(memory.ab)
     let i = 0
@@ -218,11 +218,13 @@ describe('Instructions', () => {
     writableBytes[i++] = Register.R1
     writableBytes[i++] = Register.R2
 
+    cpu.setDebugMode(true)
     cpu.step()
     cpu.step()
     cpu.step()
+    cpu.setDebugMode(false)
 
-    expect(cpu.getRegister('r2')).toBe(0x02cd)
+    expect(cpu.getRegister('r2')).toBe(0x0002)
   })
   it('should execute MOV8_REG_REG_PTR instruction correctly', () => {
     memory.setUint16(0x0100, 0x02)
@@ -309,18 +311,18 @@ describe('Instructions', () => {
     let i = 0
 
     writableBytes[i++] = I.MOV_LIT_REG.opcode
-    writableBytes[i++] = 0xab
-    writableBytes[i++] = 0xcd
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x03
     writableBytes[i++] = Register.R1
     writableBytes[i++] = I.SUB_REG_LIT.opcode
     writableBytes[i++] = Register.R1
-    writableBytes[i++] = 0x12
-    writableBytes[i++] = 0x34
+    writableBytes[i++] = 0x00
+    writableBytes[i++] = 0x01
 
     cpu.step()
     cpu.step()
 
-    expect(cpu.getRegister('acu')).toBe(0x9999)
+    expect(cpu.getRegister('acu')).toBe(0x0002)
   })
   it('should execute SUB_REG_REG instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.ab)

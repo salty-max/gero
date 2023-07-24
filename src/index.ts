@@ -6,7 +6,6 @@ import {
 import { createRAM } from './vm'
 import { CPU } from './vm/cpu'
 import { MemoryMapper } from './vm/memory-mapper'
-//import { stepDebug } from "./debug"
 
 const MM = new MemoryMapper()
 const cpu = new CPU(MM)

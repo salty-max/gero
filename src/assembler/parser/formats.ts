@@ -3,7 +3,9 @@ import T from './types'
 import { upperOrLowerStr, hexLiteral, register, address } from './common'
 import { bracketExpr } from './expressions'
 
-export const noArgs = (mnemonic: string, type: string) =>
+export type FormatParser = (mnemonic: string, type: string) => P.Parser<any>
+
+const noArgs = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.optionalWhitespace)
@@ -14,7 +16,7 @@ export const noArgs = (mnemonic: string, type: string) =>
     })
   })
 
-export const singleReg = (mnemonic: string, type: string) =>
+const singleReg = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -28,7 +30,7 @@ export const singleReg = (mnemonic: string, type: string) =>
     })
   })
 
-export const singleLit = (mnemonic: string, type: string) =>
+const singleLit = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -42,7 +44,7 @@ export const singleLit = (mnemonic: string, type: string) =>
     })
   })
 
-export const singleAddr = (mnemonic: string, type: string) =>
+const singleAddr = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -56,7 +58,7 @@ export const singleAddr = (mnemonic: string, type: string) =>
     })
   })
 
-export const litReg = (mnemonic: string, type: string) =>
+const litReg = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -76,7 +78,7 @@ export const litReg = (mnemonic: string, type: string) =>
     })
   })
 
-export const regReg = (mnemonic: string, type: string) =>
+const regReg = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -96,7 +98,7 @@ export const regReg = (mnemonic: string, type: string) =>
     })
   })
 
-export const regMem = (mnemonic: string, type: string) =>
+const regMem = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -116,7 +118,7 @@ export const regMem = (mnemonic: string, type: string) =>
     })
   })
 
-export const regLit = (mnemonic: string, type: string) =>
+const regLit = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -136,7 +138,27 @@ export const regLit = (mnemonic: string, type: string) =>
     })
   })
 
-export const memReg = (mnemonic: string, type: string) =>
+const regLit8 = (mnemonic: string, type: string) =>
+  P.coroutine((run) => {
+    run(upperOrLowerStr(mnemonic))
+    run(P.whitespace)
+
+    const reg = run(register)
+
+    run(P.optionalWhitespace)
+    run(P.char(','))
+    run(P.optionalWhitespace)
+
+    const lit = run(P.choice([hexLiteral, bracketExpr]))
+    run(P.optionalWhitespace)
+
+    return T.instructionNode({
+      instruction: type,
+      args: [reg, lit],
+    })
+  })
+
+const memReg = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -157,7 +179,7 @@ export const memReg = (mnemonic: string, type: string) =>
     })
   })
 
-export const litMem = (mnemonic: string, type: string) =>
+const litMem = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -177,7 +199,27 @@ export const litMem = (mnemonic: string, type: string) =>
     })
   })
 
-export const regPtrReg = (mnemonic: string, type: string) =>
+const litMem8 = (mnemonic: string, type: string) =>
+  P.coroutine((run) => {
+    run(upperOrLowerStr(mnemonic))
+    run(P.whitespace)
+
+    const lit = run(P.choice([hexLiteral, bracketExpr]))
+
+    run(P.optionalWhitespace)
+    run(P.char(','))
+    run(P.optionalWhitespace)
+
+    const addr = run(P.choice([address, P.char('&').chain(() => bracketExpr)]))
+    run(P.optionalWhitespace)
+
+    return T.instructionNode({
+      instruction: type,
+      args: [lit, addr],
+    })
+  })
+
+const regPtrReg = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -197,7 +239,7 @@ export const regPtrReg = (mnemonic: string, type: string) =>
     })
   })
 
-export const regRegPtr = (mnemonic: string, type: string) =>
+const regRegPtr = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -217,7 +259,7 @@ export const regRegPtr = (mnemonic: string, type: string) =>
     })
   })
 
-export const litOffReg = (mnemonic: string, type: string) =>
+const litOffReg = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
@@ -242,3 +284,23 @@ export const litOffReg = (mnemonic: string, type: string) =>
       args: [lit, rFrom, rTo],
     })
   })
+
+const F: Record<string, FormatParser> = {
+  noArgs,
+  singleReg,
+  singleLit,
+  singleAddr,
+  litReg,
+  regReg,
+  regMem,
+  regLit,
+  regLit8,
+  memReg,
+  litMem,
+  litMem8,
+  regPtrReg,
+  regRegPtr,
+  litOffReg,
+}
+
+export default F

@@ -1,3 +1,12 @@
+// const hex = (n: number) => n.toString(16).padStart(4, '0')
+// const addr = (n: number) => `&${hex(n)}`
+// const lit = (n: number) => `$${hex(n)}`
+// const negative = (n: number) => lit((~n & 0xffff) + 1)
+
+/* prettier-ignore */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export default ({ frog, input }: { frog: number; input: number }) =>
+  `
 constant frog = $2020
 constant input = $2620
 
@@ -7,9 +16,7 @@ check_up_pressed:
   mov8 &[!input], acu
   jeq $00, &[!check_down_pressed]
   mov &[!frog + $02], r1
-  mov $04, r8
-  neg r8
-  add r8, r1
+  add $04, r1
   mov acu, &[!frog + $02]
 
 check_down_pressed:
@@ -18,24 +25,8 @@ check_down_pressed:
   mov &[!frog + $02], r1
   add $04, r1
   mov acu, &[!frog + $02]
-  
 check_left_pressed:
-  mov8 &[!input + $02], acu
-  jeq $00, &[!check_right_pressed]
-  mov &[!frog], r1
-  mov $04, r8
-  neg r8
-  add r8, r1
-  mov acu, &[!frog]
-
 check_right_pressed:
-  mov8 &[!input + $03], acu
-  jeq $00, &[!check_input_end]
-  mov &[!frog], r1
-  add $04, r1
-  mov acu, &[!frog]
-
-check_input_end:
 
 
 end_of_game_logic:
@@ -58,3 +49,4 @@ after_frame_2:
   rti
 
 data8 hasEnded = { $00 }
+`.trim()

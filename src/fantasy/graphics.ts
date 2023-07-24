@@ -1,33 +1,37 @@
-// Import colours from external module
-import { colours } from './colours'
-import { PIXELS_PER_TILE, SCALE_FACTOR, SCREEN_H, SCREEN_W } from './config'
+import { Colour, colours } from './colours'
+import {
+  PIXELS_PER_TILE,
+  SCALE_FACTOR,
+  TILE_HEIGHT,
+  TILE_WIDTH,
+} from './config'
 
-// Display class handles drawing on a specific canvas
-export class Display {
-  private _ctx: CanvasRenderingContext2D // 2D rendering context of the canvas
+const w = TILE_WIDTH * PIXELS_PER_TILE * SCALE_FACTOR
+const h = TILE_HEIGHT * PIXELS_PER_TILE * SCALE_FACTOR
 
-  constructor(canvas: HTMLCanvasElement) {
-    // Grab 2D context of the canvas
-    const ctx = canvas.getContext('2d')
-    // If we can't get the context, throw an error
-    if (!ctx) throw new Error('Could not get 2D context')
-    // If we got the context, store it in this object
-    this._ctx = ctx
+const canvas = <HTMLCanvasElement>document.getElementById('screen')
+canvas.width = w
+canvas.height = h
+
+export class Tile {
+  private canvas: HTMLCanvasElement
+  private ctx: CanvasRenderingContext2D
+
+  constructor(private tileData: Uint8Array) {
+    this.canvas = document.createElement('canvas')
+    this.ctx = this.canvas.getContext('2d')!
+    this.canvas.width = PIXELS_PER_TILE * SCALE_FACTOR
+    this.canvas.height = PIXELS_PER_TILE * SCALE_FACTOR
+
+    this.drawTile(0, 0, tileData)
   }
 
-  get ctx(): CanvasRenderingContext2D {
-    return this._ctx
+  private setFill([r, g, b, a]: Colour) {
+    this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`
   }
 
-  // Set the fill colour for the context
-  fill = ([r, g, b, a]: number[]): void => {
-    this.ctx.fillStyle = `rgba(${r},${g},${b},${a})`
-  }
-
-  // Draw a pixel on the context
-  drawPixel = (x: number, y: number, c: number[]): void => {
-    this.fill(c) // Set fill colour
-    // Draw the rectangle (which is a pixel here due to scale)
+  private drawPixel(x: number, y: number, c: Colour) {
+    this.setFill(c)
     this.ctx.fillRect(
       x * SCALE_FACTOR,
       y * SCALE_FACTOR,
@@ -36,70 +40,51 @@ export class Display {
     )
   }
 
-  // Draw a tile on the context
-  drawTile = (x: number, y: number, tileData: Uint8Array): void => {
-    // Iterate through each pixel in the tile
-    for (let oy = 0; oy < 8; oy++) {
-      for (let ox = 0; ox < 8; ox += 2) {
-        // Calculate the index for the colour data
+  private drawTile(x: number, y: number, tileData: Uint8Array) {
+    for (let oy = 0; oy < PIXELS_PER_TILE; oy++) {
+      for (let ox = 0; ox < PIXELS_PER_TILE; ox += 2) {
         const index = (oy * PIXELS_PER_TILE + ox) / 2
         const byte = tileData[index]
 
-        // Extract the two colours for each pixel in the byte
         const c1 = colours[byte >> 4]
         const c2 = colours[byte & 0xf]
 
-        // Draw each pixel on the context
         this.drawPixel(x + ox, y + oy, c1)
         this.drawPixel(x + ox + 1, y + oy, c2)
       }
     }
   }
-}
 
-// Tile class represents a tile, which is essentially a mini canvas
-export class Tile {
-  canvas: HTMLCanvasElement
-
-  constructor(data: Uint8Array) {
-    // Create a new canvas for this tile
-    this.canvas = document.createElement('canvas')
-    this.canvas.width = PIXELS_PER_TILE * SCALE_FACTOR
-    this.canvas.height = PIXELS_PER_TILE * SCALE_FACTOR
-    const display = new Display(this.canvas)
-
-    // Draw the tile data onto the canvas
-    display.drawTile(0, 0, data)
+  get TileCanvas() {
+    return this.canvas
   }
 }
 
-// Renderer class takes care of drawing tiles onto the main screen
 export class Renderer {
-  display: Display
+  private ctx: CanvasRenderingContext2D
 
-  constructor(display: Display) {
-    this.display = display
+  constructor(canvas: HTMLCanvasElement) {
+    this.ctx = canvas.getContext('2d')!
   }
 
-  // Draw a tile onto the main screen at a grid aligned position
-  drawGridAlignedTile(x: number, y: number, tile: Tile) {
-    this.display.ctx.drawImage(
-      tile.canvas,
-      x * PIXELS_PER_TILE * SCALE_FACTOR,
-      y * PIXELS_PER_TILE * SCALE_FACTOR
+  private setFill([r, g, b, a]: Colour) {
+    this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`
+  }
+
+  drawGridAlignedTile(tileX: number, tileY: number, tile: Tile) {
+    this.ctx.drawImage(
+      tile.TileCanvas,
+      tileX * PIXELS_PER_TILE * SCALE_FACTOR,
+      tileY * PIXELS_PER_TILE * SCALE_FACTOR
     )
   }
 
-  // Draw a tile onto the main screen at a pixel aligned position
   drawPixelAlignedTile(x: number, y: number, tile: Tile) {
-    this.display.ctx.drawImage(tile.canvas, x * SCALE_FACTOR, y * SCALE_FACTOR)
+    this.ctx.drawImage(tile.TileCanvas, x * SCALE_FACTOR, y * SCALE_FACTOR)
   }
 
-  // Clear the main screen
   clear() {
-    // Fill the screen with the first colour
-    this.display.fill(colours[0])
-    // Draw a rectangle covering the entire canvas
-    this.display.ctx.fillRect(0, 0, SCREEN_W, SCREEN_H)
+    this.setFill([colours[0][0], colours[0][1], colours[0][2], 1])
+    this.ctx.fillRect(0, 0, w, h)
   }
 }

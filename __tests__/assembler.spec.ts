@@ -106,21 +106,21 @@ describe('instructions', () => {
     expect(machineCodeAsHex(code.machineCode)).toBe('0x1C 0x02 0x03')
   })
 
-  it('should parse sub_LIT_REG correctly', () => {
+  it('should parse SUB_LIT_REG correctly', () => {
     const input = 'sub $02, r1'
     const code = assembleString(input)
 
     expect(machineCodeAsHex(code.machineCode)).toBe('0x1D 0x00 0x02 0x02')
   })
 
-  it('should parse sub_REG_LIT correctly', () => {
+  it('should parse SUB_REG_LIT correctly', () => {
     const input = 'sub r1, $02'
     const code = assembleString(input)
 
     expect(machineCodeAsHex(code.machineCode)).toBe('0x1E 0x02 0x00 0x02')
   })
 
-  it('should parse sub_REG_REG correctly', () => {
+  it('should parse SUB_REG_REG correctly', () => {
     const input = 'sub r1, r2'
     const code = assembleString(input)
 
@@ -438,7 +438,7 @@ describe('program', () => {
   it('should correctly parse an entire program', () => {
     const exampleProgram = [
       'start:',
-      ' mov $0A, &0050',
+      ' mov [$0A + ($01 + $01)], &0050',
       'loop:',
       ' mov &0050, acu',
       ' dec acu',
@@ -453,7 +453,7 @@ describe('program', () => {
     const code = assembleString(exampleProgram)
 
     expect(machineCodeAsHex(code.machineCode)).toBe(
-      '0x14 0x00 0x0A 0x00 0x50 0x13 0x00 0x50 0x01 0x36 0x01 0x12 0x01 0x00 0x50 0x35 0x03 0x35 0x03 0x35 0x03 0x41 0x00 0x00 0x00 0x05 0xFF'
+      '0x14 0x00 0x0C 0x00 0x50 0x13 0x00 0x50 0x01 0x36 0x01 0x12 0x01 0x00 0x50 0x35 0x03 0x35 0x03 0x35 0x03 0x41 0x00 0x00 0x00 0x05 0xFF'
     )
   })
 })
