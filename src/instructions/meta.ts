@@ -56,6 +56,9 @@
  * - JLE_LIT:           0x47, Jump if Lesser Than Or Equal (Literal)
  * - JGE_REG:           0x48, Jump if Greater Than Or Equal (Register)
  * - JGE_LIT:           0x49, Jump if Greater Than  Or Equal(Literal)
+ * Jump instructions
+ * - JGE_LIT:           0x3A, Jump at Literal Address
+ * - JGE_REG:           0x3B, Jump at Literal Address
  * Stack instructions
  * - PSH_LIT:           0x18, Push Literal
  * - PSH_REG:           0x19, Push Register
@@ -449,6 +452,20 @@ export const meta: Array<IMeta> = [
     type: instructionTypes.litMem,
     size: instructionSizes.litMem,
     mnemonic: 'jge',
+  },
+  {
+    instruction: 'JMP_LIT',
+    opcode: 0x3a,
+    type: instructionTypes.singleAddr,
+    size: instructionSizes.singleAddr,
+    mnemonic: 'jmp',
+  },
+  {
+    instruction: 'JMP_REG',
+    opcode: 0x3b,
+    type: instructionTypes.singleReg,
+    size: instructionSizes.singleReg,
+    mnemonic: 'jmp',
   },
   {
     instruction: 'PSH_LIT',

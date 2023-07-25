@@ -145,9 +145,11 @@ export class CPU {
    * @param {number} [n=8] - Number of bytes to display.
    */
   viewMemoryAt(address: number, n = 8) {
-    const nextNBytes = Array.from({ length: n }, (_, i) => {
-      return this.memory.getUint8(address + i)
-    }).map((v) => `0x${v.toString(16).padStart(2, '0')}`)
+    // 0x0f01: 0x04 0x05 0xA3 0xFE 0x13 0x0D 0x44 0x0F ...
+    const nextNBytes = Array.from({ length: n }, (_, i) =>
+      this.memory.getUint8(address + i)
+    ).map((v) => `0x${v.toString(16).padStart(2, '0')}`)
+
     console.log(
       `memory @ 0x${address.toString(16).padStart(4, '0')}: ${nextNBytes.join(
         ' '
@@ -206,11 +208,13 @@ export class CPU {
    * @private
    * @returns {number} - The fetched 16-bit instruction or data word.
    */
-  private fetch16(): number {
+  private fetch16(noIncrement = false): number {
     const nextInstructionAddress = this.getRegister('ip')
     const instruction = this.memory.getUint16(nextInstructionAddress)
 
-    this.setRegister('ip', nextInstructionAddress + 2)
+    if (noIncrement === false) {
+      this.setRegister('ip', nextInstructionAddress + 2)
+    }
 
     return instruction
   }
@@ -342,7 +346,7 @@ export class CPU {
    */
   private execute(instruction: number): boolean | undefined {
     if (this.isDebugMode) {
-      console.log(opcodeToName(instruction))
+      console.log('Current: ' + opcodeToName(instruction))
     }
 
     try {
@@ -1091,6 +1095,27 @@ export class CPU {
           return
         }
         /**
+         * Jump Literal (JMP_LIT) instruction.
+         * Fetches a memory address from the instruction stream,
+         * and then sets the instruction pointer (ip) register to the fetched memory address,
+         */
+        case I.JMP_LIT.opcode: {
+          const address = this.fetch16()
+          this.setRegister('ip', address)
+          return
+        }
+        /**
+         * Jump Literal (JMP_LIT) instruction.
+         * Fetches a memory address from the instruction stream,
+         * and then sets the instruction pointer (ip) register to the fetched memory address,
+         */
+        case I.JMP_REG.opcode: {
+          const reg = this.fetchRegisterIndex()
+          const addr = this.registers.getUint16(reg)
+          this.setRegister('ip', addr)
+          return
+        }
+        /**
          * Push Literal (PSH_LIT) instruction.
          * Fetches a literal 16-bit value from the instruction stream,
          * and then pushes it onto the stack.
@@ -1184,6 +1209,7 @@ export class CPU {
          * Triggers a breakpoint.
          */
         case I.BRK.opcode: {
+          this.debug()
           // eslint-disable-next-line no-debugger
           debugger
           return
@@ -1196,12 +1222,16 @@ export class CPU {
           return true
       }
     } catch (err) {
-      console.error('crash', err)
-      console.error(`ip: ${this.getRegister('ip').toString(16)}`)
       const ins = Object.values(instructions).find(
         (i) => i.opcode === instruction
       )
-      console.error(`instruction: ${ins?.instruction}`)
+      console.group()
+      console.error('Crash', err)
+      console.error(`IP: 0x${this.getRegister('ip').toString(16)}`)
+      console.error(`Instruction: ${ins?.instruction}`)
+      this.viewMemoryAt(this.getRegister('ip'))
+      this.debug()
+      console.groupEnd()
       // eslint-disable-next-line no-debugger
       debugger
     }

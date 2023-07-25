@@ -1,4 +1,5 @@
 constant frog = $2020
+constant cars = $2030
 constant input = $2620
 
 start:
@@ -37,17 +38,48 @@ check_right_pressed:
 
 check_input_end:
 
+update_cars:
+  ;; load cars offset into the acu
+  mov8 &[!cars_offset], acu
+  jeq $20, &[!end_of_update_cars]
+  ;; write the next car offset into memory
+  mov acu, r5
+  add $10, acu
+  movl acu, &[!cars_offset]
+  mov r5, acu
+  ;; calculate address of current car
+  add [!cars], acu
+
+  ;; place current car address to r5
+  mov acu, r5
+  ;; load x position to r1
+  mov &acu, r1
+
+  ;; calculate the address of the vx property
+  add $09, r5
+  ;; place vx into acu
+  mov &acu, acu
+  ;; add vx to x, place in acu
+  add acu, r1
+
+  ;; move the new x value to the car
+  mov acu, &r5
+  ;; jump back to the start of the loop
+  mov [!update_cars], ip
+
+end_of_update_cars:
+  mov $00, &[!cars_offset]
 
 end_of_game_logic:
-  mov8 $01, &[!hasEnded]
+  mov8 $01, &[!has_ended]
 end_of_game_logic_loop:
   mov [!end_of_game_logic_loop], ip
 
 after_frame:
   psh acu
-  mov8 &[!hasEnded], acu
+  mov8 &[!has_ended], acu
   jeq $00, &[!after_frame_2]
-  mov8 $00, &[!hasEnded]
+  mov8 $00, &[!has_ended]
   pop acu
   pop r8
   psh [!start]
@@ -57,4 +89,5 @@ after_frame_2:
   pop acu
   rti
 
-data8 hasEnded = { $00 }
+data8 has_ended = { $00 }
+data8 cars_offset = { $00 }

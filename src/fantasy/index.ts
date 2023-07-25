@@ -98,6 +98,16 @@ class Game {
     this.MM.setUint16(frog + 2, 13 * PIXELS_PER_TILE)
     this.MM.setUint8(frog + 4, 0xb)
 
+    const cars = frog + SPRITE_SIZE
+    this.MM.setUint16(cars + 0, 0)
+    this.MM.setUint16(cars + 2, 11 * PIXELS_PER_TILE)
+    this.MM.setUint8(cars + 4, 0x9)
+    this.MM.setUint16(cars + 9, 2)
+    this.MM.setUint16(cars + SPRITE_SIZE + 0, 29 * PIXELS_PER_TILE)
+    this.MM.setUint16(cars + SPRITE_SIZE + 2, 9 * PIXELS_PER_TILE)
+    this.MM.setUint8(cars + SPRITE_SIZE + 4, 0x9)
+    this.MM.setUint16(cars + SPRITE_SIZE + 9, (~2 & 0xffff) + 1)
+
     for (let i = 0; i < TILE_MEMORY_SIZE; i += TILE_SIZE) {
       this.tileCache.push(new Tile(this.tileMemory.slice(i, i + TILE_SIZE)))
     }

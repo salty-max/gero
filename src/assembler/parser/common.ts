@@ -3,15 +3,21 @@ import { REGISTER_NAMES } from '../../util'
 import { mapJoin } from './util'
 import T from './types'
 
+export const bytesToString = (bytes: number[]) =>
+  bytes.map((b) => String.fromCharCode(b)).join('')
+
 const upperOrLowerStr = (s: string) =>
   P.choice([P.str(s.toUpperCase()), P.str(s.toLowerCase())])
 
-const optionalWhitespaceSurrounded = P.between(
-  P.optionalWhitespace,
-  P.optionalWhitespace
-)
+const optionalWhitespaceSurrounded = P.between<
+  string | null,
+  string,
+  string | null
+>(P.optionalWhitespace, P.optionalWhitespace)
 
-const commaSeparated = P.sepBy(optionalWhitespaceSurrounded(P.char(',')))
+const commaSeparated = P.sepBy<string, any, string>(
+  optionalWhitespaceSurrounded(P.char(','))
+)
 
 const register = P.choice(REGISTER_NAMES.map(upperOrLowerStr)).map(
   T.registerNode

@@ -30,7 +30,7 @@ export const INPUT_SIZE = 0x8 // (8 bytes)
 export const RAM2_SIZE = 0x10000 - TILE_MEMORY_SIZE - RAM1_SIZE - INPUT_SIZE // 0xd9d8 (55768 bytes)
 
 // Set the target frames per second and the time allowed for each frame
-export const FPS_TARGET = 60
+export const FPS_TARGET = 30
 export const TIME_PER_FRAME_MS = 1000 / FPS_TARGET
 // Define the number of CPU cycles to execute per animation frame
 export const CYCLES_PER_ANIMATION_FRAME = 200

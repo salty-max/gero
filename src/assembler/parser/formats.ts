@@ -34,7 +34,6 @@ const singleLit = (mnemonic: string, type: string) =>
   P.coroutine((run) => {
     run(upperOrLowerStr(mnemonic))
     run(P.whitespace)
-
     const lit = run(P.choice([hexLiteral, bracketExpr]))
     run(P.optionalWhitespace)
 

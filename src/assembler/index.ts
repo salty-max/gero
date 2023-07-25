@@ -24,31 +24,9 @@ const processModule = (module: string, loc = 0): Program => {
   const output = parser.run(module)
 
   if (output.isError) {
+    console.log(module.slice(output.index, output.index + 100))
     throw new Error(output.error)
   }
-
-  const dissassembly = output.result.map((node: Node) => {
-    if (node.type === 'INSTRUCTION') {
-      return [
-        0,
-        '\t' +
-          node.value.instruction +
-          ' ' +
-          node.value.args.map((node: Node) => node.value).join(', '),
-        node,
-      ]
-    }
-    if (node.type === 'LABEL') {
-      return [0, node.type + ' ' + node.value, node]
-    }
-    if (node.type === 'CONSTANT') {
-      return [0, node.type + ' ' + node.value.name, node]
-    }
-    if (node.type === 'DATA') {
-      return [0, node.type + ' ' + node.value.name, node]
-    }
-    return null
-  })
 
   const machineCode: Array<number> = []
   const symbols: Record<string, number> = {}
@@ -141,6 +119,9 @@ const processModule = (module: string, loc = 0): Program => {
         }
         break
       }
+      case 'COMMENT': {
+        break
+      }
       default: {
         // Look up the metadata for each instruction
         const metadata = instructions[node.value.instruction]
@@ -151,7 +132,7 @@ const processModule = (module: string, loc = 0): Program => {
     }
   })
 
-  const getNodeValue = (node: Node) => {
+  const getNodeValue = (node: Node): any => {
     // Determine the value of the literal based on its type (variable or immediate)
     switch (node.type) {
       case 'VARIABLE':
@@ -214,6 +195,48 @@ const processModule = (module: string, loc = 0): Program => {
     }
   }
 
+  const dissassembly = output.result.map((node: Node) => {
+    if (node.type === 'INSTRUCTION') {
+      return [
+        0,
+        '\t' +
+          node.value.instruction +
+          ' ' +
+          node.value.args
+            .map((node: Node) => {
+              if (node.type === 'BINARY_OPERATION') {
+                const a: string = getNodeValue(node.value.a)
+                const b: string = getNodeValue(node.value.b)
+                switch (node.value.op.type) {
+                  case 'OP_PLUS':
+                    return ((parseInt(a) + parseInt(b)) & 0xffff).toString(16)
+                  case 'OP_MINUS':
+                    return ((parseInt(a) + parseInt(b)) & 0xffff).toString(16)
+                  case 'OP_MULTIPLY':
+                    return ((parseInt(a) + parseInt(b)) & 0xffff).toString(16)
+                  default:
+                    return NaN
+                }
+              }
+
+              return node.value
+            })
+            .join(', '),
+        node,
+      ]
+    }
+    if (node.type === 'LABEL') {
+      return [0, node.type + ' ' + node.value, node]
+    }
+    if (node.type === 'CONSTANT') {
+      return [0, node.type + ' ' + node.value.name, node]
+    }
+    if (node.type === 'DATA') {
+      return [0, node.type + node.value.size + ' ' + node.value.name, node]
+    }
+    return null
+  })
+
   const encodeLitOrMem = (lit: Node) => {
     const hexVal = getNodeValue(lit)
     // Split the value into two bytes (high and low byte) and push them to the machineCode array
@@ -264,6 +287,12 @@ const processModule = (module: string, loc = 0): Program => {
       disassemblyItem[0] = symbols[(disassemblyItem[2] as Node).value]
     }
 
+    if (node.type === 'CONSTANT') {
+      const disassemblyItem = dissassembly[i] as (string | number | Node)[]
+
+      if (disassemblyItem === null) return
+      disassemblyItem[0] = symbols[(disassemblyItem[2] as Node).value.name]
+    }
     if (node.type === 'CONSTANT') {
       const disassemblyItem = dissassembly[i] as (string | number | Node)[]
 
@@ -348,7 +377,6 @@ const processModule = (module: string, loc = 0): Program => {
     }
   })
 
-  //console.log(dissassembly.map((d) => d))
   console.log(
     dissassembly
       .map((d) => {
