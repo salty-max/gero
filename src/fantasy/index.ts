@@ -86,49 +86,106 @@ class Game {
       0x10, 0x00, 0x00, 0x01,
       0x11, 0x11, 0x11, 0x11,
     );
+
+    // Frog
+    /* prettier-ignore */
+    tiles.push(
+      0xbb, 0xbb, 0x00, 0x00,
+      0x00, 0xb7, 0xb0, 0x00,
+      0xbb, 0xbb, 0xbb, 0x00,
+      0x00, 0x0b, 0xbb, 0x00,
+      0x00, 0xbb, 0xbb, 0x00,
+      0x0b, 0x0b, 0xbb, 0xb0,
+      0x00, 0x0b, 0xb0, 0xb0,
+      0x0b, 0xbb, 0x00, 0xbb
+    )
+
+    // Frog hurt
+    /* prettier-ignore */
+    tiles.push(
+      0x88, 0x88, 0x00, 0x00,
+      0x00, 0x87, 0x80, 0x00,
+      0x88, 0x88, 0x88, 0x00,
+      0x00, 0x08, 0x88, 0x00,
+      0x00, 0x88, 0x88, 0x00,
+      0x08, 0x08, 0x88, 0x80,
+      0x00, 0x08, 0x80, 0x80,
+      0x08, 0x88, 0x00, 0x88
+    )
+
+    // Elephant
+    /* prettier-ignore */
+    tiles.push(
+      0x00, 0x00, 0x66, 0x00,
+      0x00, 0x66, 0x66, 0x60,
+      0x06, 0x66, 0x66, 0x06,
+      0x66, 0x66, 0x66, 0x66,
+      0x66, 0x66, 0x67, 0x76,
+      0x66, 0x66, 0x66, 0x06,
+      0x06, 0x60, 0x66, 0x06,
+      0x06, 0x70, 0x67, 0x06
+    );
+
+    // Elephant flipped
+    /* prettier-ignore */
+    tiles.push(
+      0x00, 0x66, 0x00, 0x00,
+      0x06, 0x66, 0x66, 0x00,
+      0x60, 0x66, 0x66, 0x60,
+      0x66, 0x66, 0x66, 0x66,
+      0x67, 0x76, 0x66, 0x66,
+      0x60, 0x66, 0x66, 0x66,
+      0x60, 0x66, 0x06, 0x60,
+      0x60, 0x76, 0x07, 0x60
+    );
     this.tileMemory.load(tiles)
 
-    // for (let y = 0; y < TILES_Y; y++) {
-    //   for (let x = 0; x < TILES_X; x++) {
-    //     if ([4, 5].includes(y)) {
-    //       this.MM.setUint8(BACKGROUND_OFFSET + x + y * TILES_X, 0x0c)
-    //     } else {
-    //       this.MM.setUint8(BACKGROUND_OFFSET + x + y * TILES_X, 0x03)
-    //     }
-    //   }
-    // }
-
-    for (let i = 0; i < TILES_X * TILES_Y; i++) {
-      this.MM.setUint8(BACKGROUND_OFFSET + i, 0x10)
+    for (let y = 0; y < TILES_Y; y++) {
+      for (let x = 0; x < TILES_X; x++) {
+        if ([4, 5].includes(y)) {
+          this.MM.setUint8(BACKGROUND_OFFSET + x + y * TILES_X, 0x0c)
+        } else {
+          this.MM.setUint8(BACKGROUND_OFFSET + x + y * TILES_X, 0x03)
+        }
+      }
     }
 
+    // for (let i = 0; i < TILES_X * TILES_Y; i++) {
+    //   this.MM.setUint8(BACKGROUND_OFFSET + i, 0x10)
+    // }
+
     const frog = SPRITE_TABLE_OFFSET
-    this.MM.setUint16(frog + 0, 14 * PIXELS_PER_TILE)
-    this.MM.setUint16(frog + 2, 13 * PIXELS_PER_TILE)
-    this.MM.setUint8(frog + 4, 0xb)
+    this.MM.setUint16(frog + 0, 7 * PIXELS_PER_TILE + 4)
+    this.MM.setUint16(frog + 2, 15 * PIXELS_PER_TILE - 4)
+    this.MM.setUint8(frog + 4, 0x11)
 
-    const cars = frog + SPRITE_SIZE
+    const elephants = frog + SPRITE_SIZE
 
-    const makeCar = (
+    const makeElephant = (
       x: number,
       y: number,
-      c: number,
       vx: number,
       index = 0,
       flip = false
     ) => {
-      this.MM.setUint16(cars + SPRITE_SIZE * index + 0, x * PIXELS_PER_TILE)
-      this.MM.setUint16(cars + SPRITE_SIZE * index + 2, y * PIXELS_PER_TILE)
-      this.MM.setUint8(cars + SPRITE_SIZE * index + 4, c)
       this.MM.setUint16(
-        cars + SPRITE_SIZE * index + 9,
+        elephants + SPRITE_SIZE * index + 0,
+        x * PIXELS_PER_TILE
+      )
+      this.MM.setUint16(
+        elephants + SPRITE_SIZE * index + 2,
+        y * PIXELS_PER_TILE
+      )
+      this.MM.setUint8(elephants + SPRITE_SIZE * index + 4, flip ? 0x14 : 0x13)
+      this.MM.setUint16(
+        elephants + SPRITE_SIZE * index + 9,
         flip ? (~vx & 0xffff) + 1 : vx
       )
     }
 
-    makeCar(4, 11, 0x9, 3)
-    makeCar(29, 9, 0x9, 3, 1, true)
-    //makeCar(0, 7, 0x9, 3, 2)
+    makeElephant(4, 12, 3)
+    makeElephant(15, 10, 3, 1, true)
+    makeElephant(8, 8, 3, 2)
 
     for (let i = 0; i < TILE_MEMORY_SIZE; i += TILE_SIZE) {
       this.tileCache.push(new Tile(this.tileMemory.slice(i, i + TILE_SIZE)))

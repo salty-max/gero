@@ -1,7 +1,9 @@
 // Define constant values for tile size, pixel density and scaling
-export const TILE_WIDTH = 30
+//export const TILE_WIDTH = 30
+export const TILE_WIDTH = 16
 //const TILE_HEIGHT = Math.round((9 / 16) * TILE_WIDTH)
-export const TILE_HEIGHT = 14
+//export const TILE_HEIGHT = 14
+export const TILE_HEIGHT = 16
 export const PIXELS_PER_TILE = 8
 export const SCALE_FACTOR = 6
 

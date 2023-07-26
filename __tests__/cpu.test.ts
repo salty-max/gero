@@ -546,6 +546,7 @@ describe('Instructions', () => {
     writableBytes[i++] = Register.R1
     writableBytes[i++] = I.OR_REG_LIT.opcode
     writableBytes[i++] = Register.R1
+    writableBytes[i++] = 0x00
     writableBytes[i++] = 0xff
 
     cpu.step()
@@ -585,6 +586,7 @@ describe('Instructions', () => {
     writableBytes[i++] = Register.R1
     writableBytes[i++] = I.XOR_REG_LIT.opcode
     writableBytes[i++] = Register.R1
+    writableBytes[i++] = 0x00
     writableBytes[i++] = 0xff
 
     cpu.step()

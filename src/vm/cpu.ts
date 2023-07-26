@@ -798,7 +798,7 @@ export class CPU {
          */
         case I.OR_REG_LIT.opcode: {
           const r = this.fetchRegisterIndex()
-          const literal = this.fetch()
+          const literal = this.fetch16()
           const rValue = this.registers.getUint16(r)
 
           const res = rValue | literal
@@ -829,7 +829,7 @@ export class CPU {
          */
         case I.XOR_REG_LIT.opcode: {
           const r = this.fetchRegisterIndex()
-          const literal = this.fetch()
+          const literal = this.fetch16()
           const rValue = this.registers.getUint16(r)
 
           const res = rValue ^ literal

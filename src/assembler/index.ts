@@ -187,7 +187,9 @@ const processModule = (module: string, loc = 0): Program => {
         }
 
         if (node.value.symbol.type === 'ADDRESS') {
-          return node.value.symbol.value + member.offset
+          return (
+            (parseInt(node.value.symbol.value, 16) & 0xffff) + member.offset
+          )
         }
 
         if (!(node.value.symbol in symbols)) {
