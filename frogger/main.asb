@@ -1,0 +1,258 @@
+constant SpriteMemAddr = $2020
+constant FrogAddr = $2020
+constant ElephantsAddr = $2030
+constant InputAddr = $2620
+constant ScreenBoundX = $00f0
+constant FrogBox = $4000
+constant OtherBox = $4008
+
+struct Sprite {
+  x: $02,
+  y: $02,
+  tile_index: $01,
+  animation_offset: $01,
+}
+
+struct Frog {
+  x: $02,
+  y: $02,
+  tile_index: $01
+}
+
+struct Elephant {
+  x: $02,
+  y: $02,
+  tile_index: $01,
+  animation_offset: $01,
+  ignore_0: $03,
+  vx: $02
+}
+
+struct Input {
+  up: $01, down: $01,
+  left: $01, right: $01,
+  a: $01, b: $01,
+  start: $01, select: $01
+}
+
+struct Box {
+  x: $02, y: $02,
+  x2: $02, y2: $02
+}
+
+start:
+  mov8 $11, &[<Frog> FrogAddr.tile_index] ;; change the frog tile index to hurt
+
+check_up_pressed:
+  mov8 &[<Input> InputAddr.up], acu
+  jeq $00, &[!check_down_pressed]
+  mov &[<Frog> FrogAddr.y], r1
+  mov $04, r8
+  neg r8
+  add r8, r1
+  mov acu, &[<Frog> FrogAddr.y]
+
+check_down_pressed:
+  mov8 &[<Input> InputAddr.down], acu
+  jeq $00, &[!check_left_pressed]
+  mov &[<Frog> FrogAddr.y], r1
+  add $04, r1
+  mov acu, &[<Frog> FrogAddr.y]
+  
+check_left_pressed:
+  mov8 &[<Input> InputAddr.left], acu
+  jeq $00, &[!check_right_pressed]
+  mov &[<Frog> FrogAddr.x], r1
+  mov $04, r8
+  neg r8
+  add r8, r1
+  mov acu, &[<Frog> FrogAddr.x]
+
+check_right_pressed:
+  mov8 &[<Input> InputAddr.right], acu
+  jeq $00, &[!check_input_end]
+  mov &[<Frog> FrogAddr.x], r1
+  add $04, r1
+  mov acu, &[<Frog> FrogAddr.x]
+
+check_input_end:
+
+update_elephants:
+  mov8 &[!elephants_offset], acu ;; load elephants offset into the acu
+  jeq $30, &[!end_of_update_elephants] ;; if the offset is 48, break
+  ;; write the next elephant offset into memory
+  mov acu, r5 ;; store current offset into r5
+  add $10, acu ;; add 16 to the offset
+  movl acu, &[!elephants_offset] ;; store the new offset in data8
+  mov r5, acu ;; move the current offset back into the acu
+  mov acu, r4 ;; move the current offset into r7
+  
+  add [!ElephantsAddr], acu ;; calculate address of current elephant
+  
+  mov acu, r5 ;; place current elephant address to r5
+  mov &acu, r1  ;; load x position to r1
+
+  add [<Elephant> &0000.vx], r5 ;; calculate the address of the vx property
+  
+  mov &acu, acu  ;; place vx into acu
+  add acu, r1 ;; add vx to x, place in acu
+  mov acu, &r5 ;; move the new x value to the elephant
+
+start_of_collision_check:
+  psh acu ;; push the elephant address to the stack
+  psh r1 ;; push the x position to the stack
+  mov r4, r1 ;; move the offset into r1
+  psh $00 ;; push 0 to the stack
+  cal [!collision] ;; call the collision routine
+  jne $01, &[!end_of_collision_check] ;; if the collision flag is not set, break
+  ;;mov $08, &[<Frog> FrogAddr.x] ;; move the frog x
+  ;;mov $08, &[<Frog> FrogAddr.y] ;; move the frog y
+  mov8 $12, &[<Frog> FrogAddr.tile_index] ;; change the frog tile index to hurt
+
+
+end_of_collision_check:
+  pop r1 ;; pop the x position
+  pop acu ;; pop the elephant address
+
+negative_bounds_check:
+  mov acu, r6 ;; move elephant x to r6
+  and acu, $8000 ;; check sign of x
+  jne $8000, &[!positive_bounds_check] ;; if x is positive, break
+  mov $80, acu ;; load screen bound into acu
+  mov acu, &r5 ;; move the new x value to the elephant
+  jmp [!update_elephants]
+
+positive_bounds_check:
+  mov r6, acu
+  jgt $80, &[!update_elephants]
+  mov $00, acu
+  mov acu, &r5
+
+car_loop_back:
+  jmp [!update_elephants] ;; loop back to the start of the elephant loop
+
+end_of_update_elephants:
+  mov $00, &[!elephants_offset]
+
+end_of_game_logic:
+  mov8 $01, &[!has_ended]
+end_of_game_logic_loop:
+  jmp [!end_of_game_logic_loop]
+
+collision:
+  ;; frog hitbox
+  ;; x
+  mov &[<Frog> FrogAddr.x], acu
+  mov acu, &[<Box> FrogBox.x]
+  ;; y
+  mov &[<Frog> FrogAddr.y], acu
+  mov acu, &[<Box> FrogBox.y]
+  ;; x2
+  mov &[<Frog> FrogAddr.x], acu
+  add $08, acu
+  mov acu, &[<Box> FrogBox.x2]
+  ;; y2
+  mov &[<Frog> FrogAddr.y], acu
+  add $08, acu
+  mov acu, &[<Box> FrogBox.y2]
+
+  ;; calculate the sprite address
+  mov r1, acu ;; move the sprite index into acu
+  add [!ElephantsAddr], acu ;; add the sprite address to the sprite index
+  mov acu, r2 ;; move the sprite address into r2
+
+  ;; x
+  mov &r2, acu ;; load the sprite x into acu
+  mov acu, &[<Box> OtherBox.x] ;; move the sprite x into the box x
+  ;; y
+  mov r2, acu ;; load the sprite address into acu
+  add [<Elephant> &0000.y], acu ;; add the sprite y offset to the sprite address
+  mov &acu ,acu ;; move the sprite y into acu
+  mov acu, &[<Box> OtherBox.y] ;; move the sprite y into the box y
+  ;; x2
+  mov &r2, acu ;; load the sprite address into acu
+  add $08, acu ;; add sprite width to sprite x
+  mov acu, &[<Box> OtherBox.x2] ;; move the sprite x + width into the box x2
+  ;; y2
+  mov r2, acu ;; load the sprite address into acu
+  add [<Elephant> &0000.y], acu ;; add the sprite y offset to the sprite address
+  mov &acu, acu  ;; move the sprite y into acu
+  add $08, acu ;; add sprite height to sprite y
+  mov acu, &[<Box> OtherBox.y2] ;; move the sprite y + height into the box y2
+
+corner_0:
+  mov &[<Box> FrogBox.x], acu
+  mov &[<Box> OtherBox.x], r1
+  jgt r1, &[!corner_1] ;; f.x >= o.x
+  mov &[<Box> OtherBox.x2], r1
+  jle r1, &[!corner_1] ;; f.x < o.x2
+  mov &[<Box> FrogBox.y], acu
+  mov &[<Box> OtherBox.y], r1
+  jgt r1, &[!corner_1] ;; f.y >= o.y
+  mov &[<Box> OtherBox.y2], r1
+  jle r1, &[!corner_1] ;; f.y < o.y2
+  mov $01, acu ;; set the collision flag
+  ret
+
+corner_1:
+  mov [<Box> FrogBox.x2], acu
+  mov [<Box> OtherBox.x], r1
+  jge r1, &[!corner_2] ;; f.x2 > o.x
+  mov [<Box> OtherBox.x2], r1
+  jlt r1, &[!corner_2] ;; f.x2 <= o.x2
+  mov [<Box> FrogBox.y], acu
+  mov [<Box> OtherBox.y], r1
+  jgt r1, &[!corner_2] ;; f.y >= o.y
+  mov [<Box> OtherBox.y2], r1
+  jle r1, &[!corner_2] ;; f.y < o.y2
+  mov $01, acu ;; set the collision flag
+  ret
+
+corner_2:
+  mov [<Box> FrogBox.x2], acu
+  mov [<Box> OtherBox.x], r1
+  jge r1, &[!corner_3] ;; f.x2 > o.x
+  mov [<Box> OtherBox.x2], r1
+  jlt r1, &[!corner_3] ;; f.x2 <= o.x2
+  mov [<Box> FrogBox.y2], acu
+  mov [<Box> OtherBox.y], r1
+  jgt r1, &[!corner_3] ;; f.y2 >= o.y
+  mov [<Box> OtherBox.y2], r1
+  jle r1, &[!corner_3] ;; f.y2 < o.y2
+  mov $01, acu ;; set the collision flag
+  ret
+
+corner_3:
+  mov &[<Box> FrogBox.x], acu
+  mov &[<Box> OtherBox.x], r1
+  jgt r1, &[!no_collision] ;; f.x >= o.x
+  mov &[<Box> OtherBox.x2], r1
+  jle r1, &[!no_collision] ;; f.x < o.x2
+  mov &[<Box> FrogBox.y2], acu
+  mov &[<Box> OtherBox.y], r1
+  jgt r1, &[!no_collision] ;; f.y2 >= o.y
+  mov &[<Box> OtherBox.y2], r1
+  jle r1, &[!no_collision] ;; f.y2 < o.y2
+  mov $01, acu ;; set the collision flag
+  ret
+
+no_collision:
+  mov $00, acu
+  ret
+
+after_frame:
+  psh acu
+  mov8 &[!has_ended], acu
+  jeq $00, &[!after_frame_2]
+  mov8 $00, &[!has_ended]
+  pop acu
+  pop r8
+  psh [!start]
+  rti
+
+after_frame_2:
+  pop acu
+  rti
+
+data8 has_ended = { $00 }
+data8 elephants_offset = { $00 }

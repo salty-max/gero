@@ -105,6 +105,12 @@ export class MemoryMapper {
 
     this.regions.unshift(region)
 
+    console.log(
+      `Mapping from 0x${start.toString(16)} to 0x${(start + size - 1).toString(
+        16
+      )}`
+    )
+
     return () => {
       this.regions = this.regions.filter((r) => r !== region)
     }
@@ -136,9 +142,20 @@ export class MemoryMapper {
    */
   getUint16(address: number): number {
     const region = this.findRegion(address)
-    // If the region should be remapped, adjust the address
     const finalAddress = region.remap ? address - region.start : address
-    return region.device.getUint16(finalAddress)
+    try {
+      return region.device.getUint16(finalAddress)
+    } catch (ex) {
+      console.error(
+        `Attempted read from address 0x${address.toString(
+          16
+        )} of mapped device (final address=0x${finalAddress.toString(16)})`
+      )
+      console.log(this)
+      // eslint-disable-next-line no-debugger
+      debugger
+      return 0
+    }
   }
 
   /**
@@ -149,9 +166,20 @@ export class MemoryMapper {
    */
   getUint8(address: number): number {
     const region = this.findRegion(address)
-    // If the region should be remapped, adjust the address
     const finalAddress = region.remap ? address - region.start : address
-    return region.device.getUint8(finalAddress)
+    try {
+      return region.device.getUint8(finalAddress)
+    } catch (ex) {
+      console.error(
+        `Attempted read from address 0x${address.toString(
+          16
+        )} of mapped device (final address=0x${finalAddress.toString(16)})`
+      )
+      console.log(this)
+      // eslint-disable-next-line no-debugger
+      debugger
+      return 0
+    }
   }
 
   /**
@@ -162,9 +190,20 @@ export class MemoryMapper {
    */
   setUint16(address: number, value: number) {
     const region = this.findRegion(address)
-    // If the region should be remapped, adjust the address
     const finalAddress = region.remap ? address - region.start : address
-    region.device.setUint16(finalAddress, value)
+    try {
+      return region.device.setUint16(finalAddress, value)
+    } catch (ex) {
+      console.error(
+        `Attempted write to address 0x${address.toString(
+          16
+        )} of mapped device (final address=0x${finalAddress.toString(16)})`
+      )
+      console.log(this)
+      // eslint-disable-next-line no-debugger
+      debugger
+      return 0
+    }
   }
 
   /**
@@ -175,9 +214,20 @@ export class MemoryMapper {
    */
   setUint8(address: number, value: number) {
     const region = this.findRegion(address)
-    // If the region should be remapped, adjust the address
     const finalAddress = region.remap ? address - region.start : address
-    region.device.setUint8(finalAddress, value)
+    try {
+      return region.device.setUint8(finalAddress, value)
+    } catch (ex) {
+      console.error(
+        `Attempted write to address 0x${address.toString(
+          16
+        )} of mapped device (final address=0x${finalAddress.toString(16)})`
+      )
+      console.log(this)
+      // eslint-disable-next-line no-debugger
+      debugger
+      return 0
+    }
   }
 
   load(startAddress: number, data: number[]) {

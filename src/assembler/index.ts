@@ -1,16 +1,18 @@
-import path from 'path'
-
 import parser from './parser'
-import instructions, { InstructionType as I } from '../instructions'
-import { Register } from '../util'
-import { Export, Node, Struct } from './parser/types'
+import instructions, { instructionTypes } from '../instructions'
+import { REGISTER_NAMES } from '../util'
+import { Export, Node, Program, Struct } from './parser/types'
 import { parserResult } from './parser/util'
-import {
-  //ANSI_COLOR_BLUE,
-  ANSI_COLOR_BOLD,
-  ANSI_COLOR_RESET,
-} from '../util/util'
+import { ANSI_COLOR_BOLD, ANSI_COLOR_RESET } from '../util/util'
 //import { topLevelModule } from './parser/module'
+
+const registerMap = REGISTER_NAMES.reduce(
+  (map: Record<string, number>, regName: string, index: number) => {
+    map[regName] = index
+    return map
+  },
+  {}
+)
 
 /**
  * `processModule` parses a module string and returns machine code that can be executed by a virtual machine.
@@ -18,10 +20,11 @@ import {
  * @param loc number
  * @returns A tuple of machine code, symbols, structs, and exports
  */
-const processModule = (module: string, loc = 0) => {
+const processModule = (module: string, loc = 0): Program => {
   const output = parser.run(module)
 
   if (output.isError) {
+    console.log(module.slice(output.index, output.index + 100))
     throw new Error(output.error)
   }
 
@@ -116,6 +119,9 @@ const processModule = (module: string, loc = 0) => {
         }
         break
       }
+      case 'COMMENT': {
+        break
+      }
       default: {
         // Look up the metadata for each instruction
         const metadata = instructions[node.value.instruction]
@@ -126,7 +132,7 @@ const processModule = (module: string, loc = 0) => {
     }
   })
 
-  const getNodeValue = (node: Node) => {
+  const getNodeValue = (node: Node): any => {
     // Determine the value of the literal based on its type (variable or immediate)
     switch (node.type) {
       case 'VARIABLE':
@@ -135,9 +141,37 @@ const processModule = (module: string, loc = 0) => {
           throw new Error(`label '${node.value}' was not resolved`)
         }
         return symbols[node.value]
+      case 'REGISTER':
+        return registerMap[node.value]
       case 'ADDRESS':
       case 'HEX_LITERAL': {
         return parseInt(node.value, 16)
+      }
+      case 'BINARY_OPERATION': {
+        const a: string = getNodeValue(node.value.a)
+        const b: string = getNodeValue(node.value.b)
+        switch (node.value.op.type) {
+          case 'OP_PLUS':
+            return (parseInt(a) + parseInt(b)) & 0xffff
+          case 'OP_MINUS':
+            return (parseInt(a) + parseInt(b)) & 0xffff
+          case 'OP_MULTIPLY':
+            return (parseInt(a) + parseInt(b)) & 0xffff
+          default:
+            throw new Error(`Unsupported operator: ${node.value.op.value}`)
+        }
+      }
+      case 'GROUPED_EXPRESSION': {
+        return node.value.map((node: Node) => {
+          if (
+            node.type === 'OP_PLUS' ||
+            node.type === 'OP_MINUS' ||
+            node.type === 'OP_MULTIPLY'
+          ) {
+            return
+          }
+          return getNodeValue(node)
+        })
       }
       case 'INTERPRET_AS': {
         const struct = structs[node.value.struct]
@@ -152,6 +186,12 @@ const processModule = (module: string, loc = 0) => {
           )
         }
 
+        if (node.value.symbol.type === 'ADDRESS') {
+          return (
+            (parseInt(node.value.symbol.value, 16) & 0xffff) + member.offset
+          )
+        }
+
         if (!(node.value.symbol in symbols)) {
           throw new Error(`symbol '${node.value.symbol}' was not resolved`)
         }
@@ -159,9 +199,51 @@ const processModule = (module: string, loc = 0) => {
         return symbol + member.offset
       }
       default:
-        throw new Error(`Unexpected node type: ${node.type}`)
+        throw new Error(`Unsupported node type: ${node.type}`)
     }
   }
+
+  const dissassembly = output.result.map((node: Node) => {
+    if (node.type === 'INSTRUCTION') {
+      return [
+        0,
+        '\t' +
+          node.value.instruction +
+          ' ' +
+          node.value.args
+            .map((node: Node) => {
+              if (node.type === 'BINARY_OPERATION') {
+                const a: string = getNodeValue(node.value.a)
+                const b: string = getNodeValue(node.value.b)
+                switch (node.value.op.type) {
+                  case 'OP_PLUS':
+                    return ((parseInt(a) + parseInt(b)) & 0xffff).toString(16)
+                  case 'OP_MINUS':
+                    return ((parseInt(a) + parseInt(b)) & 0xffff).toString(16)
+                  case 'OP_MULTIPLY':
+                    return ((parseInt(a) + parseInt(b)) & 0xffff).toString(16)
+                  default:
+                    return NaN
+                }
+              }
+
+              return node.value
+            })
+            .join(', '),
+        node,
+      ]
+    }
+    if (node.type === 'LABEL') {
+      return [0, node.type + ' ' + node.value, node]
+    }
+    if (node.type === 'CONSTANT') {
+      return [0, node.type + ' ' + node.value.name, node]
+    }
+    if (node.type === 'DATA') {
+      return [0, node.type + node.value.size + ' ' + node.value.name, node]
+    }
+    return null
+  })
 
   const encodeLitOrMem = (lit: Node) => {
     const hexVal = getNodeValue(lit)
@@ -178,7 +260,7 @@ const processModule = (module: string, loc = 0) => {
   }
   const encodeReg = (reg: Node) => {
     // Map the register string to its corresponding numeric value and push it to the machineCode array
-    const mappedReg = Register[reg.value.toUpperCase()]
+    const mappedReg = registerMap[reg.value]
     machineCode.push(mappedReg)
   }
   const encodeData8 = (data: Node) => {
@@ -200,17 +282,45 @@ const processModule = (module: string, loc = 0) => {
   }
 
   // Step 2: Encode each instruction and its arguments into machine code
-  parserResult(output).result.forEach((node: Node) => {
+  parserResult(output).result.forEach((node: Node, i: number) => {
+    if (node.type === 'COMMENT') {
+      return
+    }
+
+    if (node.type === 'LABEL') {
+      const disassemblyItem = dissassembly[i] as (string | number | Node)[]
+
+      if (disassemblyItem === null) return
+
+      disassemblyItem[0] = symbols[(disassemblyItem[2] as Node).value]
+    }
+
+    if (node.type === 'CONSTANT') {
+      const disassemblyItem = dissassembly[i] as (string | number | Node)[]
+
+      if (disassemblyItem === null) return
+      disassemblyItem[0] = symbols[(disassemblyItem[2] as Node).value.name]
+    }
+    if (node.type === 'CONSTANT') {
+      const disassemblyItem = dissassembly[i] as (string | number | Node)[]
+
+      if (disassemblyItem === null) return
+      disassemblyItem[0] = symbols[(disassemblyItem[2] as Node).value.name]
+    }
     // Skip symbols
     if (
       node.type === 'LABEL' ||
       node.type === 'CONSTANT' ||
-      node.type === 'STRUCT' ||
-      node.type === 'TOP_LEVEL_MODULE'
+      node.type === 'STRUCT'
     )
       return
 
     if (node.type === 'DATA') {
+      const disassemblyItem = dissassembly[i] as (string | number | Node)[]
+
+      if (disassemblyItem === null) return
+      disassemblyItem[0] = symbols[(disassemblyItem[2] as Node).value.name]
+
       if (node.value.size === 8) {
         encodeData8(node)
       } else {
@@ -225,45 +335,67 @@ const processModule = (module: string, loc = 0) => {
     machineCode.push(metadata.opcode)
 
     // Choose the appropriate encoding method based on the type of instruction
-    if ([I.LIT_REG, I.MEM_REG].includes(metadata.type)) {
+    if (
+      [
+        instructionTypes.litReg,
+        instructionTypes.memReg,
+        instructionTypes.litRegPtr,
+      ].includes(metadata.type)
+    ) {
       encodeLitOrMem(node.value.args[0])
       encodeReg(node.value.args[1])
     }
-    if ([I.REG_LIT, I.REG_MEM].includes(metadata.type)) {
+    if (
+      [instructionTypes.regLit, instructionTypes.regMem].includes(metadata.type)
+    ) {
       encodeReg(node.value.args[0])
       encodeLitOrMem(node.value.args[1])
     }
-    if (I.REG_LIT_8 === metadata.type) {
+    if (instructionTypes.regLit8 === metadata.type) {
       encodeReg(node.value.args[0])
       encodeLit8(node.value.args[1])
     }
-    if ([I.REG_PTR_REG, I.REG_REG_PTR, I.REG_REG].includes(metadata.type)) {
+    if (
+      [
+        instructionTypes.regPtrReg,
+        instructionTypes.regRegPtr,
+        instructionTypes.regReg,
+      ].includes(metadata.type)
+    ) {
       encodeReg(node.value.args[0])
       encodeReg(node.value.args[1])
     }
-    if (I.LIT_MEM === metadata.type) {
+    if (instructionTypes.litMem === metadata.type) {
       encodeLitOrMem(node.value.args[0])
       encodeLitOrMem(node.value.args[1])
     }
-    if (I.LIT_MEM_8 === metadata.type) {
+    if (instructionTypes.litMem8 === metadata.type) {
       encodeLit8(node.value.args[0])
       encodeLitOrMem(node.value.args[1])
     }
-    if (I.LIT_OFF_REG === metadata.type) {
+    if (instructionTypes.litOffReg === metadata.type) {
       encodeLitOrMem(node.value.args[0])
       encodeReg(node.value.args[1])
       encodeReg(node.value.args[2])
     }
-    if (I.SINGLE_REG === metadata.type) {
+    if (instructionTypes.singleReg === metadata.type) {
       encodeReg(node.value.args[0])
     }
-    if (I.SINGLE_LIT === metadata.type) {
+    if (instructionTypes.singleLit === metadata.type) {
       encodeLitOrMem(node.value.args[0])
     }
-    if (I.SINGLE_ADDR === metadata.type) {
+    if (instructionTypes.singleAddr === metadata.type) {
       encodeLitOrMem(node.value.args[0])
     }
   })
+
+  console.log(
+    dissassembly
+      .map((d) => {
+        return !d ? '' : `0x${d[0].toString(16).padStart(4, '0')}: ${d[1]}`
+      })
+      .join('\n')
+  )
 
   return { machineCode, symbols }
 }
@@ -271,16 +403,20 @@ const processModule = (module: string, loc = 0) => {
 /**
  * `assembleFile` parses a main module and all of its imports and returns machine code that can be executed by a virtual machine.
  * @param {string} mainModulePath - The main file path.
- * @returns {Promise<{ machineCode: number[], symbols: Record<string, number>, structs: Record<string, Struct>, exports: Record<string, Export> }>} The resulting machine code, symbols, structs, and exports.
+ * @returns {Promise<Program>} The resulting machine code, symbols, structs, and exports.
  */
-export const assemble = async (mainModulePath: string, offset = 0) => {
-  const cwd = process.cwd()
-  const joinedPath = path.join(cwd, mainModulePath)
-
-  const res = await fetch(joinedPath)
-  const mainFileString = await res.text()
-
-  return processModule(mainFileString, offset)
+export const assemble = async (
+  mainModulePath: string,
+  offset = 0
+): Promise<Program> => {
+  try {
+    const res = await fetch(mainModulePath)
+    const mainFileString = await res.text()
+    return processModule(mainFileString.trim(), offset)
+  } catch (err) {
+    console.error(err)
+    throw new Error(`Failed to assemble module '${mainModulePath}'`)
+  }
 }
 
 /**
@@ -288,7 +424,7 @@ export const assemble = async (mainModulePath: string, offset = 0) => {
  * @param program The program string to be assembled.
  * @returns {Module} The resulting machine code, symbols, structs, and exports.
  */
-export const assembleString = (program: string, offset = 0) =>
+export const assembleString = (program: string, offset = 0): Program =>
   processModule(program, offset)
 
 /**

@@ -26,6 +26,11 @@ export type Module = {
   structs: Record<string, Struct>
 }
 
+export type Program = {
+  machineCode: number[]
+  symbols: Record<string, number>
+}
+
 const instructionNode = asType('INSTRUCTION')
 const registerNode = asType('REGISTER')
 const hexLiteralNode = asType('HEX_LITERAL')
@@ -45,6 +50,7 @@ const dataNode = asType('DATA')
 const constantNode = asType('CONSTANT')
 const structNode = asType('STRUCT')
 const interpretAsNode = asType('INTERPRET_AS')
+const commentNode = asType('COMMENT')
 
 export default {
   instructionNode,
@@ -63,4 +69,5 @@ export default {
   constantNode,
   structNode,
   interpretAsNode,
+  commentNode,
 }

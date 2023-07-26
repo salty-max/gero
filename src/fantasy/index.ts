@@ -1,227 +1,299 @@
-import { assembleString } from '../assembler'
+import { assemble, machineCodeAsHex } from '../assembler'
 import { CPU, MemoryMapper, createRAM, createROM } from '../vm'
-import { SCREEN_H, SCREEN_W, SPRITE_SIZE, TILE_SIZE } from './config'
-import { Display, Renderer, Tile } from './graphics'
+import {
+  BACKGROUND_OFFSET,
+  CODE_OFFSET,
+  CYCLES_PER_ANIMATION_FRAME,
+  FOREGROUND_OFFSET,
+  INPUT_SIZE,
+  INTERRUPT_VECTOR_OFFSET,
+  MAX_SPRITES,
+  PIXELS_PER_TILE,
+  RAM1_SIZE,
+  RAM2_SIZE,
+  SPRITE_SIZE,
+  SPRITE_TABLE_OFFSET,
+  TILES_X,
+  TILES_Y,
+  TILE_MEMORY_SIZE,
+  TILE_SIZE,
+  TIME_PER_FRAME_MS,
+} from './config'
+import { Renderer, Tile } from './graphics'
 
-// Define memory sizes for the different sections of the game memory
-// TILE_MEMORY_SIZE corresponds to the space in memory allocated for the game tiles.
-const TILE_MEMORY_SIZE = 0x2000 // (8192 bytes)
-// RAM1_SIZE is used for the interrupt vector, sprites, background, and foreground
-const RAM1_SIZE = 0x20 + 0x200 + 0x200 + 0x200 // 0x0620 (1538 bytes)
-// INPUT_SIZE represents the memory size allocated for game inputs
-const INPUT_SIZE = 0x8 // (8 bytes)
-// RAM2_SIZE is for global settings, game code and data, and the stack
-const RAM2_SIZE = 0x10000 - TILE_MEMORY_SIZE - RAM1_SIZE - INPUT_SIZE // 0xd9d8 (55768 bytes)
+class Game {
+  private programPath: string
+  private tileMemory = createROM(TILE_MEMORY_SIZE)
+  private RAMSegment1 = createRAM(RAM1_SIZE)
+  private inputMemory = createROM(INPUT_SIZE)
+  private RAMSegment2 = createRAM(RAM2_SIZE)
+  private MM = new MemoryMapper()
+  private tileCache: Tile[] = []
+  private inputStates = [
+    0 /* UP */, 0 /* DOWN */, 0 /* LEFT */, 0 /* RIGHT */, 0 /* A */, 0 /* B */,
+    0 /* START */, 0 /* SELECT */,
+  ]
+  private cpu!: CPU
+  private renderer!: Renderer
+  private last = Date.now()
 
-// Create the memory for different components of the game
-const tileMemory = createROM(TILE_MEMORY_SIZE)
-const RAMSegment1 = createRAM(RAM1_SIZE)
-const inputMemory = createROM(INPUT_SIZE)
-const RAMSegment2 = createRAM(RAM2_SIZE)
+  constructor(programPath: string) {
+    this.programPath = programPath
+    this.init()
+  }
 
-// Create a new memory mapper and map the different sections of memory to it
-const MM = new MemoryMapper()
-MM.map(tileMemory, 0x0000, TILE_MEMORY_SIZE)
-MM.map(RAMSegment1, 0x2000, RAM1_SIZE)
-MM.map(inputMemory, 0x2620, INPUT_SIZE)
-MM.map(RAMSegment2, 0x2628, RAM2_SIZE)
+  private async init() {
+    // Prepare memory mapper
+    this.MM.map(this.tileMemory, 0x0000, TILE_MEMORY_SIZE)
+    this.MM.map(this.RAMSegment1, 0x2000, RAM1_SIZE)
+    this.MM.map(this.inputMemory, 0x2620, INPUT_SIZE)
+    this.MM.map(this.RAMSegment2, 0x2628, RAM2_SIZE)
 
-// fullColourTile is a function that creates an array of length 32, where each element is a bitwise operation
-// involving the provided colour (i.e., shifting it left by 4 bits and combining it with the original colour).
-const fullColourTile = (colour: number) =>
-  Array.from({ length: TILE_SIZE }, () => (colour << 4) | colour)
+    // Prepare tiles
+    this.prepareTiles()
 
-// fullColourTiles is an array that stores the full colour tile for each of the 16 possible colours.
-const fullColourTiles = []
-for (let i = 0; i < 16; i++) {
-  fullColourTiles.push(...fullColourTile(i))
-}
+    // Setup game code
+    await this.setupGameCode()
 
-// Load fullColourTiles into the tile memory.
-tileMemory.load(fullColourTiles)
+    // Prepare canvas
+    this.renderer = new Renderer()
 
-// Define offsets for background and foreground in memory.
-const BACKGROUND_OFFSET = 0x2220
-const FOREGROUND_OFFSET = 0x2420
+    // Listen for keyboard events
+    document.addEventListener('keydown', this.handleKeydown.bind(this))
 
-// Define the number of tiles along the x and y axes.
-const TILES_X = 32
-const TILES_Y = 16
+    this.last = Date.now()
+    // Start the game loop
+    this.draw()
+  }
 
-// Loop over each tile in the grid and set its colour based on its position.
-// This creates a pattern in the grid.
-for (let i = 0; i < TILES_X * TILES_Y; i++) {
-  const x = i % TILES_X
-  const y = Math.floor(i / TILES_X)
+  private fullColourTile(colour: number) {
+    return Array.from({ length: TILE_SIZE }, () => (colour << 4) | colour)
+  }
 
-  if ((x + y) % 2 === 0) {
-    MM.setUint8(BACKGROUND_OFFSET + i, 0xf)
-  } else if ((x + y) % 3 === 0) {
-    MM.setUint8(BACKGROUND_OFFSET + i, 0xa)
-  } else {
-    MM.setUint8(BACKGROUND_OFFSET + i, 0x4)
+  private prepareTiles() {
+    const tiles = []
+    for (let i = 0; i < 16; i++) {
+      tiles.push(...this.fullColourTile(i))
+    }
+    /* prettier-ignore */
+    tiles.push(
+      0x11, 0x11, 0x11, 0x11,
+      0x10, 0x00, 0x00, 0x01,
+      0x10, 0x00, 0x00, 0x01,
+      0x10, 0x00, 0x00, 0x01,
+      0x10, 0x00, 0x00, 0x01,
+      0x10, 0x00, 0x00, 0x01,
+      0x10, 0x00, 0x00, 0x01,
+      0x11, 0x11, 0x11, 0x11,
+    );
+
+    // Frog
+    /* prettier-ignore */
+    tiles.push(
+      0xbb, 0xbb, 0x00, 0x00,
+      0x00, 0xb7, 0xb0, 0x00,
+      0xbb, 0xbb, 0xbb, 0x00,
+      0x00, 0x0b, 0xbb, 0x00,
+      0x00, 0xbb, 0xbb, 0x00,
+      0x0b, 0x0b, 0xbb, 0xb0,
+      0x00, 0x0b, 0xb0, 0xb0,
+      0x0b, 0xbb, 0x00, 0xbb
+    )
+
+    // Frog hurt
+    /* prettier-ignore */
+    tiles.push(
+      0x88, 0x88, 0x00, 0x00,
+      0x00, 0x87, 0x80, 0x00,
+      0x88, 0x88, 0x88, 0x00,
+      0x00, 0x08, 0x88, 0x00,
+      0x00, 0x88, 0x88, 0x00,
+      0x08, 0x08, 0x88, 0x80,
+      0x00, 0x08, 0x80, 0x80,
+      0x08, 0x88, 0x00, 0x88
+    )
+
+    // Elephant
+    /* prettier-ignore */
+    tiles.push(
+      0x00, 0x00, 0x66, 0x00,
+      0x00, 0x66, 0x66, 0x60,
+      0x06, 0x66, 0x66, 0x06,
+      0x66, 0x66, 0x66, 0x66,
+      0x66, 0x66, 0x67, 0x76,
+      0x66, 0x66, 0x66, 0x06,
+      0x06, 0x60, 0x66, 0x06,
+      0x06, 0x70, 0x67, 0x06
+    );
+
+    // Elephant flipped
+    /* prettier-ignore */
+    tiles.push(
+      0x00, 0x66, 0x00, 0x00,
+      0x06, 0x66, 0x66, 0x00,
+      0x60, 0x66, 0x66, 0x60,
+      0x66, 0x66, 0x66, 0x66,
+      0x67, 0x76, 0x66, 0x66,
+      0x60, 0x66, 0x66, 0x66,
+      0x60, 0x66, 0x06, 0x60,
+      0x60, 0x76, 0x07, 0x60
+    );
+    this.tileMemory.load(tiles)
+
+    for (let y = 0; y < TILES_Y; y++) {
+      for (let x = 0; x < TILES_X; x++) {
+        if ([4, 5].includes(y)) {
+          this.MM.setUint8(BACKGROUND_OFFSET + x + y * TILES_X, 0x0c)
+        } else {
+          this.MM.setUint8(BACKGROUND_OFFSET + x + y * TILES_X, 0x03)
+        }
+      }
+    }
+
+    // for (let i = 0; i < TILES_X * TILES_Y; i++) {
+    //   this.MM.setUint8(BACKGROUND_OFFSET + i, 0x10)
+    // }
+
+    const frog = SPRITE_TABLE_OFFSET
+    this.MM.setUint16(frog + 0, 7 * PIXELS_PER_TILE + 4)
+    this.MM.setUint16(frog + 2, 15 * PIXELS_PER_TILE - 4)
+    this.MM.setUint8(frog + 4, 0x11)
+
+    const elephants = frog + SPRITE_SIZE
+
+    const makeElephant = (
+      x: number,
+      y: number,
+      vx: number,
+      index = 0,
+      flip = false
+    ) => {
+      this.MM.setUint16(
+        elephants + SPRITE_SIZE * index + 0,
+        x * PIXELS_PER_TILE
+      )
+      this.MM.setUint16(
+        elephants + SPRITE_SIZE * index + 2,
+        y * PIXELS_PER_TILE
+      )
+      this.MM.setUint8(elephants + SPRITE_SIZE * index + 4, flip ? 0x14 : 0x13)
+      this.MM.setUint16(
+        elephants + SPRITE_SIZE * index + 9,
+        flip ? (~vx & 0xffff) + 1 : vx
+      )
+    }
+
+    makeElephant(4, 12, 3)
+    makeElephant(15, 10, 3, 1, true)
+    makeElephant(8, 8, 3, 2)
+
+    for (let i = 0; i < TILE_MEMORY_SIZE; i += TILE_SIZE) {
+      this.tileCache.push(new Tile(this.tileMemory.slice(i, i + TILE_SIZE)))
+    }
+  }
+
+  private async setupGameCode() {
+    const { machineCode, symbols } = await assemble(
+      this.programPath,
+      CODE_OFFSET
+    )
+
+    console.log(`Assembled machine code (${machineCode.length} bytes)`)
+    console.log(machineCodeAsHex(machineCode))
+
+    machineCode.forEach((byte: number, i: number) =>
+      this.MM.setUint8(CODE_OFFSET + i, byte)
+    )
+
+    this.MM.setUint16(INTERRUPT_VECTOR_OFFSET, CODE_OFFSET)
+    this.MM.setUint16(INTERRUPT_VECTOR_OFFSET + 2, symbols.after_frame)
+
+    this.cpu = new CPU(this.MM, INTERRUPT_VECTOR_OFFSET)
+    //this.cpu.setDebugMode(true)
+  }
+
+  private handleKeydown(e: KeyboardEvent) {
+    switch (e.key) {
+      case 'ArrowUp':
+        this.inputStates[0] = 1
+        break
+      case 'ArrowDown':
+        this.inputStates[1] = 1
+        break
+      case 'ArrowLeft':
+        this.inputStates[2] = 1
+        break
+      case 'ArrowRight':
+        this.inputStates[3] = 1
+        break
+      case 'a':
+        this.inputStates[4] = 1
+        break
+      case 'b':
+        this.inputStates[5] = 1
+        break
+      case 'Enter':
+        this.inputStates[6] = 1
+        break
+      case 'Shift':
+        this.inputStates[7] = 1
+        break
+    }
+
+    this.inputMemory.load(this.inputStates)
+  }
+
+  private draw() {
+    const now = Date.now()
+    const dt = now - this.last
+
+    if (dt > TIME_PER_FRAME_MS) {
+      this.last = now
+
+      this.inputMemory.load(this.inputStates) // Load the current state of the input into the input memory
+      // Reset the state of the input
+      for (let i = 0; i < this.inputStates.length; i++) {
+        this.inputStates[i] = 0
+      }
+
+      this.renderer.clear()
+
+      // Render the background tiles
+      for (let i = 0; i < TILES_X * TILES_Y; i++) {
+        const x = i % TILES_X
+        const y = Math.floor(i / TILES_X)
+        const tile = this.tileCache[this.MM.getUint8(BACKGROUND_OFFSET + i)]
+        this.renderer.drawGridAlignedTile(x, y, tile)
+      }
+
+      // Render the sprites
+      for (let i = 0; i < MAX_SPRITES; i++) {
+        const spriteBase = SPRITE_TABLE_OFFSET + i * SPRITE_SIZE
+        const x = this.MM.getUint16(spriteBase + 0)
+        const y = this.MM.getUint16(spriteBase + 2)
+        const tile =
+          this.MM.getUint8(spriteBase + 4) + this.MM.getUint8(spriteBase + 5)
+        this.renderer.drawPixelAlignedTile(x, y, this.tileCache[tile])
+      }
+
+      // Render the foreground tiles
+      for (let i = 0; i < TILES_X * TILES_Y; i++) {
+        const x = i % TILES_X
+        const y = Math.floor(i / TILES_X)
+        const tile = this.tileCache[this.MM.getUint8(FOREGROUND_OFFSET + i)]
+        this.renderer.drawGridAlignedTile(x, y, tile)
+      }
+
+      // Signal the CPU to handle an interrupt
+      this.cpu.handleInterrupt(1)
+    }
+
+    for (let i = 0; i < CYCLES_PER_ANIMATION_FRAME; i++) {
+      this.cpu.step()
+    }
+
+    requestAnimationFrame(this.draw.bind(this))
   }
 }
 
-// Define the offset for the sprite table in memory.
-const SPRITE_TABLE_OFFSET = 0x2020
-
-// Populate the sprite table in memory with initial values.
-// Each sprite entry requires 16 bytes, of which only a part is set here.
-MM.setUint16(SPRITE_TABLE_OFFSET + 0, 0) // x-coordinate of sprite 0
-MM.setUint16(SPRITE_TABLE_OFFSET + 2, 32) // y-coordinate of sprite 0
-MM.setUint16(SPRITE_TABLE_OFFSET + 4, 6) // tile index of sprite 0
-
-MM.setUint16(16 + SPRITE_TABLE_OFFSET + 0, 64) // x-coordinate of sprite 1
-MM.setUint16(16 + SPRITE_TABLE_OFFSET + 2, 20) // y-coordinate of sprite 1
-MM.setUint16(16 + SPRITE_TABLE_OFFSET + 4, 2) // tile index of sprite 1
-
-/* prettier-ignore */
-const inputStates = [
-  0 /* UP */,
-  0 /* DOWN */,
-  0 /* LEFT */,
-  0 /* RIGHT */,
-  0 /* A */,
-  0 /* B */,
-  0 /* START */,
-  0 /* SELECT */,
-]
-
-// Define a listener for keydown events. Depending on the key pressed, the corresponding input state is updated.
-// Each inputState corresponds to a different keypress action.
-document.addEventListener('keydown', (e) => {
-  switch (e.key) {
-    case 'ArrowUp':
-      inputStates[0] = 1 // UP
-      return
-    case 'ArrowDown':
-      inputStates[1] = 1 // DOWN
-      return
-    case 'ArrowLeft':
-      inputStates[2] = 1 // LEFT
-      return
-    case 'ArrowRight':
-      inputStates[3] = 1 // RIGHT
-      return
-    case 'z':
-      inputStates[4] = 1 // A
-      return
-    case 'x':
-      inputStates[5] = 1 // B
-      return
-    case 'Enter':
-      inputStates[6] = 1 // START
-      return
-    case 'Shift':
-      inputStates[7] = 1 // SELECT
-      return
-  }
-})
-
-// Create a cache for game tiles in memory
-const tileCache: Tile[] = []
-for (let i = 0; i < TILE_MEMORY_SIZE; i += TILE_SIZE) {
-  tileCache.push(new Tile(tileMemory.slice(i, i + TILE_SIZE)))
-}
-
-// Define the start of the game code in memory
-const CODE_OFFSET = 0x2668
-
-// Use the assembly string to generate machine code and symbols for the game
-const { machineCode, symbols } = assembleString(
-  `
-start:
-
-wait:
-  mov [!wait], ip
-
-after_frame:
-  rti
-`.trim(),
-  CODE_OFFSET
-)
-
-// Load the machine code into memory at the specified offset
-machineCode.forEach((byte: number, i: number) =>
-  MM.setUint8(CODE_OFFSET + i, byte)
-)
-
-// Define the offset in memory for interrupt vector
-const INTERRUPT_VECTOR_OFFSET = 0x2000
-
-// Set the start of the game code and the end of a frame in the interrupt vector
-MM.setUint16(INTERRUPT_VECTOR_OFFSET, CODE_OFFSET)
-MM.setUint16(INTERRUPT_VECTOR_OFFSET + 2, symbols.after_frame)
-
-// Create a new CPU and point it to the interrupt vector in memory
-const cpu = new CPU(MM, INTERRUPT_VECTOR_OFFSET)
-
-// Set the target frames per second and the time allowed for each frame
-const FPS_TARGET = 30
-const TIME_PER_FRAME_MS = 1000 / FPS_TARGET
-// Define the number of CPU cycles to execute per animation frame
-const CYCLES_PER_ANIMATION_FRAME = 200
-
-// Create a new renderer for the game and attach it to the 'screen' canvas element
-const canvas = document.getElementById('screen') as HTMLCanvasElement
-canvas.width = SCREEN_W
-canvas.height = SCREEN_H
-const screen = new Display(canvas)
-const r = new Renderer(screen)
-let last = Date.now()
-
-const drawCallback = () => {
-  const now = Date.now() // Get the current time
-  const diff = now - last // Calculate the time elapsed since the last frame
-
-  // If enough time has passed to render a new frame
-  if (diff > TIME_PER_FRAME_MS) {
-    last = now // Update the timestamp of the last frame
-    inputMemory.load(inputStates) // Load the current state of the input into the input memory
-
-    // Reset the state of the input
-    for (let i = 0; i < inputStates.length; i++) {
-      inputStates[i] = 0
-    }
-
-    // Render the background tiles
-    for (let i = 0; i < TILES_X * TILES_Y; i++) {
-      const x = i % TILES_X
-      const y = Math.floor(i / TILES_X)
-      const tile = tileCache[MM.getUint8(BACKGROUND_OFFSET + i)]
-      r.drawGridAlignedTile(x, y, tile)
-    }
-
-    // Render the sprites
-    for (let i = 0; i < 32; i++) {
-      const spriteBase = SPRITE_TABLE_OFFSET + i * SPRITE_SIZE
-      const x = MM.getUint8(spriteBase + 0)
-      const y = MM.getUint8(spriteBase + 2)
-      const tile = MM.getUint8(spriteBase + 4) + MM.getUint8(spriteBase + 5)
-      r.drawPixelAlignedTile(x, y, tileCache[tile])
-    }
-
-    // Render the foreground tiles
-    for (let i = 0; i < TILES_X * TILES_Y; i++) {
-      const x = i % TILES_X
-      const y = Math.floor(i / TILES_X)
-      const tile = tileCache[MM.getUint8(FOREGROUND_OFFSET + i)]
-      r.drawGridAlignedTile(x, y, tile)
-    }
-
-    // Signal the CPU to handle an interrupt
-    cpu.handleInterrupt(1)
-  }
-
-  // Step the CPU for a certain number of cycles
-  for (let i = 0; i < CYCLES_PER_ANIMATION_FRAME; i++) {
-    cpu.step()
-  }
-
-  // Request the browser to call this function again when it's time to update the next frame
-  requestAnimationFrame(drawCallback)
-}
-
-// Start the main game loop
-drawCallback()
+new Game('./frogger/main.asb')

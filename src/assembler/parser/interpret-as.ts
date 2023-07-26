@@ -1,6 +1,6 @@
 import * as P from 'parsil'
 import T from './types'
-import { validIdentifier } from './common'
+import { address, validIdentifier } from './common'
 
 export const interpretAs = P.coroutine((run) => {
   run(P.char('<'))
@@ -9,7 +9,7 @@ export const interpretAs = P.coroutine((run) => {
   run(P.optionalWhitespace)
   run(P.char('>'))
   run(P.optionalWhitespace)
-  const symbol = run(validIdentifier)
+  const symbol = run(P.choice([validIdentifier, address]))
   run(P.char('.'))
   const property = run(validIdentifier)
   run(P.optionalWhitespace)
