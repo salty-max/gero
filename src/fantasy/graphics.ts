@@ -63,7 +63,7 @@ export class Tile {
 export class Renderer {
   private ctx: CanvasRenderingContext2D
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor() {
     this.ctx = canvas.getContext('2d')!
   }
 

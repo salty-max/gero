@@ -21,4 +21,6 @@ const allInstructions = meta.map((instruction) => {
   )
 })
 
+console.log(allInstructions)
+
 export default P.choice(allInstructions)

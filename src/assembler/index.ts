@@ -141,6 +141,8 @@ const processModule = (module: string, loc = 0): Program => {
           throw new Error(`label '${node.value}' was not resolved`)
         }
         return symbols[node.value]
+      case 'REGISTER':
+        return registerMap[node.value]
       case 'ADDRESS':
       case 'HEX_LITERAL': {
         return parseInt(node.value, 16)
@@ -182,6 +184,10 @@ const processModule = (module: string, loc = 0): Program => {
           throw new Error(
             `struct '${node.value.struct}' does not have a property '${node.value.property}'`
           )
+        }
+
+        if (node.value.symbol.type === 'ADDRESS') {
+          return node.value.symbol.value + member.offset
         }
 
         if (!(node.value.symbol in symbols)) {
@@ -328,7 +334,11 @@ const processModule = (module: string, loc = 0): Program => {
 
     // Choose the appropriate encoding method based on the type of instruction
     if (
-      [instructionTypes.litReg, instructionTypes.memReg].includes(metadata.type)
+      [
+        instructionTypes.litReg,
+        instructionTypes.memReg,
+        instructionTypes.litRegPtr,
+      ].includes(metadata.type)
     ) {
       encodeLitOrMem(node.value.args[0])
       encodeReg(node.value.args[1])

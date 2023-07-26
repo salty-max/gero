@@ -506,6 +506,7 @@ describe('Instructions', () => {
     writableBytes[i++] = Register.R1
     writableBytes[i++] = I.AND_REG_LIT.opcode
     writableBytes[i++] = Register.R1
+    writableBytes[i++] = 0x00
     writableBytes[i++] = 0xff
 
     cpu.step()
@@ -1054,6 +1055,40 @@ describe('Instructions', () => {
 
     expect(cpu.getRegister('ip')).toBe(0x0100)
   })
+  it('should execute JMP_LIT instruction correctly', () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.ab)
+    let i = 0
+
+    writableBytes[i++] = I.JMP_LIT.opcode
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+
+    cpu.step()
+
+    expect(cpu.getRegister('ip')).toBe(0x0100)
+  })
+
+  it('should execute JMP_REG instruction correctly', () => {
+    memory.setUint16(0x0100, 0x0000)
+
+    const writableBytes = new Uint8Array(memory.ab)
+    let i = 0
+
+    writableBytes[i++] = I.MOV_LIT_REG.opcode
+    writableBytes[i++] = 0x01
+    writableBytes[i++] = 0x00 // 0x0100
+    writableBytes[i++] = Register.R1
+    writableBytes[i++] = I.JMP_REG.opcode
+    writableBytes[i++] = Register.R1
+
+    cpu.step()
+    cpu.step()
+
+    expect(cpu.getRegister('ip')).toBe(0x0100)
+  })
+
   it('should execute PSH_LIT instruction correctly', () => {
     const writableBytes = new Uint8Array(memory.ab)
     let i = 0

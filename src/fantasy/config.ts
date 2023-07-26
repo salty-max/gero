@@ -3,7 +3,7 @@ export const TILE_WIDTH = 30
 //const TILE_HEIGHT = Math.round((9 / 16) * TILE_WIDTH)
 export const TILE_HEIGHT = 14
 export const PIXELS_PER_TILE = 8
-export const SCALE_FACTOR = 4
+export const SCALE_FACTOR = 6
 
 // Compute the width and height of the canvas
 export const SCREEN_W = TILE_WIDTH * PIXELS_PER_TILE * SCALE_FACTOR

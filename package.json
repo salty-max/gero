@@ -42,6 +42,8 @@
   },
   "dependencies": {
     "@types/node": "^20.4.2",
+    "gl-matrix": "^3.4.3",
+    "twgl.js": "^5.4.1",
     "vite": "^4.4.6"
   }
 }

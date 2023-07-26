@@ -546,6 +546,19 @@ export class CPU {
           return
         }
         /**
+         * Move Literal to Register* (MOV_LIT_REG_PTR) instruction.
+         * Fetches a literal 16-bit value and a register index from the instruction stream,
+         * reads a memory address from the fetched register (treats it as a pointer),
+         * and then sets the fetched literal value into the fetched memory address.
+         */
+        case I.MOV_LIT_REG_PTR.opcode: {
+          const lit = this.fetch16()
+          const ptr = this.fetchRegisterIndex()
+          const addr = this.registers.getUint16(ptr)
+          this.memory.setUint16(addr, lit)
+          return
+        }
+        /**
          * Add Register to Register (ADD_REG_REG) instruction.
          * Fetches two register indexes from the instruction stream,
          * reads the values from the two registers,
@@ -754,7 +767,7 @@ export class CPU {
 
         case I.AND_REG_LIT.opcode: {
           const r = this.fetchRegisterIndex()
-          const literal = this.fetch()
+          const literal = this.fetch16()
           const rValue = this.registers.getUint16(r)
 
           const res = rValue & literal

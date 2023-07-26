@@ -20,6 +20,7 @@
  * - MOVH_REG_MEM:      0x73, Move High 8-bit Register to Memory
  * - MOV8_REG_PTR_REG:  0x74, Move 8-bit Register* to Register
  * - MOV8_REG_REG_PTR:  0x75, Move 8-bit Register to Register*
+ * - MOV_LIT_REG_PTR:   0x76, Move Literal to Register*
  * Arithmetic instructions
  * - ADD_LIT_REG:       0x1B, Add Literal to Register
  * - ADD_REG_REG:       0x1C, Add Register to Register
@@ -92,13 +93,12 @@ export const instructionTypes = {
   singleLit: 12,
   singleAddr: 13,
   regRegPtr: 14,
-  litRegPtr: 15,
-  regPtrMem: 16,
+  regPtrMem: 15,
+  litRegPtr: 16,
 }
 
 const instructionSizes = {
   litReg: 4,
-  litRegPtr: 4,
   regLit: 4,
   regLit8: 3,
   regReg: 3,
@@ -107,7 +107,9 @@ const instructionSizes = {
   litMem: 5,
   litMem8: 4,
   regPtrReg: 3,
+  regPtrMem: 4,
   regRegPtr: 3,
+  litRegPtr: 4,
   litOffReg: 5,
   noArgs: 1,
   singleReg: 2,
@@ -167,6 +169,20 @@ export const meta: Array<IMeta> = [
     mnemonic: 'mov8',
   },
   {
+    instruction: 'MOV_LIT_OFF_REG',
+    opcode: 0x17,
+    type: instructionTypes.litOffReg,
+    size: instructionSizes.litOffReg,
+    mnemonic: 'mov',
+  },
+  {
+    instruction: 'MOV_LIT_REG_PTR',
+    opcode: 0x76,
+    type: instructionTypes.litRegPtr,
+    size: instructionSizes.litRegPtr,
+    mnemonic: 'mov',
+  },
+  {
     instruction: 'MOV_LIT_REG',
     opcode: 0x10,
     type: instructionTypes.litReg,
@@ -213,13 +229,6 @@ export const meta: Array<IMeta> = [
     opcode: 0x16,
     type: instructionTypes.regRegPtr,
     size: instructionSizes.regRegPtr,
-    mnemonic: 'mov',
-  },
-  {
-    instruction: 'MOV_LIT_OFF_REG',
-    opcode: 0x17,
-    type: instructionTypes.litOffReg,
-    size: instructionSizes.litOffReg,
     mnemonic: 'mov',
   },
   {
@@ -456,8 +465,8 @@ export const meta: Array<IMeta> = [
   {
     instruction: 'JMP_LIT',
     opcode: 0x3a,
-    type: instructionTypes.singleAddr,
-    size: instructionSizes.singleAddr,
+    type: instructionTypes.singleLit,
+    size: instructionSizes.singleLit,
     mnemonic: 'jmp',
   },
   {
@@ -491,8 +500,8 @@ export const meta: Array<IMeta> = [
   {
     instruction: 'CAL_LIT',
     opcode: 0x5e,
-    type: instructionTypes.singleAddr,
-    size: instructionSizes.singleAddr,
+    type: instructionTypes.singleLit,
+    size: instructionSizes.singleLit,
     mnemonic: 'cal',
   },
   {

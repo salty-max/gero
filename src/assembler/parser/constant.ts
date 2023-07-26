@@ -1,6 +1,7 @@
 import * as P from 'parsil'
 import T from './types'
 import { hexLiteral, validIdentifier } from './common'
+import { bracketExpr } from './expressions'
 
 export const constant = P.coroutine((run) => {
   const isExport = Boolean(run(P.possibly(P.char('+'))))
@@ -13,7 +14,7 @@ export const constant = P.coroutine((run) => {
   run(P.char('='))
   run(P.whitespace)
 
-  const value = run(hexLiteral)
+  const value = run(P.choice([hexLiteral, bracketExpr]))
   run(P.optionalWhitespace)
 
   return T.constantNode({

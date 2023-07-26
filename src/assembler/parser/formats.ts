@@ -284,6 +284,27 @@ const litOffReg = (mnemonic: string, type: string) =>
     })
   })
 
+const litRegPtr = (mnemonic: string, type: string) =>
+  P.coroutine((run) => {
+    run(upperOrLowerStr(mnemonic))
+    run(P.whitespace)
+
+    const lit = run(P.choice([hexLiteral, bracketExpr]))
+
+    run(P.optionalWhitespace)
+    run(P.char(','))
+    run(P.optionalWhitespace)
+
+    const ptr = run(P.char('&').chain(() => register))
+
+    run(P.optionalWhitespace)
+
+    return T.instructionNode({
+      instruction: type,
+      args: [lit, ptr],
+    })
+  })
+
 const F: Record<string, FormatParser> = {
   noArgs,
   singleReg,
@@ -299,6 +320,7 @@ const F: Record<string, FormatParser> = {
   litMem8,
   regPtrReg,
   regRegPtr,
+  litRegPtr,
   litOffReg,
 }
 

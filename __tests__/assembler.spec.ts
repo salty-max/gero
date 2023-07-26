@@ -92,6 +92,13 @@ describe('instructions', () => {
     expect(machineCodeAsHex(code.machineCode)).toBe('0x75 0x02 0x03')
   })
 
+  it('should parse MOV_LIT_REG_PTR correctly', () => {
+    const input = 'mov $f0, &r2'
+    const code = assembleString(input)
+
+    expect(machineCodeAsHex(code.machineCode)).toBe('0x76 0x00 0xF0 0x03')
+  })
+
   it('should parse ADD_LIT_REG correctly', () => {
     const input = 'add $02, r1'
     const code = assembleString(input)
@@ -240,10 +247,10 @@ describe('instructions', () => {
   })
 
   it('should parse JEQ_LIT correctly', () => {
-    const input = 'jeq $02, &0060'
+    const input = 'constant c = $0100 jeq $02, &[!c]'
     const code = assembleString(input)
 
-    expect(machineCodeAsHex(code.machineCode)).toBe('0x3F 0x00 0x02 0x00 0x60')
+    expect(machineCodeAsHex(code.machineCode)).toBe('0x3F 0x00 0x02 0x01 0x00')
   })
 
   it('should parse JNE_REG correctly', () => {
@@ -316,6 +323,20 @@ describe('instructions', () => {
     expect(machineCodeAsHex(code.machineCode)).toBe('0x49 0x00 0x02 0x00 0x60')
   })
 
+  it('should parse JMP_LIT correctly', () => {
+    const input = 'jmp $0060'
+    const code = assembleString(input)
+
+    expect(machineCodeAsHex(code.machineCode)).toBe('0x3A 0x00 0x60')
+  })
+
+  it('should parse JMP_REG correctly', () => {
+    const input = 'jmp r1'
+    const code = assembleString(input)
+
+    expect(machineCodeAsHex(code.machineCode)).toBe('0x3B 0x02')
+  })
+
   it('should parse PSH_LIT correctly', () => {
     const input = 'psh $02'
     const code = assembleString(input)
@@ -338,7 +359,7 @@ describe('instructions', () => {
   })
 
   it('should parse CAL_LIT correctly', () => {
-    const input = 'cal &0060'
+    const input = 'cal $0060'
     const code = assembleString(input)
 
     expect(machineCodeAsHex(code.machineCode)).toBe('0x5E 0x00 0x60')

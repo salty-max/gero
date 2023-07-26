@@ -1,71 +1,102 @@
-constant frog = $2020
-constant cars = $2030
-constant input = $2620
+constant FrogAddr = $2020
+constant CarsAddr = $2030
+constant InputAddr = $2620
+constant ScreenBoundX = $00f0
+
+struct Frog {
+  x: $02,
+  y: $02,
+  tile_index: $01
+}
+
+struct Car {
+  x: $02,
+  y: $02,
+  tile_index: $01,
+  animation_offset: $01,
+  ignore_0: $03,
+  vx: $02
+}
+
+struct Input {
+  up: $01, down: $01,
+  left: $01, right: $01,
+  a: $01, b: $01,
+  start: $01, select: $01
+}
 
 start:
 
 check_up_pressed:
-  mov8 &[!input], acu
+  mov8 &[<Input> InputAddr.up], acu
   jeq $00, &[!check_down_pressed]
-  mov &[!frog + $02], r1
+  mov &[<Frog> FrogAddr.y], r1
   mov $04, r8
   neg r8
   add r8, r1
-  mov acu, &[!frog + $02]
+  mov acu, &[<Frog> FrogAddr.y]
 
 check_down_pressed:
-  mov8 &[!input + $01], acu
+  mov8 &[<Input> InputAddr.down], acu
   jeq $00, &[!check_left_pressed]
-  mov &[!frog + $02], r1
+  mov &[<Frog> FrogAddr.y], r1
   add $04, r1
-  mov acu, &[!frog + $02]
+  mov acu, &[<Frog> FrogAddr.y]
   
 check_left_pressed:
-  mov8 &[!input + $02], acu
+  mov8 &[<Input> InputAddr.left], acu
   jeq $00, &[!check_right_pressed]
-  mov &[!frog], r1
+  mov &[<Frog> FrogAddr.x], r1
   mov $04, r8
   neg r8
   add r8, r1
-  mov acu, &[!frog]
+  mov acu, &[<Frog> FrogAddr.x]
 
 check_right_pressed:
-  mov8 &[!input + $03], acu
+  mov8 &[<Input> InputAddr.right], acu
   jeq $00, &[!check_input_end]
-  mov &[!frog], r1
+  mov &[<Frog> FrogAddr.x], r1
   add $04, r1
-  mov acu, &[!frog]
+  mov acu, &[<Frog> FrogAddr.x]
 
 check_input_end:
 
 update_cars:
-  ;; load cars offset into the acu
-  mov8 &[!cars_offset], acu
-  jeq $20, &[!end_of_update_cars]
+  mov8 &[!cars_offset], acu ;; load cars offset into the acu
+  jeq $30, &[!end_of_update_cars] ;; if the offset is 48, break
   ;; write the next car offset into memory
-  mov acu, r5
-  add $10, acu
-  movl acu, &[!cars_offset]
-  mov r5, acu
-  ;; calculate address of current car
-  add [!cars], acu
+  mov acu, r5 ;; store current offset into r5
+  add $10, acu ;; add 16 to the offset
+  movl acu, &[!cars_offset] ;; store the new offset in data8
+  mov r5, acu ;; move the current offset back into the acu
+  
+  add [!CarsAddr], acu ;; calculate address of current car
+  
+  mov acu, r5 ;; place current car address to r5
+  mov &acu, r1  ;; load x position to r1
 
-  ;; place current car address to r5
-  mov acu, r5
-  ;; load x position to r1
-  mov &acu, r1
+  add [<Car> &0000.vx], r5 ;; calculate the address of the vx property
+  
+  mov &acu, acu  ;; place vx into acu
+  add acu, r1 ;; add vx to x, place in acu
+  mov acu, &r5 ;; move the new x value to the car
 
-  ;; calculate the address of the vx property
-  add $09, r5
-  ;; place vx into acu
-  mov &acu, acu
-  ;; add vx to x, place in acu
-  add acu, r1
+  ;; negative bounds detection
+  mov acu, r6 ;; move car x to r6
+  and acu, $8000 ;; check sign of x
+  jne $8000, &[!positive_bounds_check] ;; if x is positive, break
+  mov $f0, acu ;; load screen bound into acu
+  mov acu, &r5 ;; move the new x value to the car
+  jmp [!end_of_bounds_check]
 
-  ;; move the new x value to the car
+positive_bounds_check:
+  mov r6, acu
+  jgt $f0, &[!end_of_bounds_check]
+  mov $00, acu
   mov acu, &r5
-  ;; jump back to the start of the loop
-  mov [!update_cars], ip
+
+end_of_bounds_check:
+  jmp [!update_cars] ;; jump back to the start of the car loop
 
 end_of_update_cars:
   mov $00, &[!cars_offset]
@@ -73,7 +104,7 @@ end_of_update_cars:
 end_of_game_logic:
   mov8 $01, &[!has_ended]
 end_of_game_logic_loop:
-  mov [!end_of_game_logic_loop], ip
+  jmp [!end_of_game_logic_loop]
 
 after_frame:
   psh acu
