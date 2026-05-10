@@ -278,8 +278,9 @@ Useful for character buffers and packed data.
 
 ### 5.4 Arithmetic
 
-All arithmetic ops set `Z`, `N`, `C`, `V` flags. Implicit-`acu`
-short forms save 1 byte over the `Reg, Reg` form.
+All arithmetic ops set `Z`, `N`, `C`, `V` flags (with the documented
+exceptions for `inc` / `dec`). Implicit-`acu` short forms save 1 byte
+over the `Reg, Reg` form.
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
@@ -298,6 +299,23 @@ short forms save 1 byte over the `Reg, Reg` form.
 | `0x4C` | `div`    | `Reg, Reg`    | unsigned 32÷16: acu:dst ÷ src → quotient in dst, remainder in acu |
 | `0x4D` | `divs`   | `Imm16, Reg`  | signed 32÷16, same shape as `div` |
 | `0x4E` | `divs`   | `Reg, Reg`    | signed 32÷16, same shape as `div` |
+| `0x64` | `adc`    | `Imm16, Reg`  | reg ← reg + imm + C (add with carry — multi-precision arithmetic) |
+| `0x65` | `adc`    | `Reg, Reg`    | dst ← dst + src + C |
+| `0x66` | `sbc`    | `Imm16, Reg`  | reg ← reg - imm - C (sub with borrow — multi-precision arithmetic) |
+| `0x67` | `sbc`    | `Reg, Reg`    | dst ← dst - src - C |
+
+`adc` / `sbc` are the canonical 6502 / Z80 / 8086 primitive for
+arithmetic wider than the native register width. A 32-bit add via
+two 16-bit registers:
+
+```asm
+add  r1, r3      ; low half ; sets C if overflow
+adc  r2, r4      ; high half + carry-from-low ✨
+```
+
+Same for 32-bit subtraction with `sub` + `sbc`. Without these,
+multi-precision math requires explicit branch-on-carry sequences
+(slower, larger code).
 
 `div` / `divs` faults:
 - Divisor is 0 → vector `0x03` (division by zero).
@@ -320,16 +338,27 @@ Set `Z`, `N`. Clear `C`, `V`.
 | `0x55` | `xor`    | `Reg, Reg`    | dst ← dst ^ src |
 | `0x56` | `not`    | `Reg`         | reg ← ~reg |
 
-### 5.6 Shifts
+### 5.6 Shifts and rotates
 
-`C` receives the last bit shifted out. `Z`, `N` set on result.
+Shifts: `C` receives the last bit shifted out; `Z`, `N` set on result.
+Rotates: bits cycle **through `C`** (the standard 6502 / Z80 / 8086
+behavior — `C` is both source for the bit shifted in and destination
+for the bit shifted out, so a 17-bit chain).
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
-| `0x58` | `lsh`    | `Reg, Imm8` | reg ← reg << imm |
+| `0x58` | `lsh`    | `Reg, Imm8` | reg ← reg << imm (logical shift left) |
 | `0x59` | `lsh`    | `Reg, Reg`  | dst ← dst << src |
-| `0x5A` | `rsh`    | `Reg, Imm8` | reg ← reg >> imm (logical) |
+| `0x5A` | `rsh`    | `Reg, Imm8` | reg ← reg >> imm (logical shift right; high bit zero-filled) |
 | `0x5B` | `rsh`    | `Reg, Reg`  | dst ← dst >> src |
+| `0x5C` | `rol`    | `Reg, Imm8` | rotate left through C (bit_out → C → bit_in) |
+| `0x5D` | `rol`    | `Reg, Reg`  | same with src as count |
+| `0x5E` | `ror`    | `Reg, Imm8` | rotate right through C (bit_out → C → bit_in) |
+| `0x5F` | `ror`    | `Reg, Reg`  | same with src as count |
+
+Rotates are the natural primitive for bit-twiddling (sprite flag
+packing, hash steps, simple permutations). Without them, equivalent
+must be open-coded as `lsh` + `rsh` + `or` (3 ops vs 1).
 
 ### 5.7 Compare and test
 
@@ -364,6 +393,8 @@ or any flag-affecting ALU op).
 | `0x7B` | `jvs`    | `Addr` | `V = 1` |
 | `0x7C` | `jz`     | `Addr` | `Z = 1` (alias for `jeq`) |
 | `0x7D` | `jnz`    | `Addr` | `Z = 0` (alias for `jne`) |
+| `0x7E` | `djnz`   | `Reg, Addr` | `reg ← reg - 1`; if `reg ≠ 0` then `ip ← addr`. Z80 classic loop primitive. |
+| `0x7F` | `jr`     | `Imm8`      | relative jump: `ip ← ip + signed(imm)` (range −128..+127 from current `ip`). Saves 1 byte vs `jmp Addr` for tight branches. |
 
 ### 5.9 Subroutines
 
@@ -380,7 +411,24 @@ or any flag-affecting ALU op).
 | `0x90` | `swp`    | `Reg, Reg` | atomic swap of two registers |
 | `0x91` | `nop`    | (none)     | no operation; advance `ip` by 1 |
 
-### 5.11 System
+### 5.11 Flag manipulation
+
+Single-byte ops to toggle individual flag bits — saves the
+`mov flg, r1` + `or r1, mask` + `mov r1, flg` dance (5 bytes → 1).
+
+| Opcode | Mnemonic | Schema | Effect |
+|--------|----------|--------|--------|
+| `0xA0` | `clc`    | (none) | clear carry: `flg.C ← 0` |
+| `0xA1` | `sec`    | (none) | set carry: `flg.C ← 1` |
+| `0xA2` | `cli`    | (none) | clear interrupt-disable: `flg.I ← 0` (enables IRQs globally) |
+| `0xA3` | `sei`    | (none) | set interrupt-disable: `flg.I ← 1` (blocks IRQs globally) |
+| `0xA4` | `clv`    | (none) | clear overflow: `flg.V ← 0` |
+
+Direct 6502 / 8086 lineage. `cli` / `sei` are essential for ISR
+critical sections; `clc` / `sec` for setting up `adc` / `sbc`
+sequences.
+
+### 5.12 System
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
