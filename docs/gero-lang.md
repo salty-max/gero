@@ -117,7 +117,7 @@ print
 
 `and`, `or`, `not` are the boolean operators (short-circuit). The
 bitwise counterparts use symbolic operators `&` `|` `^` `<<` `>>`
-`~` (§4.2.2).
+`~` (§4.2.1).
 
 ### 2.7 Annotations
 
@@ -255,7 +255,7 @@ PICO-8, Sonic, early Doom used.
 |------|---------|-------|
 | Array (fixed-size) | `[u8; 64]` | N is comptime. Stack-allocated if local. |
 | Tuple | `(i16, str)` | Anonymous heterogeneous pair / triple / etc. Up to 4 elements in v0.1. Destructurable in `let` and `match`. Field access via `.0`, `.1`, …. |
-| Optional | `T?` | Sugar for `Option<T>` — see §3.4.1. |
+| Optional | `T?` | Nullable pointer type — see §3.4.1. |
 | Function | `fn(i16, i16) -> i16` | First-class — assignable, passable. |
 | Struct | `struct Foo a: i16, b: u8 end` | C-style POD. Fields contiguous in memory, no methods. See §3.4.2. Literal: `Foo { a: 1, b: 2 }`. |
 | Class | `class Foo { … }` | Vtable + fields, methods, single inheritance. See §6. |
@@ -765,7 +765,7 @@ No `++` / `--` (they were in the eevee-source prototype but
 deliberately dropped — `x += 1` covers it without operator-overload
 rules around prefix vs postfix).
 
-#### 4.2.2 Operators (binary)
+#### 4.2.1 Operators (binary)
 
 | Category | Operators | Notes |
 |----------|-----------|-------|
@@ -773,7 +773,7 @@ rules around prefix vs postfix).
 | Comparison | `==` `!=` `<` `<=` `>` `>=` | All return `bool` |
 | Logical | `and` `or` `not` | Short-circuit evaluation. `not` is unary. |
 | Bitwise | `&` `\|` `^` `<<` `>>` `~` | Map directly to ISA `and` / `or` / `xor` / `lsh` / `rsh` / `not`. `~` is unary bitwise NOT. |
-| Range | `..` `..=` | See §4.5. Produce `Range<T>` values. |
+| Range | `..` `..=` | See §4.5. Produce range values (built-in special type). |
 | Type test | `is` | `value is EnumVariant` — see §3.6. |
 
 **Precedence (highest to lowest):**
@@ -796,7 +796,7 @@ shifts vs arithmetic (low). Use parens when in doubt — `if (flags &
 MASK) == TARGET then` reads better than relying on precedence
 memory.
 
-#### 4.2.1 Discarding a value
+#### 4.2.2 Discarding a value
 
 Use `_` as the assignment target to evaluate an expression for its
 side effects and discard the result:
@@ -917,19 +917,22 @@ end
 also valid `match` patterns (§4.8.1) and can be passed around as
 values.
 
-#### 4.5.0.1 The `Range<T>` type
+#### 4.5.1 Range values
+
+Range expressions (`0..10`, `0..=10`, `0..=100 step 5`) are
+first-class **built-in values** with the conceptual layout:
 
 ```
-struct Range<T>
-  start: T
-  end: T
-  step: T          -- 1 by default
-  inclusive: bool  -- true for ..=, false for ..
-end
+start: <int type>
+end:   <int type>
+step:  <int type>     -- 1 by default
+inclusive: bool       -- true for ..=, false for ..
 ```
 
-Layout: 6 or 8 bytes depending on `T` (3 × sizeof(T) + 1 byte for
-`inclusive`, padded to alignment). For `T = i16` the slot is 8 bytes.
+For an `i16` range the runtime slot is 8 bytes (3 × 2 + 1, padded).
+The compiler special-cases ranges (no user-defined generics — see
+§3.4.2). For value types other than `i16`, ranges are not exposed
+in v0.1.
 
 Methods:
 
@@ -939,12 +942,12 @@ Methods:
 | `r.empty()` | `bool` | True if no elements would be produced (e.g. `5..=2`). |
 | `r.len()` | `u16` | Number of elements that would be visited. |
 
-`for x in r do` is special-cased by the compiler — no allocation, no
-iterator object. Custom iterables (anything other than ranges,
+`for x in r do` is special-cased by the compiler — no allocation,
+no iterator object. Custom iterables (anything other than ranges,
 arrays, or strings) are a v0.2 feature pending the iterator protocol
 spec.
 
-#### 4.5.1 `while let`
+#### 4.5.2 `while let`
 
 Loop while a pattern keeps matching. The bindings refresh each
 iteration:
