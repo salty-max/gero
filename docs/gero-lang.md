@@ -677,7 +677,7 @@ The compiler enforces:
 
 ```
 def fast_swap(a: u16, b: u16)
-  @asm("swp {a}, {b}")
+  @asm("swap {a}, {b}")
 end
 ```
 
@@ -772,7 +772,7 @@ rules around prefix vs postfix).
 | Arithmetic | `+` `-` `*` `/` `%` | `/` and `%` on signed → truncated toward zero |
 | Comparison | `==` `!=` `<` `<=` `>` `>=` | All return `bool` |
 | Logical | `and` `or` `not` | Short-circuit evaluation. `not` is unary. |
-| Bitwise | `&` `\|` `^` `<<` `>>` `~` | Map directly to ISA `and` / `or` / `xor` / `lsh` / `rsh` / `not`. `~` is unary bitwise NOT. |
+| Bitwise | `&` `\|` `^` `<<` `>>` `~` | Map directly to ISA `and` / `or` / `xor` / `shl` / `shr` / `not`. `~` is unary bitwise NOT. |
 | Range | `..` `..=` | See §4.5. Produce range values (built-in special type). |
 | Type test | `is` | `value is EnumVariant` — see §3.6. |
 
