@@ -1,0 +1,354 @@
+-- syntax_overview.gr
+--
+-- A near-complete tour of gero-lang v0.1 syntax. Compiles to a
+-- minimal turn-based monster-battle harness — picked because it
+-- exercises most language features in one cohesive program.
+--
+-- Read this top-to-bottom to see every construct from the spec at
+-- least once. Annotations refer to spec section numbers.
+
+------------------------------------------------------------
+-- §5.2  Imports
+------------------------------------------------------------
+use math                    -- stdlib module, whole import
+use rng from math           -- selective import
+use display from "./io"     -- relative path import
+use input as keys from "./io"  -- selective + rename
+
+------------------------------------------------------------
+-- §4.1  Constants and module-level state
+------------------------------------------------------------
+const MAX_HP = 100
+const HEAL_AMOUNT = 25
+const ENCOUNTER_RATE = 6      -- 6/256 chance per step
+
+@zero_page                    -- §3.7.1 — fast access for hot global
+let frame_count: u16 = 0
+
+@addr $FF50                   -- §3.7.1 — bound to gtx-16 input register
+let P1_STATE: u8 = 0
+
+local const SECRET = 42       -- §5.1 — module-private
+
+------------------------------------------------------------
+-- §3.6  Enums (tagged unions)
+------------------------------------------------------------
+enum Element
+  case Fire
+  case Water
+  case Earth
+  case Air
+end
+
+enum Action
+  case Attack(target: u8, power: i16)
+  case Defend
+  case Heal(amount: i16)
+  case Flee
+end
+
+------------------------------------------------------------
+-- §3.4  Structs (POD; `end`-delimited; literal uses { ... })
+------------------------------------------------------------
+struct Stats
+  hp: i16
+  mp: i16
+  atk: u8
+  def: u8
+end
+
+------------------------------------------------------------
+-- §6  Classes with inheritance
+------------------------------------------------------------
+@abstract                     -- §3.7.6
+class Entity
+  let stats: Stats
+  let name: str
+  let element: Element
+
+  def init(self, name: str, stats: Stats, element: Element)
+    self.name = name
+    self.stats = stats
+    self.element = element
+  end
+
+  @abstract                   -- subclasses must implement
+  def take_turn(self) -> Action
+
+  @final                      -- can't be overridden (devirt)
+  def is_alive(self) -> bool
+    return self.stats.hp > 0
+  end
+
+  @static                     -- class-level, no self
+  def random_element() -> Element
+    match rng() % 4
+      case 0 then return Element.Fire
+      case 1 then return Element.Water
+      case 2 then return Element.Earth
+      case _ then return Element.Air
+    end
+  end
+
+  def take_damage(self, amount: i16)
+    self.stats.hp = math.max(0, self.stats.hp - amount)
+  end
+end
+
+@final
+class Hero extends Entity
+  @private
+  let _xp: i16
+
+  def init(self, name: str)
+    super.init(name, Stats { hp: MAX_HP, mp: 30, atk: 12, def: 8 }, Element.Fire)
+    self._xp = 0
+  end
+
+  @override
+  def take_turn(self) -> Action
+    -- Hero turns are driven by player input
+    if let true = keys.button_pressed(0) then    -- §4.4.1  if let
+      return Action.Attack(0, self.stats.atk)
+    end
+    return Action.Defend
+  end
+
+  def gain_xp(self, amount: i16)
+    self._xp += amount                           -- §4.2  compound assign
+    if self._xp >= 100 then
+      self.level_up()
+    end
+  end
+
+  @private
+  def level_up(self)
+    self._xp = 0
+    self.stats.atk += 2
+    self.stats.def += 1
+    print "level up! $(self.name)"      -- §3.2.2 interpolation
+  end
+end
+
+@bank 5                       -- §3.7.1 — sprite/dialog data lives in bank 5
+@final
+class Monster extends Entity
+  let drop_table: [u8; 4]
+
+  def init(self, name: str, hp: i16, atk: u8, drops: [u8; 4])
+    super.init(name, Stats { hp: hp, mp: 0, atk: atk, def: 4 }, Entity.random_element())
+    self.drop_table = drops
+  end
+
+  @override
+  def take_turn(self) -> Action
+    -- Monster AI: flee at low HP, otherwise attack
+    if self.stats.hp < 10 then
+      return Action.Flee
+    end
+    return Action.Attack(0, self.stats.atk)
+  end
+end
+
+------------------------------------------------------------
+-- §4.6 / 4.7  Functions and lambdas
+-- §3.5  type annotations are optional — annotate when intent matters
+------------------------------------------------------------
+def damage(attacker: Stats, target: Stats, power: i16) -> i16
+  -- explicit annotations: public API, intent matters
+  let raw = power + attacker.atk - target.def
+  return math.max(1, raw)        -- min 1 damage
+end
+
+def short_log(name, dmg)         -- annotations omitted: inferred from call sites
+  print "$(name) → $(dmg)"
+end
+
+-- §3.4.1 multi-return for fallible ops (no Result<T, E> in v0.1)
+def parse_attack_command(s: str) -> ((u8, i16), str?)
+  -- success: ((target, power), nil) ; failure: ((0, 0), "message")
+  let parts = s.split(" ")
+  if parts.len != 3 then
+    return ((0, 0), "usage: attack <target> <power>")
+  end
+  let (target, e1) = parse_u8(parts.at(1))
+  if e1 != nil then return ((0, 0), e1) end
+  let (power, e2) = parse_i16(parts.at(2))
+  if e2 != nil then return ((0, 0), e2) end
+  return ((target, power), nil)
+end
+
+@inline                          -- §3.7.2 — perf hint
+def clamp(x: i16, lo: i16, hi: i16) -> i16
+  if x < lo then return lo end
+  if x > hi then return hi end
+  return x
+end
+
+-- First-class function, passed as argument
+def apply_to_each(items: [i16; 4], op: fn(i16) -> i16) -> [i16; 4]
+  let result: [i16; 4] = [0; 4]
+  for i in 0..4 do                              -- §4.5  range expr
+    result[i] = op(items[i])
+  end
+  return result
+end
+
+------------------------------------------------------------
+-- §4.7.1 / §4.3  Closures + do-as-expression
+------------------------------------------------------------
+def battle(hero: Hero, monster: Monster) -> bool
+  -- §4.3 do-as-expression for one-shot scoped value
+  let initial_hp: (i16, i16) = do
+    (hero.stats.hp, monster.stats.hp)
+  end
+
+  let (hero_start, monster_start) = initial_hp  -- §4.1.1  destructuring let
+
+  -- Closure capturing hero (by-value snapshot in v0.1 — §4.7.1)
+  let report = lambda () -> str
+    return "Hero went from " + hero_start + " to " + hero.stats.hp + " HP"
+  end
+
+  while hero.is_alive() and monster.is_alive() do
+    let h_action = hero.take_turn()
+    let m_action = monster.take_turn()
+
+    -- §4.8  Rust-style match with guards + destructuring
+    match h_action
+      case Action.Attack(_, power) when power > 0 then
+        let dmg = damage(hero.stats, monster.stats, power)
+        monster.take_damage(dmg)
+        print "$(hero.name) hits for $(dmg:3d)"     -- format spec
+      case Action.Defend then
+        print "$(hero.name) defends"
+      case Action.Heal(amount) then
+        hero.stats.hp = clamp(hero.stats.hp + amount, 0, MAX_HP)
+      case Action.Flee then
+        print "$(hero.name) fled!"
+        return false
+      case _ then
+        -- compiler error if not exhaustive — wildcard discharges it
+    end
+
+    -- §4.4.1  if let with guard
+    if let Action.Attack(_, p) = m_action when p > 0 then
+      let dmg = damage(monster.stats, hero.stats, p)
+      hero.take_damage(dmg)
+    end
+
+    frame_count += 1
+  end
+
+  print report()
+  return hero.is_alive()
+end
+
+------------------------------------------------------------
+-- §4.8  Pattern match worked over enum
+------------------------------------------------------------
+def element_advantage(attacker: Element, defender: Element) -> fixed
+  match (attacker, defender)                    -- tuple pattern
+    case (Element.Fire,  Element.Earth) then return 1.5
+    case (Element.Water, Element.Fire)  then return 1.5
+    case (Element.Earth, Element.Air)   then return 1.5
+    case (Element.Air,   Element.Water) then return 1.5
+    case (a, b) when a == b              then return 0.5
+    case _                               then return 1.0
+  end
+end
+
+------------------------------------------------------------
+-- §4.5.1  while let — drain a queue (user-defined enum, not Option)
+------------------------------------------------------------
+def process_events(queue: fn() -> Action) -> u8
+  let count: u8 = 0
+  while let Action.Attack(_, _) = queue() do
+    count += 1
+  end
+  -- Action.Defend / .Heal / .Flee fall through and exit the loop
+  return count
+end
+
+------------------------------------------------------------
+-- §4.8  match for fallible destructure (no `let else` in v0.1)
+------------------------------------------------------------
+def use_potion(item: Action)
+  match item
+    case Action.Heal(amount) then print "healed for $(amount)"
+    case _                   then print "not a healing item"
+  end
+end
+
+------------------------------------------------------------
+-- §3.7.4  @interrupt — hardware handler binding
+------------------------------------------------------------
+@interrupt 0x06               -- vblank vector (gtx-16)
+def on_vblank()
+  -- 60Hz tick — keep tight
+  frame_count += 1
+  if frame_count == 0 then    -- wrapped past 0xFFFF
+    print "1092 minutes uptime, you ok?"
+  end
+end
+
+@interrupt 0x21               -- save-flush convention
+def on_save_request()
+  print "saving..."
+  -- host writes SRAM banks back to disk on rti
+end
+
+------------------------------------------------------------
+-- §3.7.5  @test + @bench — collected by `gero test` / `gero bench`
+------------------------------------------------------------
+@test
+def damage_floor_is_one()
+  let weak = Stats { hp: 1, mp: 0, atk: 1, def: 100 }
+  let strong = Stats { hp: 100, mp: 0, atk: 10, def: 0 }
+  assert(damage(weak, strong, 0) == 1, "raw negative should clamp to 1")
+end
+
+@bench
+def bench_damage_calc()
+  let a = Stats { hp: 100, mp: 0, atk: 50, def: 10 }
+  let t = Stats { hp: 100, mp: 0, atk: 5,  def: 30 }
+  damage(a, t, 100)
+end
+
+@test
+def element_chart_consistent()
+  -- Each element beats exactly one other
+  for e in [Element.Fire, Element.Water, Element.Earth, Element.Air] do
+    let count = do                               -- §4.3  do as expression
+      let n: i16 = 0
+      for d in [Element.Fire, Element.Water, Element.Earth, Element.Air] do
+        if element_advantage(e, d) > 1.0 then n += 1 end
+      end
+      n
+    end
+    assert(count == 1, "each element must beat exactly one other")
+  end
+end
+
+------------------------------------------------------------
+-- §3.7.7  @asm — last-resort inline asm
+------------------------------------------------------------
+@inline
+def fast_swap(a: u16, b: u16)
+  @asm("swp {a}, {b}")
+end
+
+------------------------------------------------------------
+-- Entry point — top-level statements run at boot
+------------------------------------------------------------
+let player = Hero("Cecil")
+let slime = Monster("Slime", 30, 6, [0, 1, 0, 2])
+
+if battle(player, slime) then
+  player.gain_xp(20)
+  print "Victory!"
+else
+  print "Defeat..."
+end
+
+print "frames: ", frame_count
