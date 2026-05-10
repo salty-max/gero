@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  verify-version:
+    name: Verify version matches tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare tag to build.zig.zon
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          tag_version="${tag#v}"
+          file_version=$({ grep -E '\.version[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' build.zig.zon || true; } \
+            | head -1 \
+            | sed -E 's/.*"([^"]+)".*/\1/')
+          if [[ -z "$file_version" ]]; then
+            echo "::error::Could not parse 3-part semver from build.zig.zon"
+            exit 1
+          fi
+          if [[ "$tag_version" != "$file_version" ]]; then
+            echo "::error::Tag $tag (version $tag_version) doesn't match build.zig.zon version $file_version"
+            exit 1
+          fi
+          echo "✅ Tag $tag matches build.zig.zon version $file_version"
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: verify-version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux
+          - aarch64-macos
+          - x86_64-windows
+          - aarch64-windows
+          - wasm32-wasi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build (ReleaseSafe)
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+
+      - name: Package
+        id: pkg
+        run: |
+          set -euo pipefail
+          name="gero-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          # zig install produces zig-out/lib (and possibly zig-out/include).
+          if [[ -d zig-out/lib ]]; then
+            cp -r zig-out/lib "dist/$name/"
+          fi
+          if [[ -d zig-out/include ]]; then
+            cp -r zig-out/include "dist/$name/"
+          fi
+          cp README.md LICENSE CHANGELOG.md "dist/$name/"
+          cd dist
+          case "${{ matrix.target }}" in
+            *windows) zip -r "$name.zip" "$name" && echo "artifact=dist/$name.zip" >> "$GITHUB_OUTPUT" ;;
+            *)        tar -czf "$name.tar.gz" "$name" && echo "artifact=dist/$name.tar.gz" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gero-${{ matrix.target }}
+          path: ${{ steps.pkg.outputs.artifact }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Extract changelog body
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          # Lines between "## v$version " and the next "## v" header (or EOF).
+          # Avoid awk's 3-arg match() (gawk-only); strip the prefix manually.
+          awk -v want="$version" '
+            /^## v/ {
+              v = $0
+              sub(/^## v/, "", v)
+              sub(/[[:space:]].*$/, "", v)
+              if (v == want) { in_section = 1; next }
+              if (in_section) { exit }
+            }
+            in_section { print }
+          ' CHANGELOG.md > release-notes.md
+          if [[ ! -s release-notes.md ]]; then
+            echo "No CHANGELOG entry found for v$version — release notes will be a placeholder." >&2
+            printf 'Release %s. See CHANGELOG.md for details.\n' "$tag" > release-notes.md
+          fi
+          echo "--- release-notes.md ---"
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(dist/*.tar.gz dist/*.zip)
+          if [[ ${#artifacts[@]} -eq 0 ]]; then
+            echo "::error::No artifacts found in dist/"
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            "${artifacts[@]}"

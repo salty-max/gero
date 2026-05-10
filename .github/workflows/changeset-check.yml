@@ -1,0 +1,67 @@
+name: Changeset check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [main]
+
+jobs:
+  check:
+    name: Changeset present
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify a changeset is added (unless title is internal-only)
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          # Skip PRs whose conventional-commit type is internal-only
+          # (matches CLAUDE.md "Changesets / When to add one").
+          case "$PR_TITLE" in
+            chore\(*|chore:*|\
+            docs\(*|docs:*|\
+            test\(*|test:*|\
+            refactor\(*|refactor:*|\
+            ci\(*|ci:*|\
+            build\(*|build:*|\
+            style\(*|style:*)
+              echo "✅ Title prefix indicates internal-only change — changeset not required."
+              exit 0
+              ;;
+          esac
+
+          # Find changeset files added on this branch vs. the merge-base with main.
+          # `BASE_SHA...HEAD` is symmetric diff via merge-base in `git diff`.
+          added=$(git diff --name-only --diff-filter=A "$BASE_SHA...HEAD" \
+            | grep -E '^\.changeset/[a-zA-Z0-9_-]+\.md$' \
+            | grep -v '^\.changeset/README\.md$' \
+            || true)
+
+          if [[ -z "$added" ]]; then
+            cat >&2 <<'EOF'
+          ❌ No changeset added on this branch.
+
+          User-visible changes (feat / fix / perf / breaking refactor) need
+          a changeset entry. Run:
+
+              zig build changeset
+
+          to scaffold one interactively.
+
+          If this PR is internal-only (chore / docs / test / refactor /
+          ci / build / style), retitle it with the corresponding scope —
+          this workflow auto-skips those.
+
+          See .changeset/README.md for the format.
+          EOF
+            exit 1
+          fi
+
+          echo "✅ Found changeset(s) on this branch:"
+          echo "$added" | sed 's/^/    /'
