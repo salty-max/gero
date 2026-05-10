@@ -324,6 +324,37 @@ multi-precision math requires explicit branch-on-carry sequences
 Both vectors fault via the standard interrupt mechanism (§6); if the
 vector address is `0x0000`, the VM halts with a host-visible error.
 
+#### 5.4.1 Fixed-point and saturating arithmetic — no native ops
+
+The ISA deliberately has **no native fixed-point** (`fmul`, `fdiv`)
+or **saturating** (`qadd`, `qsub`) ops, despite gero-lang shipping a
+`fixed` 8.8 type.
+
+Rationale:
+
+- **Fixed-point add / sub** is identical to integer add / sub —
+  the binary point is preserved by alignment. Use `add` / `sub`.
+- **Fixed-point mul** = `mul` + `shr 8` (renormalize the binary
+  point). 2 ops, ~4 bytes — same cycle count a hypothetical native
+  `fmul` would cost (the multiplier hardware doesn't care about the
+  binary point).
+- **Fixed-point div** = `shl 8` + `div` (pre-scale the dividend).
+  Same trade-off.
+- **Saturating arithmetic** (clamp to ±max instead of wrap) didn't
+  exist on 6502 / Z80 / 8086 / 68000 — it's a post-1990 feature
+  (ARMv6, MMX/SSE). Software-emulate via `cmp` + branch + `mov MAX`
+  (4-6 bytes), or rely on the gero-lang compiler to lower
+  `clamp(a + b, lo, hi)` patterns to that sequence.
+
+The gero-lang compiler emits the fixed-point op sequences
+automatically — users write `let x: fixed = a * b` and never see
+the verbose form. Saturating clamps are a stdlib `math.clamp`
+call. No friction at the source level.
+
+If profiling later shows fixed-point or saturating math is a real
+hot path, native ops can be added in v0.2 with an additive minor
+version bump (existing code keeps working).
+
 ### 5.5 Logical / bitwise
 
 Set `Z`, `N`. Clear `C`, `V`.
