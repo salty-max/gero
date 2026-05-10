@@ -64,14 +64,14 @@ within `flg` (bit 0 = LSB):
 |-----|------|----------|
 | 0   | `Z`  | Result is zero. |
 | 1   | `N`  | Result high bit is 1 (signed-negative). |
-| 2   | `C`  | Unsigned overflow on add, borrow on sub, last bit shifted out of `lsh`/`rsh`. |
+| 2   | `C`  | Unsigned overflow on add, borrow on sub, last bit shifted out of `shl`/`shr`. |
 | 3   | `V`  | Signed overflow (sign of result differs from sign of both operands on add; from sign of minuend on sub). |
 | 4   | `I`  | Interrupt-disable. `1` ⇒ global IRQs blocked (per-vector mask in `im` still applies on top). |
 | 5-15 | reserved | Read as 0. |
 
 Operations that affect arithmetic flags (Z/N/C/V): `add`, `sub`,
-`mul`, `div`, `divs`, `neg`, `and`, `or`, `xor`, `not`, `lsh`,
-`rsh`, `cmp`, `tst`. `mov` and stack ops (`push`, `pop`) do **not**
+`mul`, `div`, `divs`, `neg`, `and`, `or`, `xor`, `not`, `shl`,
+`shr`, `cmp`, `tst`. `mov` and stack ops (`push`, `pop`) do **not**
 affect flags.
 
 `inc` / `dec` set Z, N, V but deliberately **leave C intact** — this
@@ -265,8 +265,8 @@ Useful for character buffers and packed data.
 | `0x22` | `mov8`   | `Addr, Reg`     | reg.lo ← mem[addr]; reg.hi ← 0 |
 | `0x23` | `mov8`   | `Reg, [Reg]`    | mem[ptr] ← reg.lo |
 | `0x24` | `mov8`   | `[Reg], Reg`    | reg.lo ← mem[ptr]; reg.hi ← 0 |
-| `0x25` | `hmov`   | `Reg, Addr`     | mem[addr] ← reg.hi |
-| `0x26` | `lmov`   | `Reg, Addr`     | mem[addr] ← reg.lo |
+| `0x25` | `movh`   | `Reg, Addr`     | mem[addr] ← reg.hi |
+| `0x26` | `movl`   | `Reg, Addr`     | mem[addr] ← reg.lo |
 
 ### 5.3 Stack (`push`, `pop`)
 
@@ -347,10 +347,10 @@ for the bit shifted out, so a 17-bit chain).
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
-| `0x58` | `lsh`    | `Reg, Imm8` | reg ← reg << imm (logical shift left) |
-| `0x59` | `lsh`    | `Reg, Reg`  | dst ← dst << src |
-| `0x5A` | `rsh`    | `Reg, Imm8` | reg ← reg >> imm (logical shift right; high bit zero-filled) |
-| `0x5B` | `rsh`    | `Reg, Reg`  | dst ← dst >> src |
+| `0x58` | `shl`    | `Reg, Imm8` | reg ← reg << imm (shift left) |
+| `0x59` | `shl`    | `Reg, Reg`  | dst ← dst << src |
+| `0x5A` | `shr`    | `Reg, Imm8` | reg ← reg >> imm (logical shift right; high bit zero-filled) |
+| `0x5B` | `shr`    | `Reg, Reg`  | dst ← dst >> src |
 | `0x5C` | `rol`    | `Reg, Imm8` | rotate left through C (bit_out → C → bit_in) |
 | `0x5D` | `rol`    | `Reg, Reg`  | same with src as count |
 | `0x5E` | `ror`    | `Reg, Imm8` | rotate right through C (bit_out → C → bit_in) |
@@ -358,7 +358,7 @@ for the bit shifted out, so a 17-bit chain).
 
 Rotates are the natural primitive for bit-twiddling (sprite flag
 packing, hash steps, simple permutations). Without them, equivalent
-must be open-coded as `lsh` + `rsh` + `or` (3 ops vs 1).
+must be open-coded as `shl` + `shr` + `or` (3 ops vs 1 native rotate).
 
 ### 5.7 Compare and test
 
@@ -408,7 +408,7 @@ or any flag-affecting ALU op).
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
-| `0x90` | `swp`    | `Reg, Reg` | atomic swap of two registers |
+| `0x90` | `swap`   | `Reg, Reg` | atomic swap of two registers |
 | `0x91` | `nop`    | (none)     | no operation; advance `ip` by 1 |
 
 ### 5.11 Flag manipulation
