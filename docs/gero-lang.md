@@ -243,8 +243,22 @@ let v: fixed = 1.5    -- compiles to 0x0180
 let dx: fixed = 0.125 -- compiles to 0x0020
 ```
 
-Standard arithmetic operators work — multiply / divide handle the
-shift internally.
+Standard arithmetic operators work transparently:
+
+- `+` / `-` compile to plain `add` / `sub` (binary point is
+  preserved by alignment, no scaling needed)
+- `*` compiles to `mul` followed by `shr 8` to renormalize the
+  binary point
+- `/` compiles to `shl 8` followed by `div`
+
+The user never sees the scaling. Cycle count is the same as a
+hypothetical native fixed-point op (a hardware multiplier doesn't
+care about the binary point — the work is identical).
+
+For clamping at fixed-point boundaries (e.g. don't let HP go
+negative or exceed `MAX_HP`), use `math.clamp(value, lo, hi)`
+from stdlib — compiles to `cmp` + branch sequence. The ISA has
+no native saturating ops (deliberate; see ISA §5.4.1).
 
 This is the canonical answer for "I need fractions" — same trick
 PICO-8, Sonic, early Doom used.
