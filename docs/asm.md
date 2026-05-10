@@ -341,6 +341,6 @@ Common errors:
 | `E005` | Duplicate label |
 | `E006` | Hex literal out of range |
 | `E007` | Address out of range (would emit > 0xFFFF) |
-| `E008` | Reserved opcode used (e.g. `div` before v0.1 implementation) |
+| `E008` | Reserved opcode used (placeholder for future ISA additions; no opcode is currently reserved-but-unimplemented in v0.1) |
 
 Errors print with caret-style snippets (knit's `formatParseErrorPretty`).
