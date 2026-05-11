@@ -6,6 +6,7 @@ const memory = @import("memory.zig");
 const mapper = @import("mapper.zig");
 const dispatch_mod = @import("dispatch.zig");
 const opcodes_mod = @import("opcodes.zig");
+const banks_mod = @import("banks.zig");
 
 /// Re-export: named register handles.
 pub const Register = registers.Register;
@@ -47,6 +48,16 @@ pub const OpcodeInfo = opcodes_mod.OpcodeInfo;
 pub const opcode_table = opcodes_mod.table;
 /// Re-export: byte size of one operand.
 pub const operandSize = opcodes_mod.operandSize;
+/// Re-export: bank pool type.
+pub const Banks = banks_mod.Banks;
+/// Re-export: bank pool errors.
+pub const BanksError = banks_mod.BanksError;
+/// Re-export: bank-window base address.
+pub const bank_window_base = banks_mod.window_base;
+/// Re-export: bank-window end address inclusive.
+pub const bank_window_end = banks_mod.window_end;
+/// Re-export: single-bank size in bytes.
+pub const bank_size = banks_mod.bank_size;
 
 /// Boot-state default for `sp` — top of memory minus 1 word so the
 /// first push lands on a valid word.
@@ -58,11 +69,15 @@ pub const fp_boot: u16 = 0xFFFE;
 /// Boot-state default for `im` — every maskable vector enabled.
 pub const im_boot: u16 = 0xFFFF;
 
-/// The VM. Owns the register file and the memory mapper (which
-/// owns the 64KB RAM and the host device registry).
+/// The VM. Owns the register file, the memory mapper (which
+/// holds the 64KB RAM and the host device registry), and the
+/// optional bank pool that backs the `0xC000..0xFEFF` window.
 pub const VM = struct {
     regs: Registers,
     mmap: MemoryMapper,
+    /// `null` when the program is unbanked — the bank window
+    /// falls through to plain RAM in that case.
+    banks: ?Banks,
 
     /// Construct a fresh VM with default boot state. `ip` is left
     /// at 0; the loader sets it to the program's entry point. The
@@ -72,14 +87,91 @@ pub const VM = struct {
         var vm: VM = .{
             .regs = Registers.init(),
             .mmap = MemoryMapper.init(allocator),
+            .banks = null,
         };
         vm.bootInitRegisters();
         return vm;
     }
 
-    /// Release VM-owned resources (the device registry).
+    /// Release VM-owned resources (the device registry + banks).
     pub fn deinit(self: *VM) void {
+        if (self.banks) |*b| b.deinit();
         self.mmap.deinit();
+    }
+
+    /// Allocate a fresh bank pool of `bank_count` zero banks,
+    /// the last `sram_bank_count` of which are battery-backed.
+    /// Replaces any previously-installed pool.
+    pub fn installBanks(
+        self: *VM,
+        allocator: std.mem.Allocator,
+        bank_count: u8,
+        sram_bank_count: u8,
+    ) (std.mem.Allocator.Error || BanksError)!void {
+        if (self.banks) |*b| b.deinit();
+        self.banks = try Banks.init(allocator, bank_count, sram_bank_count);
+    }
+
+    /// Same as `installBanks` but seeds the pool from `image`.
+    /// `image.len` must equal `bank_count * bank_size`.
+    pub fn installBanksWithImage(
+        self: *VM,
+        allocator: std.mem.Allocator,
+        image: []const u8,
+        bank_count: u8,
+        sram_bank_count: u8,
+    ) (std.mem.Allocator.Error || BanksError)!void {
+        if (self.banks) |*b| b.deinit();
+        self.banks = try Banks.initWithImage(allocator, image, bank_count, sram_bank_count);
+    }
+
+    /// Persisted SRAM bytes (read-only). Empty when the pool is
+    /// not installed or `sram_bank_count == 0`.
+    pub fn sramSlice(self: *const VM) []const u8 {
+        if (self.banks) |b| return b.sramSlice();
+        return &.{};
+    }
+
+    /// Mutable SRAM bytes — the host writes restored bytes here
+    /// during boot.
+    pub fn sramSliceMut(self: *VM) []u8 {
+        if (self.banks) |*b| return b.sramSliceMut();
+        return &.{};
+    }
+
+    /// Bank-aware byte read. Falls through to plain RAM outside
+    /// the bank window, or when no bank pool is installed.
+    pub fn readByte(self: *const VM, addr: u16) u8 {
+        if (banks_mod.inWindow(addr)) {
+            if (self.banks) |b| return b.readByte(self.regs.read(.mb), addr);
+        }
+        return self.mmap.readByte(addr);
+    }
+
+    /// Bank-aware byte write.
+    pub fn writeByte(self: *VM, addr: u16, value: u8) void {
+        if (banks_mod.inWindow(addr)) {
+            if (self.banks) |*b| {
+                b.writeByte(self.regs.read(.mb), addr, value);
+                return;
+            }
+        }
+        self.mmap.writeByte(addr, value);
+    }
+
+    /// Bank-aware word read. The low and high bytes are routed
+    /// independently, so a word straddling the window edge gets
+    /// the right source for each half.
+    pub fn readWord(self: *const VM, addr: u16) u16 {
+        const lo: u16 = self.readByte(addr);
+        const hi: u16 = self.readByte(addr +% 1);
+        return lo | (hi << 8);
+    }
+
+    /// Bank-aware word write.
+    pub fn writeWord(self: *VM, addr: u16, value: u16) void {
+        self.writeByte(addr, @truncate(value & 0xFF));
+        self.writeByte(addr +% 1, @truncate((value >> 8) & 0xFF));
     }
 
     /// Re-applies the register defaults. Public so the loader can

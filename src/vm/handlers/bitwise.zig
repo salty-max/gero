@@ -36,8 +36,8 @@ fn writeLogical(vm: *VM, dst: u8, result: u16) StepResult {
 /// `0x50` — `and Reg, Imm16` → `reg ← reg & imm`.
 pub fn andRegImm16(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
-    const imm = vm.mmap.readWord(ip +% 2);
+    const reg = vm.readByte(ip +% 1);
+    const imm = vm.readWord(ip +% 2);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeLogical(vm, reg, a & imm);
 }
@@ -45,8 +45,8 @@ pub fn andRegImm16(vm: *VM) StepResult {
 /// `0x51` — `and Reg, Reg` → `dst ← dst & src`.
 pub fn andRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeLogical(vm, dst, a & b);
@@ -55,8 +55,8 @@ pub fn andRegReg(vm: *VM) StepResult {
 /// `0x52` — `or Reg, Imm16` → `reg ← reg | imm`.
 pub fn orRegImm16(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
-    const imm = vm.mmap.readWord(ip +% 2);
+    const reg = vm.readByte(ip +% 1);
+    const imm = vm.readWord(ip +% 2);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeLogical(vm, reg, a | imm);
 }
@@ -64,8 +64,8 @@ pub fn orRegImm16(vm: *VM) StepResult {
 /// `0x53` — `or Reg, Reg` → `dst ← dst | src`.
 pub fn orRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeLogical(vm, dst, a | b);
@@ -74,8 +74,8 @@ pub fn orRegReg(vm: *VM) StepResult {
 /// `0x54` — `xor Reg, Imm16` → `reg ← reg ^ imm`.
 pub fn xorRegImm16(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
-    const imm = vm.mmap.readWord(ip +% 2);
+    const reg = vm.readByte(ip +% 1);
+    const imm = vm.readWord(ip +% 2);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeLogical(vm, reg, a ^ imm);
 }
@@ -83,8 +83,8 @@ pub fn xorRegImm16(vm: *VM) StepResult {
 /// `0x55` — `xor Reg, Reg` → `dst ← dst ^ src`.
 pub fn xorRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeLogical(vm, dst, a ^ b);
@@ -93,7 +93,7 @@ pub fn xorRegReg(vm: *VM) StepResult {
 /// `0x56` — `not Reg` → `reg ← ~reg`.
 pub fn notReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
+    const reg = vm.readByte(ip +% 1);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeLogical(vm, reg, ~a);
 }
@@ -140,8 +140,8 @@ fn writeShift(vm: *VM, dst: u8, count: u16, eff: ShiftEffect) StepResult {
 /// `0x58` — `shl Reg, Imm8` → `reg ← reg << imm`.
 pub fn shlRegImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
-    const count = vm.mmap.readByte(ip +% 2);
+    const reg = vm.readByte(ip +% 1);
+    const count = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeShift(vm, reg, count, doShl(a, count));
 }
@@ -149,8 +149,8 @@ pub fn shlRegImm8(vm: *VM) StepResult {
 /// `0x59` — `shl Reg, Reg` → `dst ← dst << src` (count taken from src).
 pub fn shlRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const count = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeShift(vm, dst, count, doShl(a, count));
@@ -159,8 +159,8 @@ pub fn shlRegReg(vm: *VM) StepResult {
 /// `0x5A` — `shr Reg, Imm8` → `reg ← reg >> imm` (logical, zero-fill).
 pub fn shrRegImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
-    const count = vm.mmap.readByte(ip +% 2);
+    const reg = vm.readByte(ip +% 1);
+    const count = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeShift(vm, reg, count, doShr(a, count));
 }
@@ -168,8 +168,8 @@ pub fn shrRegImm8(vm: *VM) StepResult {
 /// `0x5B` — `shr Reg, Reg`.
 pub fn shrRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const count = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeShift(vm, dst, count, doShr(a, count));
@@ -218,8 +218,8 @@ fn writeRotate(vm: *VM, dst: u8, count: u16, eff: ShiftEffect) StepResult {
 /// `0x5C` — `rol Reg, Imm8` → rotate left through carry.
 pub fn rolRegImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
-    const count = vm.mmap.readByte(ip +% 2);
+    const reg = vm.readByte(ip +% 1);
+    const count = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     const c_in = vm.regs.flagSet(.carry);
     return writeRotate(vm, reg, count, doRol(a, count, c_in));
@@ -228,8 +228,8 @@ pub fn rolRegImm8(vm: *VM) StepResult {
 /// `0x5D` — `rol Reg, Reg` (count from src register).
 pub fn rolRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const count = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     const c_in = vm.regs.flagSet(.carry);
@@ -239,8 +239,8 @@ pub fn rolRegReg(vm: *VM) StepResult {
 /// `0x5E` — `ror Reg, Imm8` → rotate right through carry.
 pub fn rorRegImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
-    const count = vm.mmap.readByte(ip +% 2);
+    const reg = vm.readByte(ip +% 1);
+    const count = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     const c_in = vm.regs.flagSet(.carry);
     return writeRotate(vm, reg, count, doRor(a, count, c_in));
@@ -249,8 +249,8 @@ pub fn rorRegImm8(vm: *VM) StepResult {
 /// `0x5F` — `ror Reg, Reg`.
 pub fn rorRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const count = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     const c_in = vm.regs.flagSet(.carry);

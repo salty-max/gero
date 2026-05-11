@@ -70,8 +70,8 @@ fn writeAddSub(vm: *VM, dst: u8, eff: AluEffect) StepResult {
 /// `0x40` — `add Imm16, Reg` → `reg ← reg + imm`.
 pub fn addImm16Reg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const imm = vm.mmap.readWord(ip +% 1);
-    const reg = vm.mmap.readByte(ip +% 3);
+    const imm = vm.readWord(ip +% 1);
+    const reg = vm.readByte(ip +% 3);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, reg, addWithCarry(a, imm, 0));
 }
@@ -79,8 +79,8 @@ pub fn addImm16Reg(vm: *VM) StepResult {
 /// `0x41` — `add Reg, Reg` → `dst ← dst + src`.
 pub fn addRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, dst, addWithCarry(a, b, 0));
@@ -89,7 +89,7 @@ pub fn addRegReg(vm: *VM) StepResult {
 /// `0x42` — `add Reg` → `acu ← acu + reg` (implicit-acu short form).
 pub fn addRegAcu(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const src = vm.mmap.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 1);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     const a = vm.regs.read(.acu);
     const eff = addWithCarry(a, b, 0);
@@ -105,8 +105,8 @@ pub fn addRegAcu(vm: *VM) StepResult {
 /// `0x43` — `sub Imm16, Reg` → `reg ← reg - imm`.
 pub fn subImm16Reg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const imm = vm.mmap.readWord(ip +% 1);
-    const reg = vm.mmap.readByte(ip +% 3);
+    const imm = vm.readWord(ip +% 1);
+    const reg = vm.readByte(ip +% 3);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, reg, subWithBorrow(a, imm, 0));
 }
@@ -114,8 +114,8 @@ pub fn subImm16Reg(vm: *VM) StepResult {
 /// `0x44` — `sub Reg, Reg` → `dst ← dst - src`.
 pub fn subRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, dst, subWithBorrow(a, b, 0));
@@ -124,7 +124,7 @@ pub fn subRegReg(vm: *VM) StepResult {
 /// `0x45` — `sub Reg` → `acu ← acu - reg`.
 pub fn subRegAcu(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const src = vm.mmap.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 1);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     const a = vm.regs.read(.acu);
     const eff = subWithBorrow(a, b, 0);
@@ -158,8 +158,8 @@ fn doMul(vm: *VM, dst: u8, a: u16, b: u16) StepResult {
 /// `0x46` — `mul Imm16, Reg` → `acu:reg ← reg × imm`.
 pub fn mulImm16Reg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const imm = vm.mmap.readWord(ip +% 1);
-    const reg = vm.mmap.readByte(ip +% 3);
+    const imm = vm.readWord(ip +% 1);
+    const reg = vm.readByte(ip +% 3);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return doMul(vm, reg, a, imm);
 }
@@ -167,8 +167,8 @@ pub fn mulImm16Reg(vm: *VM) StepResult {
 /// `0x47` — `mul Reg, Reg` → `acu:dst ← dst × src`.
 pub fn mulRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return doMul(vm, dst, a, b);
@@ -180,7 +180,7 @@ pub fn mulRegReg(vm: *VM) StepResult {
 /// leaves `C` intact so the op composes with `adc` sequences.
 pub fn incReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
+    const reg = vm.readByte(ip +% 1);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     const eff = addWithCarry(a, 1, 0);
     if (!vm.regs.writeByIndex(reg, eff.result)) return fault(vm, .invalid_register);
@@ -192,7 +192,7 @@ pub fn incReg(vm: *VM) StepResult {
 /// `0x49` — `dec Reg` → `reg ← reg - 1`. Same flag policy as `inc`.
 pub fn decReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
+    const reg = vm.readByte(ip +% 1);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     const eff = subWithBorrow(a, 1, 0);
     if (!vm.regs.writeByIndex(reg, eff.result)) return fault(vm, .invalid_register);
@@ -205,7 +205,7 @@ pub fn decReg(vm: *VM) StepResult {
 /// every ALU flag.
 pub fn negReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
+    const reg = vm.readByte(ip +% 1);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, reg, subWithBorrow(0, a, 0));
 }
@@ -268,8 +268,8 @@ fn dividend32Signed(vm: *const VM, reg_low: u16) i32 {
 /// quotient in `reg`, remainder in `acu`.
 pub fn divImm16Reg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const imm = vm.mmap.readWord(ip +% 1);
-    const reg = vm.mmap.readByte(ip +% 3);
+    const imm = vm.readWord(ip +% 1);
+    const reg = vm.readByte(ip +% 3);
     const low = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     const divisor: u32 = imm;
     return doDiv(vm, reg, dividend32(vm, low), divisor);
@@ -278,8 +278,8 @@ pub fn divImm16Reg(vm: *VM) StepResult {
 /// `0x4C` — `div Reg, Reg` → unsigned 32÷16: `acu:dst ÷ src`.
 pub fn divRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const low = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const src_value = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     const divisor: u32 = src_value;
@@ -289,8 +289,8 @@ pub fn divRegReg(vm: *VM) StepResult {
 /// `0x4D` — `divs Imm16, Reg` → signed 32÷16, same shape as `div`.
 pub fn divsImm16Reg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const imm = vm.mmap.readWord(ip +% 1);
-    const reg = vm.mmap.readByte(ip +% 3);
+    const imm = vm.readWord(ip +% 1);
+    const reg = vm.readByte(ip +% 3);
     const low = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     // safety: u16 immediate → i16 preserves the sign bit for signed division
     const divisor_i16: i16 = @bitCast(imm);
@@ -301,8 +301,8 @@ pub fn divsImm16Reg(vm: *VM) StepResult {
 /// `0x4E` — `divs Reg, Reg` → signed 32÷16.
 pub fn divsRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const low = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const divisor = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     // safety: u16 → i16 preserves the sign bit
@@ -320,8 +320,8 @@ fn carryIn(vm: *const VM) u1 {
 /// `0x64` — `adc Imm16, Reg` → `reg ← reg + imm + C`.
 pub fn adcImm16Reg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const imm = vm.mmap.readWord(ip +% 1);
-    const reg = vm.mmap.readByte(ip +% 3);
+    const imm = vm.readWord(ip +% 1);
+    const reg = vm.readByte(ip +% 3);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, reg, addWithCarry(a, imm, carryIn(vm)));
 }
@@ -329,8 +329,8 @@ pub fn adcImm16Reg(vm: *VM) StepResult {
 /// `0x65` — `adc Reg, Reg` → `dst ← dst + src + C`.
 pub fn adcRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, dst, addWithCarry(a, b, carryIn(vm)));
@@ -339,8 +339,8 @@ pub fn adcRegReg(vm: *VM) StepResult {
 /// `0x66` — `sbc Imm16, Reg` → `reg ← reg - imm - C`.
 pub fn sbcImm16Reg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const imm = vm.mmap.readWord(ip +% 1);
-    const reg = vm.mmap.readByte(ip +% 3);
+    const imm = vm.readWord(ip +% 1);
+    const reg = vm.readByte(ip +% 3);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, reg, subWithBorrow(a, imm, carryIn(vm)));
 }
@@ -348,8 +348,8 @@ pub fn sbcImm16Reg(vm: *VM) StepResult {
 /// `0x67` — `sbc Reg, Reg` → `dst ← dst - src - C`.
 pub fn sbcRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, dst, subWithBorrow(a, b, carryIn(vm)));

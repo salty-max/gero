@@ -19,8 +19,8 @@ fn fault(vm: *VM, vector: dispatch.Vector) StepResult {
 /// `0x90` — `swap Reg, Reg` → atomic swap.
 pub fn swap(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const a_idx = vm.mmap.readByte(ip +% 1);
-    const b_idx = vm.mmap.readByte(ip +% 2);
+    const a_idx = vm.readByte(ip +% 1);
+    const b_idx = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(a_idx) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(b_idx) orelse return fault(vm, .invalid_register);
     if (!vm.regs.writeByIndex(a_idx, b)) return fault(vm, .invalid_register);
@@ -74,7 +74,7 @@ pub fn clv(vm: *VM) StepResult {
 /// VM-emitted faults.
 pub fn intImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const vector_byte = vm.mmap.readByte(ip +% 1);
+    const vector_byte = vm.readByte(ip +% 1);
     // Advance ip so the saved return address points at the
     // instruction AFTER int N, not at int itself.
     vm.regs.write(.ip, ip +% 2);

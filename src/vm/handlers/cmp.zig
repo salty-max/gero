@@ -38,8 +38,8 @@ fn setAndFlags(vm: *VM, a: u16, b: u16) void {
 /// discard the result.
 pub fn cmpRegImm16(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
-    const imm = vm.mmap.readWord(ip +% 2);
+    const reg = vm.readByte(ip +% 1);
+    const imm = vm.readWord(ip +% 2);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     setSubFlags(vm, a, imm);
     return ok;
@@ -48,8 +48,8 @@ pub fn cmpRegImm16(vm: *VM) StepResult {
 /// `0x61` — `cmp Reg, Reg` → set flags from `dst - src`.
 pub fn cmpRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     setSubFlags(vm, a, b);
@@ -59,8 +59,8 @@ pub fn cmpRegReg(vm: *VM) StepResult {
 /// `0x62` — `tst Reg, Imm16` → set Z/N from `reg & imm`, clear C/V.
 pub fn tstRegImm16(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
-    const imm = vm.mmap.readWord(ip +% 2);
+    const reg = vm.readByte(ip +% 1);
+    const imm = vm.readWord(ip +% 2);
     const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     setAndFlags(vm, a, imm);
     return ok;
@@ -69,8 +69,8 @@ pub fn tstRegImm16(vm: *VM) StepResult {
 /// `0x63` — `tst Reg, Reg` → set Z/N from `dst & src`, clear C/V.
 pub fn tstRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.mmap.readByte(ip +% 1);
-    const src = vm.mmap.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     setAndFlags(vm, a, b);
