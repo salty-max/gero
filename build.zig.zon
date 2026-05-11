@@ -3,7 +3,12 @@
     .version = "0.0.0",
     .fingerprint = 0x9ad7ed0848df5cb,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .knit = .{
+            .url = "https://github.com/salty-max/knit/archive/refs/tags/v1.0.0.tar.gz",
+            .hash = "knit-1.0.0-sNyTDNeJBgDjPM6AV42BBXOutJyNoQe7ThiOArM7Arwj",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
