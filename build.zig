@@ -7,11 +7,15 @@ pub fn build(b: *std.Build) void {
 
     // ----- Library module + artifact ---------------------------------------
 
+    const knit_dep = b.dependency("knit", .{ .target = target, .optimize = optimize });
+    const knit_mod = knit_dep.module("knit");
+
     const gero_mod = b.addModule("gero", .{
         .root_source_file = b.path("src/gero.zig"),
         .target = target,
         .optimize = optimize,
     });
+    gero_mod.addImport("knit", knit_mod);
 
     const lib = b.addLibrary(.{
         .name = "gero",
