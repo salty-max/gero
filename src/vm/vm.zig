@@ -1,9 +1,9 @@
-/// The gero VM. Composes the register file and 64KB memory.
-/// Banking, the host mapper indirection, and the dispatch loop
-/// layer on top in subsequent PRs.
+/// The gero VM. Composes the register file and the memory mapper.
+/// Banking and the dispatch loop layer on top in subsequent PRs.
 const std = @import("std");
 const registers = @import("registers.zig");
 const memory = @import("memory.zig");
+const mapper = @import("mapper.zig");
 
 /// Re-export: named register handles.
 pub const Register = registers.Register;
@@ -13,6 +13,14 @@ pub const Registers = registers.Registers;
 pub const Flag = registers.Flag;
 /// Re-export: 64KB memory type.
 pub const Memory = memory.Memory;
+/// Re-export: host-pluggable IO interface.
+pub const Device = mapper.Device;
+/// Re-export: the routing mapper that wraps `Memory`.
+pub const MemoryMapper = mapper.MemoryMapper;
+/// Re-export: handle returned by `MemoryMapper.map`.
+pub const RegionId = mapper.RegionId;
+/// Re-export: errors from `MemoryMapper.map`.
+pub const MapError = mapper.MapError;
 
 /// Boot-state default for `sp` — top of memory minus 1 word so the
 /// first push lands on a valid word.
@@ -24,20 +32,28 @@ pub const fp_boot: u16 = 0xFFFE;
 /// Boot-state default for `im` — every maskable vector enabled.
 pub const im_boot: u16 = 0xFFFF;
 
-/// The VM. Owns the register file and a flat 64KB memory.
+/// The VM. Owns the register file and the memory mapper (which
+/// owns the 64KB RAM and the host device registry).
 pub const VM = struct {
     regs: Registers,
-    mem: Memory,
+    mmap: MemoryMapper,
 
     /// Construct a fresh VM with default boot state. `ip` is left
-    /// at 0; the loader sets it to the program's entry point.
-    pub fn init() VM {
+    /// at 0; the loader sets it to the program's entry point. The
+    /// `allocator` backs the device registry — pass the runtime
+    /// allocator (or `std.testing.allocator` in tests).
+    pub fn init(allocator: std.mem.Allocator) VM {
         var vm: VM = .{
             .regs = Registers.init(),
-            .mem = Memory.init(),
+            .mmap = MemoryMapper.init(allocator),
         };
         vm.bootInitRegisters();
         return vm;
+    }
+
+    /// Release VM-owned resources (the device registry).
+    pub fn deinit(self: *VM) void {
+        self.mmap.deinit();
     }
 
     /// Re-applies the register defaults. Public so the loader can

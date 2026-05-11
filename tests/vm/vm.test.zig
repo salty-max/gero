@@ -3,7 +3,8 @@ const gero = @import("gero");
 const VM = gero.vm.VM;
 
 test "vm: init sets boot-state special registers per ISA §8" {
-    const vm = VM.init();
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
     try std.testing.expectEqual(@as(u16, 0), vm.regs.read(.ip));
     try std.testing.expectEqual(@as(u16, 0), vm.regs.read(.acu));
     try std.testing.expectEqual(@as(u16, 0), vm.regs.read(.r1));
@@ -15,41 +16,45 @@ test "vm: init sets boot-state special registers per ISA §8" {
 }
 
 test "vm: init zeroes memory" {
-    const vm = VM.init();
-    try std.testing.expectEqual(@as(u8, 0), vm.mem.readByte(0));
-    try std.testing.expectEqual(@as(u8, 0), vm.mem.readByte(0x1100));
-    try std.testing.expectEqual(@as(u8, 0), vm.mem.readByte(0xFFFF));
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    try std.testing.expectEqual(@as(u8, 0), vm.mmap.readByte(0));
+    try std.testing.expectEqual(@as(u8, 0), vm.mmap.readByte(0x1100));
+    try std.testing.expectEqual(@as(u8, 0), vm.mmap.readByte(0xFFFF));
 }
 
 test "vm: bootInitRegisters resets registers but preserves memory" {
-    var vm = VM.init();
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
     vm.regs.write(.r1, 0xDEAD);
     vm.regs.write(.flg, 0xFFFF);
-    vm.mem.writeByte(0x1100, 0x42);
+    vm.mmap.writeByte(0x1100, 0x42);
 
     vm.bootInitRegisters();
 
-    // Registers reset to boot defaults.
     try std.testing.expectEqual(@as(u16, 0), vm.regs.read(.r1));
     try std.testing.expectEqual(@as(u16, 0), vm.regs.read(.flg));
     try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.sp));
     // Memory deliberately preserved across re-boot.
-    try std.testing.expectEqual(@as(u8, 0x42), vm.mem.readByte(0x1100));
+    try std.testing.expectEqual(@as(u8, 0x42), vm.mmap.readByte(0x1100));
 }
 
 test "vm: registers and memory are independently mutable" {
-    var vm = VM.init();
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
     vm.regs.write(.r1, 0xAAAA);
-    vm.mem.writeWord(0x2000, 0xBBBB);
+    vm.mmap.writeWord(0x2000, 0xBBBB);
     try std.testing.expectEqual(@as(u16, 0xAAAA), vm.regs.read(.r1));
-    try std.testing.expectEqual(@as(u16, 0xBBBB), vm.mem.readWord(0x2000));
+    try std.testing.expectEqual(@as(u16, 0xBBBB), vm.mmap.readWord(0x2000));
 }
 
 test "vm: multiple VM instances are independent" {
-    var a = VM.init();
-    var b = VM.init();
+    var a = VM.init(std.testing.allocator);
+    defer a.deinit();
+    var b = VM.init(std.testing.allocator);
+    defer b.deinit();
     a.regs.write(.r1, 0x1111);
-    a.mem.writeByte(0x100, 0x42);
+    a.mmap.writeByte(0x100, 0x42);
     try std.testing.expectEqual(@as(u16, 0), b.regs.read(.r1));
-    try std.testing.expectEqual(@as(u8, 0), b.mem.readByte(0x100));
+    try std.testing.expectEqual(@as(u8, 0), b.mmap.readByte(0x100));
 }
