@@ -126,7 +126,7 @@ test "stack: invalid register on push raises invalid-register fault" {
     vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
 
     loadProgram(&vm, &.{ 0x31, 0xFF }); // push <out-of-range>
-    try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
+    try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }
 
@@ -136,6 +136,6 @@ test "stack: invalid register on pop raises invalid-register fault" {
     vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
 
     loadProgram(&vm, &.{ 0x32, 0xFF }); // pop <out-of-range>
-    try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
+    try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }

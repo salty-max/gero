@@ -253,6 +253,6 @@ test "mov: invalid register index raises invalid-register fault" {
 
     // mov r1, <out-of-range>
     loadProgram(&vm, &.{ 0x11, 0x02, 0xFF });
-    try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
+    try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }
