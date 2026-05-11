@@ -35,9 +35,9 @@ pub const run = dispatch_mod.run;
 pub const raiseFault = dispatch_mod.raiseFault;
 /// Re-export: address of the IVT slot for a given vector.
 pub const ivtSlot = dispatch_mod.ivtSlot;
-/// Re-export: IVT base address (ISA §6.1).
+/// Re-export: IVT base address.
 pub const ivt_base = dispatch_mod.ivt_base;
-/// Re-export: opcode operand kinds (ISA §4).
+/// Re-export: opcode operand kinds.
 pub const Operand = opcodes_mod.Operand;
 /// Re-export: opcode metadata entry.
 pub const OpcodeInfo = opcodes_mod.OpcodeInfo;

@@ -75,7 +75,7 @@ test "flg: setFlag toggles only its target bit" {
     try std.testing.expect(r.flagSet(.negative));
 }
 
-test "flg: layout matches ISA §2.1 (Z=0, N=1, C=2, V=3, I=4)" {
+test "flg: layout — Z=0, N=1, C=2, V=3, I=4" {
     try std.testing.expectEqual(@as(u4, 0), @intFromEnum(Flag.zero));
     try std.testing.expectEqual(@as(u4, 1), @intFromEnum(Flag.negative));
     try std.testing.expectEqual(@as(u4, 2), @intFromEnum(Flag.carry));

@@ -8,7 +8,7 @@ fn setVector(vm: *VM, vector: Vector, target: u16) void {
     vm.mmap.writeWord(gero.vm.ivtSlot(vector), target);
 }
 
-test "dispatch: ivtSlot follows ISA §6.1 layout" {
+test "dispatch: ivtSlot maps reserved vectors to expected addresses" {
     try std.testing.expectEqual(@as(u16, 0x1000), gero.vm.ivtSlot(.reset));
     try std.testing.expectEqual(@as(u16, 0x1002), gero.vm.ivtSlot(.invalid_opcode));
     try std.testing.expectEqual(@as(u16, 0x1004), gero.vm.ivtSlot(.invalid_register));
@@ -46,9 +46,9 @@ test "dispatch: fault entry pushes ip, fp, flg in spec order" {
 
     _ = gero.vm.step(&vm);
 
-    // Pre-decrement push (ISA §3.3): each push decrements sp by 2
-    // before writing. Starting at sp_boot=0xFFFE, the three pushes
-    // land at 0xFFFC / 0xFFFA / 0xFFF8 (top of stack = flg).
+    // Pre-decrement push: each push decrements sp by 2 before
+    // writing. Starting at sp_boot=0xFFFE, the three pushes land
+    // at 0xFFFC / 0xFFFA / 0xFFF8 (top of stack = flg).
     try std.testing.expectEqual(@as(u16, 0x1234), vm.mmap.readWord(0xFFFC));
     try std.testing.expectEqual(@as(u16, 0xABCD), vm.mmap.readWord(0xFFFA));
     // flg was 0x000F before the push; flg.I is set AFTER the push.
@@ -90,8 +90,8 @@ test "dispatch: bytes without a handler raise invalid-opcode" {
     defer vm.deinit();
     setVector(&vm, .invalid_opcode, 0x4000);
 
-    // Pick bytes that have no handler yet (gaps in §5 + unimplemented
-    // families): the invalid-opcode fault should fire on each.
+    // Pick bytes that have no handler yet: the invalid-opcode
+    // fault should fire on each.
     inline for ([_]u8{ 0x00, 0x40, 0x80, 0xFF }) |op| {
         vm.regs.write(.ip, 0x1100);
         vm.mmap.writeByte(0x1100, op);

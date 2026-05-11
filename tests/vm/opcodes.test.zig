@@ -48,7 +48,7 @@ test "opcodes: every named entry has a non-empty mnemonic" {
     }
 }
 
-test "opcodes: table sample — mov family (§5.1)" {
+test "opcodes: table sample — mov family" {
     try std.testing.expectEqualStrings("mov", table[0x10].?.mnemonic);
     try std.testing.expectEqualSlices(Operand, &.{ .imm16, .reg }, table[0x10].?.operands);
     try std.testing.expectEqualStrings("mov", table[0x17].?.mnemonic);
@@ -57,7 +57,7 @@ test "opcodes: table sample — mov family (§5.1)" {
     try std.testing.expectEqualSlices(Operand, &.{ .imm16, .zp }, table[0x1B].?.operands);
 }
 
-test "opcodes: table sample — control flow (§5.8)" {
+test "opcodes: table sample — control flow" {
     try std.testing.expectEqualStrings("jmp", table[0x70].?.mnemonic);
     try std.testing.expectEqualSlices(Operand, &.{.addr}, table[0x70].?.operands);
     try std.testing.expectEqualStrings("djnz", table[0x7E].?.mnemonic);
@@ -66,7 +66,7 @@ test "opcodes: table sample — control flow (§5.8)" {
     try std.testing.expectEqualSlices(Operand, &.{.imm8}, table[0x7F].?.operands);
 }
 
-test "opcodes: table sample — system (§5.12)" {
+test "opcodes: table sample — system" {
     try std.testing.expectEqualStrings("hlt", table[0xFF].?.mnemonic);
     try std.testing.expectEqual(@as(usize, 0), table[0xFF].?.operands.len);
     try std.testing.expectEqualStrings("brk", table[0xFE].?.mnemonic);

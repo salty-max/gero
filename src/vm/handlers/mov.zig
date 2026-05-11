@@ -1,7 +1,7 @@
-/// Handlers for the `mov` family (ISA §5.1) and the byte-sized
-/// `mov8` / `movh` / `movl` family (ISA §5.2). None of these
-/// affect flags; ip auto-advances by the instruction size after
-/// the handler returns `.cont`.
+/// Handlers for the `mov` family and the byte-sized `mov8` /
+/// `movh` / `movl` family. None of these affect flags; ip
+/// auto-advances by the instruction size after the handler
+/// returns `.cont`.
 const vm_mod = @import("../vm.zig");
 const dispatch = @import("../dispatch.zig");
 const VM = vm_mod.VM;
