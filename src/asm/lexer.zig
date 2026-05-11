@@ -55,6 +55,9 @@ pub const Token = struct {
         ampersand,
         /// `"..."` literal with C-style escapes per asm spec §1.5.
         string,
+        /// `'A'` literal — single byte with C-style escapes per
+        /// asm spec §1.4. `value` carries the resolved byte.
+        char,
         eof,
     };
 
@@ -282,6 +285,7 @@ const ltP = parserOf(punctThunk('<', .lt, "lt"));
 const gtP = parserOf(punctThunk('>', .gt, "gt"));
 const dotP = parserOf(punctThunk('.', .dot, "dot"));
 const stringP = parserOf(stringThunk);
+const charP = parserOf(charThunk);
 fn shiftThunk(comptime byte: u8, comptime kind: Token.Kind, comptime name: []const u8) fn (*core.ParseState) core.ParseResult(Token) {
     return struct {
         fn parse(state: *core.ParseState) core.ParseResult(Token) {
@@ -309,6 +313,7 @@ fn decodeEscape(b: u8) u16 {
         't' => 0x09,
         '\\' => 0x5C,
         '"' => 0x22,
+        '\'' => 0x27,
         else => decodedEscapeMissing,
     };
 }
@@ -370,6 +375,96 @@ fn stringThunk(state: *core.ParseState) core.ParseResult(Token) {
     }) };
 }
 
+/// Match a single-quoted character literal per asm spec §1.4 —
+/// exactly one byte (raw or backslash-escaped via the §1.5 table
+/// plus `\'`), then a closing `'`. The resolved byte lives in
+/// `Token.value`. Empty `''` or multi-byte `'AB'` is `E016`-shape;
+/// unterminated is `.incomplete`; bad escape is `.lexical`.
+fn charThunk(state: *core.ParseState) core.ParseResult(Token) {
+    const start = state.index;
+    const rem = state.remaining();
+    if (rem.len == 0 or rem[0] != '\'') {
+        return .{ .err = core.parseError("char", start, "expected '\\''", .{
+            .expected = "'",
+            .kind = .syntactic,
+        }) };
+    }
+    if (rem.len < 2) {
+        return .{ .err = core.parseError("char", start + 1, "unterminated char literal at end of input", .{
+            .expected = "byte then '",
+            .kind = .incomplete,
+        }) };
+    }
+    if (rem[1] == '\'') {
+        // Error index past the opening quote so this beats every
+        // other parser's index-0 refusal in `choice()`'s
+        // furthest-progress comparison — otherwise `newlineP` (first
+        // in the table) wins the tie and we report a misleading
+        // "newline" error for an empty char literal.
+        return .{ .err = core.parseError("char", start + 1, "empty char literal", .{
+            .expected = "exactly one byte between the quotes",
+            .kind = .lexical,
+        }) };
+    }
+    if (rem[1] == '\n' or rem[1] == '\r') {
+        return .{ .err = core.parseError("char", start + 1, "unterminated char literal (newline before closing ')", .{
+            .expected = "'",
+            .kind = .incomplete,
+        }) };
+    }
+
+    var value: u16 = 0;
+    var body_len: usize = 0;
+    if (rem[1] == '\\') {
+        if (rem.len < 3) {
+            return .{ .err = core.parseError("char", start + 1, "unterminated escape at end of input", .{
+                .expected = "escape character",
+                .kind = .incomplete,
+            }) };
+        }
+        const decoded = decodeEscape(rem[2]);
+        if (decoded == decodedEscapeMissing) {
+            return .{ .err = core.parseError("char", start + 1, "unknown escape sequence", .{
+                .expected = "\\0 \\n \\r \\t \\\\ \\\" \\'",
+                .kind = .lexical,
+            }) };
+        }
+        value = decoded;
+        body_len = 2;
+    } else {
+        value = rem[1];
+        body_len = 1;
+    }
+
+    const closing = 1 + body_len;
+    if (rem.len <= closing) {
+        return .{ .err = core.parseError("char", start + closing, "unterminated char literal at end of input", .{
+            .expected = "'",
+            .kind = .incomplete,
+        }) };
+    }
+    if (rem[closing] != '\'') {
+        if (rem[closing] == '\n' or rem[closing] == '\r') {
+            return .{ .err = core.parseError("char", start + closing, "unterminated char literal (newline before closing ')", .{
+                .expected = "'",
+                .kind = .incomplete,
+            }) };
+        }
+        return .{ .err = core.parseError("char", start + closing, "char literal must be exactly one byte", .{
+            .expected = "'",
+            .kind = .lexical,
+        }) };
+    }
+
+    state.advance(closing + 1);
+    return core.ok(Token{
+        .kind = .char,
+        .start = u32At(start),
+        .end = u32At(state.index),
+        .value = value,
+    }, state.index);
+}
+
 /// Bare `&` only — refuses when followed by a hex digit so the
 /// `addrLiteral` parser (which DOES want hex digits) handles
 /// `&FFFF` and any over-length-but-still-hex variants like
@@ -413,12 +508,12 @@ const ampersandP = parserOf(ampersandThunk);
 //     so the two-byte shift operators win over the single-byte
 //     comparisons.
 const oneToken = knit.choice(Token, &[_]core.Parser(Token){
-    newlineP, hexP,    addrP,   symRefP,    identP,
-    stringP,  colonP,  commaP,  equalsP,    lbraceP,
-    rbraceP,  lparenP, rparenP, lbracketP,  rbracketP,
-    plusP,    minusP,  starP,   slashP,     percentP,
-    pipeP,    caretP,  tildeP,  shlP,       shrP,
-    ltP,      gtP,     dotP,    ampersandP,
+    newlineP,  hexP,    addrP,   symRefP, identP,
+    stringP,   charP,   colonP,  commaP,  equalsP,
+    lbraceP,   rbraceP, lparenP, rparenP, lbracketP,
+    rbracketP, plusP,   minusP,  starP,   slashP,
+    percentP,  pipeP,   caretP,  tildeP,  shlP,
+    shrP,      ltP,     gtP,     dotP,    ampersandP,
 });
 
 // ---------- whitespace + comment skipping (between tokens) ----------
