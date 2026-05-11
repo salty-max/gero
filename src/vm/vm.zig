@@ -4,6 +4,7 @@ const std = @import("std");
 const registers = @import("registers.zig");
 const memory = @import("memory.zig");
 const mapper = @import("mapper.zig");
+const dispatch_mod = @import("dispatch.zig");
 
 /// Re-export: named register handles.
 pub const Register = registers.Register;
@@ -21,6 +22,20 @@ pub const MemoryMapper = mapper.MemoryMapper;
 pub const RegionId = mapper.RegionId;
 /// Re-export: errors from `MemoryMapper.map`.
 pub const MapError = mapper.MapError;
+/// Re-export: outcome of `step` / `run`.
+pub const StepResult = dispatch_mod.StepResult;
+/// Re-export: reserved interrupt / fault vectors.
+pub const Vector = dispatch_mod.Vector;
+/// Re-export: one fetch-decode-execute cycle.
+pub const step = dispatch_mod.step;
+/// Re-export: dispatch loop until halt / fault.
+pub const run = dispatch_mod.run;
+/// Re-export: deliver a fault through the interrupt mechanism.
+pub const raiseFault = dispatch_mod.raiseFault;
+/// Re-export: address of the IVT slot for a given vector.
+pub const ivtSlot = dispatch_mod.ivtSlot;
+/// Re-export: IVT base address (ISA §6.1).
+pub const ivt_base = dispatch_mod.ivt_base;
 
 /// Boot-state default for `sp` — top of memory minus 1 word so the
 /// first push lands on a valid word.
