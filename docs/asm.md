@@ -26,7 +26,7 @@ accepted; classic-Mac CR is not.
 Semicolon to end-of-line, never crossing newline:
 
 ```asm
-mov #1, r1     ; load 1 into r1
+mov $01, r1     ; load 1 into r1
 ; full-line comment
 ```
 
@@ -35,26 +35,97 @@ No multi-line / block comments — keep it 6502-clean.
 ### 1.3 Identifiers
 
 `[A-Za-z_][A-Za-z0-9_]*`. Case-sensitive. Used for label names,
-directive names, variable names.
+variable names, and field names.
+
+**Mnemonics and directive keywords are lowercase only.** `mov` is
+valid, `MOV` is rejected with `E001` (unknown mnemonic). Register
+names (`r1`, `acu`, `flg`, …) and reserved keywords (`pub`, `const`,
+`data8`, `data16`, `struct`, type names `u8` / `u16`) are also
+lowercase-only.
 
 ### 1.4 Numeric literals
 
 | Form | Example | Width | Notes |
 |------|---------|-------|-------|
-| Hex | `$FFFF` | 1..4 hex digits | Unsigned. `$FF` = 255, `$FFFF` = 65535. |
-| Address | `&FFFF` | 1..4 hex digits | Same shape as hex but typed as `Addr`. Distinguishes "this is a memory address" from "this is a literal". |
+| Hex value | `$FFFF` | 1..4 hex digits | Unsigned. `$FF` = 255, `$FFFF` = 65535. |
+| Address  | `&FFFF` | 1..4 hex digits | Same shape as hex but typed as `Addr`. Distinguishes "this is a memory address" from "this is a literal value". |
 
 Decimal and binary literals are **not** in v0.1 — only hex. Old-school
 asm convention; if you find yourself wanting decimal, use `$0064` for
 100 and move on.
 
-### 1.5 Symbol references
+### 1.5 String literals
+
+Double-quoted, single-line, with C-style escapes. Used inside
+`data8` bodies (see §2.2). Each byte of the string lands in memory
+in order, no automatic trailing NUL — write `\0` explicitly when
+you want one.
+
+| Escape | Byte |
+|--------|------|
+| `\0`   | 0x00 |
+| `\n`   | 0x0A |
+| `\r`   | 0x0D |
+| `\t`   | 0x09 |
+| `\\`   | 0x5C |
+| `\"`   | 0x22 |
+
+Examples:
+
+```asm
+data8 hello   = "Hello, gero!\n\0"
+data8 prompt  = "name? \0"
+data8 quote   = "\"verbatim\"\0"
+```
+
+Hex bytes can be mixed with strings inside `data8` braces (see §2.2)
+when a string isn't sufficient — e.g., embedding control codes the
+escape table doesn't cover.
+
+### 1.6 Symbol references
 
 | Form | Example | Meaning |
 |------|---------|---------|
-| Bang-prefixed | `!hasFrameEnded` | Reference to a symbol declared elsewhere (data or label). Resolves at link time. |
-| Bare identifier | `start` | When used as an operand: a label / forward reference. |
-| Register pointer | `&r1` | "Address held in r1" — the indirect addressing form. |
+| `@`-prefixed | `@hasFrameEnded` | Reference to a symbol declared elsewhere (data, label, const). Resolves at assemble time. |
+| Bare identifier in operand position | `start` | A label / forward reference. Resolves at assemble time. |
+| Indirect via register | `[r1]` | The mem location whose address sits in `r1`. See §3.2. |
+
+`@` (not `!`) marks an explicit symbol reference — distinguishes from
+register names, mnemonic keywords, and identifiers used in directive
+parameters.
+
+### 1.7 Operators
+
+Compile-time expressions inside `&[ ]` (see §3.4) and on the right-
+hand side of `const` (see §2.2) accept the following operators on
+constant `u16` values. **Precedence is C-style** (highest first):
+
+| Precedence | Operators | Associativity | Notes |
+|------------|-----------|---------------|-------|
+| 1 | unary `~` `-` | right | Bitwise NOT, two's-complement negation. |
+| 2 | `*` `/` `%` | left | Unsigned multiply, divide, modulo (`/` and `%` on a zero divisor → `E009`). |
+| 3 | `+` `-` | left | Binary add / subtract. |
+| 4 | `<<` `>>` | left | Logical shift (zero-fill on right shift). |
+| 5 | `&` | left | Bitwise AND. |
+| 6 | `^` | left | Bitwise XOR. |
+| 7 | `\|` | left | Bitwise OR. |
+
+Parentheses override precedence (`&[(@p + 2) * 4]`).
+
+Examples:
+
+```asm
+const FLAGS    = (1 << 0) | (1 << 2) | (1 << 5)     ; 0x25
+const MASK_LOW = $FF00 >> 8                          ; 0x00FF
+const HALF_W   = SCREEN_W / 2                        ; SCREEN_W = $0100 -> $0080
+const PADDED   = (SIZE + 7) & ~7                     ; round up to nearest 8
+const SIGNED   = -$0001                              ; 0xFFFF
+```
+
+Operators are **compile-time only** — they fold constants before
+emit. They never produce extra instructions. To compute the same
+expression at runtime (with values held in registers), use the
+runtime opcodes (`add`, `mul`, `div`, `shl`, `and`, etc.) directly.
 
 ---
 
@@ -68,7 +139,7 @@ an instruction or directive.
 ; A line with comment only
 start:                  ; label
 const FRAME_RATE = $3C  ; directive
-mov #1, r1              ; instruction
+mov $01, r1             ; instruction
 ```
 
 ### 2.1 Labels
@@ -83,7 +154,7 @@ file-scoped, and must be unique within a file.
 
 ```asm
 start:
-  mov #0, r1
+  mov $00, r1
 loop:
   inc r1
   cmp r1, $10
@@ -94,25 +165,26 @@ loop:
 ### 2.2 Directives
 
 ```
-[+] <directive_keyword> <args...>
+[pub] <directive_keyword> <args...>
 ```
 
-The optional leading `+` marks the symbol as **exported** (visible to
-other files when linking). Currently four directives:
+The optional leading `pub` keyword marks the symbol as **exported**
+(visible to other files when linking). Currently four directives:
 
-| Keyword | Form | Effect |
-|---------|------|--------|
-| `const` | `const NAME = <value>` | Compile-time constant. Substituted inline at use sites. |
-| `data8` | `data8 NAME = { byte, byte, ... }` | Reserve and initialize bytes at the current address. |
-| `data16`| `data16 NAME = { word, word, ... }` | Same, in 16-bit words (little-endian). |
-| `struct` | `struct NAME { field: TYPE, ... }` | Compile-time struct layout for `<Type>` casts. Generates field offsets but emits no bytes. |
+| Keyword  | Form                                   | Effect |
+|----------|----------------------------------------|--------|
+| `const`  | `const NAME = <expr>`                  | Compile-time constant. Substituted inline at use sites. |
+| `data8`  | `data8 NAME = { value, ... }`          | Reserve + initialize bytes at the current address. |
+| `data16` | `data16 NAME = { value, ... }`         | Same, in 16-bit little-endian words. |
+| `struct` | `struct NAME { field: TYPE, ... }`     | Compile-time struct layout (offsets only, no bytes emitted). |
 
 #### `const`
 
 ```asm
-const VECTOR_KEYDOWN = $0020      ; software-int vector for keydown
-const SCREEN_W = $0100            ; 256
-+const VRAM_BASE = &8000          ; exported address constant
+const VECTOR_KEYDOWN = $0020         ; software-int vector for keydown
+const SCREEN_W       = $0100         ; 256
+pub const VRAM_BASE  = &8000         ; exported address constant
+pub const FLAGS_ALL  = (1 << 8) - 1  ; full operator set
 ```
 
 Constants are pure substitution — no runtime cost.
@@ -121,32 +193,45 @@ Constants are pure substitution — no runtime cost.
 
 ```asm
 data8 hasFrameEnded = { $00 }
-data8 greeting     = { $48, $65, $6C, $6C, $6F, $00 }   ; "Hello\0"
-data16 frameTimes  = { $0000, $0000, $0000, $0000 }
+data8 greeting      = "Hello, gero!\n\0"             ; string literal
+data8 mixed         = "RST", $00, "FRAME", $00       ; string + bytes
+data16 frameTimes   = { $0000, $0000, $0000, $0000 }
 ```
 
-The address of the data is bound to the symbol (so `!hasFrameEnded`
+The address of the data is bound to the symbol (so `@hasFrameEnded`
 in an operand resolves to where the bytes live). Sized by the
 directive — `data16` packs each value as a 16-bit LE word.
 
-Each value can be a hex literal, a `!symbol` reference, an address
-literal, or a parenthesized arithmetic expression of these.
+Each value in a `data8` body may be:
+
+- a hex literal (`$48`)
+- an address literal (`&1000`)
+- a `@`-prefixed symbol reference (`@other_data`)
+- a string literal (`"Hi"`) — only inside `data8`
+- a parenthesized expression of these (see §1.7)
+
+`data16` accepts the same forms minus string literals; each value
+ends up as a 16-bit LE word.
 
 #### `struct`
 
 ```asm
 struct Player {
-  hp: u16,
-  mp: u16,
+  hp:    u16,
+  mp:    u16,
   level: u8,
-  pad: u8,
+  pad:   u8,
 }
 ```
 
 Defines a layout — no bytes emitted. The fields produce compile-time
-offset constants (e.g. `Player.hp = 0`, `Player.mp = 2`,
-`Player.level = 4`, `Player.pad = 5`) usable in cast expressions
-(§3.4).
+offset constants (`Player.hp = 0`, `Player.mp = 2`, `Player.level = 4`,
+`Player.pad = 5`) usable in `<Type>` casts (§3.4) and in `const`
+expressions.
+
+Supported field types: `u8` (1 byte) and `u16` (2 bytes). Layout is
+packed — no padding. Offsets always start at zero for the first
+field.
 
 ### 2.3 Instructions
 
@@ -154,28 +239,29 @@ offset constants (e.g. `Player.hp = 0`, `Player.mp = 2`,
 <mnemonic> [operand[, operand]*]
 ```
 
-Mnemonics are exactly the keywords listed in `isa.md` §5. The
-assembler picks the right opcode encoding based on the operand types.
-For example, `mov` resolves to one of `0x10..0x1B` depending on
-whether the source / destination is a register, an immediate, an
-address, a pointer, or a zero-page address.
+Mnemonics are the exact lowercase keywords listed in `isa.md` §5.
+The assembler picks the right opcode encoding based on the operand
+types. For example, `mov` resolves to one of `0x10..0x1B` depending
+on whether the source / destination is a register, an immediate,
+an address, a register-indirect, an indexed expression, or a
+zero-page address.
 
 ```asm
-mov $1234, r1     ; 0x10 — Imm16 → Reg
-mov r1, r2        ; 0x11 — Reg → Reg
-mov r1, &2620     ; 0x12 — Reg → Addr (mem store)
-mov &2620, r1     ; 0x13 — Addr → Reg (mem load)
-mov $42, &00FF    ; 0x14 — Imm16 → Addr
-mov [r1], r2      ; 0x15 — indirect load
-mov r1, [r2]      ; 0x16 — indirect store
-mov &2620, r1, r2 ; 0x17 — indexed: mem[addr + r1] → r2
-mov $42, [r1]     ; 0x18 — Imm16 → ptr
-mov r1, $80       ; 0x19 — zero-page store
-mov $80, r1       ; 0x1A — zero-page load
+mov $1234, r1          ; 0x10 — Imm16 -> Reg
+mov r1, r2             ; 0x11 — Reg -> Reg
+mov r1, &2620          ; 0x12 — Reg -> Addr (mem store)
+mov &2620, r1          ; 0x13 — Addr -> Reg (mem load)
+mov $42, &00FF         ; 0x14 — Imm16 -> Addr
+mov [r1], r2           ; 0x15 — indirect load
+mov r1, [r2]           ; 0x16 — indirect store
+mov [&2620 + r1], r2   ; 0x17 — indexed: mem[2620 + r1] -> r2
+mov $42, [r1]          ; 0x18 — Imm16 -> ptr
+mov r1, $80            ; 0x19 — zero-page store
+mov $80, r1            ; 0x1A — zero-page load
 ```
 
-The assembler rejects invalid combinations (`mov &addr, &addr` has no
-opcode) at assembly time, not link time.
+The assembler rejects invalid combinations (`mov &addr, &addr` has
+no opcode) at assembly time with `E003`.
 
 ---
 
@@ -192,49 +278,83 @@ push acu
 mov fp, sp
 ```
 
-### 3.2 Register pointers
+### 3.2 Indirect via register
 
-The address held in a register, denoted by `&` prefix:
+The mem location whose address sits in a register, denoted by
+square brackets:
 
 ```asm
-mov &r1, r2     ; load mem[r1] into r2
-mov r2, &r1     ; store r2 into mem[r1]
+mov [r1], r2     ; load mem[r1] into r2 (indirect load)
+mov r2, [r1]     ; store r2 into mem[r1] (indirect store)
 ```
+
+Brackets distinguish "the value held in r1" (use `r1`) from
+"the byte at address r1" (use `[r1]`).
 
 ### 3.3 Immediate values and addresses
 
-Two distinct prefixes — `$` for "value", `&` for "address":
+Two distinct prefixes — `$` for "this is a value", `&` for "this
+is an address":
 
 ```asm
-mov $1234, r1   ; load the literal 0x1234 into r1
-mov &1234, r1   ; load the contents of mem[0x1234] into r1
+mov $1234, r1    ; load the literal 0x1234 into r1
+mov &1234, r1    ; load the contents of mem[0x1234] into r1
 ```
 
-### 3.4 Address expressions and casts
+The two are distinct token kinds for the assembler — `$` always
+produces a `u16` value, `&` always produces an `Addr`. Mixing them
+where the opcode expects one or the other is `E003`.
 
-Compile-time arithmetic on symbols, in `&[ ]`:
+### 3.4 Address expressions
+
+Compile-time arithmetic and indexed addressing share one syntax:
+square brackets containing an expression. Two forms:
 
 ```asm
-data16 player = { $0064, $003C, $0001, $0000 }   ; hp, mp, level, pad
+; (a) compile-time-only address expression — no register involved
+mov &[@player + 2], acu              ; load player.mp into acu
+mov acu, &[@player + Player.mp]      ; same, with a struct-cast offset
 
-mov &[!player + 2], acu          ; load player.mp into acu
-mov acu, &[!player + Player.mp]  ; equivalent, with cast offset
+; (b) indexed addressing — at most one register addend, opcode 0x17
+mov [&table + r1], acu               ; acu <- mem[table + r1]
+mov r2, [&table + r1]                ; mem[table + r1] <- r2
 ```
 
-Cast syntax `<Type> obj.prop` looks up the field offset from a `struct`
-declaration and combines it with the symbol address.
+The two are distinguished by whether the expression contains a
+register. Form **(a)** is pure compile-time arithmetic — the
+assembler folds `@player + 2` to a single 16-bit address at emit
+time, producing an `Addr` operand the regular mov-with-Addr opcodes
+(`0x12` / `0x13` / `0x14`) consume.
 
-### 3.5 Parenthesized expressions
+Form **(b)** keeps the register addend at runtime — the assembler
+checks that the rest is a compile-time-resolvable `Addr` and emits
+opcode `0x17` (`mov Addr, Reg, Reg`) with the runtime addend wired
+to the register index.
 
-Grouping for arithmetic precedence inside `&[ ]`:
+#### Casts
+
+`<Type> @symbol.field` is sugar for `&[@symbol + Type.field]`:
 
 ```asm
-const STRIDE = $0010
-mov &[!table + (r1 * STRIDE)], acu
+struct Player { hp: u16, mp: u16 }
+data8 player = { $0064, $003C }
+
+mov acu, <Player> @player.hp          ; same as &[@player + Player.hp]
+mov $00,  <Player> @player.mp          ; same as &[@player + Player.mp]
 ```
 
-Operators in v0.1: `+`, `-`, `*`. Division and bitwise ops not yet
-spec'd at the assembler level — emit instructions for those.
+The cast desugars before emit — same bytecode as the longhand. No
+runtime cost.
+
+### 3.5 Operator precedence and grouping
+
+Inside `&[ ]` (form a) and inside `const` expressions, the full
+operator set from §1.7 applies. Parentheses group as expected.
+Form (b) — the indexed-addressing path — restricts the expression to
+`<Addr-expr> + <Reg>` where the register addend appears at exactly
+one position. Anything else (two registers, register on the right,
+register inside a sub-expression that touches operators other than
+the outer `+`) is `E003`.
 
 ---
 
@@ -246,8 +366,7 @@ appropriate. There are **no** explicit section directives
 (`.text`, `.data`, `.rodata`).
 
 For programs that need to control layout (banked carts, IVT placement,
-SRAM region), use `org` directive (see §6 — TBD for v0.1, planned for
-v0.2).
+SRAM region), use `org` directive (planned for v0.2 — see §6).
 
 ---
 
@@ -258,7 +377,7 @@ Banked programs need two assembler features beyond v0.1's flat output:
 - `bank N` — declares that the following statements emit into bank
   number `N` (rather than the base image)
 - `bank_call`, `bank_jump` — pseudo-instructions that wrap
-  `mov #N, mb; call addr` (or jmp) for cross-bank calls
+  `mov $N, mb; call addr` (or jmp) for cross-bank calls
 
 These are **not in v0.1**. Until they land, banked carts must be
 hand-stitched (assemble each bank as a separate file, concatenate at
@@ -277,8 +396,8 @@ will need them.
 | `include "file.gas"` | Multi-file programs. |
 | Macros | Parametric pseudo-instructions (`def macro NAME(args) { ... }`). |
 | Decimal & binary literals | `100`, `%10101010`. |
-| String literals as `data8` shorthand | `data8 msg = "Hello, World"`. |
 | `equ` as alias for `const` | Old-school 6502 spelling. |
+| Char literals | `'A'` for `$41`, `'\n'` for `$0A`. |
 
 These land as the VM and lang compilers exercise the gaps. Each
 addition bumps the assembler's minor version; the bytecode they emit
@@ -305,10 +424,10 @@ loop:
   hlt
 ```
 
-Assembled output (annotated; addresses assume `image starts at 0x0000`):
+Assembled output (annotated; addresses assume image starts at `0x0000`):
 
 ```
-0x0000  10 00 00 02      mov $0000, r1     ; r1 = 0  (Imm16 → Reg)
+0x0000  10 00 00 02      mov $0000, r1     ; r1 = 0  (Imm16 -> Reg)
 0x0004  48 02            inc r1             ; loop:
 0x0006  60 02 10 00      cmp r1, $0010
 0x000A  73 04 00         jne &0004
@@ -317,6 +436,45 @@ Assembled output (annotated; addresses assume `image starts at 0x0000`):
 
 14 bytes. Single-pass assembler can resolve the forward reference
 `loop` because `cmp` + `jne` come after the label is bound.
+
+A worked-example with the full feature surface (strings, struct,
+cast, operators):
+
+```asm
+; ----- compile-time constants -----
+const SCREEN_W = $0100
+const BUF_LEN  = SCREEN_W / 4              ; division
+const MASK_LO  = $FFFF & ($FF00 >> 8)      ; bitwise + shift
+const FLAGS    = (1 << 0) | (1 << 5)       ; bitfield
+
+; ----- struct layout -----
+struct Player {
+  hp:    u16,
+  mp:    u16,
+  level: u8,
+  pad:   u8,
+}
+
+; ----- data -----
+pub data8 banner = "Hello, gero!\n\0"
+pub data8 player = { $0064, $003C, $0001, $0000 }   ; hp=100 mp=60 lvl=1
+
+; ----- code -----
+start:
+  ; load player.hp into acu via cast
+  mov acu, <Player> @player.hp
+  ; index into banner via runtime register
+  mov $00, r1
+banner_loop:
+  mov [&banner + r1], r2     ; r2 <- banner[r1]
+  cmp r2, $00                ; null terminator?
+  jeq end
+  ; ... emit r2 to stdout via host syscall here
+  inc r1
+  jmp banner_loop
+end:
+  hlt
+```
 
 ---
 
@@ -342,5 +500,8 @@ Common errors:
 | `E006` | Hex literal out of range |
 | `E007` | Address out of range (would emit > 0xFFFF) |
 | `E008` | Reserved opcode used (placeholder for future ISA additions; no opcode is currently reserved-but-unimplemented in v0.1) |
+| `E009` | Division by zero in a compile-time expression |
+| `E010` | Unknown escape sequence in string literal |
+| `E011` | Unterminated string literal (newline or EOF before closing `"`) |
 
 Errors print with caret-style snippets (knit's `formatParseErrorPretty`).
