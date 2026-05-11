@@ -35,6 +35,15 @@ pub const Token = struct {
         lbracket,
         rbracket,
         plus,
+        minus,
+        star,
+        lt,
+        gt,
+        dot,
+        /// Bare `&` — emitted when `&` isn't followed by a hex
+        /// digit (so the parser sees the building blocks of
+        /// `&r1` register-pointer or `&[ ]` address-expression).
+        ampersand,
         eof,
     };
 
@@ -249,16 +258,56 @@ const rparenP = parserOf(punctThunk(')', .rparen, "rparen"));
 const lbracketP = parserOf(punctThunk('[', .lbracket, "lbracket"));
 const rbracketP = parserOf(punctThunk(']', .rbracket, "rbracket"));
 const plusP = parserOf(punctThunk('+', .plus, "plus"));
+const minusP = parserOf(punctThunk('-', .minus, "minus"));
+const starP = parserOf(punctThunk('*', .star, "star"));
+const ltP = parserOf(punctThunk('<', .lt, "lt"));
+const gtP = parserOf(punctThunk('>', .gt, "gt"));
+const dotP = parserOf(punctThunk('.', .dot, "dot"));
+/// Bare `&` only — refuses when followed by a hex digit so the
+/// `addrLiteral` parser (which DOES want hex digits) handles
+/// `&FFFF` and any over-length-but-still-hex variants like
+/// `&12345` (those get the structured "too many digits"
+/// error instead of a stream of garbage tokens).
+fn ampersandThunk(state: *core.ParseState) core.ParseResult(Token) {
+    const start = state.index;
+    const rem = state.remaining();
+    if (rem.len == 0 or rem[0] != '&') {
+        return .{ .err = core.parseError("ampersand", start, "expected '&'", .{
+            .expected = "&",
+            .kind = .syntactic,
+        }) };
+    }
+    if (rem.len >= 2 and isHex(rem[1])) {
+        return .{ .err = core.parseError("ampersand", start, "ambiguous '&' (digit follows — let addrLiteral handle it)", .{
+            .expected = "non-hex after '&'",
+            .kind = .syntactic,
+        }) };
+    }
+    state.advance(1);
+    return core.ok(Token{
+        .kind = .ampersand,
+        .start = u32At(start),
+        .end = u32At(state.index),
+        .value = 0,
+    }, state.index);
+}
+
+const ampersandP = parserOf(ampersandThunk);
 
 // Order matters when every alternative refuses at the same byte:
 // `knit.choice` picks the *furthest-progress* error, and ties fall
 // back to the first alternative. Putting `newlineP` at the front
 // makes bare `\r` surface as a "newline" lexical error instead of
 // whatever the first prefix-checker would have said.
+// Order matters: `addrP` must come before `ampersandP` so
+// `&FFFF` is recognized as an address literal before the bare
+// `&` punct gets a chance.
 const oneToken = knit.choice(Token, &[_]core.Parser(Token){
-    newlineP, hexP,    addrP,     symRefP,   identP,
-    colonP,   commaP,  equalsP,   lbraceP,   rbraceP,
-    lparenP,  rparenP, lbracketP, rbracketP, plusP,
+    newlineP,   hexP,    addrP,     symRefP,   identP,
+    colonP,     commaP,  equalsP,   lbraceP,   rbraceP,
+    lparenP,    rparenP, lbracketP, rbracketP, plusP,
+    minusP,     starP,   ltP,       gtP,       dotP,
+    ampersandP,
 });
 
 // ---------- whitespace + comment skipping (between tokens) ----------

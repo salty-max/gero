@@ -162,9 +162,52 @@ test "lex: ! followed by digit rejected — both bytes flagged" {
 // ---------- punctuation ----------
 
 test "lex: all punctuation tokens" {
-    try expectKinds(":,={}()[]+", &.{
-        .colon, .comma, .equals, .lbrace, .rbrace, .lparen, .rparen, .lbracket, .rbracket, .plus,
+    try expectKinds(":,={}()[]+-*<>.", &.{
+        .colon,  .comma,    .equals,
+        .lbrace, .rbrace,   .lparen,
+        .rparen, .lbracket, .rbracket,
+        .plus,   .minus,    .star,
+        .lt,     .gt,       .dot,
     });
+}
+
+test "lex: arithmetic expression inside &[ ]" {
+    const src = "mov &[!t + r1 * STRIDE - $02], acu";
+    try expectKinds(src, &.{
+        .ident,   .ampersand, .lbracket,
+        .sym_ref, .plus,      .ident,
+        .star,    .ident,     .minus,
+        .hex,     .rbracket,  .comma,
+        .ident,
+    });
+}
+
+test "lex: cast syntax <Type> obj.field" {
+    const src = "<Player> p.hp";
+    try expectKinds(src, &.{
+        .lt, .ident, .gt, .ident, .dot, .ident,
+    });
+}
+
+test "lex: field access in addr expression" {
+    const src = "mov acu, &[!player + Player.mp]";
+    try expectKinds(src, &.{
+        .ident,     .ident,    .comma,
+        .ampersand, .lbracket, .sym_ref,
+        .plus,      .ident,    .dot,
+        .ident,     .rbracket,
+    });
+}
+
+test "lex: &r1 register pointer = ampersand + ident" {
+    try expectKinds("&r1", &.{ .ampersand, .ident });
+}
+
+test "lex: &FFFF stays as addr literal (addr wins over ampersand)" {
+    var ts = try tokenize("&FFFF");
+    defer ts.deinit();
+    try std.testing.expectEqual(Token.Kind.addr, ts.tokens[0].kind);
+    try std.testing.expectEqual(@as(u16, 0xFFFF), ts.tokens[0].value);
 }
 
 // ---------- realistic programs ----------
