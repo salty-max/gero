@@ -195,6 +195,7 @@ pub const handler_table: [256]Handler = blk: {
 /// without moving `ip`) advances past the instruction by the
 /// schema-derived size.
 pub fn step(vm: *VM) StepResult {
+    vm.cycles +%= 1;
     const ip_before = vm.regs.read(.ip);
     const op = vm.readByte(ip_before);
     const handler = handler_table[op];

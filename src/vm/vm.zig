@@ -7,6 +7,7 @@ const mapper = @import("mapper.zig");
 const dispatch_mod = @import("dispatch.zig");
 const opcodes_mod = @import("opcodes.zig");
 const banks_mod = @import("banks.zig");
+const loader_mod = @import("loader.zig");
 
 /// Re-export: named register handles.
 pub const Register = registers.Register;
@@ -58,6 +59,12 @@ pub const bank_window_base = banks_mod.window_base;
 pub const bank_window_end = banks_mod.window_end;
 /// Re-export: single-bank size in bytes.
 pub const bank_size = banks_mod.bank_size;
+/// Re-export: `.gx` parser entry point.
+pub const parseGx = loader_mod.parse;
+/// Re-export: parsed program shape.
+pub const LoadedProgram = loader_mod.LoadedProgram;
+/// Re-export: loader error set.
+pub const LoaderError = loader_mod.LoaderError;
 
 /// Boot-state default for `sp` — top of memory minus 1 word so the
 /// first push lands on a valid word.
@@ -78,6 +85,10 @@ pub const VM = struct {
     /// `null` when the program is unbanked — the bank window
     /// falls through to plain RAM in that case.
     banks: ?Banks,
+    /// Total instructions retired since boot. `step` increments
+    /// by one per dispatch (faulting instructions counted too —
+    /// they still consumed a cycle).
+    cycles: u64,
 
     /// Construct a fresh VM with default boot state. `ip` is left
     /// at 0; the loader sets it to the program's entry point. The
@@ -88,6 +99,7 @@ pub const VM = struct {
             .regs = Registers.init(),
             .mmap = MemoryMapper.init(allocator),
             .banks = null,
+            .cycles = 0,
         };
         vm.bootInitRegisters();
         return vm;
@@ -137,6 +149,28 @@ pub const VM = struct {
     pub fn sramSliceMut(self: *VM) []u8 {
         if (self.banks) |*b| return b.sramSliceMut();
         return &.{};
+    }
+
+    /// Load a parsed `.gx` program: copies the base image into
+    /// RAM at `0x0000`, sets `ip` to the entry point, and
+    /// installs zeroed bank storage if the program is banked.
+    /// The caller is responsible for seeding SRAM via
+    /// `sramSliceMut` after boot if a save store exists.
+    pub fn boot(
+        self: *VM,
+        allocator: std.mem.Allocator,
+        loaded: LoadedProgram,
+    ) (std.mem.Allocator.Error || BanksError)!void {
+        @memcpy(self.mmap.mem.bytes[0..loaded.image.len], loaded.image);
+        self.regs.write(.ip, loaded.header.entry_point);
+        if (loaded.header.bank_count > 0) {
+            try self.installBanksWithImage(
+                allocator,
+                loaded.banks,
+                loaded.header.bank_count,
+                loaded.header.sram_bank_count,
+            );
+        }
     }
 
     /// Bank-aware byte read. Falls through to plain RAM outside
