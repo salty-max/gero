@@ -37,6 +37,15 @@ pub const Token = struct {
         plus,
         minus,
         star,
+        slash,
+        percent,
+        pipe,
+        caret,
+        tilde,
+        /// `<<` — two bytes, longest-match before `lt`.
+        shl,
+        /// `>>` — two bytes, longest-match before `gt`.
+        shr,
         lt,
         gt,
         dot,
@@ -44,6 +53,8 @@ pub const Token = struct {
         /// digit (so the parser sees the building blocks of
         /// `&r1` register-pointer or `&[ ]` address-expression).
         ampersand,
+        /// `"..."` literal with C-style escapes per asm spec §1.5.
+        string,
         eof,
     };
 
@@ -147,14 +158,14 @@ const addrThunk = numericThunk('&', "addrLiteral", .addr);
 fn symRefThunk(state: *core.ParseState) core.ParseResult(Token) {
     const start = state.index;
     const rem = state.remaining();
-    if (rem.len == 0 or rem[0] != '!') {
-        return .{ .err = core.parseError("symRef", start, "expected '!'", .{
-            .expected = "!",
+    if (rem.len == 0 or rem[0] != '@') {
+        return .{ .err = core.parseError("symRef", start, "expected '@'", .{
+            .expected = "@",
             .kind = .syntactic,
         }) };
     }
     if (rem.len < 2 or !isIdentStart(rem[1])) {
-        return .{ .err = core.parseError("symRef", start + 1, "expected identifier after '!'", .{
+        return .{ .err = core.parseError("symRef", start + 1, "expected identifier after '@'", .{
             .expected = "letter or '_'",
             .kind = .syntactic,
         }) };
@@ -260,9 +271,105 @@ const rbracketP = parserOf(punctThunk(']', .rbracket, "rbracket"));
 const plusP = parserOf(punctThunk('+', .plus, "plus"));
 const minusP = parserOf(punctThunk('-', .minus, "minus"));
 const starP = parserOf(punctThunk('*', .star, "star"));
+const slashP = parserOf(punctThunk('/', .slash, "slash"));
+const percentP = parserOf(punctThunk('%', .percent, "percent"));
+const pipeP = parserOf(punctThunk('|', .pipe, "pipe"));
+const caretP = parserOf(punctThunk('^', .caret, "caret"));
+const tildeP = parserOf(punctThunk('~', .tilde, "tilde"));
+const shlP = parserOf(shiftThunk('<', .shl, "shl"));
+const shrP = parserOf(shiftThunk('>', .shr, "shr"));
 const ltP = parserOf(punctThunk('<', .lt, "lt"));
 const gtP = parserOf(punctThunk('>', .gt, "gt"));
 const dotP = parserOf(punctThunk('.', .dot, "dot"));
+const stringP = parserOf(stringThunk);
+fn shiftThunk(comptime byte: u8, comptime kind: Token.Kind, comptime name: []const u8) fn (*core.ParseState) core.ParseResult(Token) {
+    return struct {
+        fn parse(state: *core.ParseState) core.ParseResult(Token) {
+            const start = state.index;
+            const rem = state.remaining();
+            if (rem.len < 2 or rem[0] != byte or rem[1] != byte) {
+                return .{ .err = core.parseError(name, start, "expected shift operator", .{
+                    .expected = &[_]u8{ byte, byte },
+                    .kind = .syntactic,
+                }) };
+            }
+            state.advance(2);
+            return core.ok(Token{ .kind = kind, .start = u32At(start), .end = u32At(state.index), .value = 0 }, state.index);
+        }
+    }.parse;
+}
+
+const decodedEscapeMissing: u16 = 0xFFFF;
+
+fn decodeEscape(b: u8) u16 {
+    return switch (b) {
+        '0' => 0x00,
+        'n' => 0x0A,
+        'r' => 0x0D,
+        't' => 0x09,
+        '\\' => 0x5C,
+        '"' => 0x22,
+        else => decodedEscapeMissing,
+    };
+}
+
+/// Match a double-quoted string literal with C-style escapes.
+/// The token's span covers from the opening `"` to the closing
+/// `"` (inclusive). Body decoding lives at codegen time; the
+/// lexer only validates that every escape is legal and that the
+/// literal closes before EOF / newline.
+fn stringThunk(state: *core.ParseState) core.ParseResult(Token) {
+    const start = state.index;
+    const rem = state.remaining();
+    if (rem.len == 0 or rem[0] != '"') {
+        return .{ .err = core.parseError("string", start, "expected '\"'", .{
+            .expected = "\"",
+            .kind = .syntactic,
+        }) };
+    }
+    var j: usize = 1;
+    while (j < rem.len) {
+        const b = rem[j];
+        if (b == '"') {
+            j += 1;
+            state.advance(j);
+            return core.ok(Token{
+                .kind = .string,
+                .start = u32At(start),
+                .end = u32At(state.index),
+                .value = 0,
+            }, state.index);
+        }
+        if (b == '\n' or b == '\r') {
+            return .{ .err = core.parseError("string", start + j, "unterminated string literal (newline before closing '\"')", .{
+                .expected = "\"",
+                .kind = .incomplete,
+            }) };
+        }
+        if (b == '\\') {
+            if (j + 1 >= rem.len) {
+                return .{ .err = core.parseError("string", start + j, "unterminated escape at end of input", .{
+                    .expected = "escape character",
+                    .kind = .incomplete,
+                }) };
+            }
+            if (decodeEscape(rem[j + 1]) == decodedEscapeMissing) {
+                return .{ .err = core.parseError("string", start + j, "unknown escape sequence", .{
+                    .expected = "\\0 \\n \\r \\t \\\\ \\\"",
+                    .kind = .lexical,
+                }) };
+            }
+            j += 2;
+            continue;
+        }
+        j += 1;
+    }
+    return .{ .err = core.parseError("string", start + j, "unterminated string literal (EOF before closing '\"')", .{
+        .expected = "\"",
+        .kind = .incomplete,
+    }) };
+}
+
 /// Bare `&` only — refuses when followed by a hex digit so the
 /// `addrLiteral` parser (which DOES want hex digits) handles
 /// `&FFFF` and any over-length-but-still-hex variants like
@@ -299,15 +406,19 @@ const ampersandP = parserOf(ampersandThunk);
 // back to the first alternative. Putting `newlineP` at the front
 // makes bare `\r` surface as a "newline" lexical error instead of
 // whatever the first prefix-checker would have said.
-// Order matters: `addrP` must come before `ampersandP` so
-// `&FFFF` is recognized as an address literal before the bare
-// `&` punct gets a chance.
+// Order also matters in two longest-match cases:
+//   - `addrP` before `ampersandP` so `&FFFF` is an address literal
+//     before the bare `&` punct gets a chance.
+//   - `shlP` / `shrP` (`<<` / `>>`) before `ltP` / `gtP` (`<` / `>`)
+//     so the two-byte shift operators win over the single-byte
+//     comparisons.
 const oneToken = knit.choice(Token, &[_]core.Parser(Token){
-    newlineP,   hexP,    addrP,     symRefP,   identP,
-    colonP,     commaP,  equalsP,   lbraceP,   rbraceP,
-    lparenP,    rparenP, lbracketP, rbracketP, plusP,
-    minusP,     starP,   ltP,       gtP,       dotP,
-    ampersandP,
+    newlineP, hexP,    addrP,   symRefP,    identP,
+    stringP,  colonP,  commaP,  equalsP,    lbraceP,
+    rbraceP,  lparenP, rparenP, lbracketP,  rbracketP,
+    plusP,    minusP,  starP,   slashP,     percentP,
+    pipeP,    caretP,  tildeP,  shlP,       shrP,
+    ltP,      gtP,     dotP,    ampersandP,
 });
 
 // ---------- whitespace + comment skipping (between tokens) ----------
