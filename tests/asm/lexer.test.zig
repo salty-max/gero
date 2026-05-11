@@ -320,6 +320,96 @@ test "lex: data8 directive accepts mixed bytes + string" {
     });
 }
 
+// ---------- char literals ----------
+
+test "lex: 'A' char literal carries the byte value" {
+    var ts = try tokenize("'A'");
+    defer ts.deinit();
+    try std.testing.expectEqual(Token.Kind.char, ts.tokens[0].kind);
+    try std.testing.expectEqual(@as(u16, 0x41), ts.tokens[0].value);
+    try std.testing.expect(!ts.hasErrors());
+}
+
+test "lex: ' ' (space) char literal" {
+    var ts = try tokenize("' '");
+    defer ts.deinit();
+    try std.testing.expectEqual(Token.Kind.char, ts.tokens[0].kind);
+    try std.testing.expectEqual(@as(u16, 0x20), ts.tokens[0].value);
+}
+
+test "lex: char literal escapes resolve to bytes" {
+    const cases = [_]struct { src: []const u8, value: u16 }{
+        .{ .src = "'\\0'", .value = 0x00 },
+        .{ .src = "'\\n'", .value = 0x0A },
+        .{ .src = "'\\r'", .value = 0x0D },
+        .{ .src = "'\\t'", .value = 0x09 },
+        .{ .src = "'\\\\'", .value = 0x5C },
+        .{ .src = "'\\\"'", .value = 0x22 },
+        .{ .src = "'\\''", .value = 0x27 },
+    };
+    for (cases) |c| {
+        var ts = try tokenize(c.src);
+        defer ts.deinit();
+        try std.testing.expectEqual(Token.Kind.char, ts.tokens[0].kind);
+        try std.testing.expectEqual(c.value, ts.tokens[0].value);
+        try std.testing.expect(!ts.hasErrors());
+    }
+}
+
+test "lex: empty char literal '' errors as lexical" {
+    var ts = try tokenize("''");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("char", ts.errors[0].parser);
+    try std.testing.expect(ts.errors[0].kind == .lexical);
+}
+
+test "lex: multi-byte 'AB' errors as lexical" {
+    var ts = try tokenize("'AB'");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("char", ts.errors[0].parser);
+    try std.testing.expect(ts.errors[0].kind == .lexical);
+}
+
+test "lex: unterminated char literal at EOF errors as incomplete" {
+    var ts = try tokenize("'A");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("char", ts.errors[0].parser);
+    try std.testing.expect(ts.errors[0].kind == .incomplete);
+}
+
+test "lex: unterminated char literal before newline errors as incomplete" {
+    var ts = try tokenize("'A\n");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("char", ts.errors[0].parser);
+    try std.testing.expect(ts.errors[0].kind == .incomplete);
+}
+
+test "lex: unknown char escape errors as lexical" {
+    var ts = try tokenize("'\\q'");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("char", ts.errors[0].parser);
+    try std.testing.expect(ts.errors[0].kind == .lexical);
+}
+
+test "lex: char in operand position next to mnemonic" {
+    try expectKinds("cmp r1, 'A'", &.{
+        .ident, .ident, .comma, .char,
+    });
+}
+
+test "lex: char alongside string literal still both work" {
+    const src = "data8 ch = 'A'\ndata8 hi = \"Hi\"\n";
+    try expectKinds(src, &.{
+        .ident, .ident, .equals, .char,   .newline,
+        .ident, .ident, .equals, .string, .newline,
+    });
+}
+
 // ---------- realistic programs ----------
 
 test "lex: labelled instruction with operands and comment" {
