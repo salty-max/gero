@@ -7,6 +7,7 @@ const vm_mod = @import("vm.zig");
 const opcodes = @import("opcodes.zig");
 const mov = @import("handlers/mov.zig");
 const stack_handlers = @import("handlers/stack.zig");
+const arith = @import("handlers/arith.zig");
 const VM = vm_mod.VM;
 const Register = vm_mod.Register;
 const Flag = vm_mod.Flag;
@@ -87,6 +88,27 @@ pub const handler_table: [256]Handler = blk: {
     t[0x30] = stack_handlers.pushImm16;
     t[0x31] = stack_handlers.pushReg;
     t[0x32] = stack_handlers.popReg;
+
+    // arithmetic
+    t[0x40] = arith.addImm16Reg;
+    t[0x41] = arith.addRegReg;
+    t[0x42] = arith.addRegAcu;
+    t[0x43] = arith.subImm16Reg;
+    t[0x44] = arith.subRegReg;
+    t[0x45] = arith.subRegAcu;
+    t[0x46] = arith.mulImm16Reg;
+    t[0x47] = arith.mulRegReg;
+    t[0x48] = arith.incReg;
+    t[0x49] = arith.decReg;
+    t[0x4A] = arith.negReg;
+    t[0x4B] = arith.divImm16Reg;
+    t[0x4C] = arith.divRegReg;
+    t[0x4D] = arith.divsImm16Reg;
+    t[0x4E] = arith.divsRegReg;
+    t[0x64] = arith.adcImm16Reg;
+    t[0x65] = arith.adcRegReg;
+    t[0x66] = arith.sbcImm16Reg;
+    t[0x67] = arith.sbcRegReg;
 
     break :blk t;
 };
