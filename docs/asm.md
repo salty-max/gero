@@ -306,10 +306,9 @@ include "sound.gas"
 include "level1.gas"
 ```
 
-Resolves another `.gas` file at this point and inlines its tokens.
-Path is relative to the including file. Borrows from the C/Rust
-`#pragma once` / `mod` tradition rather than the literal-splice
-NASM tradition — see "Re-include semantics" below.
+Resolves another `.gas` file at this point and inlines its tokens
+**textually** — same model as NASM `%include`, ca65 `.include`,
+6502 / z80 assemblers. Path is relative to the including file.
 
 Rules:
 
@@ -323,20 +322,25 @@ Rules:
   doing the include. No search path / no system include directory
   in v0.1.
 
-**Re-include semantics (`pragma once`):** each unique file is
-resolved at most once per assembly run. If two files both include
-`utils.gas`, `utils.gas` is read and lexed once, and its tokens
-appear once in the fused stream. The second `include "utils.gas"`
-is a silent no-op.
+**Re-include semantics:** every `include` directive splices in
+the target's tokens, every time. If two files both `include
+"utils.gas"`, the bytes from `utils.gas` are emitted twice. This
+matches the asm tradition and gives hand-writers a way to repeat
+parametric blocks before macros (post-v0.1) land.
 
-Path identity is determined by canonical form (resolved symlinks,
-normalized separators). `./utils.gas`, `utils.gas`, and
-`../current/utils.gas` are all the same file.
+When you want a header to appear at most once, wrap it in an
+include guard at the top of the file — same pattern as NASM:
 
-This trades the NASM "splice every time + write your own include
-guards" model for a guard-free experience. Code that needs
-"emit-this-block-N-times" should use other directives (or v-next
-macros) rather than `include`.
+```asm
+; ----- utils.gas -----
+;ifndef UTILS_GAS    ; (planned syntax — TBD)
+;  ... shared definitions here ...
+;endif
+```
+
+(Conditional assembly is post-v0.1; until it lands, hand-writers
+either control the include graph manually or accept the duplicate
+emission for repeated sections.)
 
 ### 2.3 Instructions
 
