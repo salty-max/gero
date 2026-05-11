@@ -137,26 +137,36 @@ test "lex: identifier can't start with a digit — emits an error then resumes" 
     try std.testing.expectEqualStrings("bad", ts.tokens[0].lexeme("9bad"));
 }
 
-test "lex: !sym_ref" {
-    var ts = try tokenize("!hasFrame");
+test "lex: @sym_ref" {
+    var ts = try tokenize("@hasFrame");
     defer ts.deinit();
     try std.testing.expectEqual(Token.Kind.sym_ref, ts.tokens[0].kind);
-    try std.testing.expectEqualStrings("!hasFrame", ts.tokens[0].lexeme("!hasFrame"));
+    try std.testing.expectEqualStrings("@hasFrame", ts.tokens[0].lexeme("@hasFrame"));
 }
 
-test "lex: bare ! rejected" {
-    var ts = try tokenize("!");
+test "lex: bare @ rejected" {
+    var ts = try tokenize("@");
     defer ts.deinit();
     try std.testing.expect(ts.hasErrors());
     try std.testing.expectEqualStrings("symRef", ts.errors[0].parser);
 }
 
-test "lex: ! followed by digit rejected — both bytes flagged" {
-    var ts = try tokenize("!9");
+test "lex: @ followed by digit rejected — both bytes flagged" {
+    var ts = try tokenize("@9");
     defer ts.deinit();
     try std.testing.expect(ts.hasErrors());
-    // The '!' errors via symRef; then '9' errors via the fall-through.
+    // The '@' errors via symRef; then '9' errors via the fall-through.
     try std.testing.expect(ts.errors.len >= 1);
+}
+
+test "lex: legacy '!sym' no longer recognized after spec revision" {
+    // '!' is no longer the sym-ref prefix (replaced by '@' in v0.1-final).
+    // The bare '!' surfaces as an unknown byte; the rest still lexes.
+    var ts = try tokenize("!hasFrame");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqual(Token.Kind.ident, ts.tokens[0].kind);
+    try std.testing.expectEqualStrings("hasFrame", ts.tokens[0].lexeme("!hasFrame"));
 }
 
 // ---------- punctuation ----------
@@ -171,8 +181,49 @@ test "lex: all punctuation tokens" {
     });
 }
 
+test "lex: arithmetic operator tokens (/ % | ^ ~)" {
+    try expectKinds("/ % | ^ ~", &.{
+        .slash, .percent, .pipe, .caret, .tilde,
+    });
+}
+
+test "lex: << longest-match wins over two lt" {
+    try expectKinds("<<", &.{.shl});
+}
+
+test "lex: >> longest-match wins over two gt" {
+    try expectKinds(">>", &.{.shr});
+}
+
+test "lex: shift mixed with comparisons" {
+    try expectKinds("x << $01 > $00", &.{
+        .ident, .shl, .hex, .gt, .hex,
+    });
+}
+
+test "lex: space-separated < stays as lt (no shift glue)" {
+    try expectKinds("< <", &.{ .lt, .lt });
+}
+
+test "lex: '< x' lexes as lt + ident (whitespace breaks longest-match)" {
+    try expectKinds("< x", &.{ .lt, .ident });
+}
+
+test "lex: compile-time expression with full operator set" {
+    const src = "$01 + $02 * $03 - $04 / $05 % $06 | $07 ^ $08 ~ $09 << $0A >> $0B";
+    try expectKinds(src, &.{
+        .hex,     .plus,  .hex,
+        .star,    .hex,   .minus,
+        .hex,     .slash, .hex,
+        .percent, .hex,   .pipe,
+        .hex,     .caret, .hex,
+        .tilde,   .hex,   .shl,
+        .hex,     .shr,   .hex,
+    });
+}
+
 test "lex: arithmetic expression inside &[ ]" {
-    const src = "mov &[!t + r1 * STRIDE - $02], acu";
+    const src = "mov &[@t + r1 * STRIDE - $02], acu";
     try expectKinds(src, &.{
         .ident,   .ampersand, .lbracket,
         .sym_ref, .plus,      .ident,
@@ -190,7 +241,7 @@ test "lex: cast syntax <Type> obj.field" {
 }
 
 test "lex: field access in addr expression" {
-    const src = "mov acu, &[!player + Player.mp]";
+    const src = "mov acu, &[@player + Player.mp]";
     try expectKinds(src, &.{
         .ident,     .ident,    .comma,
         .ampersand, .lbracket, .sym_ref,
@@ -208,6 +259,65 @@ test "lex: &FFFF stays as addr literal (addr wins over ampersand)" {
     defer ts.deinit();
     try std.testing.expectEqual(Token.Kind.addr, ts.tokens[0].kind);
     try std.testing.expectEqual(@as(u16, 0xFFFF), ts.tokens[0].value);
+}
+
+// ---------- string literals ----------
+
+test "lex: empty string literal" {
+    var ts = try tokenize("\"\"");
+    defer ts.deinit();
+    try std.testing.expectEqual(Token.Kind.string, ts.tokens[0].kind);
+    try std.testing.expectEqualStrings("\"\"", ts.tokens[0].lexeme("\"\""));
+    try std.testing.expect(!ts.hasErrors());
+}
+
+test "lex: plain string literal" {
+    var ts = try tokenize("\"hello\"");
+    defer ts.deinit();
+    try std.testing.expectEqual(Token.Kind.string, ts.tokens[0].kind);
+    try std.testing.expectEqualStrings("\"hello\"", ts.tokens[0].lexeme("\"hello\""));
+    try std.testing.expect(!ts.hasErrors());
+}
+
+test "lex: string literal with every supported escape" {
+    const src = "\"a\\0b\\nc\\rd\\te\\\\f\\\"g\"";
+    var ts = try tokenize(src);
+    defer ts.deinit();
+    try std.testing.expectEqual(Token.Kind.string, ts.tokens[0].kind);
+    try std.testing.expect(!ts.hasErrors());
+}
+
+test "lex: unterminated string literal at EOF errors" {
+    var ts = try tokenize("\"oops");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("string", ts.errors[0].parser);
+    try std.testing.expect(ts.errors[0].kind == .incomplete);
+}
+
+test "lex: unterminated string literal before newline errors" {
+    var ts = try tokenize("\"oops\n");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("string", ts.errors[0].parser);
+    try std.testing.expect(ts.errors[0].kind == .incomplete);
+}
+
+test "lex: unknown escape sequence flagged as lexical" {
+    var ts = try tokenize("\"\\q\"");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("string", ts.errors[0].parser);
+    try std.testing.expect(ts.errors[0].kind == .lexical);
+}
+
+test "lex: data8 directive accepts mixed bytes + string" {
+    const src = "data8 greeting = { \"hi\", $00 }\n";
+    try expectKinds(src, &.{
+        .ident,   .ident, .equals, .lbrace,
+        .string,  .comma, .hex,    .rbrace,
+        .newline,
+    });
 }
 
 // ---------- realistic programs ----------
@@ -246,7 +356,7 @@ test "lex: exported constant directive" {
 // ---------- error recovery + multi-error ----------
 
 test "lex: two unknown bytes in one line surface as two errors" {
-    var ts = try tokenize("hlt @ # foo");
+    var ts = try tokenize("hlt # ? foo");
     defer ts.deinit();
     try std.testing.expectEqual(@as(usize, 2), ts.errors.len);
     // The valid tokens around the bad bytes still made it through.
@@ -255,7 +365,7 @@ test "lex: two unknown bytes in one line surface as two errors" {
 }
 
 test "lex: bad byte doesn't poison the rest of the stream" {
-    var ts = try tokenize("@ hlt\n");
+    var ts = try tokenize("# hlt\n");
     defer ts.deinit();
     try std.testing.expect(ts.hasErrors());
     try std.testing.expectEqual(Token.Kind.ident, ts.tokens[0].kind); // hlt
