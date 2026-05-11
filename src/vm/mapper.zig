@@ -19,54 +19,50 @@ pub const MapError = error{
     RangeOverflow,
 };
 
-/// Host-pluggable IO interface. The host implements the vtable
-/// functions and supplies a `ctx` pointer; the mapper forwards
-/// every claimed access through them.
+/// Host-pluggable IO interface. Intrusive: the host embeds a
+/// `Device` as a field of its concrete struct, supplies a vtable
+/// whose callbacks recover the parent struct via `@fieldParentPtr`,
+/// and hands `&concrete.device` to the mapper.
 ///
-/// `ctx` is `*anyopaque` because this is the public host boundary
-/// — the host owns the device type, the VM only sees the contract.
+/// No type erasure — the mapper stores `*Device` (typed) and the
+/// host's vtable callbacks know exactly which struct owns them.
 pub const Device = struct {
-    // allow-strict: host-boundary type erasure (see doc above)
-    ctx: *anyopaque,
     vtable: *const VTable,
 
-    /// Method table. Each callback receives the same `ctx` that
-    /// was supplied at registration plus the access details.
+    /// Method table. Each callback receives the same `*Device`
+    /// pointer the mapper holds; the host recovers the parent
+    /// struct via `@fieldParentPtr("<field-name>", self)`.
     pub const VTable = struct {
-        // allow-strict: same host-boundary erasure as `Device.ctx`.
-        readByte: *const fn (ctx: *anyopaque, addr: u16) u8,
-        // allow-strict: same host-boundary erasure as `Device.ctx`.
-        writeByte: *const fn (ctx: *anyopaque, addr: u16, value: u8) void,
-        // allow-strict: same host-boundary erasure as `Device.ctx`.
-        readWord: *const fn (ctx: *anyopaque, addr: u16) u16,
-        // allow-strict: same host-boundary erasure as `Device.ctx`.
-        writeWord: *const fn (ctx: *anyopaque, addr: u16, value: u16) void,
+        readByte: *const fn (self: *Device, addr: u16) u8,
+        writeByte: *const fn (self: *Device, addr: u16, value: u8) void,
+        readWord: *const fn (self: *Device, addr: u16) u16,
+        writeWord: *const fn (self: *Device, addr: u16, value: u16) void,
     };
 
     /// Convenience: byte read through the vtable.
-    pub fn readByte(self: Device, addr: u16) u8 {
-        return self.vtable.readByte(self.ctx, addr);
+    pub fn readByte(self: *Device, addr: u16) u8 {
+        return self.vtable.readByte(self, addr);
     }
 
     /// Convenience: byte write through the vtable.
-    pub fn writeByte(self: Device, addr: u16, value: u8) void {
-        self.vtable.writeByte(self.ctx, addr, value);
+    pub fn writeByte(self: *Device, addr: u16, value: u8) void {
+        self.vtable.writeByte(self, addr, value);
     }
 
     /// Convenience: word read through the vtable.
-    pub fn readWord(self: Device, addr: u16) u16 {
-        return self.vtable.readWord(self.ctx, addr);
+    pub fn readWord(self: *Device, addr: u16) u16 {
+        return self.vtable.readWord(self, addr);
     }
 
     /// Convenience: word write through the vtable.
-    pub fn writeWord(self: Device, addr: u16, value: u16) void {
-        self.vtable.writeWord(self.ctx, addr, value);
+    pub fn writeWord(self: *Device, addr: u16, value: u16) void {
+        self.vtable.writeWord(self, addr, value);
     }
 };
 
 const Region = struct {
     id: RegionId,
-    device: Device,
+    device: *Device,
     start: u16,
     /// Inclusive — kept as `u16` so the full last byte 0xFFFF fits.
     end: u16,
@@ -106,7 +102,7 @@ pub const MemoryMapper = struct {
     /// `map` calls take priority.
     pub fn map(
         self: *MemoryMapper,
-        device: Device,
+        device: *Device,
         start: u16,
         size: usize,
     ) (std.mem.Allocator.Error || MapError)!RegionId {
@@ -177,7 +173,7 @@ pub const MemoryMapper = struct {
         self.mem.writeWord(addr, value);
     }
 
-    fn findDevice(self: MemoryMapper, addr: u16) ?Device {
+    fn findDevice(self: MemoryMapper, addr: u16) ?*Device {
         // Iterate newest-first so the most-recently-mapped region
         // wins on overlap.
         var i: usize = self.regions.items.len;
