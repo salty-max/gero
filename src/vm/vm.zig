@@ -33,6 +33,8 @@ pub const step = dispatch_mod.step;
 pub const run = dispatch_mod.run;
 /// Re-export: deliver a fault through the interrupt mechanism.
 pub const raiseFault = dispatch_mod.raiseFault;
+/// Re-export: deliver a maskable IRQ (respects `flg.I` and `im`).
+pub const raiseIrq = dispatch_mod.raiseIrq;
 /// Re-export: address of the IVT slot for a given vector.
 pub const ivtSlot = dispatch_mod.ivtSlot;
 /// Re-export: IVT base address.
