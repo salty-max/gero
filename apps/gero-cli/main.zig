@@ -2,6 +2,7 @@
 /// per-subcommand modules, plumbs file-IO + stdio.
 const std = @import("std");
 const cli = @import("cli.zig");
+const term_mod = @import("term.zig");
 const run_cmd = @import("run.zig");
 
 pub fn main(init: std.process.Init) !u8 {
@@ -22,15 +23,24 @@ pub fn main(init: std.process.Init) !u8 {
     for (raw_args, 0..) |a, i| args[i] = a;
 
     const parsed = cli.parse(args[1..]) catch |err| {
+        // Color isn't known yet, so write a plain error.
+        var fallback = term_mod.Term{ .out = stderr, .color = false };
         switch (err) {
-            error.UnknownCommand => try stderr.print("gero: unknown subcommand\nrun `gero --help` for the list\n", .{}),
-            error.UnknownFlag => try stderr.print("gero: unknown flag\n", .{}),
-            error.MissingFlagValue => try stderr.print("gero: flag is missing its value\n", .{}),
-            error.InvalidEnumValue => try stderr.print("gero: flag value is not recognized\n", .{}),
-            error.TooManyPositionals => try stderr.print("gero: too many positional args (max 16)\n", .{}),
+            error.UnknownCommand => try fallback.err("unknown subcommand. Run `gero --help` for the list.", .{}),
+            error.UnknownFlag => try fallback.err("unknown flag.", .{}),
+            error.MissingFlagValue => try fallback.err("flag is missing its value.", .{}),
+            error.InvalidEnumValue => try fallback.err("flag value is not recognized.", .{}),
+            error.TooManyPositionals => try fallback.err("too many positional args (max 16).", .{}),
         }
         return 2;
     };
+
+    const stderr_color = term_mod.resolve(
+        toTermChoice(parsed.options.color),
+        envFlag(init.environ_map, "NO_COLOR"),
+        std.Io.File.stderr().isTty(io) catch false,
+    );
+    var term = term_mod.Term{ .out = stderr, .color = stderr_color };
 
     if (parsed.command == null) {
         try cli.topHelp(stdout);
@@ -43,12 +53,24 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     return switch (cmd) {
-        .run => runDispatch(io, arena, parsed.options, stdout, stderr),
+        .run => runDispatch(io, arena, parsed.options, stdout, &term),
         else => blk: {
-            try stderr.print("gero {s}: not yet implemented\n", .{cli.commandName(cmd)});
+            try term.err("gero {s}: not yet implemented", .{cli.commandName(cmd)});
             break :blk 1;
         },
     };
+}
+
+fn toTermChoice(c: cli.ColorChoice) term_mod.ColorChoice {
+    return switch (c) {
+        .auto => .auto,
+        .always => .always,
+        .never => .never,
+    };
+}
+
+fn envFlag(env: *std.process.Environ.Map, key: []const u8) bool {
+    return env.get(key) != null;
 }
 
 const SavFileSink = struct {
@@ -80,24 +102,24 @@ fn runDispatch(
     arena: std.mem.Allocator,
     opts: cli.Options,
     stdout: *std.Io.Writer,
-    stderr: *std.Io.Writer,
+    term: *term_mod.Term,
 ) !u8 {
     const positionals = opts.positional();
     if (positionals.len < 1) {
-        try stderr.print("gero run: missing .gx file path\n", .{});
+        try term.err("gero run: missing .gx file path", .{});
         return 2;
     }
     const gx_path = positionals[0];
 
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, gx_path, arena, .unlimited) catch |err| {
-        try stderr.print("gero run: cannot read {s} ({s})\n", .{ gx_path, @errorName(err) });
+        try term.err("gero run: cannot read {s} ({s})", .{ gx_path, @errorName(err) });
         return 1;
     };
 
     const sav_path = try savPathFor(arena, gx_path);
     var sav_sink = SavFileSink.init(io, std.Io.Dir.cwd(), sav_path);
 
-    return run_cmd.execute(arena, opts, stdout, stderr, &sav_sink.sink, bytes);
+    return run_cmd.execute(arena, opts, stdout, term, &sav_sink.sink, bytes);
 }
 
 fn savPathFor(arena: std.mem.Allocator, gx_path: []const u8) ![]u8 {

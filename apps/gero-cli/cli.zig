@@ -26,6 +26,9 @@ pub const Target = enum { vm, gtx_16 };
 /// `--optimize` values per `cli.md` §2.
 pub const Optimize = enum { debug, release, size };
 
+/// `--color` values: `auto` (TTY + `NO_COLOR`), `always`, `never`.
+pub const ColorChoice = enum { auto, always, never };
+
 /// Maximum positional args a single invocation can hold. v0.1
 /// commands top out at 1-2; keep it generous to absorb future
 /// `gero build` multi-source forms without re-architecting.
@@ -39,6 +42,7 @@ pub const Options = struct {
     target: Target = .vm,
     optimize: Optimize = .debug,
     out: ?[]const u8 = null,
+    color: ColorChoice = .auto,
     positional_buf: [max_positionals][]const u8 = undefined,
     positional_count: usize = 0,
 
@@ -134,6 +138,8 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command) std.Io.Writer.Error!void {
     try out.print("  --target=<spec>  vm (default) or gtx-16.\n", .{});
     try out.print("  --optimize=<m>   debug (default) / release / size.\n", .{});
     try out.print("  --out=<path>     Output destination for file-producing commands.\n", .{});
+    try out.print("  --color=<mode>   auto (default) / always / never.\n", .{});
+    try out.print("  --no-color       Shortcut for --color=never.\n", .{});
 }
 
 fn parseTarget(s: []const u8) ParseError!Target {
@@ -149,7 +155,14 @@ fn parseOptimize(s: []const u8) ParseError!Optimize {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, quiet, verbose, target, optimize, out };
+fn parseColor(s: []const u8) ParseError!ColorChoice {
+    if (std.mem.eql(u8, s, "auto")) return .auto;
+    if (std.mem.eql(u8, s, "always")) return .always;
+    if (std.mem.eql(u8, s, "never")) return .never;
+    return error.InvalidEnumValue;
+}
+
+const FlagKind = enum { help, quiet, verbose, target, optimize, out, color, no_color };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
@@ -158,6 +171,8 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "target")) return .target;
     if (std.mem.eql(u8, s, "optimize")) return .optimize;
     if (std.mem.eql(u8, s, "out")) return .out;
+    if (std.mem.eql(u8, s, "color")) return .color;
+    if (std.mem.eql(u8, s, "no-color")) return .no_color;
     return null;
 }
 
@@ -177,12 +192,14 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .target => opts.target = try parseTarget(value orelse return error.MissingFlagValue),
         .optimize => opts.optimize = try parseOptimize(value orelse return error.MissingFlagValue),
         .out => opts.out = value orelse return error.MissingFlagValue,
+        .color => opts.color = try parseColor(value orelse return error.MissingFlagValue),
+        .no_color => opts.color = .never,
     }
 }
 
 fn needsValue(kind: FlagKind) bool {
     return switch (kind) {
-        .target, .optimize, .out => true,
+        .target, .optimize, .out, .color => true,
         else => false,
     };
 }
