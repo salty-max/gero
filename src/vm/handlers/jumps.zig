@@ -15,7 +15,7 @@ fn fault(vm: *VM, vector: dispatch.Vector) StepResult {
 }
 
 fn readAddr(vm: *const VM) u16 {
-    return vm.mmap.readWord(vm.regs.read(.ip) +% 1);
+    return vm.readWord(vm.regs.read(.ip) +% 1);
 }
 
 fn taken(vm: *VM, target: u16) StepResult {
@@ -33,7 +33,7 @@ pub fn jmpAddr(vm: *VM) StepResult {
 /// `0x71` — `jmp Reg` → `ip ← reg`.
 pub fn jmpReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
+    const reg = vm.readByte(ip +% 1);
     const target = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return taken(vm, target);
 }
@@ -123,8 +123,8 @@ pub fn jnzAddr(vm: *VM) StepResult {
 /// disturb a surrounding `cmp` / `tst` chain.
 pub fn djnzRegAddr(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
-    const target = vm.mmap.readWord(ip +% 2);
+    const reg = vm.readByte(ip +% 1);
+    const target = vm.readWord(ip +% 2);
     const value = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     const new_value = value -% 1;
     if (!vm.regs.writeByIndex(reg, new_value)) return fault(vm, .invalid_register);
@@ -136,7 +136,7 @@ pub fn djnzRegAddr(vm: *VM) StepResult {
 /// Offset is post-instruction (the assembler emits `target - (here + 2)`).
 pub fn jrImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const offset_byte = vm.mmap.readByte(ip +% 1);
+    const offset_byte = vm.readByte(ip +% 1);
     // safety: u8 → i8 preserves the bit pattern as a signed offset
     const offset_i8: i8 = @bitCast(offset_byte);
     const offset_i16: i16 = offset_i8;

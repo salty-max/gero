@@ -196,7 +196,7 @@ pub const handler_table: [256]Handler = blk: {
 /// schema-derived size.
 pub fn step(vm: *VM) StepResult {
     const ip_before = vm.regs.read(.ip);
-    const op = vm.mmap.readByte(ip_before);
+    const op = vm.readByte(ip_before);
     const handler = handler_table[op];
     const result = handler(vm);
     if (result == .cont or result == .breakpoint) {
@@ -225,7 +225,7 @@ pub fn run(vm: *VM) StepResult {
 /// fault marker; otherwise the entry sequence pushes `ip` /
 /// `fp` / `flg`, sets `flg.I`, and jumps to the ISR.
 pub fn raiseFault(vm: *VM, vector: Vector) StepResult {
-    const target = vm.mmap.readWord(ivtSlot(vector));
+    const target = vm.readWord(ivtSlot(vector));
     if (target == 0) return .halted_on_fault;
 
     pushWord(vm, vm.regs.read(.ip));
@@ -263,14 +263,14 @@ pub fn ivtSlot(vector: Vector) u16 {
 pub fn pushWord(vm: *VM, value: u16) void {
     const new_sp = vm.regs.read(.sp) -% 2;
     vm.regs.write(.sp, new_sp);
-    vm.mmap.writeWord(new_sp, value);
+    vm.writeWord(new_sp, value);
 }
 
 /// Pop a 16-bit word from the stack. Post-increment:
 /// `value = mem[sp]; sp += 2`. Overflow wraps silently.
 pub fn popWord(vm: *VM) u16 {
     const sp = vm.regs.read(.sp);
-    const value = vm.mmap.readWord(sp);
+    const value = vm.readWord(sp);
     vm.regs.write(.sp, sp +% 2);
     return value;
 }

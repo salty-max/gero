@@ -30,14 +30,14 @@ fn enter(vm: *VM, target: u16, ip_after: u16) StepResult {
 /// `0x80` — `call Addr`.
 pub fn callAddr(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const target = vm.mmap.readWord(ip +% 1);
+    const target = vm.readWord(ip +% 1);
     return enter(vm, target, ip +% 3);
 }
 
 /// `0x81` — `call Reg` → `ip ← reg`.
 pub fn callReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const reg = vm.mmap.readByte(ip +% 1);
+    const reg = vm.readByte(ip +% 1);
     const target = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
     return enter(vm, target, ip +% 2);
 }
