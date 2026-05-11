@@ -12,16 +12,21 @@ const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
 
-/// Host callback that persists the SRAM bytes. The pointer
-/// `ctx` is opaque to `execute`; the host (or a test) owns
-/// whatever type backs it.
+/// Host interface that persists the SRAM bytes. Intrusive:
+/// hosts embed `SramSink` as a field and supply a vtable whose
+/// `write` callback recovers the parent via `@fieldParentPtr`.
 pub const SramSink = struct {
-    ctx: *anyopaque,
-    write_fn: *const fn (ctx: *anyopaque, bytes: []const u8) anyerror!void,
+    vtable: *const VTable,
 
-    /// Forward the bytes through the callback.
-    pub fn write(self: SramSink, bytes: []const u8) anyerror!void {
-        return self.write_fn(self.ctx, bytes);
+    /// Method table — the single `write` callback receives the
+    /// same `*SramSink` the caller holds.
+    pub const VTable = struct {
+        write: *const fn (self: *SramSink, bytes: []const u8) anyerror!void,
+    };
+
+    /// Forward the bytes through the vtable.
+    pub fn write(self: *SramSink, bytes: []const u8) anyerror!void {
+        return self.vtable.write(self, bytes);
     }
 };
 
@@ -34,7 +39,7 @@ pub fn execute(
     opts: cli.Options,
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
-    sram_sink: ?SramSink,
+    sram_sink: ?*SramSink,
     gx_bytes: []const u8,
 ) !u8 {
     if (opts.target == .gtx_16) {
@@ -96,16 +101,20 @@ pub fn execute(
 const testing = std.testing;
 
 const RecordingSink = struct {
+    sink: SramSink,
     bytes: std.ArrayList(u8) = .empty,
     allocator: std.mem.Allocator,
 
-    fn writeImpl(ctx: *anyopaque, data: []const u8) anyerror!void {
-        const self: *RecordingSink = @ptrCast(@alignCast(ctx));
+    const vtable: SramSink.VTable = .{ .write = writeImpl };
+
+    fn writeImpl(s: *SramSink, data: []const u8) anyerror!void {
+        // safety: `s` points at the `sink` field of a *RecordingSink
+        const self: *RecordingSink = @fieldParentPtr("sink", s);
         try self.bytes.appendSlice(self.allocator, data);
     }
 
-    fn sink(self: *RecordingSink) SramSink {
-        return .{ .ctx = self, .write_fn = writeImpl };
+    fn init(allocator: std.mem.Allocator) RecordingSink {
+        return .{ .sink = .{ .vtable = &vtable }, .allocator = allocator };
     }
 
     fn deinit(self: *RecordingSink) void {
@@ -204,20 +213,20 @@ test "execute: save syscall (int 0x21) hands SRAM bytes to the sink" {
     // Bank 0 starts at offset 16 + image_size = 28; zero-init.
     @memset(buf[16 + image_size ..], 0);
 
-    var sink = RecordingSink{ .allocator = testing.allocator };
-    defer sink.deinit();
+    var rec = RecordingSink.init(testing.allocator);
+    defer rec.deinit();
 
     var out_buf: [256]u8 = undefined;
     var err_buf: [256]u8 = undefined;
     var out: std.Io.Writer = .fixed(&out_buf);
     var err: std.Io.Writer = .fixed(&err_buf);
 
-    const code = try execute(testing.allocator, .{}, &out, &err, sink.sink(), &buf);
+    const code = try execute(testing.allocator, .{}, &out, &err, &rec.sink, &buf);
     try testing.expectEqual(@as(u8, 0), code);
     // First 2 bytes of SRAM hold the written word (little-endian).
-    try testing.expectEqual(@as(usize, 0x4000), sink.bytes.items.len);
-    try testing.expectEqual(@as(u8, 0xFE), sink.bytes.items[0]);
-    try testing.expectEqual(@as(u8, 0xCA), sink.bytes.items[1]);
+    try testing.expectEqual(@as(usize, 0x4000), rec.bytes.items.len);
+    try testing.expectEqual(@as(u8, 0xFE), rec.bytes.items[0]);
+    try testing.expectEqual(@as(u8, 0xCA), rec.bytes.items[1]);
 }
 
 test "execute: --target=gtx-16 exits 1 with explicit message" {

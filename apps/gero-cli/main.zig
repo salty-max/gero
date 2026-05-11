@@ -52,17 +52,26 @@ pub fn main(init: std.process.Init) !u8 {
 }
 
 const SavFileSink = struct {
+    sink: run_cmd.SramSink,
     io: std.Io,
     dir: std.Io.Dir,
     path: []const u8,
 
-    fn writeImpl(ctx: *anyopaque, bytes: []const u8) anyerror!void {
-        const self: *SavFileSink = @ptrCast(@alignCast(ctx));
+    const vtable: run_cmd.SramSink.VTable = .{ .write = writeImpl };
+
+    fn writeImpl(s: *run_cmd.SramSink, bytes: []const u8) anyerror!void {
+        // safety: `s` points at the `sink` field of a *SavFileSink
+        const self: *SavFileSink = @fieldParentPtr("sink", s);
         try self.dir.writeFile(self.io, .{ .sub_path = self.path, .data = bytes });
     }
 
-    fn sink(self: *SavFileSink) run_cmd.SramSink {
-        return .{ .ctx = self, .write_fn = writeImpl };
+    fn init(io: std.Io, dir: std.Io.Dir, path: []const u8) SavFileSink {
+        return .{
+            .sink = .{ .vtable = &vtable },
+            .io = io,
+            .dir = dir,
+            .path = path,
+        };
     }
 };
 
@@ -86,10 +95,9 @@ fn runDispatch(
     };
 
     const sav_path = try savPathFor(arena, gx_path);
-    var sink_state = SavFileSink{ .io = io, .dir = std.Io.Dir.cwd(), .path = sav_path };
-    const sink = sink_state.sink();
+    var sav_sink = SavFileSink.init(io, std.Io.Dir.cwd(), sav_path);
 
-    return run_cmd.execute(arena, opts, stdout, stderr, sink, bytes);
+    return run_cmd.execute(arena, opts, stdout, stderr, &sav_sink.sink, bytes);
 }
 
 fn savPathFor(arena: std.mem.Allocator, gx_path: []const u8) ![]u8 {
