@@ -1,9 +1,11 @@
-/// The fetch-decode-execute loop. Part 1 wires the dispatch
-/// skeleton + fault delivery — every byte at `ip` currently
-/// triggers the invalid-opcode fault. The opcode table and
-/// named per-opcode stubs land in a follow-up PR.
+/// The fetch-decode-execute loop. Reads the byte at `ip`, dispatches
+/// to the right handler in `handler_table`, and auto-advances `ip`
+/// past the instruction unless the handler set `ip` itself
+/// (jumps / calls / fault entry).
 const std = @import("std");
 const vm_mod = @import("vm.zig");
+const opcodes = @import("opcodes.zig");
+const mov = @import("handlers/mov.zig");
 const VM = vm_mod.VM;
 const Register = vm_mod.Register;
 const Flag = vm_mod.Flag;
@@ -40,10 +42,63 @@ pub const StepResult = enum {
     halted_on_fault,
 };
 
-/// One fetch-decode-execute cycle. Part 1 dispatches every byte
-/// to the invalid-opcode fault; later PRs add real handlers.
-pub fn step(vm: *VM) StepResult {
+/// Per-opcode handler. Receives the VM and returns the post-step
+/// outcome. A handler that returns `.cont` without touching `ip`
+/// leaves the auto-advance work to `step`.
+pub const Handler = *const fn (vm: *VM) StepResult;
+
+/// Default handler for bytes with no implementation — raises the
+/// invalid-opcode fault.
+fn unimplemented(vm: *VM) StepResult {
     return raiseFault(vm, .invalid_opcode);
+}
+
+/// 256-slot handler table. Bytes without a real handler default
+/// to `unimplemented`; subsequent opcode-family PRs install their
+/// handlers by overwriting individual slots here.
+pub const handler_table: [256]Handler = blk: {
+    var t = [_]Handler{unimplemented} ** 256;
+
+    // §5.1 — mov family
+    t[0x10] = mov.movImm16Reg;
+    t[0x11] = mov.movRegReg;
+    t[0x12] = mov.movRegAddr;
+    t[0x13] = mov.movAddrReg;
+    t[0x14] = mov.movImm16Addr;
+    t[0x15] = mov.movRegPtr;
+    t[0x16] = mov.movPtrReg;
+    t[0x17] = mov.movIndexed;
+    t[0x18] = mov.movImm16Ptr;
+    t[0x19] = mov.movRegZp;
+    t[0x1A] = mov.movZpReg;
+    t[0x1B] = mov.movImm16Zp;
+
+    // §5.2 — mov8 / movh / movl
+    t[0x20] = mov.mov8Imm8Addr;
+    t[0x21] = mov.mov8Imm8Reg;
+    t[0x22] = mov.mov8AddrReg;
+    t[0x23] = mov.mov8RegPtr;
+    t[0x24] = mov.mov8PtrReg;
+    t[0x25] = mov.movhRegAddr;
+    t[0x26] = mov.movlRegAddr;
+
+    break :blk t;
+};
+
+/// One fetch-decode-execute cycle. Reads the byte at `ip`,
+/// invokes its handler, and (if the handler returned `.cont`
+/// without moving `ip`) advances past the instruction by the
+/// schema-derived size.
+pub fn step(vm: *VM) StepResult {
+    const ip_before = vm.regs.read(.ip);
+    const op = vm.mmap.readByte(ip_before);
+    const handler = handler_table[op];
+    const result = handler(vm);
+    if (result == .cont and vm.regs.read(.ip) == ip_before) {
+        const info = opcodes.table[op] orelse return .halted_on_fault;
+        vm.regs.write(.ip, ip_before +% info.size());
+    }
+    return result;
 }
 
 /// Iterate `step` until it returns anything other than `.cont`.
