@@ -11,6 +11,7 @@
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
+const term_mod = @import("term.zig");
 
 /// Host interface that persists the SRAM bytes. Intrusive:
 /// hosts embed `SramSink` as a field and supply a vtable whose
@@ -38,17 +39,17 @@ pub fn execute(
     allocator: std.mem.Allocator,
     opts: cli.Options,
     stdout: *std.Io.Writer,
-    stderr: *std.Io.Writer,
+    term: *term_mod.Term,
     sram_sink: ?*SramSink,
     gx_bytes: []const u8,
 ) !u8 {
     if (opts.target == .gtx_16) {
-        try stderr.print("gero run: --target=gtx-16 is not implemented in this build\n", .{});
+        try term.err("gero run: --target=gtx-16 is not implemented in this build", .{});
         return 1;
     }
 
     const loaded = gero.vm.parseGx(gx_bytes) catch |err| {
-        try stderr.print("gero run: invalid .gx file ({s})\n", .{@errorName(err)});
+        try term.err("gero run: invalid .gx file ({s})", .{@errorName(err)});
         return 1;
     };
 
@@ -85,11 +86,11 @@ pub fn execute(
             .cont, .branched => continue,
             .halted => return 0,
             .halted_on_fault => {
-                try stderr.print("gero run: unhandled fault at ip=0x{X:0>4}\n", .{vm.regs.read(.ip)});
+                try term.err("gero run: unhandled fault at ip=0x{X:0>4}", .{vm.regs.read(.ip)});
                 return 6;
             },
             .breakpoint => {
-                if (opts.verbose) try stderr.print("gero run: breakpoint at ip=0x{X:0>4}\n", .{vm.regs.read(.ip)});
+                if (opts.verbose) try term.info("gero run: breakpoint at ip=0x{X:0>4}", .{vm.regs.read(.ip)});
                 return 2;
             },
         }
@@ -154,8 +155,9 @@ test "execute: hlt program exits 0" {
     var err_buf: [256]u8 = undefined;
     var out: std.Io.Writer = .fixed(&out_buf);
     var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
 
-    const code = try execute(testing.allocator, .{}, &out, &err, null, &buf);
+    const code = try execute(testing.allocator, .{}, &out, &term, null, &buf);
     try testing.expectEqual(@as(u8, 0), code);
 }
 
@@ -182,8 +184,9 @@ test "execute: print syscall (int 0x10) writes r1.lo to stdout" {
     var err_buf: [256]u8 = undefined;
     var out: std.Io.Writer = .fixed(&out_buf);
     var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
 
-    const code = try execute(testing.allocator, .{}, &out, &err, null, &buf);
+    const code = try execute(testing.allocator, .{}, &out, &term, null, &buf);
     try testing.expectEqual(@as(u8, 0), code);
     try testing.expectEqualStrings("HI", out_buf[0..out.end]);
 }
@@ -220,8 +223,9 @@ test "execute: save syscall (int 0x21) hands SRAM bytes to the sink" {
     var err_buf: [256]u8 = undefined;
     var out: std.Io.Writer = .fixed(&out_buf);
     var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
 
-    const code = try execute(testing.allocator, .{}, &out, &err, &rec.sink, &buf);
+    const code = try execute(testing.allocator, .{}, &out, &term, &rec.sink, &buf);
     try testing.expectEqual(@as(u8, 0), code);
     // First 2 bytes of SRAM hold the written word (little-endian).
     try testing.expectEqual(@as(usize, 0x4000), rec.bytes.items.len);
@@ -235,9 +239,10 @@ test "execute: --target=gtx-16 exits 1 with explicit message" {
     var err_buf: [256]u8 = undefined;
     var out: std.Io.Writer = .fixed(&out_buf);
     var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
 
     const opts: cli.Options = .{ .target = .gtx_16 };
-    const code = try execute(testing.allocator, opts, &out, &err, null, &buf);
+    const code = try execute(testing.allocator, opts, &out, &term, null, &buf);
     try testing.expectEqual(@as(u8, 1), code);
     try testing.expect(std.mem.indexOf(u8, err_buf[0..err.end], "gtx-16") != null);
 }
@@ -248,8 +253,9 @@ test "execute: bad magic exits 1 with structured message" {
     var err_buf: [256]u8 = undefined;
     var out: std.Io.Writer = .fixed(&out_buf);
     var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
 
-    const code = try execute(testing.allocator, .{}, &out, &err, null, &buf);
+    const code = try execute(testing.allocator, .{}, &out, &term, null, &buf);
     try testing.expectEqual(@as(u8, 1), code);
     try testing.expect(std.mem.indexOf(u8, err_buf[0..err.end], "BadMagic") != null);
 }
@@ -265,8 +271,9 @@ test "execute: unhandled fault exits 6" {
     var err_buf: [256]u8 = undefined;
     var out: std.Io.Writer = .fixed(&out_buf);
     var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
 
-    const code = try execute(testing.allocator, .{}, &out, &err, null, &buf);
+    const code = try execute(testing.allocator, .{}, &out, &term, null, &buf);
     try testing.expectEqual(@as(u8, 6), code);
     try testing.expect(std.mem.indexOf(u8, err_buf[0..err.end], "fault") != null);
 }
@@ -281,7 +288,8 @@ test "execute: brk exits 2" {
     var err_buf: [256]u8 = undefined;
     var out: std.Io.Writer = .fixed(&out_buf);
     var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
 
-    const code = try execute(testing.allocator, .{}, &out, &err, null, &buf);
+    const code = try execute(testing.allocator, .{}, &out, &term, null, &buf);
     try testing.expectEqual(@as(u8, 2), code);
 }
