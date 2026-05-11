@@ -212,22 +212,6 @@ test "mapper: map rejects range overflowing 64KB" {
     try std.testing.expectError(error.RangeOverflow, m.map(&dev.device, 0xFF00, 0x101));
 }
 
-test "mapper: hasDeviceAt reflects current claims" {
-    var m = MemoryMapper.init(std.testing.allocator);
-    defer m.deinit();
-
-    var dev = RecordDevice.init();
-    const id = try m.map(&dev.device, 0x8000, 0x4000);
-
-    try std.testing.expect(m.hasDeviceAt(0x8000));
-    try std.testing.expect(m.hasDeviceAt(0xBFFF));
-    try std.testing.expect(!m.hasDeviceAt(0xC000));
-    try std.testing.expect(!m.hasDeviceAt(0x7FFF));
-
-    _ = m.unmap(id);
-    try std.testing.expect(!m.hasDeviceAt(0x8000));
-}
-
 test "mapper: region inclusive at both ends" {
     var m = MemoryMapper.init(std.testing.allocator);
     defer m.deinit();

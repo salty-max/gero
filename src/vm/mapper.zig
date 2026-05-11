@@ -135,11 +135,6 @@ pub const MemoryMapper = struct {
         return false;
     }
 
-    /// `true` if any device currently claims `addr`.
-    pub fn hasDeviceAt(self: MemoryMapper, addr: u16) bool {
-        return self.findDevice(addr) != null;
-    }
-
     /// Routed byte read.
     pub fn readByte(self: MemoryMapper, addr: u16) u8 {
         if (self.findDevice(addr)) |dev| return dev.readByte(addr);
