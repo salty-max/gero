@@ -1,10 +1,9 @@
 /// Opcode table — the canonical mapping from byte → mnemonic +
-/// operand schema, transcribed from ISA §5. Populated by this PR
-/// as data only; the dispatch loop will start consulting it when
-/// real per-opcode handlers land (issues #20-#27).
+/// operand schema. Dispatch consults this for instruction sizing;
+/// the disassembler can re-use it for textual rendering.
 const std = @import("std");
 
-/// Operand kinds per ISA §4. Encoding sizes:
+/// Operand kinds. Encoding sizes:
 /// `reg`/`imm8`/`zp` = 1 byte, `imm16`/`addr` = 2 bytes.
 pub const Operand = enum {
     reg,
@@ -42,7 +41,7 @@ pub const OpcodeInfo = struct {
 pub const table: [256]?OpcodeInfo = blk: {
     var t = [_]?OpcodeInfo{null} ** 256;
 
-    // §5.1 — mov family (12 entries)
+    // mov family
     t[0x10] = .{ .mnemonic = "mov", .operands = &.{ .imm16, .reg } };
     t[0x11] = .{ .mnemonic = "mov", .operands = &.{ .reg, .reg } };
     t[0x12] = .{ .mnemonic = "mov", .operands = &.{ .reg, .addr } };
@@ -56,7 +55,7 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x1A] = .{ .mnemonic = "mov", .operands = &.{ .zp, .reg } };
     t[0x1B] = .{ .mnemonic = "mov", .operands = &.{ .imm16, .zp } };
 
-    // §5.2 — mov8 / movh / movl (7 entries)
+    // mov8 / movh / movl
     t[0x20] = .{ .mnemonic = "mov8", .operands = &.{ .imm8, .addr } };
     t[0x21] = .{ .mnemonic = "mov8", .operands = &.{ .imm8, .reg } };
     t[0x22] = .{ .mnemonic = "mov8", .operands = &.{ .addr, .reg } };
@@ -65,12 +64,12 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x25] = .{ .mnemonic = "movh", .operands = &.{ .reg, .addr } };
     t[0x26] = .{ .mnemonic = "movl", .operands = &.{ .reg, .addr } };
 
-    // §5.3 — stack (3 entries)
+    // stack
     t[0x30] = .{ .mnemonic = "push", .operands = &.{.imm16} };
     t[0x31] = .{ .mnemonic = "push", .operands = &.{.reg} };
     t[0x32] = .{ .mnemonic = "pop", .operands = &.{.reg} };
 
-    // §5.4 — arithmetic (19 entries: 0x40-0x4E + 0x64-0x67)
+    // arithmetic
     t[0x40] = .{ .mnemonic = "add", .operands = &.{ .imm16, .reg } };
     t[0x41] = .{ .mnemonic = "add", .operands = &.{ .reg, .reg } };
     t[0x42] = .{ .mnemonic = "add", .operands = &.{.reg} };
@@ -91,7 +90,7 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x66] = .{ .mnemonic = "sbc", .operands = &.{ .imm16, .reg } };
     t[0x67] = .{ .mnemonic = "sbc", .operands = &.{ .reg, .reg } };
 
-    // §5.5 — logical (7 entries)
+    // logical
     t[0x50] = .{ .mnemonic = "and", .operands = &.{ .reg, .imm16 } };
     t[0x51] = .{ .mnemonic = "and", .operands = &.{ .reg, .reg } };
     t[0x52] = .{ .mnemonic = "or", .operands = &.{ .reg, .imm16 } };
@@ -100,7 +99,7 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x55] = .{ .mnemonic = "xor", .operands = &.{ .reg, .reg } };
     t[0x56] = .{ .mnemonic = "not", .operands = &.{.reg} };
 
-    // §5.6 — shifts and rotates (8 entries)
+    // shifts and rotates
     t[0x58] = .{ .mnemonic = "shl", .operands = &.{ .reg, .imm8 } };
     t[0x59] = .{ .mnemonic = "shl", .operands = &.{ .reg, .reg } };
     t[0x5A] = .{ .mnemonic = "shr", .operands = &.{ .reg, .imm8 } };
@@ -110,13 +109,13 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x5E] = .{ .mnemonic = "ror", .operands = &.{ .reg, .imm8 } };
     t[0x5F] = .{ .mnemonic = "ror", .operands = &.{ .reg, .reg } };
 
-    // §5.7 — cmp / tst (4 entries)
+    // cmp / tst
     t[0x60] = .{ .mnemonic = "cmp", .operands = &.{ .reg, .imm16 } };
     t[0x61] = .{ .mnemonic = "cmp", .operands = &.{ .reg, .reg } };
     t[0x62] = .{ .mnemonic = "tst", .operands = &.{ .reg, .imm16 } };
     t[0x63] = .{ .mnemonic = "tst", .operands = &.{ .reg, .reg } };
 
-    // §5.8 — control flow (16 entries)
+    // control flow
     t[0x70] = .{ .mnemonic = "jmp", .operands = &.{.addr} };
     t[0x71] = .{ .mnemonic = "jmp", .operands = &.{.reg} };
     t[0x72] = .{ .mnemonic = "jeq", .operands = &.{.addr} };
@@ -134,23 +133,23 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x7E] = .{ .mnemonic = "djnz", .operands = &.{ .reg, .addr } };
     t[0x7F] = .{ .mnemonic = "jr", .operands = &.{.imm8} };
 
-    // §5.9 — subroutines (3 entries)
+    // subroutines
     t[0x80] = .{ .mnemonic = "call", .operands = &.{.addr} };
     t[0x81] = .{ .mnemonic = "call", .operands = &.{.reg} };
     t[0x82] = .{ .mnemonic = "ret", .operands = &.{} };
 
-    // §5.10 — misc (2 entries)
+    // misc
     t[0x90] = .{ .mnemonic = "swap", .operands = &.{ .reg, .reg } };
     t[0x91] = .{ .mnemonic = "nop", .operands = &.{} };
 
-    // §5.11 — flag manipulation (5 entries)
+    // flag manipulation
     t[0xA0] = .{ .mnemonic = "clc", .operands = &.{} };
     t[0xA1] = .{ .mnemonic = "sec", .operands = &.{} };
     t[0xA2] = .{ .mnemonic = "cli", .operands = &.{} };
     t[0xA3] = .{ .mnemonic = "sei", .operands = &.{} };
     t[0xA4] = .{ .mnemonic = "clv", .operands = &.{} };
 
-    // §5.12 — system (4 entries)
+    // system
     t[0xFC] = .{ .mnemonic = "int", .operands = &.{.imm8} };
     t[0xFD] = .{ .mnemonic = "rti", .operands = &.{} };
     t[0xFE] = .{ .mnemonic = "brk", .operands = &.{} };

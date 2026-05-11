@@ -95,19 +95,18 @@ test "stack: LIFO ordering across multiple pushes and pops" {
     try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.sp));
 }
 
-test "stack: underflow wraps silently per §3.3 (not a fault)" {
+test "stack: underflow wraps silently (not a fault)" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
-    // Pop with sp = 0xFFFE (boot, empty stack). Reads garbage and
-    // wraps sp upward; this is permissive behavior per the spec,
-    // NOT a fault.
+    // Pop with sp = 0xFFFE (boot, empty stack). Reads garbage
+    // and wraps sp upward; permissive behavior, NOT a fault.
     loadProgram(&vm, &.{ 0x32, 0x02 }); // pop r1
     try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
     try std.testing.expectEqual(@as(u16, 0x0000), vm.regs.read(.sp));
 }
 
-test "stack: overflow wraps silently per §3.3 (not a fault)" {
+test "stack: overflow wraps silently (not a fault)" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 

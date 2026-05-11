@@ -2,7 +2,7 @@ const std = @import("std");
 const gero = @import("gero");
 const VM = gero.vm.VM;
 
-test "vm: init sets boot-state special registers per ISA §8" {
+test "vm: init sets boot-state special registers" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     try std.testing.expectEqual(@as(u16, 0), vm.regs.read(.ip));

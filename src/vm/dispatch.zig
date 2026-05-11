@@ -11,13 +11,13 @@ const VM = vm_mod.VM;
 const Register = vm_mod.Register;
 const Flag = vm_mod.Flag;
 
-/// Base address of the interrupt vector table (ISA §6.1).
+/// Base address of the interrupt vector table.
 pub const ivt_base: u16 = 0x1000;
 
-/// Interrupt / fault vector. Non-exhaustive: only the reserved
-/// vectors (ISA §6.1 + §9) get named tags, but any `u8` in
-/// `0..0x3F` is a valid vector index — the `int N` opcode can
-/// raise host-defined or software-int vectors that aren't named.
+/// Interrupt / fault vector. Non-exhaustive: the reserved vectors
+/// get named tags, but any `u8` in `0..0x3F` is a valid vector
+/// index — the `int N` opcode can raise host-defined or
+/// software-int vectors that aren't named.
 pub const Vector = enum(u8) {
     /// Reset — runs at boot when the program's entry point is 0.
     reset = 0x00,
@@ -60,7 +60,7 @@ fn unimplemented(vm: *VM) StepResult {
 pub const handler_table: [256]Handler = blk: {
     var t = [_]Handler{unimplemented} ** 256;
 
-    // §5.1 — mov family
+    // mov family
     t[0x10] = mov.movImm16Reg;
     t[0x11] = mov.movRegReg;
     t[0x12] = mov.movRegAddr;
@@ -74,7 +74,7 @@ pub const handler_table: [256]Handler = blk: {
     t[0x1A] = mov.movZpReg;
     t[0x1B] = mov.movImm16Zp;
 
-    // §5.2 — mov8 / movh / movl
+    // mov8 / movh / movl
     t[0x20] = mov.mov8Imm8Addr;
     t[0x21] = mov.mov8Imm8Reg;
     t[0x22] = mov.mov8AddrReg;
@@ -83,7 +83,7 @@ pub const handler_table: [256]Handler = blk: {
     t[0x25] = mov.movhRegAddr;
     t[0x26] = mov.movlRegAddr;
 
-    // §5.3 — stack
+    // stack
     t[0x30] = stack_handlers.pushImm16;
     t[0x31] = stack_handlers.pushReg;
     t[0x32] = stack_handlers.popReg;
@@ -116,9 +116,9 @@ pub fn run(vm: *VM) StepResult {
     }
 }
 
-/// Deliver a fault through the interrupt mechanism (ISA §6.2 + §9).
-/// If the vector slot is `0` the VM halts with a host-visible
-/// fault marker; otherwise the entry sequence pushes `ip` / `fp` /
+/// Deliver a fault through the interrupt mechanism. If the
+/// vector slot is `0` the VM halts with a host-visible fault
+/// marker; otherwise the entry sequence pushes `ip` / `fp` /
 /// `flg`, sets `flg.I`, and jumps to the ISR.
 pub fn raiseFault(vm: *VM, vector: Vector) StepResult {
     const target = vm.mmap.readWord(ivtSlot(vector));
@@ -138,18 +138,17 @@ pub fn ivtSlot(vector: Vector) u16 {
     return ivt_base + 2 * @as(u16, @intFromEnum(vector));
 }
 
-/// Push a 16-bit word onto the stack. Pre-decrement convention
-/// (ISA §3.3): `sp -= 2; mem[sp] = value`. Underflow wraps
-/// silently per §3.3 — no fault, the program is responsible.
+/// Push a 16-bit word onto the stack. Pre-decrement:
+/// `sp -= 2; mem[sp] = value`. Underflow wraps silently — no
+/// fault, the program is responsible.
 pub fn pushWord(vm: *VM, value: u16) void {
     const new_sp = vm.regs.read(.sp) -% 2;
     vm.regs.write(.sp, new_sp);
     vm.mmap.writeWord(new_sp, value);
 }
 
-/// Pop a 16-bit word from the stack. Post-increment convention
-/// (ISA §3.3): `value = mem[sp]; sp += 2`. Overflow wraps
-/// silently.
+/// Pop a 16-bit word from the stack. Post-increment:
+/// `value = mem[sp]; sp += 2`. Overflow wraps silently.
 pub fn popWord(vm: *VM) u16 {
     const sp = vm.regs.read(.sp);
     const value = vm.mmap.readWord(sp);
