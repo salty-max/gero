@@ -8,6 +8,7 @@ const opcodes = @import("opcodes.zig");
 const mov = @import("handlers/mov.zig");
 const stack_handlers = @import("handlers/stack.zig");
 const arith = @import("handlers/arith.zig");
+const bitwise = @import("handlers/bitwise.zig");
 const VM = vm_mod.VM;
 const Register = vm_mod.Register;
 const Flag = vm_mod.Flag;
@@ -109,6 +110,25 @@ pub const handler_table: [256]Handler = blk: {
     t[0x65] = arith.adcRegReg;
     t[0x66] = arith.sbcImm16Reg;
     t[0x67] = arith.sbcRegReg;
+
+    // logical
+    t[0x50] = bitwise.andRegImm16;
+    t[0x51] = bitwise.andRegReg;
+    t[0x52] = bitwise.orRegImm16;
+    t[0x53] = bitwise.orRegReg;
+    t[0x54] = bitwise.xorRegImm16;
+    t[0x55] = bitwise.xorRegReg;
+    t[0x56] = bitwise.notReg;
+
+    // shifts and rotates
+    t[0x58] = bitwise.shlRegImm8;
+    t[0x59] = bitwise.shlRegReg;
+    t[0x5A] = bitwise.shrRegImm8;
+    t[0x5B] = bitwise.shrRegReg;
+    t[0x5C] = bitwise.rolRegImm8;
+    t[0x5D] = bitwise.rolRegReg;
+    t[0x5E] = bitwise.rorRegImm8;
+    t[0x5F] = bitwise.rorRegReg;
 
     break :blk t;
 };
