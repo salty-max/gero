@@ -6,6 +6,7 @@ const std = @import("std");
 const vm_mod = @import("vm.zig");
 const opcodes = @import("opcodes.zig");
 const mov = @import("handlers/mov.zig");
+const stack_handlers = @import("handlers/stack.zig");
 const VM = vm_mod.VM;
 const Register = vm_mod.Register;
 const Flag = vm_mod.Flag;
@@ -82,6 +83,11 @@ pub const handler_table: [256]Handler = blk: {
     t[0x25] = mov.movhRegAddr;
     t[0x26] = mov.movlRegAddr;
 
+    // §5.3 — stack
+    t[0x30] = stack_handlers.pushImm16;
+    t[0x31] = stack_handlers.pushReg;
+    t[0x32] = stack_handlers.popReg;
+
     break :blk t;
 };
 
@@ -132,9 +138,21 @@ pub fn ivtSlot(vector: Vector) u16 {
     return ivt_base + 2 * @as(u16, @intFromEnum(vector));
 }
 
-fn pushWord(vm: *VM, value: u16) void {
-    // Stack grows downward, `sp` always points at the top word.
+/// Push a 16-bit word onto the stack. Pre-decrement convention
+/// (ISA §3.3): `sp -= 2; mem[sp] = value`. Underflow wraps
+/// silently per §3.3 — no fault, the program is responsible.
+pub fn pushWord(vm: *VM, value: u16) void {
+    const new_sp = vm.regs.read(.sp) -% 2;
+    vm.regs.write(.sp, new_sp);
+    vm.mmap.writeWord(new_sp, value);
+}
+
+/// Pop a 16-bit word from the stack. Post-increment convention
+/// (ISA §3.3): `value = mem[sp]; sp += 2`. Overflow wraps
+/// silently.
+pub fn popWord(vm: *VM) u16 {
     const sp = vm.regs.read(.sp);
-    vm.mmap.writeWord(sp, value);
-    vm.regs.write(.sp, sp -% 2);
+    const value = vm.mmap.readWord(sp);
+    vm.regs.write(.sp, sp +% 2);
+    return value;
 }

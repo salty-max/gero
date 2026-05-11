@@ -46,14 +46,14 @@ test "dispatch: fault entry pushes ip, fp, flg in spec order" {
 
     _ = gero.vm.step(&vm);
 
-    // Stack grows downward; first push lands at 0xFFFE (sp_boot),
-    // each subsequent push 2 bytes below. Order per ISA §6.2:
-    // ip → fp → flg (flg ends up on top of stack).
-    try std.testing.expectEqual(@as(u16, 0x1234), vm.mmap.readWord(0xFFFE));
-    try std.testing.expectEqual(@as(u16, 0xABCD), vm.mmap.readWord(0xFFFC));
+    // Pre-decrement push (ISA §3.3): each push decrements sp by 2
+    // before writing. Starting at sp_boot=0xFFFE, the three pushes
+    // land at 0xFFFC / 0xFFFA / 0xFFF8 (top of stack = flg).
+    try std.testing.expectEqual(@as(u16, 0x1234), vm.mmap.readWord(0xFFFC));
+    try std.testing.expectEqual(@as(u16, 0xABCD), vm.mmap.readWord(0xFFFA));
     // flg was 0x000F before the push; flg.I is set AFTER the push.
-    try std.testing.expectEqual(@as(u16, 0x000F), vm.mmap.readWord(0xFFFA));
-    // sp ends up 6 bytes below boot.
+    try std.testing.expectEqual(@as(u16, 0x000F), vm.mmap.readWord(0xFFF8));
+    // sp ends up 6 bytes below boot, pointing at the top (flg).
     try std.testing.expectEqual(@as(u16, 0xFFF8), vm.regs.read(.sp));
 }
 
