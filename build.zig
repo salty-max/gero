@@ -19,16 +19,41 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    // ----- CLI binary ------------------------------------------------------
+
+    const cli_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    cli_mod.addImport("gero", gero_mod);
+
+    const cli_exe = b.addExecutable(.{
+        .name = "gero",
+        .root_module = cli_mod,
+    });
+    b.installArtifact(cli_exe);
+
+    // Tests embedded in the CLI source — wire them into `zig build test`.
+    const cli_test = b.addTest(.{
+        .name = "test-cli",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/gero-cli/cli.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
     // ----- Format ----------------------------------------------------------
 
     const fmt = b.addFmt(.{
-        .paths = &.{ "src", "tests", "build.zig" },
+        .paths = &.{ "src", "tests", "apps", "build.zig" },
         .check = false,
     });
     b.step("fmt", "Format every .zig file in place").dependOn(&fmt.step);
 
     const fmt_check = b.addFmt(.{
-        .paths = &.{ "src", "tests", "build.zig" },
+        .paths = &.{ "src", "tests", "apps", "build.zig" },
         .check = true,
     });
     b.step("fmt-check", "Check formatting without writing").dependOn(&fmt_check.step);
@@ -44,6 +69,7 @@ pub fn build(b: *std.Build) void {
     // ----- Native tests, default optimize ----------------------------------
 
     const test_step = b.step("test", "Run native tests");
+    test_step.dependOn(&b.addRunArtifact(cli_test).step);
     for (test_files) |rel| {
         const t = makeTest(b, gero_mod, rel, target, optimize);
         test_step.dependOn(&b.addRunArtifact(t).step);
