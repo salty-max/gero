@@ -12,6 +12,7 @@ const bitwise = @import("handlers/bitwise.zig");
 const cmp_handlers = @import("handlers/cmp.zig");
 const jumps = @import("handlers/jumps.zig");
 const subroutine = @import("handlers/subroutine.zig");
+const system_handlers = @import("handlers/system.zig");
 const VM = vm_mod.VM;
 const Register = vm_mod.Register;
 const Flag = vm_mod.Flag;
@@ -50,6 +51,9 @@ pub const StepResult = enum {
     /// A fault fired but no ISR was installed (vector slot is `0`).
     /// The host should surface the fault to the user.
     halted_on_fault,
+    /// The VM hit `brk`. `ip` is already advanced past the
+    /// breakpoint; calling `run` again resumes from there.
+    breakpoint,
 };
 
 /// Per-opcode handler. Receives the VM and returns the post-step
@@ -166,6 +170,23 @@ pub const handler_table: [256]Handler = blk: {
     t[0x81] = subroutine.callReg;
     t[0x82] = subroutine.ret;
 
+    // misc
+    t[0x90] = system_handlers.swap;
+    t[0x91] = system_handlers.nop;
+
+    // flag manipulation
+    t[0xA0] = system_handlers.clc;
+    t[0xA1] = system_handlers.sec;
+    t[0xA2] = system_handlers.cli;
+    t[0xA3] = system_handlers.sei;
+    t[0xA4] = system_handlers.clv;
+
+    // system
+    t[0xFC] = system_handlers.intImm8;
+    t[0xFD] = system_handlers.rti;
+    t[0xFE] = system_handlers.brk;
+    t[0xFF] = system_handlers.hlt;
+
     break :blk t;
 };
 
@@ -178,7 +199,7 @@ pub fn step(vm: *VM) StepResult {
     const op = vm.mmap.readByte(ip_before);
     const handler = handler_table[op];
     const result = handler(vm);
-    if (result == .cont) {
+    if (result == .cont or result == .breakpoint) {
         const info = opcodes.table[op] orelse return .halted_on_fault;
         vm.regs.write(.ip, ip_before +% info.size());
     }
@@ -186,11 +207,14 @@ pub fn step(vm: *VM) StepResult {
 }
 
 /// Iterate `step` until the VM signals a terminal state. `.cont`
-/// and `.branched` both keep the loop going.
+/// and `.branched` both keep the loop going; `.breakpoint`,
+/// `.halted`, and `.halted_on_fault` exit so the host can
+/// inspect / decide whether to resume.
 pub fn run(vm: *VM) StepResult {
     while (true) {
         const r = step(vm);
-        if (r == .halted or r == .halted_on_fault) return r;
+        if (r == .cont or r == .branched) continue;
+        return r;
     }
 }
 
