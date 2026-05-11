@@ -43,6 +43,16 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    const run_cmd_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/run.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    run_cmd_mod.addImport("gero", gero_mod);
+    const run_cmd_test = b.addTest(.{
+        .name = "test-cli-run",
+        .root_module = run_cmd_mod,
+    });
 
     // ----- Format ----------------------------------------------------------
 
@@ -70,6 +80,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run native tests");
     test_step.dependOn(&b.addRunArtifact(cli_test).step);
+    test_step.dependOn(&b.addRunArtifact(run_cmd_test).step);
     for (test_files) |rel| {
         const t = makeTest(b, gero_mod, rel, target, optimize);
         test_step.dependOn(&b.addRunArtifact(t).step);
