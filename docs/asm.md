@@ -306,10 +306,10 @@ include "sound.gas"
 include "level1.gas"
 ```
 
-Textually splices another `.gas` file at this point — 6502 / z80
-convention. The included file's tokens are parsed in-place as if
-they had been typed at the include site. Path is relative to the
-including file.
+Resolves another `.gas` file at this point and inlines its tokens.
+Path is relative to the including file. Borrows from the C/Rust
+`#pragma once` / `mod` tradition rather than the literal-splice
+NASM tradition — see "Re-include semantics" below.
 
 Rules:
 
@@ -322,6 +322,21 @@ Rules:
 - Paths are resolved relative to the directory of the `.gas` file
   doing the include. No search path / no system include directory
   in v0.1.
+
+**Re-include semantics (`pragma once`):** each unique file is
+resolved at most once per assembly run. If two files both include
+`utils.gas`, `utils.gas` is read and lexed once, and its tokens
+appear once in the fused stream. The second `include "utils.gas"`
+is a silent no-op.
+
+Path identity is determined by canonical form (resolved symlinks,
+normalized separators). `./utils.gas`, `utils.gas`, and
+`../current/utils.gas` are all the same file.
+
+This trades the NASM "splice every time + write your own include
+guards" model for a guard-free experience. Code that needs
+"emit-this-block-N-times" should use other directives (or v-next
+macros) rather than `include`.
 
 ### 2.3 Instructions
 
