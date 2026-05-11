@@ -85,20 +85,36 @@ test "dispatch: run halts when the IVT is empty" {
     try std.testing.expectEqual(gero.vm.StepResult.halted_on_fault, gero.vm.run(&vm));
 }
 
-test "dispatch: every byte at ip currently faults (Part 1 stub)" {
+test "dispatch: bytes without a handler raise invalid-opcode" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     setVector(&vm, .invalid_opcode, 0x4000);
 
-    // Without a real opcode table, any byte at ip dispatches to the
-    // invalid-opcode fault — that's the Part 1 contract.
-    inline for ([_]u8{ 0x00, 0x10, 0x80, 0xFF }) |op| {
+    // Pick bytes that have no handler yet (gaps in §5 + unimplemented
+    // families): the invalid-opcode fault should fire on each.
+    inline for ([_]u8{ 0x00, 0x40, 0x80, 0xFF }) |op| {
         vm.regs.write(.ip, 0x1100);
         vm.mmap.writeByte(0x1100, op);
-        // Reset sp + flg so each iteration starts clean.
         vm.regs.write(.sp, 0xFFFE);
         vm.regs.write(.flg, 0);
         try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
         try std.testing.expectEqual(@as(u16, 0x4000), vm.regs.read(.ip));
     }
+}
+
+test "dispatch: step auto-advances ip by instruction size" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    // 0x91 nop is 1 byte and has no handler yet → faults. Use a
+    // mov instead: 0x11 mov reg, reg is 3 bytes total.
+    vm.regs.write(.ip, 0x1100);
+    vm.mmap.writeByte(0x1100, 0x11);
+    vm.mmap.writeByte(0x1101, 0x02); // dst = r1
+    vm.mmap.writeByte(0x1102, 0x03); // src = r2
+    vm.regs.write(.r2, 0xBEEF);
+
+    try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
+    try std.testing.expectEqual(@as(u16, 0x1103), vm.regs.read(.ip));
+    try std.testing.expectEqual(@as(u16, 0xBEEF), vm.regs.read(.r1));
 }
