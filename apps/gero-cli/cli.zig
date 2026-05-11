@@ -79,7 +79,7 @@ fn commandFromStr(s: []const u8) ?Command {
     return null;
 }
 
-fn commandName(cmd: Command) []const u8 {
+pub fn commandName(cmd: Command) []const u8 {
     return switch (cmd) {
         .asm_ => "asm",
         .compile => "compile",
