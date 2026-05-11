@@ -39,9 +39,9 @@ variable names, and field names.
 
 **Mnemonics and directive keywords are lowercase only.** `mov` is
 valid, `MOV` is rejected with `E001` (unknown mnemonic). Register
-names (`r1`, `acu`, `flg`, …) and reserved keywords (`pub`, `const`,
-`data8`, `data16`, `struct`, type names `u8` / `u16`) are also
-lowercase-only.
+names (`r1`, `acu`, `flg`, …) and reserved keywords (`const`,
+`data8`, `data16`, `struct`, `org`, `include`, type names `u8` /
+`u16`) are also lowercase-only.
 
 ### 1.4 Numeric literals
 
@@ -49,10 +49,15 @@ lowercase-only.
 |------|---------|-------|-------|
 | Hex value | `$FFFF` | 1..4 hex digits | Unsigned. `$FF` = 255, `$FFFF` = 65535. |
 | Address  | `&FFFF` | 1..4 hex digits | Same shape as hex but typed as `Addr`. Distinguishes "this is a memory address" from "this is a literal value". |
+| Char     | `'A'`   | single byte     | Single-quoted ASCII byte. Same C-style escapes as string literals (§1.5). `'A'` = `$41`, `'\n'` = `$0A`. Always a `u8` value. |
 
 Decimal and binary literals are **not** in v0.1 — only hex. Old-school
 asm convention; if you find yourself wanting decimal, use `$0064` for
 100 and move on.
+
+Char literals are sugar for hex: `cmp r1, 'A'` and `cmp r1, $41` emit
+identical bytecode. The advantage is readability for character
+comparisons and ASCII-table arithmetic.
 
 ### 1.5 String literals
 
@@ -150,7 +155,10 @@ mov $01, r1             ; instruction
 
 A label binds the current address (the byte offset of the next emitted
 instruction or data) to the identifier. Labels are case-sensitive,
-file-scoped, and must be unique within a file.
+**image-scoped** (every label is visible across every `include`d
+file — same model as 6502 / z80 assemblers), and must be unique
+across the entire compilation unit. Use a naming-convention prefix
+(`gfx_init`, `snd_step`) to avoid collisions across files.
 
 ```asm
 start:
@@ -165,26 +173,27 @@ loop:
 ### 2.2 Directives
 
 ```
-[pub] <directive_keyword> <args...>
+<directive_keyword> <args...>
 ```
 
-The optional leading `pub` keyword marks the symbol as **exported**
-(visible to other files when linking). Currently four directives:
+Six directives in v0.1:
 
-| Keyword  | Form                                   | Effect |
-|----------|----------------------------------------|--------|
-| `const`  | `const NAME = <expr>`                  | Compile-time constant. Substituted inline at use sites. |
-| `data8`  | `data8 NAME = value, ...`              | Reserve + initialize bytes at the current address. |
-| `data16` | `data16 NAME = value, ...`             | Same, in 16-bit little-endian words. |
-| `struct` | `struct NAME { field: TYPE, ... }`     | Compile-time struct layout (offsets only, no bytes emitted). |
+| Keyword   | Form                                   | Effect |
+|-----------|----------------------------------------|--------|
+| `const`   | `const NAME = <expr>`                  | Compile-time constant. Substituted inline at use sites. |
+| `data8`   | `data8 NAME = value, ...`              | Reserve + initialize bytes at the current address. |
+| `data16`  | `data16 NAME = value, ...`             | Same, in 16-bit little-endian words. |
+| `struct`  | `struct NAME { field: TYPE, ... }`     | Compile-time struct layout (offsets only, no bytes emitted). |
+| `org`     | `org $ADDR`                            | Set the current emit address. Subsequent statements emit starting at `$ADDR`. |
+| `include` | `include "path.gas"`                   | Textually splice another `.gas` file at this point (6502 / z80 style). |
 
 #### `const`
 
 ```asm
 const VECTOR_KEYDOWN = $0020         ; software-int vector for keydown
 const SCREEN_W       = $0100         ; 256
-pub const VRAM_BASE  = &8000         ; exported address constant
-pub const FLAGS_ALL  = (1 << 8) - 1  ; full operator set
+const VRAM_BASE      = &8000         ; address constant
+const FLAGS_ALL      = (1 << 8) - 1  ; full operator set
 ```
 
 Constants are pure substitution — no runtime cost.
@@ -210,6 +219,7 @@ directive — `data16` packs each value as a 16-bit LE word.
 Each value in a `data8` body may be:
 
 - a hex literal (`$48`)
+- a char literal (`'H'`) — `data8` only, single byte
 - an address literal (`&1000`)
 - a `@`-prefixed symbol reference (`@other_data`)
 - a string literal (`"Hi"`) — only in `data8`
@@ -240,6 +250,58 @@ expressions.
 Supported field types: `u8` (1 byte) and `u16` (2 bytes). Layout is
 packed — no padding. Offsets always start at zero for the first
 field.
+
+#### `org`
+
+```asm
+org $1000               ; IVT lives here per ISA §3.1
+data16 ivt_keydown = @on_keydown
+data16 ivt_timer   = @on_timer
+
+org $1100               ; user code starts here
+start:
+  mov $00, r1
+  ; ...
+```
+
+Sets the **current emit address** for subsequent statements. Required
+for any program that needs to place data at a fixed location — most
+notably IVT entries (forced to `$1000` by `isa.md` §3.1). `org` does
+not emit any bytes itself; it just moves the assembler's emit cursor.
+
+Rules:
+
+- Address must be a compile-time `u16`.
+- Backward `org` (target < current emit address) is `E014` —
+  overlapping emit is rejected, no silent overwrite.
+- Forward `org` leaves an unused gap; the gap is zero-padded in the
+  output image so the file size always matches `image_size` in the
+  `.gx` header (isa.md §7.1).
+
+#### `include`
+
+```asm
+include "graphics.gas"
+include "sound.gas"
+include "level1.gas"
+```
+
+Textually splices another `.gas` file at this point — 6502 / z80
+convention. The included file's tokens are parsed in-place as if
+they had been typed at the include site. Path is relative to the
+including file.
+
+Rules:
+
+- All labels and `const`s from included files share the same global
+  namespace as the including file (§2.1 "image-scoped"). Use a
+  prefix convention to avoid collisions.
+- Cycles are forbidden — including a file that (transitively)
+  includes the current file is `E012`.
+- Include depth is capped at 32 to bound recursion (`E013`).
+- Paths are resolved relative to the directory of the `.gas` file
+  doing the include. No search path / no system include directory
+  in v0.1.
 
 ### 2.3 Instructions
 
@@ -369,12 +431,10 @@ the outer `+`) is `E003`.
 ## 4. Sections (TBD)
 
 v0.1 emits a flat image — every directive and instruction goes into
-a single output stream starting at offset `0x0000`, padded as
-appropriate. There are **no** explicit section directives
-(`.text`, `.data`, `.rodata`).
-
-For programs that need to control layout (banked carts, IVT placement,
-SRAM region), use `org` directive (planned for v0.2 — see §6).
+a single output stream. There are **no** explicit section directives
+(`.text`, `.data`, `.rodata`). Programs that need to control layout
+(IVT placement at `$1000`, SRAM region alignment) use the `org`
+directive (§2.2).
 
 ---
 
@@ -389,27 +449,26 @@ Banked programs need two assembler features beyond v0.1's flat output:
 
 These are **not in v0.1**. Until they land, banked carts must be
 hand-stitched (assemble each bank as a separate file, concatenate at
-the cart-build step). v0.2 will introduce them as the lang compiler
-will need them.
+the cart-build step). A future asm version will introduce them as the
+lang compiler exercises the multi-bank path.
 
 ---
 
-## 6. Roadmap (post-v0.1)
+## 6. Roadmap (future asm versions)
+
+Note: gero **v0.2 is the high-level language**, not an asm bump. The
+assembler is versioned independently — these features land in future
+asm minor releases as the VM and lang compilers exercise the gaps.
 
 | Feature | Why |
 |---------|-----|
-| `org $ADDR` | Place subsequent emit at a specific address (IVT setup, SRAM header alignment). |
 | `bank N` | Bank-aware emit for the multi-bank cart workflow. |
 | `bank_call` / `bank_jump` | Sugar for cross-bank calls. |
-| `include "file.gas"` | Multi-file programs. |
 | Macros | Parametric pseudo-instructions (`def macro NAME(args) { ... }`). |
-| Decimal & binary literals | `100`, `%10101010`. |
-| `equ` as alias for `const` | Old-school 6502 spelling. |
-| Char literals | `'A'` for `$41`, `'\n'` for `$0A`. |
+| Export / import markers | Only relevant if a linker model lands later. v0.1 uses textual `include` with a single global namespace (6502 / z80 tradition). |
 
-These land as the VM and lang compilers exercise the gaps. Each
-addition bumps the assembler's minor version; the bytecode they emit
-remains ISA v0.1 — assembler evolution is independent of ISA
+Each addition bumps the assembler's minor version; the bytecode they
+emit remains ISA v0.1 — assembler evolution is independent of ISA
 evolution as long as no new opcode is generated.
 
 ---
@@ -464,10 +523,10 @@ struct Player {
 }
 
 ; ----- data -----
-pub data8 banner = "Hello, gero!\n\0"
+data8 banner = "Hello, gero!\n\0"
 ; Player layout = hp(u16), mp(u16), level(u8), pad(u8) = 6 bytes.
 ; data8 lays bytes in source order, LE for the u16 fields.
-pub data8 player = $64, $00, $3C, $00, $01, $00     ; hp=100 mp=60 lvl=1 pad=0
+data8 player = $64, $00, $3C, $00, $01, $00         ; hp=100 mp=60 lvl=1 pad=0
 
 ; ----- code -----
 start:
@@ -511,7 +570,12 @@ Common errors:
 | `E007` | Address out of range (would emit > 0xFFFF) |
 | `E008` | Reserved opcode used (placeholder for future ISA additions; no opcode is currently reserved-but-unimplemented in v0.1) |
 | `E009` | Division by zero in a compile-time expression |
-| `E010` | Unknown escape sequence in string literal |
+| `E010` | Unknown escape sequence in string or char literal |
 | `E011` | Unterminated string literal (newline or EOF before closing `"`) |
+| `E012` | `include` cycle detected |
+| `E013` | `include` depth exceeds 32 |
+| `E014` | Backward `org` would overlap already-emitted bytes |
+| `E015` | `include` target file not found |
+| `E016` | Char literal must be exactly one byte (empty `''` or multi-char) |
 
 Errors print with caret-style snippets (knit's `formatParseErrorPretty`).
