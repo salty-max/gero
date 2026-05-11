@@ -5,6 +5,7 @@ const registers = @import("registers.zig");
 const memory = @import("memory.zig");
 const mapper = @import("mapper.zig");
 const dispatch_mod = @import("dispatch.zig");
+const opcodes_mod = @import("opcodes.zig");
 
 /// Re-export: named register handles.
 pub const Register = registers.Register;
@@ -36,6 +37,14 @@ pub const raiseFault = dispatch_mod.raiseFault;
 pub const ivtSlot = dispatch_mod.ivtSlot;
 /// Re-export: IVT base address (ISA §6.1).
 pub const ivt_base = dispatch_mod.ivt_base;
+/// Re-export: opcode operand kinds (ISA §4).
+pub const Operand = opcodes_mod.Operand;
+/// Re-export: opcode metadata entry.
+pub const OpcodeInfo = opcodes_mod.OpcodeInfo;
+/// Re-export: 256-entry opcode lookup table.
+pub const opcode_table = opcodes_mod.table;
+/// Re-export: byte size of one operand.
+pub const operandSize = opcodes_mod.operandSize;
 
 /// Boot-state default for `sp` — top of memory minus 1 word so the
 /// first push lands on a valid word.
