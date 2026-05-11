@@ -78,9 +78,9 @@ data8 prompt  = "name? \0"
 data8 quote   = "\"verbatim\"\0"
 ```
 
-Hex bytes can be mixed with strings inside `data8` braces (see §2.2)
-when a string isn't sufficient — e.g., embedding control codes the
-escape table doesn't cover.
+Hex bytes can be mixed with strings inside a `data8` value list
+(see §2.2) when a string isn't sufficient — e.g., embedding control
+codes the escape table doesn't cover.
 
 ### 1.6 Symbol references
 
@@ -174,8 +174,8 @@ The optional leading `pub` keyword marks the symbol as **exported**
 | Keyword  | Form                                   | Effect |
 |----------|----------------------------------------|--------|
 | `const`  | `const NAME = <expr>`                  | Compile-time constant. Substituted inline at use sites. |
-| `data8`  | `data8 NAME = { value, ... }`          | Reserve + initialize bytes at the current address. |
-| `data16` | `data16 NAME = { value, ... }`         | Same, in 16-bit little-endian words. |
+| `data8`  | `data8 NAME = value, ...`              | Reserve + initialize bytes at the current address. |
+| `data16` | `data16 NAME = value, ...`             | Same, in 16-bit little-endian words. |
 | `struct` | `struct NAME { field: TYPE, ... }`     | Compile-time struct layout (offsets only, no bytes emitted). |
 
 #### `const`
@@ -191,11 +191,16 @@ Constants are pure substitution — no runtime cost.
 
 #### `data8` / `data16`
 
+A `data8` / `data16` directive takes a **comma-separated list of
+values** on a single line. No braces — the `=` opens the list and
+the newline closes it (newlines are statement terminators per §1.1,
+same rule as instructions). Style matches NASM's `db` / `dw`.
+
 ```asm
-data8 hasFrameEnded = { $00 }
-data8 greeting      = "Hello, gero!\n\0"             ; string literal
-data8 mixed         = "RST", $00, "FRAME", $00       ; string + bytes
-data16 frameTimes   = { $0000, $0000, $0000, $0000 }
+data8  hasFrameEnded = $00
+data8  greeting      = "Hello, gero!\n\0"            ; string literal
+data8  mixed         = "RST", $00, "FRAME", $00      ; string + bytes
+data16 frameTimes    = $0000, $0000, $0000, $0000
 ```
 
 The address of the data is bound to the symbol (so `@hasFrameEnded`
@@ -207,11 +212,14 @@ Each value in a `data8` body may be:
 - a hex literal (`$48`)
 - an address literal (`&1000`)
 - a `@`-prefixed symbol reference (`@other_data`)
-- a string literal (`"Hi"`) — only inside `data8`
+- a string literal (`"Hi"`) — only in `data8`
 - a parenthesized expression of these (see §1.7)
 
 `data16` accepts the same forms minus string literals; each value
 ends up as a 16-bit LE word.
+
+Braces (`{ }`) are reserved for multi-line blocks — `struct` (§2.2
+below). Single-line value lists never use them.
 
 #### `struct`
 
@@ -337,10 +345,10 @@ to the register index.
 
 ```asm
 struct Player { hp: u16, mp: u16 }
-data8 player = { $0064, $003C }
+data8 player = $64, $00, $3C, $00     ; hp=$0064 (LE), mp=$003C (LE)
 
 mov acu, <Player> @player.hp          ; same as &[@player + Player.hp]
-mov $00,  <Player> @player.mp          ; same as &[@player + Player.mp]
+mov $00, <Player> @player.mp          ; same as &[@player + Player.mp]
 ```
 
 The cast desugars before emit — same bytecode as the longhand. No
@@ -457,7 +465,9 @@ struct Player {
 
 ; ----- data -----
 pub data8 banner = "Hello, gero!\n\0"
-pub data8 player = { $0064, $003C, $0001, $0000 }   ; hp=100 mp=60 lvl=1
+; Player layout = hp(u16), mp(u16), level(u8), pad(u8) = 6 bytes.
+; data8 lays bytes in source order, LE for the u16 fields.
+pub data8 player = $64, $00, $3C, $00, $01, $00     ; hp=100 mp=60 lvl=1 pad=0
 
 ; ----- code -----
 start:
