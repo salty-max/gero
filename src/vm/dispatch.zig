@@ -9,6 +9,7 @@ const mov = @import("handlers/mov.zig");
 const stack_handlers = @import("handlers/stack.zig");
 const arith = @import("handlers/arith.zig");
 const bitwise = @import("handlers/bitwise.zig");
+const cmp_handlers = @import("handlers/cmp.zig");
 const VM = vm_mod.VM;
 const Register = vm_mod.Register;
 const Flag = vm_mod.Flag;
@@ -129,6 +130,12 @@ pub const handler_table: [256]Handler = blk: {
     t[0x5D] = bitwise.rolRegReg;
     t[0x5E] = bitwise.rorRegImm8;
     t[0x5F] = bitwise.rorRegReg;
+
+    // cmp / tst
+    t[0x60] = cmp_handlers.cmpRegImm16;
+    t[0x61] = cmp_handlers.cmpRegReg;
+    t[0x62] = cmp_handlers.tstRegImm16;
+    t[0x63] = cmp_handlers.tstRegReg;
 
     break :blk t;
 };
