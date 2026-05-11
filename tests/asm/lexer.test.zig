@@ -10,7 +10,10 @@ fn expectKinds(source: []const u8, kinds: []const Token.Kind) !void {
     var ts = try tokenize(source);
     defer ts.deinit();
     if (ts.tokens.len != kinds.len + 1) {
-        std.debug.print("expected {d} tokens (+eof), got {d}\n", .{ kinds.len, ts.tokens.len - 1 });
+        std.debug.print(
+            "expected {d} tokens (+eof), got {d}\n",
+            .{ kinds.len, ts.tokens.len - 1 },
+        );
         return error.TestUnexpectedTokenCount;
     }
     for (kinds, 0..) |expected, i| {
@@ -26,6 +29,7 @@ test "lex: empty source emits only EOF" {
     defer ts.deinit();
     try std.testing.expectEqual(@as(usize, 1), ts.tokens.len);
     try std.testing.expectEqual(Token.Kind.eof, ts.tokens[0].kind);
+    try std.testing.expect(!ts.hasErrors());
 }
 
 test "lex: spaces + tabs alone produce no tokens" {
@@ -48,8 +52,15 @@ test "lex: CRLF accepted, single newline token" {
     try expectKinds("\r\n", &.{.newline});
 }
 
-test "lex: bare CR rejected as err" {
-    try expectKinds("\r", &.{.err});
+test "lex: bare CR errors with lexical kind, no token emitted" {
+    var ts = try tokenize("\r");
+    defer ts.deinit();
+    try std.testing.expectEqual(@as(usize, 1), ts.tokens.len); // just EOF
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), ts.errors.len);
+    const e = ts.errors[0];
+    try std.testing.expectEqualStrings("newline", e.parser);
+    try std.testing.expect(e.kind == .lexical);
 }
 
 // ---------- numeric literals ----------
@@ -59,6 +70,7 @@ test "lex: $FF hex literal carries the parsed value" {
     defer ts.deinit();
     try std.testing.expectEqual(Token.Kind.hex, ts.tokens[0].kind);
     try std.testing.expectEqual(@as(u16, 0xFF), ts.tokens[0].value);
+    try std.testing.expect(!ts.hasErrors());
 }
 
 test "lex: $ABCD hex max width" {
@@ -68,11 +80,16 @@ test "lex: $ABCD hex max width" {
 }
 
 test "lex: hex literal with 5+ digits is rejected" {
-    try expectKinds("$ABCDE", &.{.err});
+    var ts = try tokenize("$ABCDE");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("hexLiteral", ts.errors[0].parser);
 }
 
-test "lex: bare $ rejected as err" {
-    try expectKinds("$", &.{.err});
+test "lex: bare $ rejected" {
+    var ts = try tokenize("$");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
 }
 
 test "lex: lowercase hex digits accepted" {
@@ -89,7 +106,10 @@ test "lex: &FFFF address literal" {
 }
 
 test "lex: addr literal 5+ digits rejected" {
-    try expectKinds("&12345", &.{.err});
+    var ts = try tokenize("&12345");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("addrLiteral", ts.errors[0].parser);
 }
 
 // ---------- identifiers + sym refs ----------
@@ -108,8 +128,13 @@ test "lex: identifier with digits and underscores" {
     try std.testing.expectEqual(@as(usize, 10), ts.tokens[0].end - ts.tokens[0].start);
 }
 
-test "lex: identifier can't start with a digit (digit is err, rest is ident)" {
-    try expectKinds("9bad", &.{ .err, .ident });
+test "lex: identifier can't start with a digit — emits an error then resumes" {
+    var ts = try tokenize("9bad");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    // Recovery: after the bad '9', the rest lexes as ident "bad".
+    try std.testing.expectEqual(Token.Kind.ident, ts.tokens[0].kind);
+    try std.testing.expectEqualStrings("bad", ts.tokens[0].lexeme("9bad"));
 }
 
 test "lex: !sym_ref" {
@@ -120,11 +145,18 @@ test "lex: !sym_ref" {
 }
 
 test "lex: bare ! rejected" {
-    try expectKinds("!", &.{.err});
+    var ts = try tokenize("!");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqualStrings("symRef", ts.errors[0].parser);
 }
 
 test "lex: ! followed by digit rejected — both bytes flagged" {
-    try expectKinds("!9", &.{ .err, .err });
+    var ts = try tokenize("!9");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    // The '!' errors via symRef; then '9' errors via the fall-through.
+    try std.testing.expect(ts.errors.len >= 1);
 }
 
 // ---------- punctuation ----------
@@ -168,25 +200,33 @@ test "lex: exported constant directive" {
     });
 }
 
-// ---------- error recovery ----------
+// ---------- error recovery + multi-error ----------
 
-test "lex: two errors in one line both surface" {
+test "lex: two unknown bytes in one line surface as two errors" {
     var ts = try tokenize("hlt @ # foo");
     defer ts.deinit();
-    var err_count: usize = 0;
-    for (ts.tokens) |t| {
-        if (t.kind == .err) err_count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 2), err_count);
-    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqual(@as(usize, 2), ts.errors.len);
+    // The valid tokens around the bad bytes still made it through.
+    try std.testing.expectEqual(Token.Kind.ident, ts.tokens[0].kind); // hlt
+    try std.testing.expectEqual(Token.Kind.ident, ts.tokens[1].kind); // foo
 }
 
-test "lex: bad token doesn't poison the rest of the stream" {
+test "lex: bad byte doesn't poison the rest of the stream" {
     var ts = try tokenize("@ hlt\n");
     defer ts.deinit();
-    try std.testing.expectEqual(Token.Kind.err, ts.tokens[0].kind);
-    try std.testing.expectEqual(Token.Kind.ident, ts.tokens[1].kind);
-    try std.testing.expectEqual(Token.Kind.newline, ts.tokens[2].kind);
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expectEqual(Token.Kind.ident, ts.tokens[0].kind); // hlt
+    try std.testing.expectEqual(Token.Kind.newline, ts.tokens[1].kind);
+}
+
+test "lex: errors carry the knit ParseError shape" {
+    var ts = try tokenize("$ABCDE");
+    defer ts.deinit();
+    try std.testing.expect(ts.errors.len >= 1);
+    const e = ts.errors[0];
+    try std.testing.expectEqualStrings("hexLiteral", e.parser);
+    try std.testing.expect(e.expected != null);
+    try std.testing.expect(e.kind == .syntactic);
 }
 
 // ---------- token spans ----------

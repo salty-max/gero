@@ -1,9 +1,12 @@
-/// `.gas` lexer. Eats whitespace / `;` comments, emits one
-/// `Token` per syntactic atom, and treats newlines as
-/// statement terminators (per asm spec §1). Bad bytes produce
-/// `.err` tokens so the lexer recovers and keeps going — the
-/// caller drains every error in a single pass.
+/// `.gas` lexer — built on `knit` so token errors share the
+/// same `ParseError` shape (parser name / expected / actual /
+/// kind / context) as the parser stage downstream. Each token
+/// kind has its own `Parser(Token)`; the `tokenize` driver
+/// composes them through `knit.choice` and surfaces multi-error
+/// recovery by advancing one byte past every refusal.
 const std = @import("std");
+const knit = @import("knit");
+const core = knit.core;
 
 /// One syntactic atom. `start..end` are byte offsets into the
 /// original source; numeric tokens also carry the parsed value.
@@ -32,7 +35,6 @@ pub const Token = struct {
         lbracket,
         rbracket,
         plus,
-        err,
         eof,
     };
 
@@ -42,151 +44,286 @@ pub const Token = struct {
     }
 };
 
-/// Output of `tokenize`. `tokens` always ends with `.eof`. The
-/// caller frees both slices.
+/// Output of `tokenize`. `tokens` always ends with `.eof`. Any
+/// `ParseError` the per-token parsers raised is collected in
+/// `errors` so the caller can drain every problem in a single
+/// pass (`#37` formats them with `knit.formatParseErrorPretty`).
 pub const TokenStream = struct {
     tokens: []Token,
+    errors: []core.ParseError,
     allocator: std.mem.Allocator,
 
-    /// Release the underlying token slice.
+    /// Release both slices.
     pub fn deinit(self: *TokenStream) void {
         self.allocator.free(self.tokens);
+        self.allocator.free(self.errors);
     }
 
-    /// `true` if at least one `.err` token appears anywhere in
-    /// the stream.
+    /// `true` when at least one token-level error was recorded.
     pub fn hasErrors(self: TokenStream) bool {
-        for (self.tokens) |t| if (t.kind == .err) return true;
-        return false;
+        return self.errors.len > 0;
     }
 };
 
-/// Tokenize `source`. Always succeeds — bad input produces
-/// `.err` tokens (one per offending byte) so the caller can
-/// surface every problem in a single pass. The returned slice
-/// always ends with an `.eof` token.
+fn isHex(b: u8) bool {
+    return (b >= '0' and b <= '9') or (b >= 'a' and b <= 'f') or (b >= 'A' and b <= 'F');
+}
+
+fn hexValue(b: u8) u16 {
+    return switch (b) {
+        '0'...'9' => b - '0',
+        'a'...'f' => b - 'a' + 10,
+        'A'...'F' => b - 'A' + 10,
+        else => 0,
+    };
+}
+
+fn isIdentStart(b: u8) bool {
+    return std.ascii.isAlphabetic(b) or b == '_';
+}
+
+fn isIdentCont(b: u8) bool {
+    return std.ascii.isAlphanumeric(b) or b == '_';
+}
+
+fn u32At(i: usize) u32 {
+    // @as: byte offsets fit in u32 — `.gas` sources won't reach 4 GiB
+    return @as(u32, @intCast(i));
+}
+
+// ---------- per-token parsers ----------
+
+fn numericThunk(comptime prefix: u8, comptime parser_name: []const u8, comptime kind: Token.Kind) fn (*core.ParseState) core.ParseResult(Token) {
+    return struct {
+        fn parse(state: *core.ParseState) core.ParseResult(Token) {
+            const start = state.index;
+            const rem = state.remaining();
+            if (rem.len == 0 or rem[0] != prefix) {
+                return .{ .err = core.parseError(parser_name, start, "expected prefix", .{
+                    .expected = &[_]u8{prefix},
+                    .kind = .syntactic,
+                }) };
+            }
+            var count: usize = 0;
+            var value: u16 = 0;
+            while (count < 5 and 1 + count < rem.len and isHex(rem[1 + count])) : (count += 1) {
+                if (count < 4) value = (value << 4) | hexValue(rem[1 + count]);
+            }
+            if (count == 0) {
+                return .{ .err = core.parseError(parser_name, start + 1, "expected 1-4 hex digits", .{
+                    .expected = "hex digit",
+                    .kind = .syntactic,
+                }) };
+            }
+            if (count > 4) {
+                return .{ .err = core.parseError(parser_name, start + 5, "hex literal exceeds 4 digits", .{
+                    .expected = "1-4 hex digits",
+                    .kind = .syntactic,
+                }) };
+            }
+            state.advance(1 + count);
+            return core.ok(Token{
+                .kind = kind,
+                .start = u32At(start),
+                .end = u32At(state.index),
+                .value = value,
+            }, state.index);
+        }
+    }.parse;
+}
+
+const hexThunk = numericThunk('$', "hexLiteral", .hex);
+const addrThunk = numericThunk('&', "addrLiteral", .addr);
+
+fn symRefThunk(state: *core.ParseState) core.ParseResult(Token) {
+    const start = state.index;
+    const rem = state.remaining();
+    if (rem.len == 0 or rem[0] != '!') {
+        return .{ .err = core.parseError("symRef", start, "expected '!'", .{
+            .expected = "!",
+            .kind = .syntactic,
+        }) };
+    }
+    if (rem.len < 2 or !isIdentStart(rem[1])) {
+        return .{ .err = core.parseError("symRef", start + 1, "expected identifier after '!'", .{
+            .expected = "letter or '_'",
+            .kind = .syntactic,
+        }) };
+    }
+    var j: usize = 2;
+    while (j < rem.len and isIdentCont(rem[j])) j += 1;
+    state.advance(j);
+    return core.ok(Token{
+        .kind = .sym_ref,
+        .start = u32At(start),
+        .end = u32At(state.index),
+        .value = 0,
+    }, state.index);
+}
+
+fn identThunk(state: *core.ParseState) core.ParseResult(Token) {
+    const start = state.index;
+    const rem = state.remaining();
+    if (rem.len == 0 or !isIdentStart(rem[0])) {
+        return .{ .err = core.parseError("identifier", start, "expected identifier", .{
+            .expected = "letter or '_'",
+            .kind = .syntactic,
+        }) };
+    }
+    var j: usize = 1;
+    while (j < rem.len and isIdentCont(rem[j])) j += 1;
+    state.advance(j);
+    return core.ok(Token{
+        .kind = .ident,
+        .start = u32At(start),
+        .end = u32At(state.index),
+        .value = 0,
+    }, state.index);
+}
+
+fn newlineThunk(state: *core.ParseState) core.ParseResult(Token) {
+    const start = state.index;
+    const rem = state.remaining();
+    if (rem.len == 0) {
+        return .{ .err = core.parseError("newline", start, "unexpected end of input", .{
+            .expected = "\\n or \\r\\n",
+            .kind = .incomplete,
+        }) };
+    }
+    if (rem[0] == '\n') {
+        state.advance(1);
+        return core.ok(Token{ .kind = .newline, .start = u32At(start), .end = u32At(state.index), .value = 0 }, state.index);
+    }
+    if (rem[0] == '\r') {
+        if (rem.len >= 2 and rem[1] == '\n') {
+            state.advance(2);
+            return core.ok(Token{ .kind = .newline, .start = u32At(start), .end = u32At(state.index), .value = 0 }, state.index);
+        }
+        return .{ .err = core.parseError("newline", start, "bare CR not a valid line terminator", .{
+            .expected = "\\r\\n",
+            .actual = "\\r",
+            .kind = .lexical,
+        }) };
+    }
+    return .{ .err = core.parseError("newline", start, "expected newline", .{
+        .expected = "\\n or \\r\\n",
+        .kind = .syntactic,
+    }) };
+}
+
+fn punctThunk(comptime byte: u8, comptime kind: Token.Kind, comptime name: []const u8) fn (*core.ParseState) core.ParseResult(Token) {
+    return struct {
+        fn parse(state: *core.ParseState) core.ParseResult(Token) {
+            const start = state.index;
+            const rem = state.remaining();
+            if (rem.len == 0 or rem[0] != byte) {
+                return .{ .err = core.parseError(name, start, "expected punctuation", .{
+                    .expected = &[_]u8{byte},
+                    .kind = .syntactic,
+                }) };
+            }
+            state.advance(1);
+            return core.ok(Token{ .kind = kind, .start = u32At(start), .end = u32At(state.index), .value = 0 }, state.index);
+        }
+    }.parse;
+}
+
+/// Wrap a Thunk into a `core.Parser(Token)`.
+fn parserOf(comptime thunk: fn (*core.ParseState) core.ParseResult(Token)) core.Parser(Token) {
+    return .{ .parseFn = thunk };
+}
+
+const hexP = parserOf(hexThunk);
+const addrP = parserOf(addrThunk);
+const symRefP = parserOf(symRefThunk);
+const identP = parserOf(identThunk);
+const newlineP = parserOf(newlineThunk);
+
+const colonP = parserOf(punctThunk(':', .colon, "colon"));
+const commaP = parserOf(punctThunk(',', .comma, "comma"));
+const equalsP = parserOf(punctThunk('=', .equals, "equals"));
+const lbraceP = parserOf(punctThunk('{', .lbrace, "lbrace"));
+const rbraceP = parserOf(punctThunk('}', .rbrace, "rbrace"));
+const lparenP = parserOf(punctThunk('(', .lparen, "lparen"));
+const rparenP = parserOf(punctThunk(')', .rparen, "rparen"));
+const lbracketP = parserOf(punctThunk('[', .lbracket, "lbracket"));
+const rbracketP = parserOf(punctThunk(']', .rbracket, "rbracket"));
+const plusP = parserOf(punctThunk('+', .plus, "plus"));
+
+// Order matters when every alternative refuses at the same byte:
+// `knit.choice` picks the *furthest-progress* error, and ties fall
+// back to the first alternative. Putting `newlineP` at the front
+// makes bare `\r` surface as a "newline" lexical error instead of
+// whatever the first prefix-checker would have said.
+const oneToken = knit.choice(Token, &[_]core.Parser(Token){
+    newlineP, hexP,    addrP,     symRefP,   identP,
+    colonP,   commaP,  equalsP,   lbraceP,   rbraceP,
+    lparenP,  rparenP, lbracketP, rbracketP, plusP,
+});
+
+// ---------- whitespace + comment skipping (between tokens) ----------
+
+fn skipBlanks(state: *core.ParseState) void {
+    while (state.index < state.input.len) {
+        const b = state.input[state.index];
+        if (b == ' ' or b == '\t') {
+            state.advance(1);
+        } else if (b == ';') {
+            // Comment to end of line — but the newline itself is a
+            // separate token, so stop before it.
+            while (state.index < state.input.len and state.input[state.index] != '\n' and state.input[state.index] != '\r') {
+                state.advance(1);
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+// ---------- driver ----------
+
+/// Tokenize `source`. Always succeeds; lexical refusals are
+/// collected into `errors` (each carries the full knit
+/// `ParseError` shape — parser name, expected/actual, kind).
+/// The returned token slice always ends with `.eof`.
 pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) std.mem.Allocator.Error!TokenStream {
     var tokens: std.ArrayList(Token) = .empty;
     errdefer tokens.deinit(allocator);
+    var errors: std.ArrayList(core.ParseError) = .empty;
+    errdefer errors.deinit(allocator);
 
-    var i: usize = 0;
-    while (i < source.len) {
-        const c = source[i];
-        switch (c) {
-            ' ', '\t' => i += 1,
-            ';' => {
-                while (i < source.len and source[i] != '\n') i += 1;
-            },
-            '\n' => {
-                try tokens.append(allocator, .{ .kind = .newline, .start = u32At(i), .end = u32At(i + 1), .value = 0 });
-                i += 1;
-            },
-            '\r' => {
-                if (i + 1 < source.len and source[i + 1] == '\n') {
-                    try tokens.append(allocator, .{ .kind = .newline, .start = u32At(i), .end = u32At(i + 2), .value = 0 });
-                    i += 2;
-                } else {
-                    // Bare CR is not a valid line ending per the spec.
-                    try tokens.append(allocator, .{ .kind = .err, .start = u32At(i), .end = u32At(i + 1), .value = 0 });
-                    i += 1;
-                }
-            },
-            '$' => i = try eatHex(allocator, &tokens, source, i, .hex),
-            '&' => i = try eatHex(allocator, &tokens, source, i, .addr),
-            '!' => i = try eatSymRef(allocator, &tokens, source, i),
-            ':' => i = try emitPunct(allocator, &tokens, .colon, i),
-            ',' => i = try emitPunct(allocator, &tokens, .comma, i),
-            '=' => i = try emitPunct(allocator, &tokens, .equals, i),
-            '{' => i = try emitPunct(allocator, &tokens, .lbrace, i),
-            '}' => i = try emitPunct(allocator, &tokens, .rbrace, i),
-            '(' => i = try emitPunct(allocator, &tokens, .lparen, i),
-            ')' => i = try emitPunct(allocator, &tokens, .rparen, i),
-            '[' => i = try emitPunct(allocator, &tokens, .lbracket, i),
-            ']' => i = try emitPunct(allocator, &tokens, .rbracket, i),
-            '+' => i = try emitPunct(allocator, &tokens, .plus, i),
-            else => {
-                if (isIdentStart(c)) {
-                    i = try eatIdent(allocator, &tokens, source, i);
-                } else {
-                    try tokens.append(allocator, .{ .kind = .err, .start = u32At(i), .end = u32At(i + 1), .value = 0 });
-                    i += 1;
-                }
+    var state = core.ParseState.init(source, allocator);
+
+    while (true) {
+        skipBlanks(&state);
+        if (state.index >= state.input.len) break;
+        const before = state.index;
+
+        const result = oneToken.parseFn(&state);
+        switch (result) {
+            .ok => |ok| try tokens.append(allocator, ok.value),
+            .err => |e| {
+                try errors.append(allocator, e);
+                // Resume at the position knit reported the error
+                // (skipping every byte the winning alternative
+                // already consumed), but guarantee forward
+                // progress so a stuck parser can't infinite-loop.
+                const target = @max(before + 1, e.index + 1);
+                state.index = @min(target, state.input.len);
             },
         }
     }
 
-    try tokens.append(allocator, .{ .kind = .eof, .start = u32At(i), .end = u32At(i), .value = 0 });
-    return .{ .tokens = try tokens.toOwnedSlice(allocator), .allocator = allocator };
-}
+    try tokens.append(allocator, .{
+        .kind = .eof,
+        .start = u32At(state.index),
+        .end = u32At(state.index),
+        .value = 0,
+    });
 
-fn u32At(i: usize) u32 {
-    // @as: byte offsets fit in u32 — sources won't exceed 4 GiB.
-    return @as(u32, @intCast(i));
-}
-
-fn emitPunct(
-    allocator: std.mem.Allocator,
-    tokens: *std.ArrayList(Token),
-    kind: Token.Kind,
-    i: usize,
-) std.mem.Allocator.Error!usize {
-    try tokens.append(allocator, .{ .kind = kind, .start = u32At(i), .end = u32At(i + 1), .value = 0 });
-    return i + 1;
-}
-
-fn eatHex(
-    allocator: std.mem.Allocator,
-    tokens: *std.ArrayList(Token),
-    source: []const u8,
-    start: usize,
-    kind: Token.Kind,
-) std.mem.Allocator.Error!usize {
-    var j = start + 1;
-    while (j < source.len and std.ascii.isHex(source[j])) j += 1;
-    const digit_count = j - start - 1;
-    if (digit_count == 0 or digit_count > 4) {
-        try tokens.append(allocator, .{ .kind = .err, .start = u32At(start), .end = u32At(j), .value = 0 });
-        return j;
-    }
-    const slice = source[start + 1 .. j];
-    // allow-strict: 1-4 hex digits always parse into a u16 (digit count checked)
-    const parsed = std.fmt.parseInt(u16, slice, 16) catch unreachable;
-    try tokens.append(allocator, .{ .kind = kind, .start = u32At(start), .end = u32At(j), .value = parsed });
-    return j;
-}
-
-fn eatSymRef(
-    allocator: std.mem.Allocator,
-    tokens: *std.ArrayList(Token),
-    source: []const u8,
-    start: usize,
-) std.mem.Allocator.Error!usize {
-    var j = start + 1;
-    if (j >= source.len or !isIdentStart(source[j])) {
-        try tokens.append(allocator, .{ .kind = .err, .start = u32At(start), .end = u32At(j), .value = 0 });
-        return j;
-    }
-    while (j < source.len and isIdentCont(source[j])) j += 1;
-    try tokens.append(allocator, .{ .kind = .sym_ref, .start = u32At(start), .end = u32At(j), .value = 0 });
-    return j;
-}
-
-fn eatIdent(
-    allocator: std.mem.Allocator,
-    tokens: *std.ArrayList(Token),
-    source: []const u8,
-    start: usize,
-) std.mem.Allocator.Error!usize {
-    var j = start;
-    while (j < source.len and isIdentCont(source[j])) j += 1;
-    try tokens.append(allocator, .{ .kind = .ident, .start = u32At(start), .end = u32At(j), .value = 0 });
-    return j;
-}
-
-fn isIdentStart(c: u8) bool {
-    return std.ascii.isAlphabetic(c) or c == '_';
-}
-
-fn isIdentCont(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '_';
+    return .{
+        .tokens = try tokens.toOwnedSlice(allocator),
+        .errors = try errors.toOwnedSlice(allocator),
+        .allocator = allocator,
+    };
 }
