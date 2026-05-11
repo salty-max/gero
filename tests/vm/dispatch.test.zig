@@ -102,6 +102,104 @@ test "dispatch: bytes without a handler raise invalid-opcode" {
     }
 }
 
+// ---------- raiseIrq masking ----------
+
+test "raiseIrq: flg.I set globally blocks delivery" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    setVector(&vm, .invalid_opcode, 0x3000);
+    vm.regs.setFlag(.interrupt_disable, true);
+    try std.testing.expectEqual(@as(?gero.vm.StepResult, null), gero.vm.raiseIrq(&vm, .invalid_opcode));
+    // ip untouched.
+    try std.testing.expectEqual(@as(u16, 0), vm.regs.read(.ip));
+}
+
+test "raiseIrq: im bit clear blocks vectors 0x00..0x0F" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    setVector(&vm, .invalid_opcode, 0x3000);
+    vm.regs.setFlag(.interrupt_disable, false);
+    vm.regs.write(.im, 0xFFFD); // bit 1 (= vector 0x01) cleared
+    try std.testing.expectEqual(@as(?gero.vm.StepResult, null), gero.vm.raiseIrq(&vm, .invalid_opcode));
+}
+
+test "raiseIrq: im bit set delivers vectors 0x00..0x0F" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    setVector(&vm, .invalid_opcode, 0x3000);
+    vm.regs.setFlag(.interrupt_disable, false);
+    vm.regs.write(.im, 0xFFFF); // every maskable vector enabled
+    const r = gero.vm.raiseIrq(&vm, .invalid_opcode);
+    try std.testing.expectEqual(@as(?gero.vm.StepResult, .branched), r);
+    try std.testing.expectEqual(@as(u16, 0x3000), vm.regs.read(.ip));
+}
+
+test "raiseIrq: vectors >= 0x10 ignore im (only respect flg.I)" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    // Vector 0x20 — out of im's reach.
+    vm.mmap.writeWord(0x1040, 0x3000); // 0x1000 + 2 * 0x20
+    vm.regs.setFlag(.interrupt_disable, false);
+    vm.regs.write(.im, 0); // im fully clear
+    const v: gero.vm.Vector = @enumFromInt(0x20);
+    const r = gero.vm.raiseIrq(&vm, v);
+    try std.testing.expectEqual(@as(?gero.vm.StepResult, .branched), r);
+    try std.testing.expectEqual(@as(u16, 0x3000), vm.regs.read(.ip));
+}
+
+test "raiseFault: unmaskable — fires even with flg.I and im fully blocking" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    setVector(&vm, .div_by_zero, 0x3000);
+    vm.regs.setFlag(.interrupt_disable, true);
+    vm.regs.write(.im, 0);
+    try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.raiseFault(&vm, .div_by_zero));
+    try std.testing.expectEqual(@as(u16, 0x3000), vm.regs.read(.ip));
+}
+
+// ---------- nested interrupts ----------
+
+test "nested interrupts: cli inside ISR1 lets a second int fire and rti unwinds correctly" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    // Vector 0x20 → ISR1 at 0x4000; vector 0x21 → ISR2 at 0x5000.
+    vm.mmap.writeWord(0x1040, 0x4000);
+    vm.mmap.writeWord(0x1042, 0x5000);
+    // main: int 0x20 at 0x1100.
+    vm.regs.write(.ip, 0x1100);
+    vm.mmap.writeByte(0x1100, 0xFC);
+    vm.mmap.writeByte(0x1101, 0x20);
+    // ISR1 at 0x4000: cli; int 0x21; rti.
+    vm.mmap.writeByte(0x4000, 0xA2); // cli
+    vm.mmap.writeByte(0x4001, 0xFC); // int
+    vm.mmap.writeByte(0x4002, 0x21);
+    vm.mmap.writeByte(0x4003, 0xFD); // rti
+    // ISR2 at 0x5000: rti.
+    vm.mmap.writeByte(0x5000, 0xFD);
+
+    _ = gero.vm.step(&vm); // int 0x20 → ip=0x4000, flg.I=1
+    try std.testing.expectEqual(@as(u16, 0x4000), vm.regs.read(.ip));
+    try std.testing.expect(vm.regs.flagSet(.interrupt_disable));
+
+    _ = gero.vm.step(&vm); // cli → flg.I=0
+    try std.testing.expect(!vm.regs.flagSet(.interrupt_disable));
+
+    _ = gero.vm.step(&vm); // int 0x21 → ip=0x5000, flg.I=1 (auto-set on entry)
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+    try std.testing.expect(vm.regs.flagSet(.interrupt_disable));
+
+    _ = gero.vm.step(&vm); // rti (ISR2) → back to ISR1 at 0x4003
+    try std.testing.expectEqual(@as(u16, 0x4003), vm.regs.read(.ip));
+    // flg restored to ISR1's state after cli: I=0.
+    try std.testing.expect(!vm.regs.flagSet(.interrupt_disable));
+
+    _ = gero.vm.step(&vm); // rti (ISR1) → back to main at 0x1102
+    try std.testing.expectEqual(@as(u16, 0x1102), vm.regs.read(.ip));
+    // sp / fp fully unwound to pre-int state.
+    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.fp));
+}
+
 test "dispatch: step auto-advances ip by instruction size" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();

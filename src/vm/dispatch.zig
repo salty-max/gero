@@ -218,10 +218,12 @@ pub fn run(vm: *VM) StepResult {
     }
 }
 
-/// Deliver a fault through the interrupt mechanism. If the
-/// vector slot is `0` the VM halts with a host-visible fault
-/// marker; otherwise the entry sequence pushes `ip` / `fp` /
-/// `flg`, sets `flg.I`, and jumps to the ISR.
+/// Deliver a fault through the interrupt mechanism. Faults
+/// (and software `int N`) bypass `flg.I` and `im` — they always
+/// fire, so a buggy program can't silently drop a div-by-zero.
+/// If the vector slot is `0` the VM halts with a host-visible
+/// fault marker; otherwise the entry sequence pushes `ip` /
+/// `fp` / `flg`, sets `flg.I`, and jumps to the ISR.
 pub fn raiseFault(vm: *VM, vector: Vector) StepResult {
     const target = vm.mmap.readWord(ivtSlot(vector));
     if (target == 0) return .halted_on_fault;
@@ -232,6 +234,21 @@ pub fn raiseFault(vm: *VM, vector: Vector) StepResult {
     vm.regs.setFlag(.interrupt_disable, true);
     vm.regs.write(.ip, target);
     return .branched;
+}
+
+/// Deliver a hardware-style IRQ. Honors the maskable layer
+/// (`flg.I` globally + `im` for vectors `0..0x0F`); host /
+/// device code calls this to signal an interrupt. Returns
+/// `null` when the IRQ is blocked by masking, otherwise the
+/// outcome of the entry sequence (same as `raiseFault`).
+pub fn raiseIrq(vm: *VM, vector: Vector) ?StepResult {
+    if (vm.regs.flagSet(.interrupt_disable)) return null;
+    const v = @intFromEnum(vector);
+    if (v < 0x10) {
+        const mask = vm.regs.read(.im);
+        if ((mask >> @intCast(v)) & 1 == 0) return null;
+    }
+    return raiseFault(vm, vector);
 }
 
 /// Address of the slot for `vector` inside the IVT.
