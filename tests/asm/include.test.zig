@@ -121,9 +121,9 @@ test "include: nested 3-deep include resolves in order" {
     try std.testing.expectEqualStrings("a_ident", idents[2]);
 }
 
-// ---------- pragma-once dedup ----------
+// ---------- textual splice (re-include emits every time) ----------
 
-test "include: diamond include — utils is resolved once even when reached twice" {
+test "include: diamond — utils is spliced TWICE per asm tradition" {
     var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("utils.gas", "u_ident\n");
@@ -148,27 +148,26 @@ test "include: diamond include — utils is resolved once even when reached twic
     defer fused.deinit();
 
     try std.testing.expect(!fused.hasErrors());
-    // 4 files in the table (main, a, b, utils) — utils appears exactly once.
-    try std.testing.expectEqual(@as(usize, 4), fused.file_table.files.items.len);
-    // u_ident should appear ONCE in the fused stream, not twice.
+    // utils.gas gets a FileTable entry per inclusion — the file table
+    // tracks each splice, not each unique file.
+    try std.testing.expect(fused.file_table.files.items.len >= 4);
+    // u_ident should appear TWICE in the fused stream (textual splice).
     var u_ident_count: usize = 0;
     for (fused.tokens) |t| {
         if (t.kind != .ident) continue;
         const f = fused.file_table.get(t.file_id);
         if (std.mem.eql(u8, f.content[t.start..t.end], "u_ident")) u_ident_count += 1;
     }
-    try std.testing.expectEqual(@as(usize, 1), u_ident_count);
+    try std.testing.expectEqual(@as(usize, 2), u_ident_count);
 }
 
-test "include: same file referenced via different relative paths still dedups" {
+test "include: two direct includes of the same file emit its tokens twice" {
     var fx = Fixture.init();
     defer fx.deinit();
-    try fx.mkdir("sub");
-    try fx.write("utils.gas", "u_ident\n");
-    try fx.write("sub/inner.gas", "include \"../utils.gas\"\n");
+    try fx.write("shared.gas", "s_ident\n");
     try fx.write("main.gas",
-        \\include "utils.gas"
-        \\include "sub/inner.gas"
+        \\include "shared.gas"
+        \\include "shared.gas"
         \\
     );
 
@@ -179,15 +178,13 @@ test "include: same file referenced via different relative paths still dedups" {
     defer fused.deinit();
 
     try std.testing.expect(!fused.hasErrors());
-    // utils.gas must appear once even though the second include
-    // names it via `../utils.gas` from inside sub/.
-    var u_ident_count: usize = 0;
+    var s_count: usize = 0;
     for (fused.tokens) |t| {
         if (t.kind != .ident) continue;
         const f = fused.file_table.get(t.file_id);
-        if (std.mem.eql(u8, f.content[t.start..t.end], "u_ident")) u_ident_count += 1;
+        if (std.mem.eql(u8, f.content[t.start..t.end], "s_ident")) s_count += 1;
     }
-    try std.testing.expectEqual(@as(usize, 1), u_ident_count);
+    try std.testing.expectEqual(@as(usize, 2), s_count);
 }
 
 // ---------- cycle / depth / missing ----------

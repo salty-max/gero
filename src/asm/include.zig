@@ -1,9 +1,10 @@
 /// `include` resolution phase — walks the asm source graph,
 /// fusing tokens from every reachable file into one stream the
-/// downstream parser can consume directly. Implements the
-/// `pragma once` semantics from asm spec §2.2 (each file resolves
-/// at most once per assembly), cycle detection (E012), depth cap
-/// (E013), and file-not-found (E015).
+/// downstream parser can consume directly. Splice is textual per
+/// asm spec §2.2 (each `include` emits the target's tokens every
+/// time — NASM tradition). Cycle detection bounds runaway
+/// recursion (E012); depth cap (E013) guards pathological graphs;
+/// missing target (E015) is a per-include diagnostic.
 const std = @import("std");
 const knit = @import("knit");
 const core = knit.core;
@@ -100,12 +101,10 @@ const Context = struct {
     tokens: *std.ArrayList(lexer.Token),
     errors: *std.ArrayList(Diagnostic),
     /// Canonical paths currently being resolved — cycle detection.
-    /// Entries reference path strings owned by `file_table`.
-    in_progress: *std.ArrayList([]const u8),
-    /// Canonical paths that have finished resolving — dedup
-    /// (`pragma once` semantics). Entries reference path strings
-    /// owned by `file_table`.
-    resolved: *std.StringHashMap(u16),
+    /// Entries reference path strings owned by `file_table` (each
+    /// entry is the canonical path that's been registered there
+    /// for the duration of its recursive call).
+    in_progress: *std.ArrayList([:0]const u8),
 };
 
 /// Resolve `root_path` and every file it includes (transitively)
@@ -130,10 +129,7 @@ pub fn resolveIncludes(
     var errors: std.ArrayList(Diagnostic) = .empty;
     errdefer errors.deinit(allocator);
 
-    var resolved = std.StringHashMap(u16).init(allocator);
-    defer resolved.deinit();
-
-    var in_progress: std.ArrayList([]const u8) = .empty;
+    var in_progress: std.ArrayList([:0]const u8) = .empty;
     defer in_progress.deinit(allocator);
 
     var ctx = Context{
@@ -143,7 +139,6 @@ pub fn resolveIncludes(
         .tokens = &tokens,
         .errors = &errors,
         .in_progress = &in_progress,
-        .resolved = &resolved,
     };
 
     try resolveOne(&ctx, root_path, null, 0, 0, 0);
@@ -213,14 +208,6 @@ fn resolveOne(
         },
         else => return err,
     };
-
-    // pragma-once: already fully resolved, skip silently. Need to
-    // free the canonical we just allocated since we won't be
-    // registering this file.
-    if (ctx.resolved.contains(canonical)) {
-        ctx.allocator.free(canonical);
-        return;
-    }
 
     // Cycle: same path currently being resolved further up the
     // chain. Borrowing the canonical path string is safe because
@@ -323,8 +310,6 @@ fn resolveOne(
     for (ts.errors) |e| {
         try ctx.errors.append(ctx.allocator, .{ .file_id = file_id, .parse_error = e });
     }
-
-    try ctx.resolved.put(canonical, file_id);
 }
 
 /// Format one `Diagnostic` as `<path>:<line>:<col>: <message>` —
