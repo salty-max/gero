@@ -1,9 +1,11 @@
 /// `gero` CLI entry point. Parses argv, dispatches to the
 /// per-subcommand modules, plumbs file-IO + stdio.
 const std = @import("std");
+const gero = @import("gero");
 const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
 const run_cmd = @import("run.zig");
+const info_cmd = @import("info.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
@@ -54,11 +56,40 @@ pub fn main(init: std.process.Init) !u8 {
 
     return switch (cmd) {
         .run => runDispatch(io, arena, parsed.options, stdout, &term),
+        .info => infoDispatch(io, arena, parsed.options, stdout, &term),
         else => blk: {
             try term.err("gero {s}: not yet implemented", .{cli.commandName(cmd)});
             break :blk 1;
         },
     };
+}
+
+fn infoDispatch(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    opts: cli.Options,
+    stdout: *std.Io.Writer,
+    term: *term_mod.Term,
+) !u8 {
+    const positionals = opts.positional();
+    if (positionals.len < 1) {
+        try term.err("gero info: missing .gx file path", .{});
+        return 2;
+    }
+    const gx_path = positionals[0];
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, gx_path, arena, .unlimited) catch |err| {
+        try term.err("gero info: cannot read {s} ({s})", .{ gx_path, @errorName(err) });
+        return 1;
+    };
+
+    const loaded = gero.vm.parseGx(bytes) catch |err| {
+        try term.err("gero info: invalid .gx file ({s})", .{@errorName(err)});
+        return 1;
+    };
+
+    try info_cmd.format(stdout, .{ .path = gx_path, .file_size = bytes.len }, loaded);
+    return 0;
 }
 
 fn toTermChoice(c: cli.ColorChoice) term_mod.ColorChoice {
