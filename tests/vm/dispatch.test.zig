@@ -92,7 +92,7 @@ test "dispatch: bytes without a handler raise invalid-opcode" {
 
     // Pick bytes that have no handler yet: the invalid-opcode
     // fault should fire on each.
-    inline for ([_]u8{ 0x00, 0x40, 0x80, 0xFF }) |op| {
+    inline for ([_]u8{ 0x00, 0x70, 0x80, 0xFF }) |op| {
         vm.regs.write(.ip, 0x1100);
         vm.mmap.writeByte(0x1100, op);
         vm.regs.write(.sp, 0xFFFE);
