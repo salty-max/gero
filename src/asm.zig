@@ -7,6 +7,14 @@
 const std = @import("std");
 const knit = @import("knit");
 const gero = @import("gero.zig");
+const lexer = @import("asm/lexer.zig");
+
+/// Re-export: lexer token.
+pub const Token = lexer.Token;
+/// Re-export: lexer output.
+pub const TokenStream = lexer.TokenStream;
+/// Re-export: `.gas` tokenizer.
+pub const tokenize = lexer.tokenize;
 
 /// Errors the assembler can emit. Restricted while the smoke
 /// parser is the only producer; the real assembler will grow
