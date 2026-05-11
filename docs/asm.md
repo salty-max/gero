@@ -40,8 +40,8 @@ variable names, and field names.
 **Mnemonics and directive keywords are lowercase only.** `mov` is
 valid, `MOV` is rejected with `E001` (unknown mnemonic). Register
 names (`r1`, `acu`, `flg`, …) and reserved keywords (`const`,
-`data8`, `data16`, `struct`, `org`, `include`, type names `u8` /
-`u16`) are also lowercase-only.
+`data8`, `data16`, `struct`, `org`, `include`, `reserve`, type
+names `u8` / `u16`) are also lowercase-only.
 
 ### 1.4 Numeric literals
 
@@ -223,6 +223,7 @@ Each value in a `data8` body may be:
 - an address literal (`&1000`)
 - a `@`-prefixed symbol reference (`@other_data`)
 - a string literal (`"Hi"`) — only in `data8`
+- a reservation form `reserve N` — see below
 - a parenthesized expression of these (see §1.7)
 
 `data16` accepts the same forms minus string literals; each value
@@ -230,6 +231,25 @@ ends up as a 16-bit LE word.
 
 Braces (`{ }`) are reserved for multi-line blocks — `struct` (§2.2
 below). Single-line value lists never use them.
+
+##### `reserve N`
+
+```asm
+data8  scratch  = reserve 256                  ; 256 zero bytes
+data16 ringbuf  = reserve 16                   ; 16 zero words (32 bytes)
+data8  packet   = $AA, $55, reserve 14, $FF    ; framed header + body + tail
+```
+
+`reserve N` emits **N zero-initialized units** at this position
+inside a `data8` / `data16` value list — N bytes in `data8`, N
+little-endian words in `data16`. It can be mixed with other value
+forms inside the same statement (NASM `db`/`resb` mix). `N` is a
+compile-time `u16`; runtime values are rejected with `E003`.
+
+Use `reserve` for work buffers, ring buffers, scratch space, or any
+region you intend to fill at runtime. Without it, the only way to
+declare a 256-byte buffer would be to type 256 `$00`s, which is
+exactly the kind of thing the spec is supposed to spare you.
 
 #### `struct`
 
