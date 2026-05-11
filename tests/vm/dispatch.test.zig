@@ -30,7 +30,7 @@ test "dispatch: step with installed ISR enters the handler" {
     setVector(&vm, .invalid_opcode, 0x2000);
     vm.regs.write(.ip, 0x1100);
 
-    try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
+    try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
     try std.testing.expectEqual(@as(u16, 0x2000), vm.regs.read(.ip));
     try std.testing.expect(vm.regs.flagSet(.interrupt_disable));
 }
@@ -92,12 +92,12 @@ test "dispatch: bytes without a handler raise invalid-opcode" {
 
     // Pick bytes that have no handler yet: the invalid-opcode
     // fault should fire on each.
-    inline for ([_]u8{ 0x00, 0x70, 0x80, 0xFF }) |op| {
+    inline for ([_]u8{ 0x00, 0x68, 0x83, 0xFF }) |op| {
         vm.regs.write(.ip, 0x1100);
         vm.mmap.writeByte(0x1100, op);
         vm.regs.write(.sp, 0xFFFE);
         vm.regs.write(.flg, 0);
-        try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
+        try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
         try std.testing.expectEqual(@as(u16, 0x4000), vm.regs.read(.ip));
     }
 }

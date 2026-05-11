@@ -10,6 +10,7 @@ const stack_handlers = @import("handlers/stack.zig");
 const arith = @import("handlers/arith.zig");
 const bitwise = @import("handlers/bitwise.zig");
 const cmp_handlers = @import("handlers/cmp.zig");
+const jumps = @import("handlers/jumps.zig");
 const VM = vm_mod.VM;
 const Register = vm_mod.Register;
 const Flag = vm_mod.Flag;
@@ -37,8 +38,12 @@ pub const Vector = enum(u8) {
 
 /// Outcome of a `step` call.
 pub const StepResult = enum {
-    /// The VM advanced — keep dispatching.
+    /// The handler completed normally; `step` auto-advances `ip`
+    /// past the instruction.
     cont,
+    /// The handler set `ip` itself (jump, call, fault entry).
+    /// `step` leaves `ip` alone — the run loop keeps going.
+    branched,
     /// The VM hit `hlt` (no resume).
     halted,
     /// A fault fired but no ISR was installed (vector slot is `0`).
@@ -137,6 +142,24 @@ pub const handler_table: [256]Handler = blk: {
     t[0x62] = cmp_handlers.tstRegImm16;
     t[0x63] = cmp_handlers.tstRegReg;
 
+    // control flow
+    t[0x70] = jumps.jmpAddr;
+    t[0x71] = jumps.jmpReg;
+    t[0x72] = jumps.jeqAddr;
+    t[0x73] = jumps.jneAddr;
+    t[0x74] = jumps.jltAddr;
+    t[0x75] = jumps.jleAddr;
+    t[0x76] = jumps.jgtAddr;
+    t[0x77] = jumps.jgeAddr;
+    t[0x78] = jumps.jccAddr;
+    t[0x79] = jumps.jcsAddr;
+    t[0x7A] = jumps.jvcAddr;
+    t[0x7B] = jumps.jvsAddr;
+    t[0x7C] = jumps.jzAddr;
+    t[0x7D] = jumps.jnzAddr;
+    t[0x7E] = jumps.djnzRegAddr;
+    t[0x7F] = jumps.jrImm8;
+
     break :blk t;
 };
 
@@ -149,19 +172,19 @@ pub fn step(vm: *VM) StepResult {
     const op = vm.mmap.readByte(ip_before);
     const handler = handler_table[op];
     const result = handler(vm);
-    if (result == .cont and vm.regs.read(.ip) == ip_before) {
+    if (result == .cont) {
         const info = opcodes.table[op] orelse return .halted_on_fault;
         vm.regs.write(.ip, ip_before +% info.size());
     }
     return result;
 }
 
-/// Iterate `step` until it returns anything other than `.cont`.
-/// Returns the final outcome (`.halted` or `.halted_on_fault`).
+/// Iterate `step` until the VM signals a terminal state. `.cont`
+/// and `.branched` both keep the loop going.
 pub fn run(vm: *VM) StepResult {
     while (true) {
         const r = step(vm);
-        if (r != .cont) return r;
+        if (r == .halted or r == .halted_on_fault) return r;
     }
 }
 
@@ -178,7 +201,7 @@ pub fn raiseFault(vm: *VM, vector: Vector) StepResult {
     pushWord(vm, vm.regs.read(.flg));
     vm.regs.setFlag(.interrupt_disable, true);
     vm.regs.write(.ip, target);
-    return .cont;
+    return .branched;
 }
 
 /// Address of the slot for `vector` inside the IVT.
