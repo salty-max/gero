@@ -11,6 +11,7 @@ const arith = @import("handlers/arith.zig");
 const bitwise = @import("handlers/bitwise.zig");
 const cmp_handlers = @import("handlers/cmp.zig");
 const jumps = @import("handlers/jumps.zig");
+const subroutine = @import("handlers/subroutine.zig");
 const VM = vm_mod.VM;
 const Register = vm_mod.Register;
 const Flag = vm_mod.Flag;
@@ -159,6 +160,11 @@ pub const handler_table: [256]Handler = blk: {
     t[0x7D] = jumps.jnzAddr;
     t[0x7E] = jumps.djnzRegAddr;
     t[0x7F] = jumps.jrImm8;
+
+    // subroutines
+    t[0x80] = subroutine.callAddr;
+    t[0x81] = subroutine.callReg;
+    t[0x82] = subroutine.ret;
 
     break :blk t;
 };
