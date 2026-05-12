@@ -440,6 +440,7 @@ fn computeLineCol(content: []const u8, target: u32) LineCol {
     var line: u32 = 1;
     var col: u32 = 1;
     var i: usize = 0;
+    // @as: widen u32 file offset to usize for the slice-length comparison.
     const end = @min(@as(usize, target), content.len);
     while (i < end) : (i += 1) {
         if (content[i] == '\n') {
