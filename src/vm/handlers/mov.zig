@@ -189,6 +189,21 @@ pub fn mov8PtrReg(vm: *VM) StepResult {
     return ok;
 }
 
+/// `0x29` — `mov8 [Addr + Reg], Reg` → byte-level indexed load:
+/// `dst.lo ← mem[addr + idx]; dst.hi ← 0`. Use for stepping
+/// through `data8` byte arrays (the word-sized `0x17` overlaps
+/// adjacent bytes on each iteration).
+pub fn mov8Indexed(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const base = vm.readWord(ip +% 1);
+    const idx_reg = vm.readByte(ip +% 3);
+    const dst = vm.readByte(ip +% 4);
+    const offset = vm.regs.readByIndex(idx_reg) orelse return fault(vm, .invalid_register);
+    const value = vm.readByte(base +% offset);
+    if (!vm.regs.writeByIndex(dst, value)) return fault(vm, .invalid_register);
+    return ok;
+}
+
 /// `0x25` — `movh Reg, Addr` → `mem[addr] ← reg.hi`.
 pub fn movhRegAddr(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);

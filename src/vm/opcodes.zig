@@ -61,6 +61,7 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x22] = .{ .mnemonic = "mov8", .operands = &.{ .addr, .reg } };
     t[0x23] = .{ .mnemonic = "mov8", .operands = &.{ .reg, .reg } };
     t[0x24] = .{ .mnemonic = "mov8", .operands = &.{ .reg, .reg } };
+    t[0x29] = .{ .mnemonic = "mov8", .operands = &.{ .addr, .reg, .reg } };
     t[0x25] = .{ .mnemonic = "movh", .operands = &.{ .reg, .addr } };
     t[0x26] = .{ .mnemonic = "movl", .operands = &.{ .reg, .addr } };
 
