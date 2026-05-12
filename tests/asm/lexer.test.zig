@@ -250,7 +250,10 @@ test "lex: field access in addr expression" {
     });
 }
 
-test "lex: &r1 register pointer = ampersand + ident" {
+test "lex: '&' followed by a non-hex ident lexes as ampersand + ident" {
+    // The lexer doesn't know `r1` is a register — that's the
+    // parser's job. The token shape is what matters: bare `&`
+    // followed by an identifier emits two separate tokens.
     try expectKinds("&r1", &.{ .ampersand, .ident });
 }
 
