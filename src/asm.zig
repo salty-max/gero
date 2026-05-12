@@ -9,6 +9,8 @@ const knit = @import("knit");
 const gero = @import("gero.zig");
 const lexer = @import("asm/lexer.zig");
 const include = @import("asm/include.zig");
+const ast_mod = @import("asm/ast.zig");
+const parser = @import("asm/parser.zig");
 
 /// Re-export: lexer token.
 pub const Token = lexer.Token;
@@ -29,6 +31,21 @@ pub const FusedSource = include.FusedSource;
 pub const resolveIncludes = include.resolveIncludes;
 /// Re-export: format one `Diagnostic` as `<path>:<line>:<col>: <msg>`.
 pub const formatDiagnostic = include.formatDiagnostic;
+
+/// Re-export: source span — `{file_id, start, end}`.
+pub const Span = ast_mod.Span;
+/// Re-export: top-level AST node — label, directive, instruction (others land later).
+pub const Statement = ast_mod.Statement;
+/// Re-export: label-statement AST shape.
+pub const Label = ast_mod.Label;
+/// Re-export: catch-all node for unrecognized statement shapes.
+pub const Unknown = ast_mod.Unknown;
+/// Re-export: parsed program — owned `[]Statement`.
+pub const Program = ast_mod.Program;
+/// Re-export: parser output — program AST + collected diagnostics.
+pub const ParseTree = parser.ParseTree;
+/// Re-export: parse a fused token stream into a `ParseTree`.
+pub const parse = parser.parse;
 
 /// Errors the assembler can emit. Restricted while the smoke
 /// parser is the only producer; the real assembler will grow
