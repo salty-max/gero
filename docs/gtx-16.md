@@ -456,7 +456,9 @@ PICO-8-minimal style. Boot drops the user at a prompt.
 | `cat <path>` | Print a file. |
 | `clear` | Clear the screen. |
 | `load <cart>` | Load a cart into memory (no run). |
-| `run [cart]` | Run loaded cart, or `run <cart>` to load + run. |
+| `run [cart]` | Run loaded cart, or `run <cart>` to load + run. Discards any suspended cart snapshot. |
+| `resume` | Resume the most-recently-suspended cart from where it was paused. See §12.1. |
+| `quit` | Discard the current cart snapshot. Use when you don't want `resume` to take you back to a half-played cart. |
 | `save [name]` | Save the current cart (with optional rename). |
 | `edit [editor]` | Open an editor on the current cart. Default: code. See §11. |
 | `splore` | Open a graphical browser of available carts. |
@@ -528,6 +530,89 @@ All editors share:
 A cart can call `host_reboot()` (gero opcode) to relaunch the
 boot shell at any point.
 
+### 12.1 Context switching (shell ↔ cart)
+
+gtx-16 is **single-VM** — only one gero program executes at a
+time. But the shell, editors, and a running cart need to coexist
+naturally: hit Esc during a game, you're back in the shell with
+the cart paused; pick up an editor, change a sprite, resume the
+cart with the new sprite live.
+
+This is achieved with **snapshot-based context switching**, the
+same model PICO-8 uses. No concurrent processes, no scheduler —
+just one live VM + two saved snapshots that swap on triggers.
+
+**Two snapshot slots** maintained by the host:
+
+| Slot | Holds | Lifetime |
+|------|-------|----------|
+| `system_snapshot` | Shell or current editor state — regs + RAM image + IO regs + interrupt state. | Always present (boot fills it). |
+| `cart_snapshot` | Currently-loaded user cart, suspended state. | Present from `run` until `quit` or next `run`. |
+
+**The swap mechanism:**
+
+```
+                      ┌──────────────┐
+                      │   LIVE VM    │
+                      │  (executing) │
+                      └──────┬───────┘
+                             │ swap
+                             ▼
+                ┌────────────────────────┐
+                │  Host snapshot store   │
+                │  • system_snapshot     │
+                │  • cart_snapshot       │
+                └────────────────────────┘
+```
+
+`swap_to(target)` is a host operation that:
+1. Saves the live VM's full state into the snapshot it's currently associated with.
+2. Loads the target snapshot's state into the live VM.
+3. Resumes execution at the loaded `ip`.
+
+The whole VM (registers, the 64 KB memory image, IVT entries,
+interrupt-disable flag) is snapshotted. The IO peripherals
+(display, audio, input) stay live host-side — they don't swap.
+
+**Triggers:**
+
+| Action | Effect |
+|--------|--------|
+| **Boot** | Live VM runs `/sys/boot.gtx`; `system_snapshot` becomes the live state itself. |
+| **`run cart`** (shell) | `swap_to(cart_snapshot)` — but if cart_snapshot is empty, instead load the cart's `.gx` fresh into the live VM (and any previous cart_snapshot is discarded). |
+| **Esc keypress** (host catches, cart can't disable) | If a cart is the live VM: snapshot it into `cart_snapshot`, then `swap_to(system_snapshot)`. |
+| **`resume`** (shell) | If `cart_snapshot` exists: `swap_to(cart_snapshot)`. Otherwise no-op with an error message. |
+| **`quit`** (shell) | Discard `cart_snapshot`. Next `run` will start fresh. |
+| **Cart calls `hlt`** | Cart finished cleanly. Discard `cart_snapshot`, `swap_to(system_snapshot)`. |
+| **`edit <editor>`** (shell) | Editor loads as a new system program — its bytes overwrite the live VM's system state. Existing `cart_snapshot` is untouched. (Editors have privileged read/write access to `cart_snapshot` so they can modify the loaded cart's assets.) |
+
+**Editor + cart coexistence:**
+
+An editor running in the system slot has read/write access to
+`cart_snapshot`'s memory region — it can edit sprites, sound
+data, etc. inside the suspended cart. On `resume`, the cart sees
+the modified bytes. (How exactly the editor finds the right
+offsets in cart_snapshot is an editor-cart contract — typically
+the cart's manifest declares "sprites live at `0x8000`" and the
+sprite editor reads/writes there.)
+
+**Audio is independent of the VM swap.** The audio engine runs
+host-side (see §3.3) from a Song struct in cart memory. When a
+cart is suspended, its memory still exists in `cart_snapshot` —
+the engine keeps reading from there. So music started by a cart
+continues to play while you're in the shell or an editor.
+
+**Memory cost:** ~128 KB host-side (two snapshots × 64 KB RAM
+image + register state). Negligible on any modern host. Banks
+are part of the snapshot too — full state preserved.
+
+**Why not concurrent multi-process?** Real multitasking (multiple
+VMs running interleaved) would require a scheduler, IPC, shared-
+resource arbitration. Big complexity for marginal gain — the
+shell doesn't need cycles while a cart is in focus, the editor
+doesn't need cycles when the cart is running. Snapshot swap
+covers every case PICO-8 has lived with for years.
+
 ---
 
 ## 13. What gtx-16 explicitly does NOT do
@@ -539,8 +624,10 @@ boot shell at any point.
 - **No networking.** No sockets, no URL fetch, no BBS browser
   inside the console. Sharing happens via `.gtx.png` export +
   upload to whatever service you like.
-- **No multi-process.** One cart runs at a time. The shell
-  suspends when a cart starts; resumes when the cart exits.
+- **No concurrent multi-process.** One VM is live at any moment.
+  Shell ↔ cart ↔ editor switch via snapshot-based context
+  switching (§12.1) — same model as PICO-8. No scheduler, no
+  IPC, no shared-resource arbitration.
 - **No clipboard / direct OS calls.** No `system()`, no shell-out,
   no opening arbitrary files outside the sandbox.
 - **No timed real-world clock.** Frame counter only — no calendar
@@ -578,7 +665,7 @@ next round of additions.
 |---------|-----|
 | Rotation primitives (`spr_rotated`, full affine matrix) | If user demand emerges. v0.1 has scale only. |
 | Per-scanline palette / palette HDMA equivalent | Sky gradients, atmospheric effects. Easy to add later. |
-| Multi-process / background music while editing | Optional — would push the project toward "fantasy workstation" identity vs "fantasy console". |
+| Mode 7 / single-layer affine projection | Mario Kart / F-Zero style pseudo-3D racing. Specifies an affine matrix on one of the two layers. |
 | Network access (read-only BBS) | If a curated cart-sharing platform makes sense. Sandbox stays strict. |
 | Higher resolutions (480×270, 640×480) | Possibly a `RESOLUTION` register that the cart picks at load. Trade-off: bigger FB, more pixel-pushing per frame. |
 
