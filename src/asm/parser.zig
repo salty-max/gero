@@ -74,6 +74,14 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !ParseTree {
 fn cleanupStatements(allocator: std.mem.Allocator, statements: *std.ArrayList(ast.Statement)) void {
     for (statements.items) |s| switch (s) {
         .const_decl => |c| ast.freeExpr(allocator, c.expr),
+        .data8, .data16 => |d| {
+            for (d.values) |v| switch (v) {
+                .expr => |e| ast.freeExpr(allocator, e.expr),
+                .reserve => |r| ast.freeExpr(allocator, r.count_expr),
+                .addr_lit, .sym_ref, .string => {},
+            };
+            allocator.free(d.values);
+        },
         else => {},
     };
     statements.deinit(allocator);
@@ -90,11 +98,17 @@ fn parseStatement(
 ) !void {
     const stmt_start = state.index;
 
-    // `const NAME = <expr>` — must be checked before generic
-    // labels, since the bare `const` lexeme would otherwise be
-    // taken as a label's identifier.
+    // Directive keywords must be checked before generic labels,
+    // since the bare keyword lexeme would otherwise be taken as a
+    // label's identifier.
     if (consumeKeyword(state, "const")) {
         return parseConstDecl(state, allocator, stmt_start, statements, errors, consts);
+    }
+    if (consumeKeyword(state, "data8")) {
+        return parseDataDecl(state, allocator, stmt_start, statements, errors, consts, .data8);
+    }
+    if (consumeKeyword(state, "data16")) {
+        return parseDataDecl(state, allocator, stmt_start, statements, errors, consts, .data16);
     }
 
     // Label: `ident ":"`. The colon distinguishes a label from an
@@ -219,6 +233,202 @@ fn parseConstDecl(
     } });
 }
 
+// ---------- data8 / data16 directives ----------
+
+/// Selects which data directive is being parsed. The parser
+/// shares one function across both — only the variant tag and
+/// the string-literal admissibility differ.
+const DataKind = enum { data8, data16 };
+
+fn parseDataDecl(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+    kind: DataKind,
+) !void {
+    const kw_name: []const u8 = switch (kind) {
+        .data8 => "data8",
+        .data16 => "data16",
+    };
+
+    skipBlanksInLine(state);
+
+    // Name.
+    const name_result = lexer.identP.parseFn(state);
+    if (name_result != .ok) {
+        try errors.append(allocator, .{
+            .parse_error = core.parseError(
+                kw_name,
+                state.index,
+                "expected identifier after directive keyword",
+                .{ .expected = "identifier", .kind = .syntactic },
+            ),
+        });
+        try recoverToNewline(state);
+        try statements.append(allocator, .{ .unknown = .{
+            .span = spanFrom(stmt_start, state.index),
+        } });
+        return;
+    }
+    const name_token = name_result.ok.value;
+
+    skipBlanksInLine(state);
+
+    // `=`.
+    const eq_result = lexer.equalsP.parseFn(state);
+    if (eq_result != .ok) {
+        try errors.append(allocator, .{
+            .parse_error = core.parseError(
+                kw_name,
+                state.index,
+                "expected `=` after directive name",
+                .{ .expected = "=", .kind = .syntactic },
+            ),
+        });
+        try recoverToNewline(state);
+        try statements.append(allocator, .{ .unknown = .{
+            .span = spanFrom(stmt_start, state.index),
+        } });
+        return;
+    }
+
+    // Comma-separated value list. At least one value required.
+    var values: std.ArrayList(ast.DataValue) = .empty;
+    errdefer cleanupDataValues(allocator, &values);
+
+    while (true) {
+        const val_or_err = parseDataValue(state, allocator, errors, consts, kind);
+        const val = val_or_err catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ParseFailed => {
+                cleanupDataValues(allocator, &values);
+                try recoverToNewline(state);
+                try statements.append(allocator, .{ .unknown = .{
+                    .span = spanFrom(stmt_start, state.index),
+                } });
+                return;
+            },
+        };
+        try values.append(allocator, val);
+
+        skipBlanksInLine(state);
+        if (peekByte(state, ',')) {
+            state.advance(1);
+            continue;
+        }
+        break;
+    }
+
+    const owned = try values.toOwnedSlice(allocator);
+    const decl: ast.DataDecl = .{
+        .name = ast.Span.fromToken(name_token),
+        .values = owned,
+        .span = spanFrom(stmt_start, state.index),
+    };
+    try statements.append(allocator, switch (kind) {
+        .data8 => .{ .data8 = decl },
+        .data16 => .{ .data16 = decl },
+    });
+}
+
+fn parseDataValue(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+    kind: DataKind,
+) expr.ParseError!ast.DataValue {
+    skipBlanksInLine(state);
+    const start = state.index;
+
+    // `"..."` string literal — `data8` only.
+    if (state.index < state.input.len and state.input[state.index] == '"') {
+        const r = lexer.stringP.parseFn(state);
+        if (r == .ok) {
+            const tok = r.ok.value;
+            if (kind == .data16) {
+                try errors.append(state.allocator, .{
+                    .parse_error = core.parseError(
+                        "data16",
+                        tok.start,
+                        "string literals are only allowed in `data8` bodies",
+                        .{ .expected = "hex / addr / sym_ref / expression", .kind = .semantic },
+                    ),
+                });
+            }
+            return .{ .string = .{
+                .span = .{ .start = tok.start, .end = tok.end },
+            } };
+        }
+        // Fall through — the string parser refused (probably
+        // unterminated). Let the lexer's earlier error stand;
+        // we'll surface a generic "expected value" below.
+    }
+
+    // `&FFFF` address literal — must come before the expression
+    // path because the expression parser treats `&` as bitwise AND.
+    if (state.index < state.input.len and state.input[state.index] == '&') {
+        const r = lexer.addrP.parseFn(state);
+        if (r == .ok) {
+            const tok = r.ok.value;
+            return .{ .addr_lit = .{
+                .value = tok.value,
+                .span = .{ .start = tok.start, .end = tok.end },
+            } };
+        }
+    }
+
+    // `@sym` reference.
+    if (state.index < state.input.len and state.input[state.index] == '@') {
+        const r = lexer.symRefP.parseFn(state);
+        if (r == .ok) {
+            const tok = r.ok.value;
+            return .{ .sym_ref = .{
+                .span = .{ .start = tok.start, .end = tok.end },
+            } };
+        }
+    }
+
+    // `reserve N` — the count is itself an expression.
+    if (consumeKeyword(state, "reserve")) {
+        const count_expr = try expr.parseExpression(state, allocator, errors);
+        const count: ?u16 = blk: {
+            const eval = expr.evalExpr(count_expr, state.input, consts.*);
+            switch (eval) {
+                .ok => |v| break :blk v,
+                .err => |d| {
+                    try errors.append(state.allocator, d);
+                    break :blk null;
+                },
+            }
+        };
+        return .{ .reserve = .{
+            .count_expr = count_expr,
+            .count = count,
+            .span = spanFrom(start, state.index),
+        } };
+    }
+
+    // Fall through to the general compile-time expression.
+    const e = try expr.parseExpression(state, allocator, errors);
+    return .{ .expr = .{
+        .expr = e,
+        .span = e.span(),
+    } };
+}
+
+fn cleanupDataValues(allocator: std.mem.Allocator, values: *std.ArrayList(ast.DataValue)) void {
+    for (values.items) |v| switch (v) {
+        .expr => |e| ast.freeExpr(allocator, e.expr),
+        .reserve => |r| ast.freeExpr(allocator, r.count_expr),
+        .addr_lit, .sym_ref, .string => {},
+    };
+    values.deinit(allocator);
+}
+
 // ---------- unknown / recovery ----------
 
 fn recordUnknown(
@@ -296,4 +506,12 @@ fn skipSeparators(state: *core.ParseState) void {
 fn spanFrom(start: usize, end: usize) ast.Span {
     // safety: source offsets bounded by max_file_size (16 MiB) per include.zig.
     return .{ .start = @intCast(start), .end = @intCast(end) };
+}
+
+/// Lightweight byte peek without going through a lexer parser.
+/// Used for one-char punctuation (`,`, `=`, …) in directive bodies
+/// where round-tripping through knit is overkill.
+fn peekByte(state: *core.ParseState, b: u8) bool {
+    skipBlanksInLine(state);
+    return state.index < state.input.len and state.input[state.index] == b;
 }
