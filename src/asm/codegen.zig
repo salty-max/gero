@@ -380,22 +380,45 @@ fn layoutPass(
             },
             .org => |o| {
                 if (o.addr) |target| {
-                    // `org` addresses are CPU-space; convert back
-                    // to a bank-local offset before comparing.
-                    const base = bankAddr(current_bank, 0);
-                    const target_offset: u32 = if (target >= base) target - base else 0;
-                    if (target_offset < cursor_ptr.*) {
+                    // Validate that `target` falls inside the
+                    // current section's CPU-address range:
+                    //   - base image  → [$0000..$BFFF]
+                    //   - any `bank N` → [$C000..$FEFF] (the window)
+                    // Mixing them is almost always a user mistake
+                    // (writes get shadowed at runtime, or labels
+                    // resolve to the wrong CPU space) so we reject
+                    // with E007 rather than silently clamping.
+                    const in_window = target >= bank_window_base and target <= 0xFEFF;
+                    const valid = if (current_bank == null) (target < bank_window_base) else in_window;
+                    if (!valid) {
                         try errors.append(symbols.allocator, .{
-                            .code = .backward_org,
+                            .code = .addr_out_of_range,
                             .parse_error = core.parseError(
                                 "org",
                                 o.span.start,
-                                "backward `org` would overlap already-emitted bytes",
-                                .{ .expected = "addr ≥ current emit position", .kind = .semantic },
+                                if (current_bank == null)
+                                    "`org` in base image must target $0000..$BFFF (anything in $C000..$FEFF is shadowed by the bank window at runtime)"
+                                else
+                                    "`org` inside `bank N` must target the bank window $C000..$FEFF",
+                                .{ .expected = "address in current section's range", .kind = .semantic },
                             ),
                         });
                     } else {
-                        cursor_ptr.* = target_offset;
+                        const base = bankAddr(current_bank, 0);
+                        const target_offset: u32 = target - base;
+                        if (target_offset < cursor_ptr.*) {
+                            try errors.append(symbols.allocator, .{
+                                .code = .backward_org,
+                                .parse_error = core.parseError(
+                                    "org",
+                                    o.span.start,
+                                    "backward `org` would overlap already-emitted bytes",
+                                    .{ .expected = "addr ≥ current emit position", .kind = .semantic },
+                                ),
+                            });
+                        } else {
+                            cursor_ptr.* = target_offset;
+                        }
                     }
                 }
                 // If `o.addr` is null the parser already emitted
@@ -524,12 +547,21 @@ fn emitPass(
             },
             .org => |o| {
                 if (o.addr) |target| {
-                    const base = bankAddr(current_bank, 0);
-                    const target_offset: u32 = if (target >= base) target - base else 0;
-                    while (image.items.len < target_offset) {
-                        try image.append(allocator, 0);
+                    // Layout already rejected `org` targets outside
+                    // the current section's range with E007; skip
+                    // the pad logic for those cases so we don't
+                    // emit spurious zeros.
+                    const in_window = target >= bank_window_base and target <= 0xFEFF;
+                    const valid = if (current_bank == null) (target < bank_window_base) else in_window;
+                    if (valid) {
+                        const base = bankAddr(current_bank, 0);
+                        const target_offset: u32 = target - base;
+                        while (image.items.len < target_offset) {
+                            try image.append(allocator, 0);
+                        }
                     }
-                    // Backward case already diagnosed in pass 1.
+                    // Backward / out-of-range cases already
+                    // diagnosed in pass 1.
                 }
             },
             .instruction => |i| {
