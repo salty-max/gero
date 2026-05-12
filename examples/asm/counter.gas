@@ -1,0 +1,31 @@
+; counter.gas — print the hex digits 0..F on one line + newline.
+;
+; Exercises:
+;   - inc / cmp / jne (the canonical flag-driven loop)
+;   - char literals as immediates
+;   - imm8 narrowing on `cmp r, $XX`
+;
+; Run:
+;   gero asm counter.gas
+;   gero run counter.gx
+;
+; Expected stdout: "0123456789ABCDEF\n"
+
+const PRINT   = $10
+const NEWLINE = $0A
+
+main:
+  mov '0', r1                ; current digit char
+.loop_digits:
+  int PRINT
+  inc r1
+  cmp r1, $3A                ; '9' + 1 = $3A → done with decimals
+  jne .check_letters_entry
+  mov 'A', r1                ; jump over $3A..$40 to 'A'
+.check_letters_entry:
+  cmp r1, $47                ; 'F' + 1 = $47 → all hex digits printed
+  jne .loop_digits
+
+  mov NEWLINE, r1
+  int PRINT
+  hlt

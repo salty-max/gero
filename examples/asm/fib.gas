@@ -1,0 +1,72 @@
+; fib.gas — recursive Fibonacci, prints fib(10) as 2-digit hex.
+;
+; Tests:
+;   - call / ret (deep recursion, ~89 calls for fib(10))
+;   - push / pop discipline across recursive calls
+;   - 16-bit arithmetic (add reg,reg)
+;   - cmp + jlt branching
+;   - hex-digit conversion subroutine
+;
+; Run:
+;   gero asm fib.gas
+;   gero run fib.gx
+;
+; Expected stdout: "37\n"   (fib(10) = 55 = $37)
+
+const PRINT   = $10
+const NEWLINE = $0A
+
+main:
+  mov $0A, r1                ; n = 10
+  call fib                   ; r1 ← fib(10) = $37
+
+  ; print r1.lo as 2 hex digits. Note: `mov reg, reg` is Intel-
+  ; order (dst, src) — opposite of the imm / addr forms which
+  ; are src-first. So `mov r2, r1` copies r1 INTO r2.
+  mov r2, r1                 ; r2 ← r1 (save the full value)
+  shr r1, $04                ; r1 = high nibble
+  call print_nibble
+  mov r1, r2                 ; r1 ← r2 (restore)
+  and r1, $0F                ; r1 = low nibble
+  call print_nibble
+
+  mov NEWLINE, r1
+  int PRINT
+  hlt
+
+; ----------------------------------------------------------------
+; fib(r1) -> r1
+;   if r1 < 2: return r1
+;   else: return fib(r1-1) + fib(r1-2)
+; r2 is scratch but the inner stack discipline preserves caller's r2.
+; ----------------------------------------------------------------
+fib:
+  cmp r1, $02
+  jlt .base                  ; n < 2 → return n unchanged
+
+  push r1                    ; save n
+  dec r1
+  call fib                   ; r1 = fib(n-1)
+  pop r2                     ; r2 = n  (Intel order — pop reg means pop INTO reg)
+  push r1                    ; save fib(n-1)
+  mov r1, r2                 ; r1 ← r2 (restore n into r1 for the n-2 recursion)
+  sub $02, r1                ; r1 = n - 2
+  call fib                   ; r1 = fib(n-2)
+  pop r2                     ; r2 = fib(n-1)
+  add r1, r2                 ; r1 ← r1 + r2 = fib(n-2) + fib(n-1)
+.base:
+  ret
+
+; ----------------------------------------------------------------
+; print_nibble(r1) — r1 holds 0..15, prints the matching hex char.
+; ----------------------------------------------------------------
+print_nibble:
+  cmp r1, $0A
+  jge .alpha
+  add $30, r1                ; '0' + n
+  jmp .emit
+.alpha:
+  add $37, r1                ; 'A' - 10 = $41 - $0A = $37
+.emit:
+  int PRINT
+  ret
