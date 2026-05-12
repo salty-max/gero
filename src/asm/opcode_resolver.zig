@@ -218,18 +218,29 @@ pub fn labelRefKind(name: []const u8, symbols: symtab.SymbolTable) Kind {
     return .addr;
 }
 
-/// Result of `resolve` — the opcode byte plus the total encoded
-/// instruction size (1 byte for the opcode + sum of operand widths).
+/// Result of `resolve` — the opcode byte, total encoded size
+/// (1 byte for the opcode + sum of operand widths), and the
+/// matched shape's kinds so emit can write each operand at the
+/// canonical width even when widening kicked in.
 pub const Resolution = struct {
     opcode: u8,
     size: u8,
+    /// The matched shape's kinds. May differ from the caller's
+    /// kinds when an `.imm8` user-kind widened to `.imm16` to
+    /// match a shape that only has the wider form.
+    kinds: []const Kind,
 };
 
 /// Resolve an instruction's mnemonic + operand kinds to an
-/// opcode. Returns `null` if no matching shape exists — the
-/// caller surfaces `E001` (unknown mnemonic) or `E003` (operand
-/// type mismatch) as appropriate.
+/// opcode. Tries exact match first; if none, retries with each
+/// user-side `.imm8` widened to `.imm16` (safe — every `Imm8`
+/// value fits in `Imm16`). Narrowing in the other direction is
+/// never attempted — a caller-supplied `.imm16` only matches a
+/// shape's `.imm16`. Returns `null` if no matching shape exists —
+/// the caller surfaces `E001` (unknown mnemonic) or `E003`
+/// (operand type mismatch) as appropriate.
 pub fn resolve(mnemonic: []const u8, kinds: []const Kind) ?Resolution {
+    // Pass 1: exact match.
     for (shapes) |s| {
         if (!std.mem.eql(u8, s.mnemonic, mnemonic)) continue;
         if (s.kinds.len != kinds.len) continue;
@@ -240,13 +251,28 @@ pub fn resolve(mnemonic: []const u8, kinds: []const Kind) ?Resolution {
                 break;
             }
         }
-        if (match) {
-            var size: u8 = 1;
-            for (s.kinds) |k| size += k.width();
-            return .{ .opcode = s.opcode, .size = size };
+        if (match) return resolutionFor(s);
+    }
+    // Pass 2: allow `.imm8` → `.imm16` widening at each position.
+    for (shapes) |s| {
+        if (!std.mem.eql(u8, s.mnemonic, mnemonic)) continue;
+        if (s.kinds.len != kinds.len) continue;
+        var match = true;
+        for (s.kinds, kinds) |a, b| {
+            if (a == b) continue;
+            if (a == .imm16 and b == .imm8) continue;
+            match = false;
+            break;
         }
+        if (match) return resolutionFor(s);
     }
     return null;
+}
+
+fn resolutionFor(s: Shape) Resolution {
+    var size: u8 = 1;
+    for (s.kinds) |k| size += k.width();
+    return .{ .opcode = s.opcode, .size = size, .kinds = s.kinds };
 }
 
 /// Check whether `mnemonic` is in the table at all (regardless

@@ -111,6 +111,7 @@ pub fn assemble(
 fn classifyForLayout(op: ast.Operand, source: []const u8, symbols: symtab.SymbolTable) opres.Kind {
     return switch (op) {
         .label_ref => |l| opres.labelRefKind(source[l.span.start..l.span.end], symbols),
+        .immediate => |e| narrowImm(e, source, symbols),
         else => opres.classify(op, null),
     };
 }
@@ -121,7 +122,21 @@ fn classifyForLayout(op: ast.Operand, source: []const u8, symbols: symtab.Symbol
 fn classifyForEmit(op: ast.Operand, source: []const u8, symbols: symtab.SymbolTable) opres.Kind {
     return switch (op) {
         .label_ref => |l| opres.labelRefKind(source[l.span.start..l.span.end], symbols),
+        .immediate => |e| narrowImm(e, source, symbols),
         else => opres.classify(op, null),
+    };
+}
+
+/// Pick the narrowest immediate kind that fits the folded value.
+/// Forward refs (anything that doesn't fold) keep the wider
+/// `.imm16` so layout sizing stays safe; `resolve()`'s widening
+/// pass picks up the wider shape if no `.imm8` form exists.
+fn narrowImm(e: *ast.Expr, source: []const u8, symbols: symtab.SymbolTable) opres.Kind {
+    var consts = symbols.toConstantTable() catch return .imm16;
+    defer consts.deinit();
+    return switch (expr.evalExpr(e, source, consts)) {
+        .ok => |v| if (v <= 0xFF) .imm8 else .imm16,
+        .err => .imm16,
     };
 }
 
@@ -471,7 +486,7 @@ fn emitInstruction(
 
     try image.append(allocator, res.opcode);
 
-    for (inst.operands) |op| switch (op) {
+    for (inst.operands, 0..) |op, op_idx| switch (op) {
         .register => |r| try image.append(allocator, @intFromEnum(r.id)),
         .immediate => |e| {
             const result = expr.evalExpr(e, source, consts);
@@ -482,7 +497,10 @@ fn emitInstruction(
                     break :blk 0;
                 },
             };
-            try emitValue(allocator, image, val, 2);
+            // Resolved shape decides the on-wire width: imm8 → 1 byte,
+            // imm16 → 2 bytes (default).
+            const width: u32 = if (res.kinds[op_idx] == .imm8) 1 else 2;
+            try emitValue(allocator, image, val, width);
         },
         .addr_lit => |a| try emitValue(allocator, image, a.value, 2),
         .sym_ref => |s| try emitSymRef(allocator, image, errors, source, s, consts),

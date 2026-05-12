@@ -67,6 +67,40 @@ test "codegen: cmp reg, imm16 → 0x60 reg imm_lo imm_hi" {
     try std.testing.expectEqualSlices(u8, &.{ 0x60, 0x02, 0x10, 0x00 }, out.imageBody());
 }
 
+test "codegen: int $10 narrows to 1-byte imm8 operand (0xFC 0x10)" {
+    var out = try assemble("int $10\n", .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqualSlices(u8, &.{ 0xFC, 0x10 }, out.imageBody());
+}
+
+test "codegen: shl r1, $03 uses imm8 shape (0x58 reg imm8)" {
+    var out = try assemble("shl r1, $03\n", .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqualSlices(u8, &.{ 0x58, 0x02, 0x03 }, out.imageBody());
+}
+
+test "codegen: mov $00, r1 widens imm8 → imm16 (4 bytes, not 3)" {
+    var out = try assemble("mov $00, r1\n", .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    // mov has no Imm8,Reg shape — only Imm16,Reg. Widening picks
+    // 0x10 with 2-byte LE imm + reg.
+    try std.testing.expectEqualSlices(u8, &.{ 0x10, 0x00, 0x00, 0x02 }, out.imageBody());
+}
+
+test "codegen: int $1234 errors — imm16 won't narrow to imm8 shape" {
+    var out = try assemble("int $1234\n", .{});
+    defer out.deinit();
+    try std.testing.expect(out.cg.hasErrors());
+    var saw_mismatch = false;
+    for (out.cg.errors) |e| {
+        if (e.code == .operand_type_mismatch) saw_mismatch = true;
+    }
+    try std.testing.expect(saw_mismatch);
+}
+
 // ---------- the §7 worked example ----------
 
 test "codegen: §7 worked example assembles to the spec'd 14 bytes" {
