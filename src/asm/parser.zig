@@ -110,6 +110,9 @@ fn parseStatement(
     if (consumeKeyword(state, "data16")) {
         return parseDataDecl(state, allocator, stmt_start, statements, errors, consts, .data16);
     }
+    if (consumeKeyword(state, "struct")) {
+        return parseStructDecl(state, allocator, stmt_start, statements, errors, consts);
+    }
 
     // Label: `ident ":"`. The colon distinguishes a label from an
     // instruction line that happens to start with an identifier.
@@ -427,6 +430,207 @@ fn cleanupDataValues(allocator: std.mem.Allocator, values: *std.ArrayList(ast.Da
         .addr_lit, .sym_ref, .string => {},
     };
     values.deinit(allocator);
+}
+
+// ---------- struct directive ----------
+
+fn parseStructDecl(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+) !void {
+    skipBlanksInLine(state);
+
+    // Type name.
+    const name_result = lexer.identP.parseFn(state);
+    if (name_result != .ok) {
+        try errors.append(allocator, .{
+            .parse_error = core.parseError(
+                "struct",
+                state.index,
+                "expected identifier after `struct` keyword",
+                .{ .expected = "identifier", .kind = .syntactic },
+            ),
+        });
+        try recoverToEndOfBlock(state);
+        try statements.append(allocator, .{ .unknown = .{
+            .span = spanFrom(stmt_start, state.index),
+        } });
+        return;
+    }
+    const name_token = name_result.ok.value;
+
+    skipSeparators(state); // whitespace + newlines allowed before `{`
+
+    // Opening brace.
+    const lb_result = lexer.lbraceP.parseFn(state);
+    if (lb_result != .ok) {
+        try errors.append(allocator, .{
+            .parse_error = core.parseError(
+                "struct",
+                state.index,
+                "expected `{` to open struct body",
+                .{ .expected = "{", .kind = .syntactic },
+            ),
+        });
+        try recoverToEndOfBlock(state);
+        try statements.append(allocator, .{ .unknown = .{
+            .span = spanFrom(stmt_start, state.index),
+        } });
+        return;
+    }
+
+    // Field list. Fields separated by commas, newlines, or both.
+    // Closing `}` ends the body. Allow a trailing comma.
+    var fields: std.ArrayList(ast.StructField) = .empty;
+    errdefer fields.deinit(allocator);
+
+    var running_offset: u16 = 0;
+
+    while (true) {
+        skipSeparators(state);
+
+        // End of body?
+        if (state.index < state.input.len and state.input[state.index] == '}') {
+            state.advance(1);
+            break;
+        }
+
+        const field_or_err = parseStructField(state, allocator, errors, running_offset);
+        const field = field_or_err catch |err| switch (err) {
+            error.OutOfMemory => {
+                fields.deinit(allocator);
+                return error.OutOfMemory;
+            },
+            error.ParseFailed => {
+                fields.deinit(allocator);
+                try recoverToEndOfBlock(state);
+                try statements.append(allocator, .{ .unknown = .{
+                    .span = spanFrom(stmt_start, state.index),
+                } });
+                return;
+            },
+        };
+        try fields.append(allocator, field);
+        running_offset += field.ty.width();
+
+        skipBlanksInLine(state);
+        // Optional comma between fields. The next iteration's
+        // `skipSeparators` handles newlines.
+        if (peekByte(state, ',')) state.advance(1);
+    }
+
+    // Inject `Name.field` offset constants into the parser's
+    // ConstantTable so downstream expressions can resolve them.
+    const struct_name = state.input[name_token.start..name_token.end];
+    for (fields.items) |f| {
+        const field_name = state.input[f.name.start..f.name.end];
+        const qualified = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ struct_name, field_name });
+        try consts.putOwned(qualified, f.offset);
+    }
+
+    const owned = try fields.toOwnedSlice(allocator);
+    try statements.append(allocator, .{ .struct_decl = .{
+        .name = ast.Span.fromToken(name_token),
+        .fields = owned,
+        .size = running_offset,
+        .span = spanFrom(stmt_start, state.index),
+    } });
+}
+
+fn parseStructField(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    errors: *std.ArrayList(include.Diagnostic),
+    offset: u16,
+) expr.ParseError!ast.StructField {
+    _ = allocator;
+    const field_start = state.index;
+    skipBlanksInLine(state);
+
+    // Field name.
+    const name_result = lexer.identP.parseFn(state);
+    if (name_result != .ok) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "struct",
+                state.index,
+                "expected field name",
+                .{ .expected = "identifier", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+    const name_token = name_result.ok.value;
+
+    skipBlanksInLine(state);
+
+    // Separator `:`.
+    const colon_result = lexer.colonP.parseFn(state);
+    if (colon_result != .ok) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "struct",
+                state.index,
+                "expected `:` between field name and type",
+                .{ .expected = ":", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+
+    skipBlanksInLine(state);
+
+    // Type — must be `u8` or `u16`.
+    const type_result = lexer.identP.parseFn(state);
+    if (type_result != .ok) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "struct",
+                state.index,
+                "expected `u8` or `u16` as field type",
+                .{ .expected = "u8 | u16", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+    const type_token = type_result.ok.value;
+    const type_lex = state.input[type_token.start..type_token.end];
+    const ty: ast.FieldType = if (std.mem.eql(u8, type_lex, "u8"))
+        .u8_t
+    else if (std.mem.eql(u8, type_lex, "u16"))
+        .u16_t
+    else {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "struct",
+                type_token.start,
+                "unknown field type (v0.1 supports `u8` and `u16` only)",
+                .{ .expected = "u8 | u16", .actual = type_lex, .kind = .semantic },
+            ),
+        });
+        return error.ParseFailed;
+    };
+
+    return .{
+        .name = ast.Span.fromToken(name_token),
+        .ty = ty,
+        .offset = offset,
+        .span = spanFrom(field_start, state.index),
+    };
+}
+
+/// Recover from a malformed struct body — advance past the next
+/// closing `}` (or to EOF) so the outer loop can pick up cleanly.
+fn recoverToEndOfBlock(state: *core.ParseState) !void {
+    while (state.index < state.input.len) {
+        const b = state.input[state.index];
+        state.advance(1);
+        if (b == '}') return;
+    }
 }
 
 // ---------- unknown / recovery ----------

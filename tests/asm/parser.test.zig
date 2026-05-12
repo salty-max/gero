@@ -414,3 +414,180 @@ test "parser: data8 followed by label both parse" {
     try std.testing.expect(!pt.hasErrors());
     try std.testing.expectEqual(@as(usize, 2), pt.program.statements.len);
 }
+
+// ---------- struct directive ----------
+
+test "parser: empty struct parses with size 0" {
+    var pt = try parseSource(
+        \\struct Empty {
+        \\}
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), pt.program.statements.len);
+    switch (pt.program.statements[0]) {
+        .struct_decl => |s| {
+            try std.testing.expectEqual(@as(usize, 0), s.fields.len);
+            try std.testing.expectEqual(@as(u16, 0), s.size);
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: struct with u8 + u16 fields computes packed offsets" {
+    var pt = try parseSource(
+        \\struct Player {
+        \\  hp: u16,
+        \\  mp: u16,
+        \\  level: u8,
+        \\  pad: u8,
+        \\}
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .struct_decl => |s| {
+            try std.testing.expectEqual(@as(usize, 4), s.fields.len);
+            try std.testing.expectEqual(@as(u16, 0), s.fields[0].offset); // hp
+            try std.testing.expectEqual(@as(u16, 2), s.fields[1].offset); // mp
+            try std.testing.expectEqual(@as(u16, 4), s.fields[2].offset); // level
+            try std.testing.expectEqual(@as(u16, 5), s.fields[3].offset); // pad
+            try std.testing.expectEqual(@as(u16, 6), s.size);
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: struct injects Name.field constants into the symbol table" {
+    var pt = try parseSource(
+        \\struct Player { hp: u16, mp: u16 }
+        \\const PLAYER_HP_OFFSET = Player.hp
+        \\const PLAYER_MP_OFFSET = Player.mp
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 3), pt.program.statements.len);
+
+    // Re-evaluate the two const_decls and check they pick up the
+    // struct's offset constants.
+    var consts = gero.asm_.ConstantTable.init(alloc);
+    defer consts.deinit();
+    // Pre-fill with the struct's offsets so the chained eval works.
+    try consts.put("Player.hp", 0);
+    try consts.put("Player.mp", 2);
+    const src =
+        \\struct Player { hp: u16, mp: u16 }
+        \\const PLAYER_HP_OFFSET = Player.hp
+        \\const PLAYER_MP_OFFSET = Player.mp
+        \\
+    ;
+    switch (pt.program.statements[1]) {
+        .const_decl => |c| {
+            const r = gero.asm_.evalExpr(c.expr, src, consts);
+            try std.testing.expectEqual(@as(u16, 0), r.ok);
+        },
+        else => return error.WrongStatementKind,
+    }
+    switch (pt.program.statements[2]) {
+        .const_decl => |c| {
+            const r = gero.asm_.evalExpr(c.expr, src, consts);
+            try std.testing.expectEqual(@as(u16, 2), r.ok);
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: struct fields can be on one line with commas" {
+    var pt = try parseSource("struct Point { x: u16, y: u16 }\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .struct_decl => |s| try std.testing.expectEqual(@as(usize, 2), s.fields.len),
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: struct allows trailing comma" {
+    var pt = try parseSource(
+        \\struct Foo {
+        \\  a: u8,
+        \\  b: u8,
+        \\}
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+}
+
+test "parser: struct missing name surfaces a diagnostic" {
+    var pt = try parseSource("struct { hp: u16 }\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
+
+test "parser: struct missing opening brace" {
+    var pt = try parseSource("struct Player hp: u16 }\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
+
+test "parser: struct unknown field type" {
+    var pt = try parseSource("struct Foo { x: u32 }\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+    var saw_unknown_type = false;
+    for (pt.errors) |e| {
+        if (std.mem.indexOf(u8, e.parse_error.message, "unknown field type") != null) {
+            saw_unknown_type = true;
+        }
+    }
+    try std.testing.expect(saw_unknown_type);
+}
+
+test "parser: struct field without colon" {
+    var pt = try parseSource("struct Foo { x u16 }\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
+
+test "parser: struct followed by other statements parses cleanly" {
+    var pt = try parseSource(
+        \\struct Player { hp: u16 }
+        \\start:
+        \\data8 hp_init = $64
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 3), pt.program.statements.len);
+}
+
+test "parser: expression with qualified ident (Foo.bar) resolves" {
+    var pt = try parseSource(
+        \\struct S { a: u8, b: u8, c: u16 }
+        \\const X = S.c
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    // S.a = 0, S.b = 1, S.c = 2
+    var consts = gero.asm_.ConstantTable.init(alloc);
+    defer consts.deinit();
+    try consts.put("S.c", 2);
+    switch (pt.program.statements[1]) {
+        .const_decl => |c| {
+            const r = gero.asm_.evalExpr(c.expr, "struct S { a: u8, b: u8, c: u16 }\nconst X = S.c\n", consts);
+            try std.testing.expectEqual(@as(u16, 2), r.ok);
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: expression with `Foo.` (missing field) surfaces an error" {
+    var pt = try parseSource("const X = Foo.\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}

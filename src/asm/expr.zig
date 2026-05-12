@@ -23,28 +23,47 @@ const ast = @import("ast.zig");
 /// point in parsing. The parser maintains one of these as it
 /// walks statements top-to-bottom; each `const` declaration adds
 /// an entry, subsequent expressions resolve against it.
+///
+/// Two kinds of keys live here:
+/// - **Borrowed** — slices into the fused source (the common
+///   case for top-level `const` names).
+/// - **Owned** — allocated strings (used for synthetic keys like
+///   `Player.hp` from struct directives). Tracked in
+///   `owned_keys` so deinit can free them.
 pub const ConstantTable = struct {
     entries: std.StringHashMap(u16),
+    owned_keys: std.ArrayList([]const u8),
     allocator: std.mem.Allocator,
 
     /// Build an empty table backed by `allocator`.
     pub fn init(allocator: std.mem.Allocator) ConstantTable {
         return .{
             .entries = std.StringHashMap(u16).init(allocator),
+            .owned_keys = .empty,
             .allocator = allocator,
         };
     }
 
-    /// Release the backing map. Keys are borrowed (point into the
-    /// fused source); we don't free them.
+    /// Release the backing map and any allocator-owned keys.
+    /// Borrowed keys (slices into the source) aren't freed.
     pub fn deinit(self: *ConstantTable) void {
+        for (self.owned_keys.items) |k| self.allocator.free(k);
+        self.owned_keys.deinit(self.allocator);
         self.entries.deinit();
     }
 
-    /// Bind `name` to `value`. Overwrites silently — duplicate
-    /// detection is the parser's responsibility (it surfaces an
-    /// E005-style diagnostic before reaching here).
+    /// Bind `name` to `value` with a **borrowed** key (caller
+    /// guarantees the slice outlives the table). Overwrites
+    /// silently — duplicate detection is the parser's job.
     pub fn put(self: *ConstantTable, name: []const u8, value: u16) !void {
+        try self.entries.put(name, value);
+    }
+
+    /// Bind `name` to `value` and take ownership of the `name`
+    /// buffer — it will be freed by `deinit`. Used for synthetic
+    /// keys (e.g., `Player.hp`) that don't live in the source.
+    pub fn putOwned(self: *ConstantTable, name: []const u8, value: u16) !void {
+        try self.owned_keys.append(self.allocator, name);
         try self.entries.put(name, value);
     }
 
@@ -291,10 +310,32 @@ fn parsePrimary(
     } else if (isIdentStart(next)) {
         const r = lexer.identP.parseFn(state);
         if (r == .ok) {
-            const tok = r.ok.value;
+            const first_tok = r.ok.value;
+            // Check for a dotted continuation: `Name.field` is a
+            // qualified ident referring to struct-field offsets
+            // (asm spec §2.2). Evaluator looks up the full
+            // `Name.field` lexeme as one key in the
+            // ConstantTable.
+            var end_offset: u32 = first_tok.end;
+            if (state.index < state.input.len and state.input[state.index] == '.') {
+                state.advance(1);
+                const second = lexer.identP.parseFn(state);
+                if (second != .ok) {
+                    try errors.append(state.allocator, .{
+                        .parse_error = core.parseError(
+                            "expression",
+                            state.index,
+                            "expected field name after `.`",
+                            .{ .expected = "identifier", .kind = .syntactic },
+                        ),
+                    });
+                    return error.ParseFailed;
+                }
+                end_offset = second.ok.value.end;
+            }
             const expr = try allocator.create(ast.Expr);
             expr.* = .{ .ident = .{
-                .span = .{ .start = tok.start, .end = tok.end },
+                .span = .{ .start = first_tok.start, .end = end_offset },
             } };
             return expr;
         }
