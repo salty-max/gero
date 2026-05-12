@@ -54,8 +54,8 @@ pub const Token = struct {
         gt,
         dot,
         /// Bare `&` — emitted when `&` isn't followed by a hex
-        /// digit (so the parser sees the building blocks of
-        /// `&r1` register-pointer or `&[ ]` address-expression).
+        /// digit. The parser uses it as the leading marker of an
+        /// address expression `&[ ... ]` (asm spec §3.4 form a).
         ampersand,
         /// `"..."` literal with C-style escapes per asm spec §1.5.
         string,
@@ -534,7 +534,7 @@ fn ampersandThunk(state: *core.ParseState) core.ParseResult(Token) {
 
 /// Bare `&` punctuation — refuses when followed by a hex digit
 /// so `addrP` wins on `&FFFF`. Used as the leading marker for
-/// register-pointers (`&r1`) and address expressions (`&[ ]`).
+/// address expressions (`&[ ... ]`, asm spec §3.4 form a).
 pub const ampersandP = parserOf(ampersandThunk);
 
 // Order matters when every alternative refuses at the same byte:
