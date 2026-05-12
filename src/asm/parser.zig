@@ -616,11 +616,7 @@ fn parseStructField(
     }
     const type_token = type_result.ok.value;
     const type_lex = state.input[type_token.start..type_token.end];
-    const ty: ast.FieldType = if (std.mem.eql(u8, type_lex, "u8"))
-        .u8_t
-    else if (std.mem.eql(u8, type_lex, "u16"))
-        .u16_t
-    else {
+    const ty: ast.FieldType = std.meta.stringToEnum(ast.FieldType, type_lex) orelse {
         try errors.append(state.allocator, .{
             .parse_error = core.parseError(
                 "struct",
