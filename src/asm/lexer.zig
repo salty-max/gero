@@ -260,36 +260,70 @@ fn parserOf(comptime thunk: fn (*core.ParseState) core.ParseResult(Token)) core.
     return .{ .parseFn = thunk };
 }
 
-const hexP = parserOf(hexThunk);
-const addrP = parserOf(addrThunk);
-const symRefP = parserOf(symRefThunk);
-const identP = parserOf(identThunk);
-const newlineP = parserOf(newlineThunk);
+// Phase-1 token parsers — knit `Parser(Token)` leaves the asm
+// parser (`parser.zig`) consumes via `sequenceOf` / `choice` to
+// build the statement grammar. One doc line per public decl
+// keeps the strict-doc-check happy without bloating the file.
 
-const colonP = parserOf(punctThunk(':', .colon, "colon"));
-const commaP = parserOf(punctThunk(',', .comma, "comma"));
-const equalsP = parserOf(punctThunk('=', .equals, "equals"));
-const lbraceP = parserOf(punctThunk('{', .lbrace, "lbrace"));
-const rbraceP = parserOf(punctThunk('}', .rbrace, "rbrace"));
-const lparenP = parserOf(punctThunk('(', .lparen, "lparen"));
-const rparenP = parserOf(punctThunk(')', .rparen, "rparen"));
-const lbracketP = parserOf(punctThunk('[', .lbracket, "lbracket"));
-const rbracketP = parserOf(punctThunk(']', .rbracket, "rbracket"));
-const plusP = parserOf(punctThunk('+', .plus, "plus"));
-const minusP = parserOf(punctThunk('-', .minus, "minus"));
-const starP = parserOf(punctThunk('*', .star, "star"));
-const slashP = parserOf(punctThunk('/', .slash, "slash"));
-const percentP = parserOf(punctThunk('%', .percent, "percent"));
-const pipeP = parserOf(punctThunk('|', .pipe, "pipe"));
-const caretP = parserOf(punctThunk('^', .caret, "caret"));
-const tildeP = parserOf(punctThunk('~', .tilde, "tilde"));
-const shlP = parserOf(shiftThunk('<', .shl, "shl"));
-const shrP = parserOf(shiftThunk('>', .shr, "shr"));
-const ltP = parserOf(punctThunk('<', .lt, "lt"));
-const gtP = parserOf(punctThunk('>', .gt, "gt"));
-const dotP = parserOf(punctThunk('.', .dot, "dot"));
-const stringP = parserOf(stringThunk);
-const charP = parserOf(charThunk);
+/// `$FFFF` hex literal (1-4 digits).
+pub const hexP = parserOf(hexThunk);
+/// `&FFFF` address literal (1-4 digits).
+pub const addrP = parserOf(addrThunk);
+/// `@ident` symbol reference.
+pub const symRefP = parserOf(symRefThunk);
+/// Bare identifier (`[A-Za-z_][A-Za-z0-9_]*`).
+pub const identP = parserOf(identThunk);
+/// LF or CRLF newline; bare CR errors as `.lexical`.
+pub const newlineP = parserOf(newlineThunk);
+
+/// Punctuation `:` — label / struct-field separator.
+pub const colonP = parserOf(punctThunk(':', .colon, "colon"));
+/// Punctuation `,` — operand / value-list separator.
+pub const commaP = parserOf(punctThunk(',', .comma, "comma"));
+/// Punctuation `=` — `const NAME = expr` and friends.
+pub const equalsP = parserOf(punctThunk('=', .equals, "equals"));
+/// Punctuation `{` — struct body open.
+pub const lbraceP = parserOf(punctThunk('{', .lbrace, "lbrace"));
+/// Punctuation `}` — struct body close.
+pub const rbraceP = parserOf(punctThunk('}', .rbrace, "rbrace"));
+/// Punctuation `(` — expression grouping.
+pub const lparenP = parserOf(punctThunk('(', .lparen, "lparen"));
+/// Punctuation `)` — expression grouping.
+pub const rparenP = parserOf(punctThunk(')', .rparen, "rparen"));
+/// Punctuation `[` — indirect / address-expr / indexed open.
+pub const lbracketP = parserOf(punctThunk('[', .lbracket, "lbracket"));
+/// Punctuation `]` — indirect / address-expr / indexed close.
+pub const rbracketP = parserOf(punctThunk(']', .rbracket, "rbracket"));
+/// Operator `+` — binary add / unary plus.
+pub const plusP = parserOf(punctThunk('+', .plus, "plus"));
+/// Operator `-` — binary subtract / unary negate.
+pub const minusP = parserOf(punctThunk('-', .minus, "minus"));
+/// Operator `*` — multiplication.
+pub const starP = parserOf(punctThunk('*', .star, "star"));
+/// Operator `/` — division.
+pub const slashP = parserOf(punctThunk('/', .slash, "slash"));
+/// Operator `%` — modulo.
+pub const percentP = parserOf(punctThunk('%', .percent, "percent"));
+/// Operator `|` — bitwise OR.
+pub const pipeP = parserOf(punctThunk('|', .pipe, "pipe"));
+/// Operator `^` — bitwise XOR.
+pub const caretP = parserOf(punctThunk('^', .caret, "caret"));
+/// Operator `~` — bitwise NOT (unary).
+pub const tildeP = parserOf(punctThunk('~', .tilde, "tilde"));
+/// Operator `<<` — left shift (longest-match before `<`).
+pub const shlP = parserOf(shiftThunk('<', .shl, "shl"));
+/// Operator `>>` — right shift (longest-match before `>`).
+pub const shrP = parserOf(shiftThunk('>', .shr, "shr"));
+/// Punctuation `<` — cast open (and rejected here for `<<`).
+pub const ltP = parserOf(punctThunk('<', .lt, "lt"));
+/// Punctuation `>` — cast close (and rejected here for `>>`).
+pub const gtP = parserOf(punctThunk('>', .gt, "gt"));
+/// Punctuation `.` — struct-field access in casts.
+pub const dotP = parserOf(punctThunk('.', .dot, "dot"));
+/// String literal `"..."` with §1.5 escapes — `data8` only.
+pub const stringP = parserOf(stringThunk);
+/// Char literal `'A'` with §1.4 / §1.5 escapes.
+pub const charP = parserOf(charThunk);
 fn shiftThunk(comptime byte: u8, comptime kind: Token.Kind, comptime name: []const u8) fn (*core.ParseState) core.ParseResult(Token) {
     return struct {
         fn parse(state: *core.ParseState) core.ParseResult(Token) {
@@ -498,7 +532,10 @@ fn ampersandThunk(state: *core.ParseState) core.ParseResult(Token) {
     }, state.index);
 }
 
-const ampersandP = parserOf(ampersandThunk);
+/// Bare `&` punctuation — refuses when followed by a hex digit
+/// so `addrP` wins on `&FFFF`. Used as the leading marker for
+/// register-pointers (`&r1`) and address expressions (`&[ ]`).
+pub const ampersandP = parserOf(ampersandThunk);
 
 // Order matters when every alternative refuses at the same byte:
 // `knit.choice` picks the *furthest-progress* error, and ties fall
