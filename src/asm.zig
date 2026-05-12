@@ -41,6 +41,8 @@ pub const resolveIncludes = include.resolveIncludes;
 pub const formatDiagnostic = include.formatDiagnostic;
 /// Re-export: pretty-format a `Diagnostic` with a caret-style snippet.
 pub const formatPretty = include.formatPretty;
+/// Re-export: `formatPretty` without the path prefix — caller emits a file header.
+pub const formatPrettyBody = include.formatPrettyBody;
 /// Re-export: ANSI escape strings the formatter wraps around colored pieces.
 pub const Style = include.Style;
 

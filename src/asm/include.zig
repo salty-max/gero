@@ -580,15 +580,35 @@ pub fn formatPretty(
     };
     const lc = computeLineCol(loc.file.content, loc.file_offset);
     try writeHeader(writer, loc.file.path, lc, err, style);
+    try writeCaretSnippet(writer, loc.file.content, loc.file_offset, lc, style);
+}
 
-    const line_slice = lineAt(loc.file.content, loc.file_offset);
-    // Right-align the gutter so the caret column math stays simple.
-    try writer.print("{s}{d: >4} |{s} {s}\n", .{ style.gutter, lc.line, style.reset, line_slice });
-    try writer.print("{s}     |{s} ", .{ style.gutter, style.reset });
-    // Pad to column-1 spaces, then a caret. col is 1-based.
-    var pad: u32 = 1;
-    while (pad < lc.col) : (pad += 1) try writer.writeByte(' ');
-    try writer.print("{s}^{s}\n", .{ style.caret, style.reset });
+/// Same as `formatPretty` but without the leading `<path>:` —
+/// emits `<line>:<col>: [Exxx] <msg>` plus the caret snippet.
+/// Use this when the caller prints a path section header itself
+/// and wants per-file grouping (e.g. multiple errors from one
+/// included file).
+pub fn formatPrettyBody(
+    writer: anytype,
+    source_map: SourceMap,
+    err: Diagnostic,
+    style: Style,
+) !void {
+    // safety: ParseError indexes fit in u32 — our sources are
+    // bounded by max_file_size (16 MiB).
+    const offset: u32 = @intCast(err.parse_error.index);
+    const loc = source_map.lookup(offset) orelse {
+        // No source-map info — fall back to the full path-bearing
+        // shape so the user still sees something useful.
+        return formatDiagnostic(writer, source_map, err, style);
+    };
+    const lc = computeLineCol(loc.file.content, loc.file_offset);
+    try writer.print("{s}{d}:{d}{s}: ", .{ style.location, lc.line, lc.col, style.reset });
+    if (err.code) |c| {
+        try writer.print("{s}[{s}]{s} ", .{ style.code, c.shortLabel(), style.reset });
+    }
+    try writer.print("{s}\n", .{err.parse_error.message});
+    try writeCaretSnippet(writer, loc.file.content, loc.file_offset, lc, style);
 }
 
 /// `<path>:<line>:<col>: [Exxx] <message>` header line, shared
@@ -605,6 +625,25 @@ fn writeHeader(
         try writer.print("{s}[{s}]{s} ", .{ style.code, c.shortLabel(), style.reset });
     }
     try writer.print("{s}\n", .{err.parse_error.message});
+}
+
+/// Two lines: the source line with line-number gutter + the
+/// caret line under the offending column. Shared between
+/// `formatPretty` and `formatPrettyBody`.
+fn writeCaretSnippet(
+    writer: anytype,
+    content: []const u8,
+    target_offset: u32,
+    lc: LineCol,
+    style: Style,
+) !void {
+    const line_slice = lineAt(content, target_offset);
+    // Right-align the gutter so the caret column math stays simple.
+    try writer.print("{s}{d: >4} |{s} {s}\n", .{ style.gutter, lc.line, style.reset, line_slice });
+    try writer.print("{s}     |{s} ", .{ style.gutter, style.reset });
+    var pad: u32 = 1;
+    while (pad < lc.col) : (pad += 1) try writer.writeByte(' ');
+    try writer.print("{s}^{s}\n", .{ style.caret, style.reset });
 }
 
 const LineCol = struct { line: u32, col: u32 };
