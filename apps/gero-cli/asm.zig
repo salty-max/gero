@@ -125,14 +125,16 @@ fn printAllDiagnostics(
     }
     try writeSummaryHeader(stdout, style, total, file_count);
 
-    // Emit per-file sections — blank line before each new file.
+    // Emit per-file sections: blank line + `<path>:` header for
+    // each new file, then each diagnostic body (no path prefix).
     prev_path = "";
     for (keyed) |k| {
         if (!std.mem.eql(u8, k.path, prev_path)) {
             try stdout.writeByte('\n');
+            try stdout.print("{s}{s}{s}\n", .{ style.location, k.path, style.reset });
             prev_path = k.path;
         }
-        try gero.asm_.formatPretty(stdout, source_map, k.diag, style);
+        try gero.asm_.formatPrettyBody(stdout, source_map, k.diag, style);
     }
 }
 
