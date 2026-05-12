@@ -36,8 +36,9 @@ pub fn execute(
     // full picture in one run. Include errors that can't be
     // recovered from (no fused source = no parse) short-circuit
     // before parse.
+    const style: gero.asm_.Style = if (term.color) .ansi else .plain;
     if (fused.errors.len > 0) {
-        try printDiagnostics(stdout, fused.source_map, fused.errors);
+        try printDiagnostics(stdout, fused.source_map, fused.errors, style);
         return 3;
     }
 
@@ -54,7 +55,7 @@ pub fn execute(
 
     const had_errors = pt.hasErrors() or cg.hasErrors();
     if (had_errors) {
-        try printAllDiagnostics(arena, stdout, fused.source_map, pt.errors, cg.errors);
+        try printAllDiagnostics(arena, stdout, fused.source_map, pt.errors, cg.errors, style);
         return 3;
     }
 
@@ -82,30 +83,78 @@ fn printDiagnostics(
     stdout: *std.Io.Writer,
     source_map: gero.asm_.SourceMap,
     errors: []const gero.asm_.Diagnostic,
+    style: gero.asm_.Style,
 ) !void {
-    for (errors) |d| try gero.asm_.formatPretty(stdout, source_map, d);
+    for (errors) |d| try gero.asm_.formatPretty(stdout, source_map, d, style);
 }
 
-/// Merge parse + codegen diagnostics, sort by fused-source offset
-/// so the user sees errors in source order regardless of which
-/// pass raised them.
+/// Augment each diagnostic with its resolved file path so we can
+/// group + sort by (path, fused_index) — diagnostics from the same
+/// file land in one section, sorted by source position.
+const KeyedDiag = struct {
+    diag: gero.asm_.Diagnostic,
+    path: []const u8,
+};
+
+/// Merge parse + codegen diagnostics, group by file, sort each
+/// group by fused-source offset, print a summary header + one
+/// section per file. `<unknown>` (rare — source-map miss) groups
+/// last under a single bucket.
 fn printAllDiagnostics(
     arena: std.mem.Allocator,
     stdout: *std.Io.Writer,
     source_map: gero.asm_.SourceMap,
     parse_errors: []const gero.asm_.Diagnostic,
     codegen_errors: []const gero.asm_.Diagnostic,
+    style: gero.asm_.Style,
 ) !void {
     const total = parse_errors.len + codegen_errors.len;
-    const all = try arena.alloc(gero.asm_.Diagnostic, total);
-    @memcpy(all[0..parse_errors.len], parse_errors);
-    @memcpy(all[parse_errors.len..], codegen_errors);
-    std.mem.sort(gero.asm_.Diagnostic, all, {}, byIndex);
-    try printDiagnostics(stdout, source_map, all);
+    const keyed = try arena.alloc(KeyedDiag, total);
+    for (parse_errors, 0..) |d, i| keyed[i] = .{ .diag = d, .path = pathOf(source_map, d) };
+    for (codegen_errors, 0..) |d, j| keyed[parse_errors.len + j] = .{ .diag = d, .path = pathOf(source_map, d) };
+    std.mem.sort(KeyedDiag, keyed, {}, byPathThenIndex);
+
+    // Count distinct files for the summary header.
+    var file_count: usize = 0;
+    var prev_path: []const u8 = "";
+    for (keyed) |k| {
+        if (!std.mem.eql(u8, k.path, prev_path)) {
+            file_count += 1;
+            prev_path = k.path;
+        }
+    }
+    try writeSummaryHeader(stdout, style, total, file_count);
+
+    // Emit per-file sections — blank line before each new file.
+    prev_path = "";
+    for (keyed) |k| {
+        if (!std.mem.eql(u8, k.path, prev_path)) {
+            try stdout.writeByte('\n');
+            prev_path = k.path;
+        }
+        try gero.asm_.formatPretty(stdout, source_map, k.diag, style);
+    }
 }
 
-fn byIndex(_: void, a: gero.asm_.Diagnostic, b: gero.asm_.Diagnostic) bool {
-    return a.parse_error.index < b.parse_error.index;
+fn writeSummaryHeader(stdout: *std.Io.Writer, style: gero.asm_.Style, errors: usize, files: usize) !void {
+    const error_noun: []const u8 = if (errors == 1) "error" else "errors";
+    const file_noun: []const u8 = if (files == 1) "file" else "files";
+    // Reuse Style.code for the count label so it pops in red like
+    // the per-line [Exxx] markers.
+    try stdout.print("{s}{d} {s}{s} in {d} {s}\n", .{ style.code, errors, error_noun, style.reset, files, file_noun });
+}
+
+fn pathOf(source_map: gero.asm_.SourceMap, d: gero.asm_.Diagnostic) []const u8 {
+    // @as: ParseError indexes fit in u32 — bounded by max_file_size (16 MiB).
+    const offset: u32 = @as(u32, @intCast(d.parse_error.index));
+    if (source_map.lookup(offset)) |loc| return loc.file.path;
+    return "<unknown>";
+}
+
+fn byPathThenIndex(_: void, a: KeyedDiag, b: KeyedDiag) bool {
+    const path_cmp = std.mem.order(u8, a.path, b.path);
+    if (path_cmp != .eq) return path_cmp == .lt;
+    return a.diag.parse_error.index < b.diag.parse_error.index;
 }
 
 /// Resolve the `.gx` output path from `--out` plus the source.
