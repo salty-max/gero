@@ -19,6 +19,7 @@ pub fn execute(
     stdout: *std.Io.Writer,
     term: *term_mod.Term,
 ) !u8 {
+    const t_start = std.Io.Timestamp.now(io, .awake);
     const positionals = opts.positional();
     if (positionals.len < 1) {
         try term.err("gero asm: missing .gas file path", .{});
@@ -39,6 +40,7 @@ pub fn execute(
     const style: gero.asm_.Style = if (term.color) .ansi else .plain;
     if (fused.errors.len > 0) {
         try printDiagnostics(stdout, fused.source_map, fused.errors, style);
+        try writeFooter(stdout, io, style, t_start, .failed);
         return 3;
     }
 
@@ -56,6 +58,7 @@ pub fn execute(
     const had_errors = pt.hasErrors() or cg.hasErrors();
     if (had_errors) {
         try printAllDiagnostics(arena, stdout, fused.source_map, pt.errors, cg.errors, style);
+        try writeFooter(stdout, io, style, t_start, .failed);
         return 3;
     }
 
@@ -73,9 +76,55 @@ pub fn execute(
             loaded.header.bank_count,
             if (loaded.header.hasDebugSymbols()) "yes" else "no",
         });
+        try writeFooter(stdout, io, style, t_start, .ok);
     }
 
     return 0;
+}
+
+/// Whether `gero asm` produced a `.gx` or bailed on errors.
+const Outcome = enum { ok, failed };
+
+/// Cargo-style footer with elapsed wall time.
+///
+/// ```text
+///     Finished in 12.3 ms
+///     Failed in 4.1 ms
+/// ```
+fn writeFooter(stdout: *std.Io.Writer, io: std.Io, style: gero.asm_.Style, t_start: std.Io.Timestamp, outcome: Outcome) !void {
+    const t_end = std.Io.Timestamp.now(io, .awake);
+    const elapsed_ns: i96 = t_start.durationTo(t_end).nanoseconds;
+    const label = switch (outcome) {
+        .ok => "    Finished in ",
+        .failed => "    Failed in ",
+    };
+    const label_style = switch (outcome) {
+        .ok => style.location, // bold — same as path headers
+        .failed => style.code, // red — same as [Exxx]
+    };
+    try stdout.print("{s}{s}{s}", .{ label_style, label, style.reset });
+    try writeDuration(stdout, elapsed_ns);
+    try stdout.writeByte('\n');
+}
+
+fn writeDuration(stdout: *std.Io.Writer, ns: i96) !void {
+    const ns_per_ms: i96 = std.time.ns_per_ms;
+    const ns_per_s: i96 = std.time.ns_per_s;
+    if (ns >= ns_per_s) {
+        // safety: caller passes a non-negative duration; the cast
+        //         to u64 just lets {d} format unsigned without the
+        //         leading-sign business that confuses the spec.
+        const whole: u64 = @intCast(@divFloor(ns, ns_per_s));
+        const tenths: u64 = @intCast(@divFloor(@mod(ns, ns_per_s), ns_per_ms * 100));
+        try stdout.print("{d}.{d} s", .{ whole, tenths });
+    } else if (ns >= ns_per_ms) {
+        // @as: see above — non-negative ns by construction.
+        const whole: u64 = @intCast(@divFloor(ns, ns_per_ms));
+        const tenths: u64 = @intCast(@divFloor(@mod(ns, ns_per_ms), 100_000));
+        try stdout.print("{d}.{d} ms", .{ whole, tenths });
+    } else {
+        try stdout.writeAll("< 1 ms");
+    }
 }
 
 /// Pretty-print every diagnostic against the fused-source map.
