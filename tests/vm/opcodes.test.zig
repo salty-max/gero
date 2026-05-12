@@ -29,12 +29,12 @@ test "opcodes: OpcodeInfo.size sums opcode + operands" {
     try std.testing.expectEqual(@as(u8, 5), movix.size());
 }
 
-test "opcodes: table holds exactly 90 named entries" {
+test "opcodes: table holds exactly 92 named entries" {
     var count: usize = 0;
     for (table) |entry| if (entry != null) {
         count += 1;
     };
-    try std.testing.expectEqual(@as(usize, 90), count);
+    try std.testing.expectEqual(@as(usize, 92), count);
 }
 
 test "opcodes: every named entry has a non-empty mnemonic" {
@@ -104,7 +104,7 @@ test "opcodes: unused byte values are null" {
     // Spot-check several gaps in the spec's opcode space.
     try std.testing.expect(table[0x00] == null);
     try std.testing.expect(table[0x0F] == null);
-    try std.testing.expect(table[0x27] == null);
+    try std.testing.expect(table[0x29] == null);
     try std.testing.expect(table[0x33] == null);
     try std.testing.expect(table[0x57] == null);
     try std.testing.expect(table[0x68] == null);

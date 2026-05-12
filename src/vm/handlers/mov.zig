@@ -210,3 +210,48 @@ pub fn movlRegAddr(vm: *VM) StepResult {
     vm.writeByte(addr, @truncate(value));
     return ok;
 }
+
+/// `0x27` — `bcpy Reg, Reg, Reg` → block copy.
+/// `mem[dst..dst+len] ← mem[src..src+len]`, byte-by-byte from
+/// low to high (so overlapping ranges with `dst > src` will see
+/// corrupted bytes — callers should split or use disjoint
+/// regions). Reads three register indices: dst-addr, src-addr,
+/// length (in bytes, u16). Maximum transfer is 65535 bytes.
+/// Address arithmetic wraps at the 16-bit boundary.
+pub fn bcpyRegRegReg(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const dst_reg = vm.readByte(ip +% 1);
+    const src_reg = vm.readByte(ip +% 2);
+    const len_reg = vm.readByte(ip +% 3);
+    const dst_addr = vm.regs.readByIndex(dst_reg) orelse return fault(vm, .invalid_register);
+    const src_addr = vm.regs.readByIndex(src_reg) orelse return fault(vm, .invalid_register);
+    const len = vm.regs.readByIndex(len_reg) orelse return fault(vm, .invalid_register);
+    var i: u16 = 0;
+    while (i < len) : (i +%= 1) {
+        const b = vm.readByte(src_addr +% i);
+        vm.writeByte(dst_addr +% i, b);
+    }
+    return ok;
+}
+
+/// `0x28` — `bset Reg, Reg, Reg` → block byte-fill.
+/// `mem[addr..addr+len] ← val.lo` for each byte. Reads three
+/// register indices: dst-addr, length (u16), value (low byte
+/// used; high byte ignored). Address arithmetic wraps at the
+/// 16-bit boundary.
+pub fn bsetRegRegReg(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const addr_reg = vm.readByte(ip +% 1);
+    const len_reg = vm.readByte(ip +% 2);
+    const val_reg = vm.readByte(ip +% 3);
+    const addr = vm.regs.readByIndex(addr_reg) orelse return fault(vm, .invalid_register);
+    const len = vm.regs.readByIndex(len_reg) orelse return fault(vm, .invalid_register);
+    const val_word = vm.regs.readByIndex(val_reg) orelse return fault(vm, .invalid_register);
+    // safety: truncating to the low byte is the spec'd "val.lo" half
+    const val_byte: u8 = @truncate(val_word);
+    var i: u16 = 0;
+    while (i < len) : (i +%= 1) {
+        vm.writeByte(addr +% i, val_byte);
+    }
+    return ok;
+}

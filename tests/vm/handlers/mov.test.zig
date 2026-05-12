@@ -256,3 +256,156 @@ test "mov: invalid register index raises invalid-register fault" {
     try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }
+
+// ---------- block memory ops (bcpy / bset) ----------
+
+test "bcpy 0x27: copies len bytes from src to dst" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    // Seed source region.
+    vm.mmap.writeByte(0x2000, 0xDE);
+    vm.mmap.writeByte(0x2001, 0xAD);
+    vm.mmap.writeByte(0x2002, 0xBE);
+    vm.mmap.writeByte(0x2003, 0xEF);
+
+    vm.regs.write(.r1, 0x3000); // dst
+    vm.regs.write(.r2, 0x2000); // src
+    vm.regs.write(.r3, 0x0004); // len
+
+    loadProgram(&vm, &.{ 0x27, 0x02, 0x03, 0x04 }); // bcpy r1, r2, r3
+    _ = gero.vm.step(&vm);
+
+    try std.testing.expectEqual(@as(u8, 0xDE), vm.mmap.readByte(0x3000));
+    try std.testing.expectEqual(@as(u8, 0xAD), vm.mmap.readByte(0x3001));
+    try std.testing.expectEqual(@as(u8, 0xBE), vm.mmap.readByte(0x3002));
+    try std.testing.expectEqual(@as(u8, 0xEF), vm.mmap.readByte(0x3003));
+    // Beyond the copied range is untouched (still 0).
+    try std.testing.expectEqual(@as(u8, 0x00), vm.mmap.readByte(0x3004));
+    try std.testing.expectEqual(@as(u16, 0x1104), vm.regs.read(.ip));
+}
+
+test "bcpy: len = 0 is a no-op" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    vm.mmap.writeByte(0x2000, 0xAA);
+    vm.mmap.writeByte(0x3000, 0xBB);
+    vm.regs.write(.r1, 0x3000);
+    vm.regs.write(.r2, 0x2000);
+    vm.regs.write(.r3, 0x0000);
+    loadProgram(&vm, &.{ 0x27, 0x02, 0x03, 0x04 });
+    _ = gero.vm.step(&vm);
+
+    try std.testing.expectEqual(@as(u8, 0xBB), vm.mmap.readByte(0x3000));
+}
+
+test "bcpy: address wraps at the 16-bit boundary" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    // Source straddles the wrap: bytes at 0xFFFE, 0xFFFF, 0x0000.
+    vm.mmap.writeByte(0xFFFE, 0x11);
+    vm.mmap.writeByte(0xFFFF, 0x22);
+    vm.mmap.writeByte(0x0000, 0x33);
+    vm.regs.write(.r1, 0x4000);
+    vm.regs.write(.r2, 0xFFFE);
+    vm.regs.write(.r3, 0x0003);
+    loadProgram(&vm, &.{ 0x27, 0x02, 0x03, 0x04 });
+    _ = gero.vm.step(&vm);
+
+    try std.testing.expectEqual(@as(u8, 0x11), vm.mmap.readByte(0x4000));
+    try std.testing.expectEqual(@as(u8, 0x22), vm.mmap.readByte(0x4001));
+    try std.testing.expectEqual(@as(u8, 0x33), vm.mmap.readByte(0x4002));
+}
+
+test "bcpy: doesn't touch flags" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    vm.regs.write(.r1, 0x3000);
+    vm.regs.write(.r2, 0x2000);
+    vm.regs.write(.r3, 0x0010);
+    loadProgram(&vm, &.{ 0x27, 0x02, 0x03, 0x04 });
+    try expectFlagsUnchanged(&vm);
+}
+
+test "bcpy: invalid register index raises invalid-register fault" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
+    // bcpy r1, r2, <out-of-range>
+    loadProgram(&vm, &.{ 0x27, 0x02, 0x03, 0xFF });
+    try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+}
+
+test "bset 0x28: fills len bytes with the value-register's low byte" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    vm.regs.write(.r1, 0x3000); // addr
+    vm.regs.write(.r2, 0x0008); // len
+    vm.regs.write(.r3, 0xDEAD); // value (only 0xAD will be written)
+
+    loadProgram(&vm, &.{ 0x28, 0x02, 0x03, 0x04 }); // bset r1, r2, r3
+    _ = gero.vm.step(&vm);
+
+    var i: u16 = 0;
+    while (i < 8) : (i += 1) {
+        try std.testing.expectEqual(@as(u8, 0xAD), vm.mmap.readByte(0x3000 + i));
+    }
+    try std.testing.expectEqual(@as(u8, 0x00), vm.mmap.readByte(0x3008));
+    try std.testing.expectEqual(@as(u16, 0x1104), vm.regs.read(.ip));
+}
+
+test "bset: len = 0 is a no-op" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    vm.mmap.writeByte(0x3000, 0xCC);
+    vm.regs.write(.r1, 0x3000);
+    vm.regs.write(.r2, 0x0000);
+    vm.regs.write(.r3, 0xFF);
+    loadProgram(&vm, &.{ 0x28, 0x02, 0x03, 0x04 });
+    _ = gero.vm.step(&vm);
+
+    try std.testing.expectEqual(@as(u8, 0xCC), vm.mmap.readByte(0x3000));
+}
+
+test "bset: address wraps at the 16-bit boundary" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    vm.regs.write(.r1, 0xFFFE);
+    vm.regs.write(.r2, 0x0003);
+    vm.regs.write(.r3, 0x5A);
+    loadProgram(&vm, &.{ 0x28, 0x02, 0x03, 0x04 });
+    _ = gero.vm.step(&vm);
+
+    try std.testing.expectEqual(@as(u8, 0x5A), vm.mmap.readByte(0xFFFE));
+    try std.testing.expectEqual(@as(u8, 0x5A), vm.mmap.readByte(0xFFFF));
+    try std.testing.expectEqual(@as(u8, 0x5A), vm.mmap.readByte(0x0000));
+}
+
+test "bset: doesn't touch flags" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    vm.regs.write(.r1, 0x3000);
+    vm.regs.write(.r2, 0x0010);
+    vm.regs.write(.r3, 0x00);
+    loadProgram(&vm, &.{ 0x28, 0x02, 0x03, 0x04 });
+    try expectFlagsUnchanged(&vm);
+}
+
+test "bset: invalid register index raises invalid-register fault" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
+    loadProgram(&vm, &.{ 0x28, 0x02, 0xFF, 0x04 });
+    try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+}
