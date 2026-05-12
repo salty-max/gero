@@ -127,8 +127,74 @@ pub const Located = struct {
 
 /// Diagnostic carrying a fused-buffer byte offset (inside
 /// `parse_error.index`). Use `SourceMap.lookup` to resolve.
+/// `code` is set for semantic errors that map to asm spec §8's
+/// E001..E016 list; generic syntax errors leave it `null`.
 pub const Diagnostic = struct {
     parse_error: core.ParseError,
+    code: ?ErrorCode = null,
+};
+
+/// Asm spec §8 error codes. Numerical IDs match the spec's
+/// `E001..E016` table — `@intFromEnum(ErrorCode.unknown_mnemonic) == 1`.
+pub const ErrorCode = enum(u8) {
+    /// E001: unknown mnemonic.
+    unknown_mnemonic = 1,
+    /// E002: operand count mismatch.
+    operand_count_mismatch = 2,
+    /// E003: operand type mismatch (no opcode for this combination).
+    operand_type_mismatch = 3,
+    /// E004: undefined symbol.
+    undefined_symbol = 4,
+    /// E005: duplicate label.
+    duplicate_label = 5,
+    /// E006: hex literal out of range.
+    hex_out_of_range = 6,
+    /// E007: address out of range.
+    addr_out_of_range = 7,
+    /// E008: reserved opcode used.
+    reserved_opcode = 8,
+    /// E009: division by zero in compile-time expression.
+    div_by_zero = 9,
+    /// E010: unknown escape sequence in string or char literal.
+    unknown_escape = 10,
+    /// E011: unterminated string literal.
+    unterminated_string = 11,
+    /// E012: `include` cycle detected.
+    include_cycle = 12,
+    /// E013: `include` depth exceeds 32.
+    include_depth_exceeded = 13,
+    /// E014: backward `org` would overlap already-emitted bytes.
+    backward_org = 14,
+    /// E015: `include` target file not found.
+    include_not_found = 15,
+    /// E016: char literal must be exactly one byte.
+    char_literal_size = 16,
+
+    /// Render as `E001`..`E016`. Caller owns nothing — the
+    /// returned slice has static storage.
+    pub fn shortLabel(self: ErrorCode) []const u8 {
+        // Map by value rather than a giant switch to keep the
+        // function tiny. The runtime cost is one switch + four
+        // bytes of formatted output.
+        return switch (self) {
+            .unknown_mnemonic => "E001",
+            .operand_count_mismatch => "E002",
+            .operand_type_mismatch => "E003",
+            .undefined_symbol => "E004",
+            .duplicate_label => "E005",
+            .hex_out_of_range => "E006",
+            .addr_out_of_range => "E007",
+            .reserved_opcode => "E008",
+            .div_by_zero => "E009",
+            .unknown_escape => "E010",
+            .unterminated_string => "E011",
+            .include_cycle => "E012",
+            .include_depth_exceeded => "E013",
+            .backward_org => "E014",
+            .include_not_found => "E015",
+            .char_literal_size => "E016",
+        };
+    }
 };
 
 /// Output of `resolveIncludes` — fused source + file map + errors.
@@ -221,6 +287,7 @@ fn resolveOne(
 ) ResolveError!void {
     if (depth > max_include_depth) {
         try ctx.errors.append(ctx.allocator, .{
+            .code = .include_depth_exceeded,
             .parse_error = core.parseError(
                 "include",
                 include_site_offset,
@@ -242,6 +309,7 @@ fn resolveOne(
     const canonical = Dir.cwd().realPathFileAlloc(ctx.io, absolute, ctx.allocator) catch |err| switch (err) {
         error.FileNotFound => {
             try ctx.errors.append(ctx.allocator, .{
+                .code = .include_not_found,
                 .parse_error = core.parseError(
                     "include",
                     include_site_offset,
@@ -257,6 +325,7 @@ fn resolveOne(
     for (ctx.in_progress.items) |p| {
         if (std.mem.eql(u8, p, canonical)) {
             try ctx.errors.append(ctx.allocator, .{
+                .code = .include_cycle,
                 .parse_error = core.parseError(
                     "include",
                     include_site_offset,
@@ -414,10 +483,11 @@ fn matchIncludeLine(line: []const u8) ?[]const u8 {
     return line[path_start..path_end];
 }
 
-/// Format one `Diagnostic` as `<path>:<line>:<col>: <message>`.
-/// Resolves the diagnostic's fused-source offset via the
-/// `SourceMap`. The full multi-error + caret-snippet treatment
-/// lives in #37.
+/// Format one `Diagnostic` as
+/// `<path>:<line>:<col>: [<code>] <message>`. The `[Exxx]` prefix
+/// is included only when the diagnostic carries an `ErrorCode`
+/// (semantic errors per asm spec §8); plain syntax errors emit
+/// no bracketed code.
 pub fn formatDiagnostic(
     writer: anytype,
     source_map: SourceMap,
@@ -428,10 +498,55 @@ pub fn formatDiagnostic(
     const offset: u32 = @intCast(err.parse_error.index);
     if (source_map.lookup(offset)) |loc| {
         const lc = computeLineCol(loc.file.content, loc.file_offset);
-        try writer.print("{s}:{d}:{d}: {s}\n", .{ loc.file.path, lc.line, lc.col, err.parse_error.message });
+        if (err.code) |c| {
+            try writer.print("{s}:{d}:{d}: [{s}] {s}\n", .{ loc.file.path, lc.line, lc.col, c.shortLabel(), err.parse_error.message });
+        } else {
+            try writer.print("{s}:{d}:{d}: {s}\n", .{ loc.file.path, lc.line, lc.col, err.parse_error.message });
+        }
+    } else if (err.code) |c| {
+        try writer.print("<unknown>:0:{d}: [{s}] {s}\n", .{ offset, c.shortLabel(), err.parse_error.message });
     } else {
         try writer.print("<unknown>:0:{d}: {s}\n", .{ offset, err.parse_error.message });
     }
+}
+
+/// Pretty-format one `Diagnostic` with a caret snippet:
+///
+/// ```text
+/// <path>:<line>:<col>: [E004] undefined symbol
+///   3 | jmp missing
+///     |     ^
+/// ```
+///
+/// The snippet shows the offending source line, with a caret
+/// underneath the column the diagnostic points at. Falls back to
+/// the plain `formatDiagnostic` shape when the source-map lookup
+/// fails.
+pub fn formatPretty(
+    writer: anytype,
+    source_map: SourceMap,
+    err: Diagnostic,
+) !void {
+    // safety: ParseError indexes fit in u32 — our sources are
+    // bounded by max_file_size (16 MiB).
+    const offset: u32 = @intCast(err.parse_error.index);
+    const loc = source_map.lookup(offset) orelse {
+        return formatDiagnostic(writer, source_map, err);
+    };
+    const lc = computeLineCol(loc.file.content, loc.file_offset);
+    if (err.code) |c| {
+        try writer.print("{s}:{d}:{d}: [{s}] {s}\n", .{ loc.file.path, lc.line, lc.col, c.shortLabel(), err.parse_error.message });
+    } else {
+        try writer.print("{s}:{d}:{d}: {s}\n", .{ loc.file.path, lc.line, lc.col, err.parse_error.message });
+    }
+    const line_slice = lineAt(loc.file.content, loc.file_offset);
+    // Right-align the gutter so the caret column math stays simple.
+    try writer.print("{d: >4} | {s}\n", .{ lc.line, line_slice });
+    try writer.writeAll("     | ");
+    // Pad to column-1 spaces, then a caret. col is 1-based.
+    var pad: u32 = 1;
+    while (pad < lc.col) : (pad += 1) try writer.writeByte(' ');
+    try writer.writeAll("^\n");
 }
 
 const LineCol = struct { line: u32, col: u32 };
@@ -451,4 +566,16 @@ fn computeLineCol(content: []const u8, target: u32) LineCol {
         }
     }
     return .{ .line = line, .col = col };
+}
+
+/// Return the slice of `content` that holds the line containing
+/// `target` (file-relative byte offset). Trailing `\n` is excluded.
+fn lineAt(content: []const u8, target: u32) []const u8 {
+    // @as: widen u32 file offset to usize for slice indexing.
+    const t = @min(@as(usize, target), content.len);
+    var start: usize = t;
+    while (start > 0 and content[start - 1] != '\n') start -= 1;
+    var end: usize = t;
+    while (end < content.len and content[end] != '\n') end += 1;
+    return content[start..end];
 }

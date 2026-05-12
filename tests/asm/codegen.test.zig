@@ -171,7 +171,7 @@ test "codegen: backward org raises E014-shape" {
     try std.testing.expect(out.cg.hasErrors());
     var saw_backward = false;
     for (out.cg.errors) |e| {
-        if (std.mem.indexOf(u8, e.parse_error.message, "backward `org`") != null) saw_backward = true;
+        if (e.code == .backward_org) saw_backward = true;
     }
     try std.testing.expect(saw_backward);
 }
@@ -210,7 +210,7 @@ test "codegen: duplicate label raises E005-shape" {
     try std.testing.expect(out.cg.hasErrors());
     var saw_dup = false;
     for (out.cg.errors) |e| {
-        if (std.mem.indexOf(u8, e.parse_error.message, "duplicate label") != null) saw_dup = true;
+        if (e.code == .duplicate_label) saw_dup = true;
     }
     try std.testing.expect(saw_dup);
 }
@@ -221,7 +221,7 @@ test "codegen: undefined symbol in operand raises E004-shape" {
     try std.testing.expect(out.cg.hasErrors());
     var saw_undefined = false;
     for (out.cg.errors) |e| {
-        if (std.mem.indexOf(u8, e.parse_error.message, "undefined symbol") != null) saw_undefined = true;
+        if (e.code == .undefined_symbol) saw_undefined = true;
     }
     try std.testing.expect(saw_undefined);
 }
@@ -232,7 +232,7 @@ test "codegen: unknown mnemonic raises E001-shape" {
     try std.testing.expect(out.cg.hasErrors());
     var saw_unknown = false;
     for (out.cg.errors) |e| {
-        if (std.mem.indexOf(u8, e.parse_error.message, "unknown mnemonic") != null) saw_unknown = true;
+        if (e.code == .unknown_mnemonic) saw_unknown = true;
     }
     try std.testing.expect(saw_unknown);
 }
@@ -245,9 +245,22 @@ test "codegen: mnemonic with wrong operand shape raises E003-shape" {
     try std.testing.expect(out.cg.hasErrors());
     var saw_mismatch = false;
     for (out.cg.errors) |e| {
-        if (std.mem.indexOf(u8, e.parse_error.message, "operand type mismatch") != null) saw_mismatch = true;
+        if (e.code == .operand_type_mismatch) saw_mismatch = true;
     }
     try std.testing.expect(saw_mismatch);
+}
+
+test "codegen: division by zero in const expr raises E009-shape" {
+    // The const evaluator raises div_by_zero; it surfaces in the
+    // parse-time errors propagated through codegen.
+    var pt = try gero.asm_.parse(alloc, "const N = $0010 / $0000\nhlt\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.errors.len > 0);
+    var saw_div = false;
+    for (pt.errors) |e| {
+        if (e.code == .div_by_zero) saw_div = true;
+    }
+    try std.testing.expect(saw_div);
 }
 
 // ---------- symbol table sanity ----------
