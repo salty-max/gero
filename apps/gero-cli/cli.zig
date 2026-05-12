@@ -37,6 +37,7 @@ pub const max_positionals: usize = 16;
 /// Parsed common flags + the collected positional tail.
 pub const Options = struct {
     help: bool = false,
+    version: bool = false,
     quiet: bool = false,
     verbose: bool = false,
     target: Target = .vm,
@@ -124,6 +125,7 @@ pub fn topHelp(out: *std.Io.Writer) std.Io.Writer.Error!void {
         try out.print("  {s:<8} {s}\n", .{ commandName(cmd), commandSummary(cmd) });
     }
     try out.print("\nRun `gero <subcommand> --help` for per-command flags.\n", .{});
+    try out.print("Run `gero --version` to print the build version.\n", .{});
 }
 
 /// Per-subcommand help. Currently the same template; concrete
@@ -132,14 +134,20 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command) std.Io.Writer.Error!void {
     try out.print("gero {s} — {s}\n\n", .{ commandName(cmd), commandSummary(cmd) });
     try out.print("USAGE\n  gero {s} [flags] [args]\n\n", .{commandName(cmd)});
     try out.print("COMMON FLAGS\n", .{});
-    try out.print("  --help / -h      Print this help.\n", .{});
-    try out.print("  --quiet / -q     Suppress non-error output.\n", .{});
-    try out.print("  --verbose / -v   Extra diagnostics.\n", .{});
-    try out.print("  --target=<spec>  vm (default) or gtx-16.\n", .{});
-    try out.print("  --optimize=<m>   debug (default) / release / size.\n", .{});
-    try out.print("  --out=<path>     Output destination for file-producing commands.\n", .{});
-    try out.print("  --color=<mode>   auto (default) / always / never.\n", .{});
-    try out.print("  --no-color       Shortcut for --color=never.\n", .{});
+    try out.print("  --help / -h         Print this help.\n", .{});
+    try out.print("  --version / -V      Print build version.\n", .{});
+    try out.print("  --quiet / -q        Suppress non-error output.\n", .{});
+    try out.print("  --verbose / -v      Extra diagnostics + per-phase timings.\n", .{});
+    try out.print("  --target / -t=<s>   vm (default) or gtx-16.\n", .{});
+    try out.print("  --optimize / -O=<m> debug (default) / release / size.\n", .{});
+    try out.print("  --out / -o=<path>   Output destination for file-producing commands.\n", .{});
+    try out.print("  --color / -c=<m>    auto (default) / always / never.\n", .{});
+    try out.print("  --no-color          Shortcut for --color=never.\n", .{});
+}
+
+/// Print the version line consumed by `gero --version` / `gero -V`.
+pub fn printVersion(out: *std.Io.Writer) std.Io.Writer.Error!void {
+    try out.print("gero {s}\n", .{version_string});
 }
 
 fn parseTarget(s: []const u8) ParseError!Target {
@@ -162,10 +170,11 @@ fn parseColor(s: []const u8) ParseError!ColorChoice {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, quiet, verbose, target, optimize, out, color, no_color };
+const FlagKind = enum { help, version, quiet, verbose, target, optimize, out, color, no_color };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
+    if (std.mem.eql(u8, s, "version")) return .version;
     if (std.mem.eql(u8, s, "quiet")) return .quiet;
     if (std.mem.eql(u8, s, "verbose")) return .verbose;
     if (std.mem.eql(u8, s, "target")) return .target;
@@ -178,15 +187,20 @@ fn longFlag(s: []const u8) ?FlagKind {
 
 fn shortFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "h")) return .help;
+    if (std.mem.eql(u8, s, "V")) return .version; // upper-case — convention from rustc / clang
     if (std.mem.eql(u8, s, "q")) return .quiet;
     if (std.mem.eql(u8, s, "v")) return .verbose;
+    if (std.mem.eql(u8, s, "t")) return .target;
+    if (std.mem.eql(u8, s, "O")) return .optimize; // upper-case — convention from clang / gcc
     if (std.mem.eql(u8, s, "o")) return .out;
+    if (std.mem.eql(u8, s, "c")) return .color;
     return null;
 }
 
 fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void {
     switch (kind) {
         .help => opts.help = true,
+        .version => opts.version = true,
         .quiet => opts.quiet = true,
         .verbose => opts.verbose = true,
         .target => opts.target = try parseTarget(value orelse return error.MissingFlagValue),
@@ -203,6 +217,10 @@ fn needsValue(kind: FlagKind) bool {
         else => false,
     };
 }
+
+/// Build-time-captured semver from `build.zig.zon`. Stamped into
+/// `gero --version` output. Bumped via `zig build version`.
+pub const version_string: []const u8 = "0.0.0";
 
 /// Parse `argv[1..]` into a `Parsed`. The first non-flag token
 /// is the subcommand; everything after it is forwarded to the

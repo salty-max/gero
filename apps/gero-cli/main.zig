@@ -45,6 +45,10 @@ pub fn main(init: std.process.Init) !u8 {
     );
     var term = term_mod.Term{ .out = stderr, .color = stderr_color };
 
+    if (parsed.options.version) {
+        try cli.printVersion(stdout);
+        return 0;
+    }
     if (parsed.command == null) {
         try cli.topHelp(stdout);
         return 0;
