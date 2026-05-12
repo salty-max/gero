@@ -332,7 +332,7 @@ test "include: formatDiagnostic produces path:line:col prefix" {
 
     var allocating = std.Io.Writer.Allocating.init(alloc);
     defer allocating.deinit();
-    try gero.asm_.formatDiagnostic(&allocating.writer, fused.source_map, fused.errors[0]);
+    try gero.asm_.formatDiagnostic(&allocating.writer, fused.source_map, fused.errors[0], .plain);
 
     const out = allocating.written();
     try std.testing.expect(std.mem.indexOf(u8, out, "main.gas") != null);
@@ -354,7 +354,7 @@ test "include: formatPretty emits a caret line under the column" {
 
     var allocating = std.Io.Writer.Allocating.init(alloc);
     defer allocating.deinit();
-    try gero.asm_.formatPretty(&allocating.writer, fused.source_map, fused.errors[0]);
+    try gero.asm_.formatPretty(&allocating.writer, fused.source_map, fused.errors[0], .plain);
 
     const out = allocating.written();
     // Header line has the [E015] prefix.
@@ -363,4 +363,27 @@ test "include: formatPretty emits a caret line under the column" {
     try std.testing.expect(std.mem.indexOf(u8, out, "include \"nope.gas\"") != null);
     // A caret line exists.
     try std.testing.expect(std.mem.indexOf(u8, out, "^") != null);
+    // No ANSI escapes with the default plain style.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[") == null);
+}
+
+test "include: formatPretty with ansi style emits ANSI escapes" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("main.gas", "include \"nope.gas\"\n");
+
+    const main_path = try fx.pathOf("main.gas");
+    defer alloc.free(main_path);
+
+    var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, main_path);
+    defer fused.deinit();
+
+    var allocating = std.Io.Writer.Allocating.init(alloc);
+    defer allocating.deinit();
+    try gero.asm_.formatPretty(&allocating.writer, fused.source_map, fused.errors[0], .ansi);
+
+    const out = allocating.written();
+    // At minimum: the bold-red [Exxx] wrap + a reset.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[1;31m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[0m") != null);
 }

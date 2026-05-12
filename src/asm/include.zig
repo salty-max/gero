@@ -499,6 +499,35 @@ fn matchIncludeLine(line: []const u8) ?[]const u8 {
     return line[path_start..path_end];
 }
 
+/// ANSI escape strings the formatter wraps around the colored
+/// pieces of a diagnostic. `Style.plain` emits no escapes; the
+/// CLI flips to `Style.ansi` when stderr is a TTY.
+pub const Style = struct {
+    /// Wraps the `path:line:col` prefix.
+    location: []const u8 = "",
+    /// Wraps the `[Exxx]` error code.
+    code: []const u8 = "",
+    /// Wraps the gutter (line-number column + `|` separator).
+    gutter: []const u8 = "",
+    /// Wraps the caret `^` under the offending column.
+    caret: []const u8 = "",
+    /// Reset escape, emitted after every wrapped piece.
+    reset: []const u8 = "",
+
+    /// No ANSI escapes — default for tests + non-TTY output.
+    pub const plain: Style = .{};
+
+    /// Standard ANSI palette: bold location, red `[Exxx]`, dim
+    /// gutter, red caret.
+    pub const ansi: Style = .{
+        .location = "\x1b[1m",
+        .code = "\x1b[1;31m",
+        .gutter = "\x1b[2m",
+        .caret = "\x1b[1;31m",
+        .reset = "\x1b[0m",
+    };
+};
+
 /// Format one `Diagnostic` as
 /// `<path>:<line>:<col>: [<code>] <message>`. The `[Exxx]` prefix
 /// is included only when the diagnostic carries an `ErrorCode`
@@ -508,21 +537,20 @@ pub fn formatDiagnostic(
     writer: anytype,
     source_map: SourceMap,
     err: Diagnostic,
+    style: Style,
 ) !void {
     // safety: ParseError indexes fit in u32 — our sources are
     // bounded by max_file_size (16 MiB).
     const offset: u32 = @intCast(err.parse_error.index);
     if (source_map.lookup(offset)) |loc| {
         const lc = computeLineCol(loc.file.content, loc.file_offset);
-        if (err.code) |c| {
-            try writer.print("{s}:{d}:{d}: [{s}] {s}\n", .{ loc.file.path, lc.line, lc.col, c.shortLabel(), err.parse_error.message });
-        } else {
-            try writer.print("{s}:{d}:{d}: {s}\n", .{ loc.file.path, lc.line, lc.col, err.parse_error.message });
-        }
-    } else if (err.code) |c| {
-        try writer.print("<unknown>:0:{d}: [{s}] {s}\n", .{ offset, c.shortLabel(), err.parse_error.message });
+        try writeHeader(writer, loc.file.path, lc, err, style);
     } else {
-        try writer.print("<unknown>:0:{d}: {s}\n", .{ offset, err.parse_error.message });
+        try writer.print("{s}<unknown>:0:{d}{s}: ", .{ style.location, offset, style.reset });
+        if (err.code) |c| {
+            try writer.print("{s}[{s}]{s} ", .{ style.code, c.shortLabel(), style.reset });
+        }
+        try writer.print("{s}\n", .{err.parse_error.message});
     }
 }
 
@@ -542,27 +570,41 @@ pub fn formatPretty(
     writer: anytype,
     source_map: SourceMap,
     err: Diagnostic,
+    style: Style,
 ) !void {
     // safety: ParseError indexes fit in u32 — our sources are
     // bounded by max_file_size (16 MiB).
     const offset: u32 = @intCast(err.parse_error.index);
     const loc = source_map.lookup(offset) orelse {
-        return formatDiagnostic(writer, source_map, err);
+        return formatDiagnostic(writer, source_map, err, style);
     };
     const lc = computeLineCol(loc.file.content, loc.file_offset);
-    if (err.code) |c| {
-        try writer.print("{s}:{d}:{d}: [{s}] {s}\n", .{ loc.file.path, lc.line, lc.col, c.shortLabel(), err.parse_error.message });
-    } else {
-        try writer.print("{s}:{d}:{d}: {s}\n", .{ loc.file.path, lc.line, lc.col, err.parse_error.message });
-    }
+    try writeHeader(writer, loc.file.path, lc, err, style);
+
     const line_slice = lineAt(loc.file.content, loc.file_offset);
     // Right-align the gutter so the caret column math stays simple.
-    try writer.print("{d: >4} | {s}\n", .{ lc.line, line_slice });
-    try writer.writeAll("     | ");
+    try writer.print("{s}{d: >4} |{s} {s}\n", .{ style.gutter, lc.line, style.reset, line_slice });
+    try writer.print("{s}     |{s} ", .{ style.gutter, style.reset });
     // Pad to column-1 spaces, then a caret. col is 1-based.
     var pad: u32 = 1;
     while (pad < lc.col) : (pad += 1) try writer.writeByte(' ');
-    try writer.writeAll("^\n");
+    try writer.print("{s}^{s}\n", .{ style.caret, style.reset });
+}
+
+/// `<path>:<line>:<col>: [Exxx] <message>` header line, shared
+/// between `formatDiagnostic` and `formatPretty`.
+fn writeHeader(
+    writer: anytype,
+    path: []const u8,
+    lc: LineCol,
+    err: Diagnostic,
+    style: Style,
+) !void {
+    try writer.print("{s}{s}:{d}:{d}{s}: ", .{ style.location, path, lc.line, lc.col, style.reset });
+    if (err.code) |c| {
+        try writer.print("{s}[{s}]{s} ", .{ style.code, c.shortLabel(), style.reset });
+    }
+    try writer.print("{s}\n", .{err.parse_error.message});
 }
 
 const LineCol = struct { line: u32, col: u32 };

@@ -41,6 +41,8 @@ pub const resolveIncludes = include.resolveIncludes;
 pub const formatDiagnostic = include.formatDiagnostic;
 /// Re-export: pretty-format a `Diagnostic` with a caret-style snippet.
 pub const formatPretty = include.formatPretty;
+/// Re-export: ANSI escape strings the formatter wraps around colored pieces.
+pub const Style = include.Style;
 
 /// Re-export: source span — `{start, end}` byte offsets in the fused source.
 pub const Span = ast_mod.Span;
