@@ -76,11 +76,11 @@ pub fn addImm16Reg(vm: *VM) StepResult {
     return writeAddSub(vm, reg, addWithCarry(a, imm, 0));
 }
 
-/// `0x41` — `add Reg, Reg` → `dst ← dst + src`.
+/// `0x41` — `add Reg, Reg` → `dst ← dst + src` (asm: `add src, dst`).
 pub fn addRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, dst, addWithCarry(a, b, 0));
@@ -111,11 +111,11 @@ pub fn subImm16Reg(vm: *VM) StepResult {
     return writeAddSub(vm, reg, subWithBorrow(a, imm, 0));
 }
 
-/// `0x44` — `sub Reg, Reg` → `dst ← dst - src`.
+/// `0x44` — `sub Reg, Reg` → `dst ← dst - src` (asm: `sub src, dst`).
 pub fn subRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, dst, subWithBorrow(a, b, 0));
@@ -164,11 +164,11 @@ pub fn mulImm16Reg(vm: *VM) StepResult {
     return doMul(vm, reg, a, imm);
 }
 
-/// `0x47` — `mul Reg, Reg` → `acu:dst ← dst × src`.
+/// `0x47` — `mul Reg, Reg` → `acu:dst ← dst × src` (asm: `mul src, dst`).
 pub fn mulRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return doMul(vm, dst, a, b);
@@ -275,11 +275,11 @@ pub fn divImm16Reg(vm: *VM) StepResult {
     return doDiv(vm, reg, dividend32(vm, low), divisor);
 }
 
-/// `0x4C` — `div Reg, Reg` → unsigned 32÷16: `acu:dst ÷ src`.
+/// `0x4C` — `div Reg, Reg` → unsigned 32÷16: `acu:dst ÷ src` (asm: `div src, dst`).
 pub fn divRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const low = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const src_value = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     const divisor: u32 = src_value;
@@ -298,11 +298,11 @@ pub fn divsImm16Reg(vm: *VM) StepResult {
     return doDivs(vm, reg, dividend32Signed(vm, low), divisor_signed);
 }
 
-/// `0x4E` — `divs Reg, Reg` → signed 32÷16.
+/// `0x4E` — `divs Reg, Reg` → signed 32÷16 (asm: `divs src, dst`).
 pub fn divsRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const low = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const divisor = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     // safety: u16 → i16 preserves the sign bit
@@ -326,11 +326,11 @@ pub fn adcImm16Reg(vm: *VM) StepResult {
     return writeAddSub(vm, reg, addWithCarry(a, imm, carryIn(vm)));
 }
 
-/// `0x65` — `adc Reg, Reg` → `dst ← dst + src + C`.
+/// `0x65` — `adc Reg, Reg` → `dst ← dst + src + C` (asm: `adc src, dst`).
 pub fn adcRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, dst, addWithCarry(a, b, carryIn(vm)));
@@ -345,11 +345,11 @@ pub fn sbcImm16Reg(vm: *VM) StepResult {
     return writeAddSub(vm, reg, subWithBorrow(a, imm, carryIn(vm)));
 }
 
-/// `0x67` — `sbc Reg, Reg` → `dst ← dst - src - C`.
+/// `0x67` — `sbc Reg, Reg` → `dst ← dst - src - C` (asm: `sbc src, dst`).
 pub fn sbcRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeAddSub(vm, dst, subWithBorrow(a, b, carryIn(vm)));

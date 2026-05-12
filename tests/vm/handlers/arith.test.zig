@@ -68,7 +68,7 @@ test "add 0x41 reg,reg" {
     defer vm.deinit();
     vm.regs.write(.r1, 0x100);
     vm.regs.write(.r2, 0x200);
-    loadProgram(&vm, &.{ 0x41, 0x02, 0x03 }); // add r1, r2 → r1 = r1 + r2
+    loadProgram(&vm, &.{ 0x41, 0x03, 0x02 }); // add r2, r1 → r1 += r2 (src, dst)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x300), vm.regs.read(.r1));
 }
@@ -121,7 +121,7 @@ test "sub 0x44 reg,reg" {
     defer vm.deinit();
     vm.regs.write(.r1, 0x100);
     vm.regs.write(.r2, 0x040);
-    loadProgram(&vm, &.{ 0x44, 0x02, 0x03 }); // sub r1, r2
+    loadProgram(&vm, &.{ 0x44, 0x03, 0x02 }); // sub r2, r1 → r1 -= r2 (src, dst)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x0C0), vm.regs.read(.r1));
 }
@@ -169,7 +169,7 @@ test "mul 0x47 reg,reg" {
     defer vm.deinit();
     vm.regs.write(.r1, 0x100);
     vm.regs.write(.r2, 0x20);
-    loadProgram(&vm, &.{ 0x47, 0x02, 0x03 }); // mul r1 × r2
+    loadProgram(&vm, &.{ 0x47, 0x03, 0x02 }); // mul r2, r1 → r1 *= r2 (src, dst)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x2000), vm.regs.read(.r1));
     try std.testing.expectEqual(@as(u16, 0x0000), vm.regs.read(.acu));
@@ -281,7 +281,7 @@ test "div 0x4C reg,reg" {
     vm.regs.write(.acu, 0);
     vm.regs.write(.r1, 100);
     vm.regs.write(.r2, 7);
-    loadProgram(&vm, &.{ 0x4C, 0x02, 0x03 });
+    loadProgram(&vm, &.{ 0x4C, 0x03, 0x02 }); // div r2, r1 — divisor=r2, dividend=acu:r1
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 14), vm.regs.read(.r1));
     try std.testing.expectEqual(@as(u16, 2), vm.regs.read(.acu));
@@ -307,7 +307,7 @@ test "divs 0x4E reg,reg" {
     vm.regs.write(.acu, 0xFFFF);
     vm.regs.write(.r1, 0xFFF6);
     vm.regs.write(.r2, 3);
-    loadProgram(&vm, &.{ 0x4E, 0x02, 0x03 });
+    loadProgram(&vm, &.{ 0x4E, 0x03, 0x02 }); // divs r2, r1 (src, dst)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0xFFFD), vm.regs.read(.r1)); // -3
 }
@@ -365,7 +365,7 @@ test "adc 0x65 reg,reg with carry-in" {
     vm.regs.write(.r1, 0x10);
     vm.regs.write(.r2, 0x05);
     vm.regs.setFlag(.carry, true);
-    loadProgram(&vm, &.{ 0x65, 0x02, 0x03 }); // adc r1, r2 (with C=1)
+    loadProgram(&vm, &.{ 0x65, 0x03, 0x02 }); // adc r2, r1 (src, dst — with C=1)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x16), vm.regs.read(.r1));
 }
@@ -393,7 +393,7 @@ test "sbc 0x67 reg,reg with borrow-in" {
     vm.regs.write(.r1, 0x10);
     vm.regs.write(.r2, 0x05);
     vm.regs.setFlag(.carry, true);
-    loadProgram(&vm, &.{ 0x67, 0x02, 0x03 }); // sbc r1, r2 (with C=1)
+    loadProgram(&vm, &.{ 0x67, 0x03, 0x02 }); // sbc r2, r1 (src, dst — with C=1)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x0A), vm.regs.read(.r1));
 }
@@ -405,7 +405,7 @@ test "arith: invalid register on add raises invalid-register fault" {
     defer vm.deinit();
     vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
 
-    loadProgram(&vm, &.{ 0x41, 0x02, 0xFF }); // add r1, <out-of-range>
+    loadProgram(&vm, &.{ 0x41, 0x02, 0xFF }); // add r1, <out-of-range> (dst invalid)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }

@@ -208,8 +208,8 @@ test "dispatch: step auto-advances ip by instruction size" {
     // mov instead: 0x11 mov reg, reg is 3 bytes total.
     vm.regs.write(.ip, 0x1100);
     vm.mmap.writeByte(0x1100, 0x11);
-    vm.mmap.writeByte(0x1101, 0x02); // dst = r1
-    vm.mmap.writeByte(0x1102, 0x03); // src = r2
+    vm.mmap.writeByte(0x1101, 0x03); // src = r2
+    vm.mmap.writeByte(0x1102, 0x02); // dst = r1
     vm.regs.write(.r2, 0xBEEF);
 
     try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));

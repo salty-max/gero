@@ -22,11 +22,11 @@ pub fn movImm16Reg(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x11` — `mov Reg, Reg` → `dst ← src` (Intel order: dst first).
+/// `0x11` — `mov Reg, Reg` → `dst ← src` (asm: `mov src, dst`).
 pub fn movRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const value = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     if (!vm.regs.writeByIndex(dst, value)) return fault(vm, .invalid_register);
     return ok;

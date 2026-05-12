@@ -49,7 +49,8 @@ test "codegen: mov imm16, reg → 0x10 LE imm reg" {
     try std.testing.expectEqualSlices(u8, &.{ 0x10, 0xCD, 0xAB, 0x02 }, out.imageBody());
 }
 
-test "codegen: mov reg, reg → 0x11 dst src" {
+test "codegen: mov reg, reg → 0x11 src dst (src first per asm convention)" {
+    // `mov r1, r2` is read as src=r1, dst=r2 — r2 ← r1.
     var out = try assemble("mov r1, r2\n", .{});
     defer out.deinit();
     try std.testing.expectEqualSlices(u8, &.{ 0x11, 0x02, 0x03 }, out.imageBody());
