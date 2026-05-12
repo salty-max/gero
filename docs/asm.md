@@ -514,17 +514,87 @@ directive (§2.2).
 
 ## 5. Banking
 
-Banked programs need two assembler features beyond v0.1's flat output:
+Banked programs use two directives:
 
-- `bank N` — declares that the following statements emit into bank
-  number `N` (rather than the base image)
-- `bank_call`, `bank_jump` — pseudo-instructions that wrap
-  `mov $N, mb; call addr` (or jmp) for cross-bank calls
+- `bank N` — sticky directive. Every subsequent statement is
+  emitted into bank slot `N` (0-based) until the next `bank`
+  directive or EOF. Bank slots are accessed at runtime by setting
+  the `mb` register: `mov $N, mb` makes the bank window at
+  `$C000..$FEFF` mirror bank `N`.
+- `sram_banks N` — declares N battery-backed SRAM banks per ISA
+  §5. SRAM banks are the **last** `N` of the cart's banks (they
+  share the slot space with ROM banks; the loader treats the
+  trailing N as SRAM). The host persists their contents via
+  `int $21` and restores them at boot if a matching `.sav` file
+  exists.
 
-These are **not in v0.1**. Until they land, banked carts must be
-hand-stitched (assemble each bank as a separate file, concatenate at
-the cart-build step). A future asm version will introduce them as the
-lang compiler exercises the multi-bank path.
+Both directives accept a hex literal: `bank $01`, `sram_banks $02`.
+Decimal isn't part of v0.1 (asm spec §1.4).
+
+### Layout
+
+Each bank's content lives at CPU addresses `$C000..$FEFF` when the
+window is mapped to it. Labels declared inside `bank N` resolve to
+their bank-window address, so `call <label>` and `jmp <label>`
+target the right CPU address — provided `mb` is set to `N` first.
+
+```asm
+main:                          ; base image — RAM 0x0000+
+  mov $00, mb                  ; window now mirrors bank 0
+  call greet                   ; greet is at $C000
+  hlt
+
+bank $00
+greet:                         ; bank 0, offset 0 → CPU $C000
+  mov 'H', r1
+  int $10
+  ret
+```
+
+### Multi-file convention
+
+The `bank N` directive is sticky, so its effect persists across
+file boundaries (an `include`d file that ends in `bank $01` leaves
+the includer in bank 1 too). The recommended layout for non-trivial
+carts is **one file per bank**, with the bank includes at the
+**bottom** of the root file:
+
+```
+src/
+├── main.gas         # base image — must come BEFORE the bank includes
+├── bank0_audio.gas  # opens with `bank $00`
+└── bank1_sprites.gas# opens with `bank $01`
+```
+
+```asm
+; main.gas
+
+main:
+  ; ... base-image code ...
+  hlt
+
+; Bank includes after the base-image hlt — the sticky `bank N`
+; directives inside each include don't bleed back into main.
+include "bank0_audio.gas"
+include "bank1_sprites.gas"
+```
+
+See `examples/asm/banks/` for a working three-file demo.
+
+### Cross-bank calls
+
+A cross-bank call is two instructions: switch `mb`, then call /
+jmp. The asm has no sugar for this in v0.1 — write the pair
+explicitly:
+
+```asm
+mov $01, mb
+call <label_in_bank_1>
+```
+
+A `bank_call` / `bank_jump` pseudo-instruction that desugars to
+this pair is a candidate for a future asm minor release (the parser
+would need to know which bank `<label>` lives in).
 
 ---
 
@@ -536,7 +606,6 @@ asm minor releases as the VM and lang compilers exercise the gaps.
 
 | Feature | Why |
 |---------|-----|
-| `bank N` | Bank-aware emit for the multi-bank cart workflow. |
 | `bank_call` / `bank_jump` | Sugar for cross-bank calls. |
 | Macros | Parametric pseudo-instructions (`def macro NAME(args) { ... }`). |
 | Export / import markers | Only relevant if a linker model lands later. v0.1 uses textual `include` with a single global namespace (6502 / z80 tradition). |

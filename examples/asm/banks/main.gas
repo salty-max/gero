@@ -1,0 +1,35 @@
+; banks/main.gas — base image entry point that calls into bank 0
+; and bank 1, demonstrating cross-bank calls via the `mb` register.
+;
+; Run:
+;   gero asm examples/asm/banks/main.gas -o examples/asm/banks/
+;   gero run examples/asm/banks/main.gx
+;
+; Expected stdout: "Hi!\n"
+;   'H' from bank 0, 'i' from bank 1, '!' from the base image.
+;
+; Convention: includes for bank files live at the BOTTOM of the
+; root file. The `bank N` directive is sticky (per asm.md §5), so
+; an included file that opens with `bank $00` would route every
+; statement after the include into bank 0 — including the
+; root's own code. Putting the bank includes after the base
+; image's `hlt` keeps the root in the base segment.
+
+main:
+  ; Print 'H' from bank 0.
+  mov $00, mb            ; window now mirrors bank 0
+  call greet             ; bank 0 routine — prints 'H'
+
+  ; Print 'i' from bank 1.
+  mov $01, mb            ; window now mirrors bank 1
+  call excite            ; bank 1 routine — prints 'i'
+
+  ; Back to base image — print '!' and newline.
+  mov '!', r1
+  int $10
+  mov $0A, r1
+  int $10
+  hlt
+
+include "bank0_greet.gas"
+include "bank1_excite.gas"

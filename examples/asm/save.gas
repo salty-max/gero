@@ -1,0 +1,44 @@
+; save.gas — write "SAV" into SRAM, flush via `int $21`, then halt.
+;
+; SRAM convention per ISA §5: the LAST `sram_bank_count` banks
+; are battery-backed. With `sram_banks $01` and one bank (bank 0)
+; declared, bank 0 IS the SRAM bank.
+;
+; Run:
+;   gero asm save.gas
+;   gero run save.gx
+;
+;   → stdout: "OK\n"
+;   → save.sav: 16 KB file, first 3 bytes are 'S' 'A' 'V', rest zeros.
+;
+; Re-running picks the .sav back up automatically (the host
+; restores SRAM at boot if a matching .sav exists).
+
+sram_banks $01
+
+main:
+  mov $00, mb                 ; window mirrors bank 0 (the SRAM bank)
+
+  ; Write the 3-byte tag into SRAM at &C000..&C002.
+  mov 'S', r1
+  mov r1, &C000
+  mov 'A', r1
+  mov r1, &C001
+  mov 'V', r1
+  mov r1, &C002
+
+  ; Tell the host to persist SRAM to disk.
+  int $21
+
+  ; Confirm to stdout.
+  mov 'O', r1
+  int $10
+  mov 'K', r1
+  int $10
+  mov $0A, r1
+  int $10
+  hlt
+
+; Empty bank 0 — exists only so the cart has one bank slot
+; (the one we just wrote into through the window).
+bank $00

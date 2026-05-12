@@ -1,0 +1,12 @@
+; bank 0 — the `greet` routine prints 'H'.
+;
+; Lives at CPU address $C000 when mb = $00. Sticky `bank $00`
+; directive routes every subsequent statement (until EOF or the
+; next `bank` directive) into bank 0's segment of the cart.
+
+bank $00
+
+greet:
+  mov 'H', r1
+  int $10
+  ret

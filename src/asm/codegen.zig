@@ -73,28 +73,37 @@ pub fn assemble(
     errdefer errors.deinit(allocator);
 
     // Pass 1: layout. Walk statements, compute sizes, populate
-    // symbol addresses. The emit cursor tracks where the next
-    // byte will land.
-    var image_size: u32 = 0;
-    try layoutPass(&symbols, &errors, source, tree, &image_size);
+    // symbol addresses. Tracks one cursor per bank (base + 1..N)
+    // and the highest bank index seen so the header gets it right.
+    var layout: Layout = .{
+        .base_size = 0,
+        .bank_sizes = std.AutoHashMap(u8, u32).init(allocator),
+        .max_bank = null,
+        .sram_banks = 0,
+    };
+    defer layout.bank_sizes.deinit();
+    try layoutPass(&symbols, &errors, source, tree, &layout);
 
-    // Pass 2: emit. Project the populated symbol table down to a
-    // ConstantTable so the expression evaluator can resolve every
-    // symbol reference. Walk statements again, emit each byte.
-    var image_buf: std.ArrayList(u8) = .empty;
-    errdefer image_buf.deinit(allocator);
+    // Pass 2: emit. Per-bank buffers; the same `current_bank` state
+    // walks alongside the layout state.
+    var emit: Emit = .{
+        .base = .empty,
+        .banks = std.AutoHashMap(u8, std.ArrayList(u8)).init(allocator),
+    };
+    defer {
+        emit.base.deinit(allocator);
+        var it = emit.banks.valueIterator();
+        while (it.next()) |v| v.deinit(allocator);
+        emit.banks.deinit();
+    }
 
     var resolved_consts = try symbols.toConstantTable();
     defer resolved_consts.deinit();
 
-    try emitPass(allocator, &image_buf, &errors, source, tree, resolved_consts, &symbols, image_size);
+    try emitPass(allocator, &emit, &errors, source, tree, resolved_consts, &symbols, &layout);
 
-    // Prepend the .gx header per ISA §7.1. Resolve the entry
-    // point: explicit option wins; otherwise prefer a `main:`
-    // label if present, else default to `0x0000`.
-    const image_bytes = try image_buf.toOwnedSlice(allocator);
-    errdefer allocator.free(image_bytes);
-
+    // Resolve the entry point: explicit option wins; otherwise
+    // prefer a `main:` label, else default to `0x0000`.
     const resolved_entry: u16 = opts.entry_point orelse blk: {
         if (symbols.get("main")) |sym| {
             if (sym.kind == .label) break :blk sym.value;
@@ -102,8 +111,7 @@ pub fn assemble(
         break :blk 0x0000;
     };
 
-    const final = try buildArchive(allocator, image_bytes, resolved_entry);
-    allocator.free(image_bytes);
+    const final = try buildArchive(allocator, &emit, &layout, resolved_entry);
 
     return .{
         .image = final,
@@ -111,6 +119,70 @@ pub fn assemble(
         .errors = try errors.toOwnedSlice(allocator),
         .allocator = allocator,
     };
+}
+
+// ---------- bank state ----------
+
+/// Per-bank tracking shared by layout + emit. `base_size` is the
+/// final size of the base image (the implicit no-bank-declared
+/// region); `bank_sizes[N]` is the final size of bank slot N
+/// (0-based, accessed at runtime by `mb = N`). `max_bank == null`
+/// means no `bank N` directive was seen; otherwise it's the
+/// highest 0-based slot index declared. `sram_banks` is the
+/// latest `sram_banks N` value.
+const Layout = struct {
+    base_size: u32,
+    bank_sizes: std.AutoHashMap(u8, u32),
+    max_bank: ?u8,
+    sram_banks: u8,
+};
+
+/// Per-bank emit buffers. Base image lives outside the banks
+/// hashmap; banks 0..max_bank live inside it. Each bank holds
+/// 15.75 KB usable per ISA §5 (padded to 16 KB on disk).
+const Emit = struct {
+    base: std.ArrayList(u8),
+    banks: std.AutoHashMap(u8, std.ArrayList(u8)),
+};
+
+/// Bank window base address per ISA §5 — banked content is
+/// addressed in CPU space at `0xC000 + offset_in_bank`.
+const bank_window_base: u16 = 0xC000;
+
+/// 16 KB per bank on disk, per ISA §7.1.
+const bank_disk_size: u32 = 0x4000;
+
+/// Return the CPU address corresponding to `offset` within
+/// `bank` — base image stays at `offset` (low RAM), banks shift
+/// into the 0xC000 window.
+fn bankAddr(bank: ?u8, offset: u32) u16 {
+    // safety: base image bounded at 64 KiB; bank offsets at
+    //         15.75 KiB — the u16 cast never truncates.
+    if (bank == null) return @intCast(offset);
+    // @as: same bound — bank offset fits u16 (window is 15.75 KiB).
+    return bank_window_base +% @as(u16, @intCast(offset));
+}
+
+/// Get the layout cursor for the current `bank`. Auto-initialized
+/// to 0 the first time a bank is touched.
+fn layoutCursor(layout: *Layout, bank: ?u8) !*u32 {
+    if (bank) |b| {
+        const entry = try layout.bank_sizes.getOrPut(b);
+        if (!entry.found_existing) entry.value_ptr.* = 0;
+        return entry.value_ptr;
+    }
+    return &layout.base_size;
+}
+
+/// Get (or create) the emit buffer for the current `bank`.
+fn emitBuffer(allocator: std.mem.Allocator, emit: *Emit, bank: ?u8) !*std.ArrayList(u8) {
+    _ = allocator; // present for symmetry — list ops take allocator on use
+    if (bank) |b| {
+        const entry = try emit.banks.getOrPut(b);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        return entry.value_ptr;
+    }
+    return &emit.base;
 }
 
 // ---------- operand classification ----------
@@ -202,17 +274,16 @@ fn layoutPass(
     errors: *std.ArrayList(include.Diagnostic),
     source: []const u8,
     tree: parser_mod.ParseTree,
-    out_image_size: *u32,
+    layout: *Layout,
 ) !void {
-    var cursor: u32 = 0;
+    var current_bank: ?u8 = null;
     var parent_label: ?[]const u8 = null;
     for (tree.program.statements) |stmt| {
+        const cursor_ptr = try layoutCursor(layout, current_bank);
         switch (stmt) {
             .label => |l| {
                 const name = source[l.name.start..l.name.end];
-                // safety: cursor is bounded by max u16 image (the
-                //         ISA caps at 64k) — cast won't truncate.
-                const addr: u16 = @intCast(cursor);
+                const addr: u16 = bankAddr(current_bank, cursor_ptr.*);
                 if (name.len > 0 and name[0] == '.') {
                     // Local label: register as `parent.name`.
                     if (parent_label) |p| {
@@ -282,7 +353,7 @@ fn layoutPass(
             },
             .data8, .data16 => |d| {
                 const name = source[d.name.start..d.name.end];
-                const addr: u16 = @intCast(cursor);
+                const addr: u16 = bankAddr(current_bank, cursor_ptr.*);
                 symbols.putBorrowed(name, .{ .kind = .data, .value = addr }) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.Duplicate => try errors.append(symbols.allocator, .{
@@ -296,7 +367,7 @@ fn layoutPass(
                     }),
                 };
                 const word_size: u32 = if (stmt == .data8) 1 else 2;
-                cursor += try sizeOfDataValues(d.values, word_size, source, symbols, errors);
+                cursor_ptr.* += try sizeOfDataValues(d.values, word_size, source, symbols, errors);
             },
             .struct_decl => |sd| {
                 const struct_name = source[sd.name.start..sd.name.end];
@@ -309,7 +380,11 @@ fn layoutPass(
             },
             .org => |o| {
                 if (o.addr) |target| {
-                    if (target < cursor) {
+                    // `org` addresses are CPU-space; convert back
+                    // to a bank-local offset before comparing.
+                    const base = bankAddr(current_bank, 0);
+                    const target_offset: u32 = if (target >= base) target - base else 0;
+                    if (target_offset < cursor_ptr.*) {
                         try errors.append(symbols.allocator, .{
                             .code = .backward_org,
                             .parse_error = core.parseError(
@@ -320,18 +395,30 @@ fn layoutPass(
                             ),
                         });
                     } else {
-                        cursor = target;
+                        cursor_ptr.* = target_offset;
                     }
                 }
                 // If `o.addr` is null the parser already emitted
                 // a diagnostic. Leave the cursor alone.
+            },
+            .bank_switch => |b| {
+                if (b.index) |idx| {
+                    current_bank = idx;
+                    if (layout.max_bank == null or idx > layout.max_bank.?) layout.max_bank = idx;
+                    // Touch the cursor entry so the bank slot exists
+                    // even if no bytes get emitted into it.
+                    _ = try layoutCursor(layout, idx);
+                }
+            },
+            .sram_banks_decl => |s| {
+                if (s.count) |n| layout.sram_banks = n;
             },
             .instruction => |i| {
                 const mnem = source[i.mnemonic.start..i.mnemonic.end];
                 var kinds: [3]opres.Kind = undefined;
                 for (i.operands, 0..) |op, idx| kinds[idx] = classifyForLayout(op, source, symbols.*, parent_label, symbols.allocator);
                 if (opres.resolve(mnem, kinds[0..i.operands.len])) |res| {
-                    cursor += res.size;
+                    cursor_ptr.* += res.size;
                 } else {
                     // Unknown mnemonic OR operand-shape mismatch.
                     const known = opres.isKnownMnemonic(mnem);
@@ -347,13 +434,12 @@ fn layoutPass(
                     });
                     // Best-effort cursor advance to keep subsequent
                     // statements roughly aligned for layout.
-                    cursor += 1;
+                    cursor_ptr.* += 1;
                 }
             },
             .unknown => {},
         }
     }
-    out_image_size.* = cursor;
 }
 
 fn sizeOfDataValues(
@@ -411,48 +497,55 @@ fn decodedStringLen(raw: []const u8) usize {
 
 fn emitPass(
     allocator: std.mem.Allocator,
-    image: *std.ArrayList(u8),
+    emit: *Emit,
     errors: *std.ArrayList(include.Diagnostic),
     source: []const u8,
     tree: parser_mod.ParseTree,
     consts: expr.ConstantTable,
     symbols: *const symtab.SymbolTable,
-    image_size: u32,
+    layout: *const Layout,
 ) !void {
-    var cursor: u32 = 0;
+    var current_bank: ?u8 = null;
     var parent_label: ?[]const u8 = null;
     for (tree.program.statements) |stmt| {
+        const image = try emitBuffer(allocator, emit, current_bank);
         switch (stmt) {
             .label => |l| {
                 const name = source[l.name.start..l.name.end];
                 if (name.len == 0 or name[0] != '.') parent_label = name;
             },
-            .const_decl, .struct_decl, .unknown => {},
+            .const_decl, .struct_decl, .sram_banks_decl, .unknown => {},
+            .bank_switch => |b| {
+                if (b.index) |idx| current_bank = idx;
+            },
             .data8, .data16 => |d| {
                 const word_size: u32 = if (stmt == .data8) 1 else 2;
                 try emitDataValues(allocator, image, errors, source, d.values, word_size, consts, symbols);
-                cursor = @intCast(image.items.len);
             },
             .org => |o| {
                 if (o.addr) |target| {
-                    if (target >= cursor) {
-                        // Pad gap with zeros.
-                        while (cursor < target) : (cursor += 1) {
-                            try image.append(allocator, 0);
-                        }
+                    const base = bankAddr(current_bank, 0);
+                    const target_offset: u32 = if (target >= base) target - base else 0;
+                    while (image.items.len < target_offset) {
+                        try image.append(allocator, 0);
                     }
                     // Backward case already diagnosed in pass 1.
                 }
             },
             .instruction => |i| {
                 try emitInstruction(allocator, image, errors, source, i, consts, symbols, parent_label);
-                cursor = @intCast(image.items.len);
             },
         }
     }
-    // Ensure the image is at least `image_size` bytes (pass 1's
-    // layout target). Final pad if needed.
-    while (image.items.len < image_size) try image.append(allocator, 0);
+    // Pad each bank up to its layout-pass target (covers any
+    // forward-`org` padding that didn't trigger from data/instr).
+    const base_target = layout.base_size;
+    while (emit.base.items.len < base_target) try emit.base.append(allocator, 0);
+    var it = emit.banks.iterator();
+    while (it.next()) |entry| {
+        const target = layout.bank_sizes.get(entry.key_ptr.*) orelse 0;
+        while (entry.value_ptr.items.len < target) try entry.value_ptr.append(allocator, 0);
+    }
 }
 
 fn emitDataValues(
@@ -761,33 +854,69 @@ fn emitCast(
 /// Magic bytes at the start of a `.gx` file — "GERO" in ASCII.
 const gx_magic = [4]u8{ 'G', 'E', 'R', 'O' };
 
-fn buildArchive(allocator: std.mem.Allocator, image_bytes: []const u8, entry_point: u16) ![]u8 {
+fn buildArchive(allocator: std.mem.Allocator, emit: *const Emit, layout: *const Layout, entry_point: u16) ![]u8 {
     // Header layout per ISA §7.1:
     //   0x00..0x04  magic = "GERO"
     //   0x04..0x06  u16le version = 0x0001
     //   0x06..0x08  u16le flags
     //   0x08..0x0A  u16le entry_point
-    //   0x0A..0x0C  u16le image_size
+    //   0x0A..0x0C  u16le image_size      (base image only)
     //   0x0C        u8 bank_count
     //   0x0D        u8 sram_bank_count
     //   0x0E..0x10  reserved (must be 0)
+    //
+    // Archive body per ISA §7.1:
+    //   header + base_image + (bank_count × bank_disk_size)
+    //
+    // SRAM banks are NOT emitted — they're zero-init at boot.
     const header_size: usize = 16;
-    const total = header_size + image_bytes.len;
+    const base_len = emit.base.items.len;
+
+    // 0-based banks: bank_count = max_bank + 1 when any bank was
+    // declared, else 0.
+    // @as: widen u8 to u16 so the `+ 1` for a max-index of 255 fits.
+    const bank_count: u16 = if (layout.max_bank) |m| @as(u16, m) + 1 else 0;
+    // @as: widen u16 / u32 to usize for the byte-count math (max 256 × 16 KiB = 4 MiB).
+    const banked_bytes: usize = @as(usize, bank_count) * @as(usize, bank_disk_size);
+    const total = header_size + base_len + banked_bytes;
     var out = try allocator.alloc(u8, total);
+
+    // Flag bit 0 (banked) — set whenever the cart has at least
+    // one bank. The loader uses this to know whether to slice the
+    // bank region from the archive.
+    const flag_banked: u16 = 0x0001;
+    const flags: u16 = if (bank_count > 0) flag_banked else 0;
 
     @memcpy(out[0..4], &gx_magic);
     writeU16Le(out[4..6], 0x0001); // version
-    writeU16Le(out[6..8], 0x0000); // flags
+    writeU16Le(out[6..8], flags);
     writeU16Le(out[8..10], entry_point);
-    // safety: image_size capped at 64 KiB by the ISA's 16-bit
-    //         address space; cart code larger than that needs
-    //         banking, which is a v0.1 follow-up.
-    writeU16Le(out[10..12], @intCast(image_bytes.len));
-    out[12] = 0; // bank_count
-    out[13] = 0; // sram_bank_count
+    // safety: base image capped at 64 KiB by the ISA's 16-bit
+    //         address space; banks live in their own segment.
+    writeU16Le(out[10..12], @intCast(base_len));
+    // safety: bank_count <= 256 by construction (u8 input + at most +1).
+    out[12] = @intCast(bank_count);
+    out[13] = layout.sram_banks;
     writeU16Le(out[14..16], 0); // reserved
 
-    @memcpy(out[header_size..], image_bytes);
+    // Base image.
+    @memcpy(out[header_size..][0..base_len], emit.base.items);
+
+    // Banks 0..max_bank: 16 KB each, zero-padded if the program
+    // didn't fill the whole window. Gaps (banks the user skipped)
+    // are also zeros.
+    var cursor: usize = header_size + base_len;
+    var bank: u8 = 0;
+    while (bank < bank_count) : (bank += 1) {
+        const dst = out[cursor..][0..bank_disk_size];
+        @memset(dst, 0);
+        if (emit.banks.get(bank)) |b| {
+            const n = @min(b.items.len, bank_disk_size);
+            @memcpy(dst[0..n], b.items[0..n]);
+        }
+        cursor += bank_disk_size;
+    }
+
     return out;
 }
 

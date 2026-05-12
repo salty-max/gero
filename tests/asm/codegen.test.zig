@@ -299,6 +299,80 @@ test "codegen: backward org raises E014-shape" {
 
 // ---------- header ----------
 
+// ---------- bank / sram directives (issue #96) ----------
+
+test "codegen: no bank directive → header bank_count = 0, no banked flag" {
+    var out = try assemble("hlt\n", .{});
+    defer out.deinit();
+    // bank_count byte
+    try std.testing.expectEqual(@as(u8, 0), out.cg.image[0x0C]);
+    // flags low byte — bit 0 = banked → must be 0
+    try std.testing.expectEqual(@as(u8, 0), out.cg.image[6] & 0x01);
+}
+
+test "codegen: bank $00 emits 1 banked slot + sets banked flag" {
+    var out = try assemble(
+        \\main:
+        \\  hlt
+        \\bank $00
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expectEqual(@as(u8, 1), out.cg.image[0x0C]); // bank_count
+    try std.testing.expect((out.cg.image[6] & 0x01) != 0); // banked flag set
+    // Archive: 16 (header) + base + 16 KB bank = 16 + N + 16384
+    // The base is `hlt` = 1 byte → total = 16401.
+    try std.testing.expectEqual(@as(usize, 16 + 1 + 0x4000), out.cg.image.len);
+}
+
+test "codegen: highest bank index drives bank_count (gaps zero-filled)" {
+    var out = try assemble(
+        \\main:
+        \\  hlt
+        \\bank $02
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    // max_bank = 2 → bank_count = 3 (banks 0, 1, 2 — 0 and 1 are zeros)
+    try std.testing.expectEqual(@as(u8, 3), out.cg.image[0x0C]);
+    try std.testing.expectEqual(@as(usize, 16 + 1 + 3 * 0x4000), out.cg.image.len);
+}
+
+test "codegen: sram_banks N populates the header byte" {
+    var out = try assemble(
+        \\sram_banks $02
+        \\bank $00
+        \\  hlt
+        \\bank $01
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expectEqual(@as(u8, 2), out.cg.image[0x0D]); // sram_bank_count
+    try std.testing.expectEqual(@as(u8, 2), out.cg.image[0x0C]); // bank_count
+}
+
+test "codegen: labels inside `bank N` resolve to bank-window addresses" {
+    // `call greet` should emit a `call $C000` (the greet label
+    // sits at offset 0 of bank 0 → CPU $C000 when mb = $00).
+    var out = try assemble(
+        \\main:
+        \\  call greet
+        \\  hlt
+        \\bank $00
+        \\greet:
+        \\  ret
+        \\
+    , .{});
+    defer out.deinit();
+    // image[0..3] = call $C000 → 0x80 LE($C000)
+    try std.testing.expectEqual(@as(u8, 0x80), out.cg.image[16]);
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[17]);
+    try std.testing.expectEqual(@as(u8, 0xC0), out.cg.image[18]);
+}
+
 test "codegen: header magic + version + entry_point + image_size" {
     var out = try assemble("hlt\n", .{ .entry_point = 0x1100 });
     defer out.deinit();
