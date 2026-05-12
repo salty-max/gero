@@ -1,0 +1,10 @@
+; bank 1 — the `excite` routine prints 'i'.
+;
+; Lives at CPU address $C000 when mb = $01.
+
+bank $01
+
+excite:
+  mov 'i', r1
+  int $10
+  ret

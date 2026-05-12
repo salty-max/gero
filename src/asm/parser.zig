@@ -128,6 +128,12 @@ fn parseStatement(
     if (consumeKeyword(state, "org")) {
         return parseOrgDecl(state, allocator, stmt_start, statements, errors, consts);
     }
+    if (consumeKeyword(state, "bank")) {
+        return parseBankSwitch(state, allocator, stmt_start, statements, errors, consts);
+    }
+    if (consumeKeyword(state, "sram_banks")) {
+        return parseSramBanksDecl(state, allocator, stmt_start, statements, errors, consts);
+    }
 
     // Label: `ident ":"`. The colon distinguishes a label from an
     // instruction line that happens to start with an identifier.
@@ -708,6 +714,81 @@ fn parseOrgDecl(
     try statements.append(allocator, .{ .org = .{
         .addr_expr = rhs,
         .addr = addr,
+        .span = spanFrom(stmt_start, state.index),
+    } });
+}
+
+// ---------- bank N / sram_banks N ----------
+
+/// Parse a folded u8 immediately following a keyword. Used by
+/// `bank N` and `sram_banks N`. Frees the expression tree before
+/// returning since the value is the only thing the AST needs.
+/// Returns `null` on parse / eval failure (the diagnostic is
+/// already in `errors`).
+fn parseFoldedU8(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+) !?u8 {
+    skipBlanksInLine(state);
+    const rhs = expr.parseExpression(state, allocator, errors) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ParseFailed => return null,
+    };
+    defer ast.freeExpr(allocator, rhs);
+
+    const result = expr.evalExpr(rhs, state.input, consts.*);
+    switch (result) {
+        .ok => |v| {
+            if (v > 0xFF) {
+                try errors.append(allocator, .{
+                    .code = .hex_out_of_range,
+                    .parse_error = core.parseError(
+                        "directive",
+                        rhs.span().start,
+                        "value must fit in u8 (0..255)",
+                        .{ .expected = "u8", .kind = .semantic },
+                    ),
+                });
+                return null;
+            }
+            // @as: bounded by the check above — guaranteed to fit u8.
+            return @as(u8, @intCast(v));
+        },
+        .err => |d| {
+            try errors.append(allocator, d);
+            return null;
+        },
+    }
+}
+
+fn parseBankSwitch(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+) !void {
+    const index = try parseFoldedU8(state, allocator, errors, consts);
+    try statements.append(allocator, .{ .bank_switch = .{
+        .index = index,
+        .span = spanFrom(stmt_start, state.index),
+    } });
+}
+
+fn parseSramBanksDecl(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+) !void {
+    const count = try parseFoldedU8(state, allocator, errors, consts);
+    try statements.append(allocator, .{ .sram_banks_decl = .{
+        .count = count,
         .span = spanFrom(stmt_start, state.index),
     } });
 }

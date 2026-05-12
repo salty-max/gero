@@ -11,6 +11,8 @@ re-runnable as a smoke test for the assembler + VM pipeline.
 | `hello.gas` | `mov8` indexed-load over a NUL-terminated `data8` string + `int $10` print + `hlt` | `Hello, gero!\n` |
 | `counter.gas` | `inc` / `cmp` / `jne` (flag-driven loop), char literals as immediates, imm8 narrowing | `0123456789ABCDEF\n` |
 | `fib.gas` | recursive Fibonacci — `call` / `ret` + stack discipline + `add reg, reg` + hex-digit conversion sub-routine | `37\n` (fib(10) = 55 = `$37`) |
+| `banks/main.gas` | multi-bank cart with cross-bank calls — base image trampolines into bank 0 and bank 1 via `mb` register | `Hi!\n` |
+| `save.gas` | SRAM write + `int $21` flush — produces a 16 KB `.sav` file with `"SAV\0"` at offset 0 | `OK\n` (plus `save.sav` written to disk) |
 
 ## Run one
 
@@ -29,17 +31,6 @@ zig build              # builds zig-out/bin/gero
 
 A clean run produces no diff and exits 0. (`zig build test-examples`
 will land in #48 to bundle this into CI.)
-
-## Deferred examples
-
-Two programs from the original #47 plan are not here yet — the
-assembler doesn't support bank or SRAM emission in v0.1
-(`codegen.zig` hardcodes both header bytes to 0). They land when the
-asm grows those features:
-
-- `banks.gas` — multi-bank program with cross-bank `call`.
-- `save.gas` — write to SRAM + `int $21` flush, demonstrating
-  persistence to a `.sav` file.
 
 ## Operand order
 

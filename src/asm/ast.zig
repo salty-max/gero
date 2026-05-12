@@ -36,6 +36,14 @@ pub const Statement = union(enum) {
     data16: DataDecl,
     struct_decl: StructDecl,
     org: OrgDecl,
+    /// `bank N` — sticky directive switching subsequent emit into
+    /// bank N's segment. `N == 0` is the base image (the default
+    /// before any `bank` directive).
+    bank_switch: BankSwitch,
+    /// `sram_banks N` — declares the number of zero-initialized
+    /// SRAM banks the program needs. Header-only annotation; no
+    /// body emitted.
+    sram_banks_decl: SramBanksDecl,
     instruction: Instruction,
     /// Catch-all for unrecognized lines — carries a span so the
     /// consumer can skip past it cleanly.
@@ -50,6 +58,8 @@ pub const Statement = union(enum) {
             .data16 => |d| d.span,
             .struct_decl => |s| s.span,
             .org => |o| o.span,
+            .bank_switch => |b| b.span,
+            .sram_banks_decl => |s| s.span,
             .instruction => |i| i.span,
             .unknown => |u| u.span,
         };
@@ -237,6 +247,30 @@ pub const OrgDecl = struct {
     /// a no-op for the directive.
     addr: ?u16,
     /// Span covering `org <expr>` end-to-end.
+    span: Span,
+};
+
+/// `bank N` — sticky directive switching subsequent emission into
+/// bank N. `N == 0` is the base image; `N >= 1` is a banked
+/// segment that lives after the base image in the `.gx` archive.
+/// Codegen tracks the highest bank index seen to populate the
+/// header's `bank_count`.
+pub const BankSwitch = struct {
+    /// Folded bank index (u8 per ISA §7.1). `null` if the RHS
+    /// expression failed to evaluate.
+    index: ?u8,
+    /// Span covering `bank <expr>` end-to-end.
+    span: Span,
+};
+
+/// `sram_banks N` — declares N battery-backed SRAM banks for the
+/// program. Header-only; no bytes are emitted for SRAM since it's
+/// zero-init at boot (or restored from a `.sav` file).
+pub const SramBanksDecl = struct {
+    /// Folded SRAM bank count (u8 per ISA §7.1). `null` if eval
+    /// failed.
+    count: ?u8,
+    /// Span covering `sram_banks <expr>` end-to-end.
     span: Span,
 };
 
