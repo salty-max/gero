@@ -54,6 +54,18 @@ pub const parse = parser.parse;
 pub const Expr = ast_mod.Expr;
 /// Re-export: const declaration AST shape.
 pub const ConstDecl = ast_mod.ConstDecl;
+/// Re-export: data8/data16 declaration AST shape (shared between both).
+pub const DataDecl = ast_mod.DataDecl;
+/// Re-export: one entry in a data8/data16 value list.
+pub const DataValue = ast_mod.DataValue;
+/// Re-export: address literal `&FFFF`.
+pub const AddrLit = ast_mod.AddrLit;
+/// Re-export: symbol reference `@sym`.
+pub const SymRef = ast_mod.SymRef;
+/// Re-export: string literal `"..."` (data8 only).
+pub const StringLit = ast_mod.StringLit;
+/// Re-export: `reserve N` form.
+pub const ReserveForm = ast_mod.ReserveForm;
 /// Re-export: name → u16 lookup for compile-time constants.
 pub const ConstantTable = expr_mod.ConstantTable;
 /// Re-export: fold an `Expr` tree to a `u16` using a `ConstantTable`.

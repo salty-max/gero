@@ -31,6 +31,8 @@ pub const Span = struct {
 pub const Statement = union(enum) {
     label: Label,
     const_decl: ConstDecl,
+    data8: DataDecl,
+    data16: DataDecl,
     /// Catch-all for unrecognized lines — carries a span so the
     /// consumer can skip past it cleanly.
     unknown: Unknown,
@@ -40,6 +42,8 @@ pub const Statement = union(enum) {
         return switch (self) {
             .label => |l| l.span,
             .const_decl => |c| c.span,
+            .data8 => |d| d.span,
+            .data16 => |d| d.span,
             .unknown => |u| u.span,
         };
     }
@@ -70,6 +74,91 @@ pub const ConstDecl = struct {
     /// RHS expression tree, owned by the program allocator.
     expr: *Expr,
     /// Span covering `const NAME = expr` end-to-end.
+    span: Span,
+};
+
+/// `data8 NAME = value, ...` / `data16 NAME = value, ...` —
+/// emits a labeled byte (or LE word) sequence at the current
+/// emit position. The kind (data8 vs data16) lives in the
+/// `Statement` variant, so this struct is shared between both.
+pub const DataDecl = struct {
+    /// Span of the identifier being bound (without the directive
+    /// keyword or the `=`).
+    name: Span,
+    /// Comma-separated value list, in source order. Owned by the
+    /// program allocator (each entry may carry an owned `*Expr`
+    /// sub-tree).
+    values: []DataValue,
+    /// Span covering `<kw> NAME = v1, v2, ...` end-to-end.
+    span: Span,
+};
+
+/// One entry in a `data8` / `data16` value list. Per asm spec
+/// §2.2 the form can be one of:
+///
+/// - hex literal, char literal, or parenthesized expression —
+///   captured as `.expr` (the general compile-time-u16 case)
+/// - address literal `&FFFF` — `.addr_lit`
+/// - `@`-prefixed symbol reference — `.sym_ref`
+/// - string literal `"..."` — `.string` (data8 only; the parser
+///   rejects strings inside `data16`)
+/// - `reserve N` — `.reserve` (emits N zero units; N is itself
+///   an expression)
+pub const DataValue = union(enum) {
+    expr: ExprValue,
+    addr_lit: AddrLit,
+    sym_ref: SymRef,
+    string: StringLit,
+    reserve: ReserveForm,
+
+    /// Smallest `Span` covering the value's source bytes.
+    pub fn span(self: DataValue) Span {
+        return switch (self) {
+            .expr => |e| e.span,
+            .addr_lit => |a| a.span,
+            .sym_ref => |s| s.span,
+            .string => |s| s.span,
+            .reserve => |r| r.span,
+        };
+    }
+};
+
+/// Pre-parsed expression value wrapped to keep the union flat.
+pub const ExprValue = struct {
+    expr: *Expr,
+    span: Span,
+};
+
+/// `&FFFF` — already-parsed `u16` address.
+pub const AddrLit = struct {
+    value: u16,
+    span: Span,
+};
+
+/// `@sym` — symbol reference. The actual address gets patched in
+/// during the symbol-resolution pass (#35); for now the parser
+/// just records the lexeme span.
+pub const SymRef = struct {
+    /// Span of the `@sym` token, including the leading `@`.
+    span: Span,
+};
+
+/// `"..."` — string literal. The raw bytes (with escape
+/// sequences) live at `source[span.start + 1 .. span.end - 1]`.
+/// Codegen decodes the escapes per asm spec §1.5.
+pub const StringLit = struct {
+    span: Span,
+};
+
+/// `reserve N` — emits N zero units (bytes in `data8`, LE words
+/// in `data16`). `count_expr` is folded at parse time; the
+/// resulting count is stored alongside for emission convenience.
+pub const ReserveForm = struct {
+    count_expr: *Expr,
+    /// `null` if the count expression failed to evaluate at parse
+    /// time (a diagnostic was emitted). Codegen treats this as a
+    /// no-op for the failed entry.
+    count: ?u16,
     span: Span,
 };
 
@@ -188,11 +277,20 @@ pub const Program = struct {
     allocator: std.mem.Allocator,
 
     /// Release the owned statement list, including any expression
-    /// trees hanging off `const_decl` statements.
+    /// trees hanging off `const_decl` / `data8` / `data16`
+    /// statements.
     pub fn deinit(self: *Program) void {
         for (self.statements) |s| {
             switch (s) {
                 .const_decl => |c| freeExpr(self.allocator, c.expr),
+                .data8, .data16 => |d| {
+                    for (d.values) |v| switch (v) {
+                        .expr => |e| freeExpr(self.allocator, e.expr),
+                        .reserve => |r| freeExpr(self.allocator, r.count_expr),
+                        .addr_lit, .sym_ref, .string => {},
+                    };
+                    self.allocator.free(d.values);
+                },
                 else => {},
             }
         }
