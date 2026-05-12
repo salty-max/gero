@@ -27,11 +27,13 @@ pub fn execute(
     }
     const src_path = positionals[0];
 
+    const t_phase_start_include = std.Io.Timestamp.now(io, .awake);
     var fused = gero.asm_.resolveIncludes(io, arena, src_path) catch |err| {
         try term.err("gero asm: cannot read {s} ({s})", .{ src_path, @errorName(err) });
         return 1;
     };
     defer fused.deinit();
+    const t_after_include = std.Io.Timestamp.now(io, .awake);
 
     // Collect diagnostics across every phase so the user sees the
     // full picture in one run. Include errors that can't be
@@ -51,9 +53,11 @@ pub fn execute(
     // statements still surface in the same run.
     var pt = try gero.asm_.parse(arena, fused.source);
     defer pt.deinit();
+    const t_after_parse = std.Io.Timestamp.now(io, .awake);
 
     var cg = try gero.asm_.assemble(arena, fused.source, pt, .{});
     defer cg.deinit();
+    const t_after_codegen = std.Io.Timestamp.now(io, .awake);
 
     const had_errors = pt.hasErrors() or cg.hasErrors();
     if (had_errors) {
@@ -67,6 +71,7 @@ pub fn execute(
         try term.err("gero asm: cannot write {s} ({s})", .{ out_path, @errorName(err) });
         return 1;
     };
+    const t_after_write = std.Io.Timestamp.now(io, .awake);
 
     if (!opts.quiet) {
         const loaded = gero.vm.parseGx(cg.image) catch unreachable; // allow-strict: codegen just emitted these bytes — they're well-formed by construction
@@ -76,10 +81,39 @@ pub fn execute(
             loaded.header.bank_count,
             if (loaded.header.hasDebugSymbols()) "yes" else "no",
         });
+        if (opts.verbose) {
+            try writePhaseTimings(stdout, style, .{
+                .include = t_phase_start_include.durationTo(t_after_include).nanoseconds,
+                .parse = t_after_include.durationTo(t_after_parse).nanoseconds,
+                .codegen = t_after_parse.durationTo(t_after_codegen).nanoseconds,
+                .write = t_after_codegen.durationTo(t_after_write).nanoseconds,
+            });
+        }
         try writeFooter(stdout, io, style, t_start, .ok);
     }
 
     return 0;
+}
+
+const PhaseTimings = struct {
+    include: i96,
+    parse: i96,
+    codegen: i96,
+    write: i96,
+};
+
+fn writePhaseTimings(stdout: *std.Io.Writer, style: gero.asm_.Style, t: PhaseTimings) !void {
+    const phases = [_]struct { label: []const u8, ns: i96 }{
+        .{ .label = "    include", .ns = t.include },
+        .{ .label = "    parse  ", .ns = t.parse },
+        .{ .label = "    codegen", .ns = t.codegen },
+        .{ .label = "    write  ", .ns = t.write },
+    };
+    for (phases) |p| {
+        try stdout.print("{s}{s}{s} ", .{ style.gutter, p.label, style.reset });
+        try writeDuration(stdout, p.ns);
+        try stdout.writeByte('\n');
+    }
 }
 
 /// Whether `gero asm` produced a `.gx` or bailed on errors.
