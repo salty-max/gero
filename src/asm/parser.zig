@@ -84,6 +84,13 @@ fn cleanupStatements(allocator: std.mem.Allocator, statements: *std.ArrayList(as
         },
         .struct_decl => |sd| allocator.free(sd.fields),
         .org => |o| ast.freeExpr(allocator, o.addr_expr),
+        .instruction => |i| {
+            for (i.operands) |op| switch (op) {
+                .immediate => |e| ast.freeExpr(allocator, e),
+                .register, .indirect, .addr_lit, .sym_ref, .label_ref => {},
+            };
+            allocator.free(i.operands);
+        },
         else => {},
     };
     statements.deinit(allocator);
@@ -122,6 +129,10 @@ fn parseStatement(
     // Label: `ident ":"`. The colon distinguishes a label from an
     // instruction line that happens to start with an identifier.
     if (try tryParseLabel(state, allocator, stmt_start, statements)) return;
+
+    // Instruction: any other identifier in statement position is
+    // a mnemonic followed by zero or more operands.
+    if (try tryParseInstruction(state, allocator, stmt_start, statements, errors)) return;
 
     // Anything else: record the line as an `unknown` statement,
     // emit a diagnostic, and recover to the next newline.
@@ -681,6 +692,247 @@ fn parseOrgDecl(
         .addr = addr,
         .span = spanFrom(stmt_start, state.index),
     } });
+}
+
+// ---------- instructions ----------
+
+/// Register names per ISA §2. Used to disambiguate operand
+/// identifiers (a register name resolves to `.register`, anything
+/// else to `.label_ref`).
+const register_names: [15][]const u8 = .{
+    "ip",  "acu",
+    "r1",  "r2",
+    "r3",  "r4",
+    "r5",  "r6",
+    "r7",  "r8",
+    "sp",  "fp",
+    "mb",  "im",
+    "flg",
+};
+
+fn isRegisterName(name: []const u8) bool {
+    for (register_names) |r| {
+        if (std.mem.eql(u8, r, name)) return true;
+    }
+    return false;
+}
+
+fn tryParseInstruction(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+) !bool {
+    const saved = state.index;
+    skipBlanksInLine(state);
+
+    // Mnemonic must be a bare identifier in statement position.
+    const mnemonic_result = lexer.identP.parseFn(state);
+    if (mnemonic_result != .ok) {
+        state.index = saved;
+        return false;
+    }
+    const mnemonic_token = mnemonic_result.ok.value;
+
+    // Operands. Newline / EOF / `;`-comment ends the operand list.
+    var operands: std.ArrayList(ast.Operand) = .empty;
+    errdefer cleanupOperands(allocator, &operands);
+
+    skipBlanksInLine(state);
+    if (!atStatementEnd(state)) {
+        while (true) {
+            const op = parseOperand(state, allocator, errors) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.ParseFailed => {
+                    cleanupOperands(allocator, &operands);
+                    try recoverToNewline(state);
+                    try statements.append(allocator, .{ .unknown = .{
+                        .span = spanFrom(stmt_start, state.index),
+                    } });
+                    return true;
+                },
+            };
+            try operands.append(allocator, op);
+
+            skipBlanksInLine(state);
+            if (peekByte(state, ',')) {
+                state.advance(1);
+                skipBlanksInLine(state);
+                continue;
+            }
+            break;
+        }
+    }
+
+    const owned = try operands.toOwnedSlice(allocator);
+    try statements.append(allocator, .{ .instruction = .{
+        .mnemonic = ast.Span.fromToken(mnemonic_token),
+        .operands = owned,
+        .span = spanFrom(stmt_start, state.index),
+    } });
+    return true;
+}
+
+/// True if the cursor sits on a statement terminator (newline,
+/// EOF, or a `;`-comment start). Used to recognize zero-operand
+/// instructions like `hlt` without parsing further.
+fn atStatementEnd(state: *core.ParseState) bool {
+    if (state.index >= state.input.len) return true;
+    const b = state.input[state.index];
+    return b == '\n' or b == ';';
+}
+
+fn parseOperand(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    errors: *std.ArrayList(include.Diagnostic),
+) expr.ParseError!ast.Operand {
+    skipBlanksInLine(state);
+    const start = state.index;
+
+    if (state.index >= state.input.len) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected an operand",
+                .{ .expected = "register / immediate / address / label", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+
+    const b = state.input[state.index];
+
+    // `[reg]` — indirect via register.
+    if (b == '[') {
+        state.advance(1);
+        skipBlanksInLine(state);
+        const inner_result = lexer.identP.parseFn(state);
+        if (inner_result != .ok) {
+            try errors.append(state.allocator, .{
+                .parse_error = core.parseError(
+                    "operand",
+                    state.index,
+                    "expected register name inside `[...]`",
+                    .{ .expected = "register", .kind = .syntactic },
+                ),
+            });
+            return error.ParseFailed;
+        }
+        const inner_token = inner_result.ok.value;
+        const inner_lex = state.input[inner_token.start..inner_token.end];
+        if (!isRegisterName(inner_lex)) {
+            try errors.append(state.allocator, .{
+                .parse_error = core.parseError(
+                    "operand",
+                    inner_token.start,
+                    "expected a register name inside `[...]`",
+                    .{ .expected = "register", .actual = inner_lex, .kind = .semantic },
+                ),
+            });
+            return error.ParseFailed;
+        }
+        skipBlanksInLine(state);
+        if (!peekByte(state, ']')) {
+            try errors.append(state.allocator, .{
+                .parse_error = core.parseError(
+                    "operand",
+                    state.index,
+                    "expected `]` to close indirect operand",
+                    .{ .expected = "]", .kind = .syntactic },
+                ),
+            });
+            return error.ParseFailed;
+        }
+        state.advance(1);
+        return .{ .indirect = .{
+            .reg = .{ .span = ast.Span.fromToken(inner_token) },
+            .span = spanFrom(start, state.index),
+        } };
+    }
+
+    // `&FFFF` — address literal. Slice B will add the `&[expr]`
+    // form (form a) here; for now `&` not followed by hex is an
+    // error (the lexer's addrP path produces a structured
+    // refusal we don't try to surface here).
+    if (b == '&') {
+        const r = lexer.addrP.parseFn(state);
+        if (r == .ok) {
+            const tok = r.ok.value;
+            return .{ .addr_lit = .{
+                .value = tok.value,
+                .span = .{ .start = tok.start, .end = tok.end },
+            } };
+        }
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected `&FFFF` address literal (the `&[expr]` form arrives in a later PR)",
+                .{ .expected = "address literal", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+
+    // `@sym` — symbol reference.
+    if (b == '@') {
+        const r = lexer.symRefP.parseFn(state);
+        if (r == .ok) {
+            const tok = r.ok.value;
+            return .{ .sym_ref = .{
+                .span = .{ .start = tok.start, .end = tok.end },
+            } };
+        }
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected `@sym` symbol reference",
+                .{ .expected = "symbol reference", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+
+    // Identifier — either a register name or a label/const reference.
+    if ((b >= 'A' and b <= 'Z') or (b >= 'a' and b <= 'z') or b == '_') {
+        const r = lexer.identP.parseFn(state);
+        if (r != .ok) {
+            try errors.append(state.allocator, .{
+                .parse_error = core.parseError(
+                    "operand",
+                    state.index,
+                    "expected an identifier",
+                    .{ .expected = "register or label name", .kind = .syntactic },
+                ),
+            });
+            return error.ParseFailed;
+        }
+        const tok = r.ok.value;
+        const lex = state.input[tok.start..tok.end];
+        if (isRegisterName(lex)) {
+            return .{ .register = .{ .span = ast.Span.fromToken(tok) } };
+        }
+        return .{ .label_ref = .{ .span = ast.Span.fromToken(tok) } };
+    }
+
+    // Everything else — defer to the expression parser. Hex
+    // literals, char literals, parenthesized expressions, unary
+    // operators all start here. The result is wrapped as an
+    // `immediate` operand.
+    const e = try expr.parseExpression(state, allocator, errors);
+    return .{ .immediate = e };
+}
+
+fn cleanupOperands(allocator: std.mem.Allocator, operands: *std.ArrayList(ast.Operand)) void {
+    for (operands.items) |op| switch (op) {
+        .immediate => |e| ast.freeExpr(allocator, e),
+        .register, .indirect, .addr_lit, .sym_ref, .label_ref => {},
+    };
+    operands.deinit(allocator);
 }
 
 // ---------- unknown / recovery ----------

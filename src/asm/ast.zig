@@ -35,6 +35,7 @@ pub const Statement = union(enum) {
     data16: DataDecl,
     struct_decl: StructDecl,
     org: OrgDecl,
+    instruction: Instruction,
     /// Catch-all for unrecognized lines — carries a span so the
     /// consumer can skip past it cleanly.
     unknown: Unknown,
@@ -48,6 +49,7 @@ pub const Statement = union(enum) {
             .data16 => |d| d.span,
             .struct_decl => |s| s.span,
             .org => |o| o.span,
+            .instruction => |i| i.span,
             .unknown => |u| u.span,
         };
     }
@@ -232,6 +234,79 @@ pub const OrgDecl = struct {
     span: Span,
 };
 
+/// An instruction line — a mnemonic followed by zero or more
+/// operands. Per asm spec §2.3 the assembler picks the right
+/// opcode encoding from the operand types at codegen time
+/// (#36's job). The parser just records the mnemonic name +
+/// operand shapes.
+pub const Instruction = struct {
+    /// Span of the mnemonic identifier (lexeme bytes recover via
+    /// `source[mnemonic.start..mnemonic.end]`).
+    mnemonic: Span,
+    /// Comma-separated operands in source order, owned by the
+    /// program allocator.
+    operands: []Operand,
+    /// Span covering the whole instruction.
+    span: Span,
+};
+
+/// One operand of an instruction. Per asm spec §3, an operand
+/// is one of these shapes. Slice A of the parser covers the
+/// simple forms; the complex address forms (`&[expr]`,
+/// `[addr + reg]` indexed, `<Type> @sym.field` cast) arrive in
+/// slice B.
+pub const Operand = union(enum) {
+    /// A register name (`r1`, `acu`, `sp`, …) — see asm spec §3.1.
+    register: RegisterRef,
+    /// Indirect via register: `[r1]` — see asm spec §3.2.
+    indirect: IndirectReg,
+    /// Immediate value: `$FFFF` / `'A'` / a compile-time
+    /// expression. The evaluator folds it to a `u16` at codegen
+    /// time (or earlier, if the expression contains no forward
+    /// refs).
+    immediate: *Expr,
+    /// `&FFFF` — pre-resolved address literal.
+    addr_lit: AddrLit,
+    /// `@sym` — symbol reference (resolved by #35).
+    sym_ref: SymRef,
+    /// Bare identifier in operand position — refers to a label
+    /// or a `const`. Resolution is the symbol-table pass's job.
+    label_ref: LabelRef,
+
+    /// Smallest `Span` covering the operand.
+    pub fn span(self: Operand) Span {
+        return switch (self) {
+            .register => |r| r.span,
+            .indirect => |i| i.span,
+            .immediate => |e| e.span(),
+            .addr_lit => |a| a.span,
+            .sym_ref => |s| s.span,
+            .label_ref => |l| l.span,
+        };
+    }
+};
+
+/// Register reference (`r1`, `acu`, …). The lexeme bytes recover
+/// the canonical name via `source[span.start..span.end]`. Codegen
+/// maps the name to its register-index byte per ISA §2.
+pub const RegisterRef = struct {
+    span: Span,
+};
+
+/// `[reg]` — indirect via register. The inner register reference
+/// lives in `reg`; `span` covers the brackets too.
+pub const IndirectReg = struct {
+    reg: RegisterRef,
+    span: Span,
+};
+
+/// Bare identifier in operand position — refers to a label
+/// (`jmp loop`) or a previously-defined `const`. The symbol pass
+/// (#35) resolves it; the parser just records the lexeme span.
+pub const LabelRef = struct {
+    span: Span,
+};
+
 /// Compile-time expression — what shows up on the RHS of `const`,
 /// inside `&[ ... ]` address expressions, and as `data8`/`data16`
 /// value-list entries. Walks via `expr.evalExpr` to a `u16` (or
@@ -363,6 +438,13 @@ pub const Program = struct {
                 },
                 .struct_decl => |sd| self.allocator.free(sd.fields),
                 .org => |o| freeExpr(self.allocator, o.addr_expr),
+                .instruction => |i| {
+                    for (i.operands) |op| switch (op) {
+                        .immediate => |e| freeExpr(self.allocator, e),
+                        .register, .indirect, .addr_lit, .sym_ref, .label_ref => {},
+                    };
+                    self.allocator.free(i.operands);
+                },
                 else => {},
             }
         }
