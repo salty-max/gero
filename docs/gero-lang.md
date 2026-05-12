@@ -521,7 +521,7 @@ in the base image (bank-less area before `0xC000`).
 @zero_page
 let cursor_pos: u16 = 0      -- fast access, e.g. updated 60×/sec
 
-@addr $FF00
+@addr $FE40
 let DISPCTL: u8 = 0          -- bound to gtx-16 display-control IO register
 
 @bank 5
@@ -1428,10 +1428,13 @@ Old-school enough — same model NES games used for actor systems.
               ↓
 0x7FFF (or wherever code ends)
 
-0x8000..0xBFFF  VRAM (host-mapped if FC consumer)
+0x8000..0xBFFF  Mapped region A (plain RAM; on gtx-16, carts
+                                  typically store sprite sheets here)
 0xC000..0xFEFF  bank window (compiler emits per-bank if program
                               uses banked modules)
-0xFF00..0xFFFF  IO / peripherals
+0xFE40..0xFEFF  gtx-16 IO surface (display, drawing, audio,
+                                    input — see gtx-16 §14)
+0xFF00..0xFFFF  IO page tail (RNG, timing, KV store, mouse)
 ```
 
 ### 7.3 Banked modules

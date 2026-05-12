@@ -25,7 +25,7 @@ const ENCOUNTER_RATE = 6      -- 6/256 chance per step
 @zero_page                    -- §3.7.1 — fast access for hot global
 let frame_count: u16 = 0
 
-@addr $FF50                   -- §3.7.1 — bound to gtx-16 input register
+@addr $FEE0                   -- §3.7.1 — bound to gtx-16 gamepad input register
 let P1_STATE: u8 = 0
 
 local const SECRET = 42       -- §5.1 — module-private

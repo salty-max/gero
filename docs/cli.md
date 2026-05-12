@@ -102,8 +102,10 @@ gero run game.gx --target=gtx-16   # boot with FC peripherals mapped
 - Default target `vm` runs the bare VM — `print` syscalls go to
   stdout, `int 0x21` (save-flush) writes `<basename>.sav` next to
   the `.gx`.
-- `--target=gtx-16` boots the FC host: opens a 256×192 window,
-  audio channels, gamepad input mapping (keyboard → gamepad on dev).
+- `--target=gtx-16` boots the FC host: opens a 320×240 window
+  (4:3 retro PC), wires up the IO command surface for drawing,
+  8-channel audio, gamepad + keyboard + mouse input. Full spec
+  in `docs/gtx-16.md`.
 
 **Exit:** 0 on `hlt` clean exit; 6 on unhandled fault (invalid
 opcode, /0, etc.); 1 on host-level error (file missing, version
