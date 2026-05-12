@@ -185,3 +185,61 @@ test "parser: consumes the resolveIncludes output for a multi-file program" {
         );
     }
 }
+
+// ---------- const directive ----------
+
+test "parser: 'const X = $05' parses to a const_decl statement" {
+    var pt = try parseSource("const X = $05\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), pt.program.statements.len);
+    switch (pt.program.statements[0]) {
+        .const_decl => |c| {
+            try std.testing.expectEqualStrings("X", "const X = $05\n"[c.name.start..c.name.end]);
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: const followed by label both parse" {
+    var pt = try parseSource(
+        \\const FRAME_RATE = $3C
+        \\start:
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 2), pt.program.statements.len);
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(gero.asm_.Statement), .const_decl),
+        @as(std.meta.Tag(gero.asm_.Statement), pt.program.statements[0]),
+    );
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(gero.asm_.Statement), .label),
+        @as(std.meta.Tag(gero.asm_.Statement), pt.program.statements[1]),
+    );
+}
+
+test "parser: const missing '=' surfaces a diagnostic + unknown" {
+    var pt = try parseSource("const X $05\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), pt.program.statements.len);
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(gero.asm_.Statement), .unknown),
+        @as(std.meta.Tag(gero.asm_.Statement), pt.program.statements[0]),
+    );
+}
+
+test "parser: const without identifier surfaces a diagnostic" {
+    var pt = try parseSource("const = $05\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+    var saw_expected_ident = false;
+    for (pt.errors) |e| {
+        if (std.mem.indexOf(u8, e.parse_error.message, "expected identifier") != null) {
+            saw_expected_ident = true;
+        }
+    }
+    try std.testing.expect(saw_expected_ident);
+}

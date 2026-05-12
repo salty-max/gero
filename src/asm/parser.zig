@@ -1,18 +1,24 @@
 /// Asm parser — consumes the fused source string from
-/// `include.resolveIncludes` and emits an `ast.Program` in one
-/// unified pass via knit combinators. The byte-level token
-/// parsers from `lexer.zig` are reused as leaf parsers in the
-/// statement grammar.
+/// `include.resolveIncludes` and emits an `ast.Program`.
 ///
-/// Scaffolding PR scope: top-level loop + label statements +
-/// unknown-line recovery. Directives and instructions land in
-/// follow-up PRs (each adds one variant to `ast.Statement`).
+/// Scope so far: top-level loop, label statements, `const`
+/// directive with full compile-time expression RHS (per asm spec
+/// §1.7 operator set). Remaining directives + instructions land
+/// in subsequent PRs.
+///
+/// Architecture note: the leaf parsers (`hexP`, `identP`,
+/// `colonP`, …) are knit byte-parsers reused from `lexer.zig`.
+/// Statement-level dispatch is hand-rolled — knit's `choice`
+/// composes well over leaves but the directive layer wants
+/// `if`-style cascading + threaded state (the `ConstantTable`),
+/// which reads cleaner as explicit code.
 const std = @import("std");
 const knit = @import("knit");
 const core = knit.core;
 const lexer = @import("lexer.zig");
 const include = @import("include.zig");
 const ast = @import("ast.zig");
+const expr = @import("expr.zig");
 
 /// Output of `parse` — the program AST plus any diagnostics
 /// raised while building it. Errors don't abort parsing; the
@@ -35,139 +41,24 @@ pub const ParseTree = struct {
     }
 };
 
-// ---------- whitespace + comment skipping ----------
-
-/// Skip ASCII whitespace (' ', '\t') and `;`-comments to EOL.
-/// Newlines are statement terminators, not whitespace, so we
-/// stop before them.
-fn skipBlanksThunk(state: *core.ParseState) core.ParseResult(void) {
-    while (state.index < state.input.len) {
-        const b = state.input[state.index];
-        if (b == ' ' or b == '\t') {
-            state.advance(1);
-        } else if (b == ';') {
-            while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
-        } else {
-            break;
-        }
-    }
-    return core.ok({}, state.index);
-}
-
-const blanksP: core.Parser(void) = .{ .parseFn = skipBlanksThunk };
-
-/// Skip blanks/comments AND any number of newlines. Used between
-/// statements to consume blank lines.
-fn skipSeparatorsThunk(state: *core.ParseState) core.ParseResult(void) {
-    while (state.index < state.input.len) {
-        const b = state.input[state.index];
-        if (b == ' ' or b == '\t' or b == '\n') {
-            state.advance(1);
-        } else if (b == ';') {
-            while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
-        } else {
-            break;
-        }
-    }
-    return core.ok({}, state.index);
-}
-
-const separatorsP: core.Parser(void) = .{ .parseFn = skipSeparatorsThunk };
-
-// ---------- label parser ----------
-
-/// `name:` — knit chain reusing the lexer's `identP` + `colonP`
-/// leaves. blanksP between them lets `start  :` parse the same
-/// as `start:`.
-fn buildLabel(seq: core.ParseResult(struct { lexer.Token, void, lexer.Token }).Ok) ast.Statement {
-    _ = seq;
-    // unused — we map below
-    unreachable;
-}
-
-fn mapLabel(seq: struct { lexer.Token, void, lexer.Token }) ast.Statement {
-    const ident = seq[0];
-    const colon = seq[2];
-    return .{ .label = .{
-        .name = ast.Span.fromToken(ident),
-        .span = ast.Span.join(ast.Span.fromToken(ident), ast.Span.fromToken(colon)),
-    } };
-}
-
-const labelP: core.Parser(ast.Statement) = blk: {
-    const seq = knit.sequenceOf(.{ lexer.identP, blanksP, lexer.colonP });
-    break :blk seq.map(ast.Statement, mapLabel);
-};
-
-// ---------- unknown-line recovery ----------
-
-/// Catch-all: when no real statement matches, consume to the
-/// next newline and emit an `unknown` AST node so the consumer
-/// can keep walking the program. Always succeeds (so it can be
-/// the last alternative in a `choice`).
-fn unknownThunk(state: *core.ParseState) core.ParseResult(ast.Statement) {
-    const start = state.index;
-    // safety: byte offsets bounded by max_file_size (16 MiB) in include.zig.
-    const start_u32: u32 = @intCast(start);
-    var end_u32: u32 = start_u32;
-    while (state.index < state.input.len and state.input[state.index] != '\n') {
-        state.advance(1);
-        end_u32 = @intCast(state.index);
-    }
-    // Don't consume the newline itself — the outer loop separator does.
-    return core.ok(ast.Statement{ .unknown = .{
-        .span = .{ .start = start_u32, .end = end_u32 },
-    } }, state.index);
-}
-
-const unknownP: core.Parser(ast.Statement) = .{ .parseFn = unknownThunk };
-
-// ---------- statement dispatch ----------
-
-const statementP: core.Parser(ast.Statement) = knit.choice(ast.Statement, &.{ labelP, unknownP });
-
-// ---------- driver ----------
-
 /// Parse a fused source string into an `ast.Program` + diagnostics.
-/// Never fails on grammar errors — those go into `errors` (one per
-/// `unknown` statement). The only error path is OOM.
+/// Never fails on grammar errors — those go into `errors` (typically
+/// one per misshapen statement). The only error path is OOM.
 pub fn parse(allocator: std.mem.Allocator, source: []const u8) !ParseTree {
     var statements: std.ArrayList(ast.Statement) = .empty;
-    errdefer statements.deinit(allocator);
+    errdefer cleanupStatements(allocator, &statements);
     var errors: std.ArrayList(include.Diagnostic) = .empty;
     errdefer errors.deinit(allocator);
+
+    var consts = expr.ConstantTable.init(allocator);
+    defer consts.deinit();
 
     var state = core.ParseState.init(source, allocator);
 
     while (state.index < source.len) {
-        // Eat blank lines / leading whitespace / comments.
-        _ = separatorsP.parseFn(&state);
+        skipSeparators(&state);
         if (state.index >= source.len) break;
-
-        const before = state.index;
-        const r = statementP.parseFn(&state);
-        switch (r) {
-            .ok => |ok| {
-                // If statement matched `unknown`, record a diagnostic.
-                if (ok.value == .unknown) {
-                    try errors.append(allocator, .{
-                        .parse_error = core.parseError(
-                            "statement",
-                            before,
-                            "unrecognized statement shape (directives + instructions arrive in follow-up PRs)",
-                            .{ .kind = .syntactic },
-                        ),
-                    });
-                }
-                try statements.append(allocator, ok.value);
-            },
-            .err => {
-                // statementP includes unknownP which always succeeds,
-                // so this shouldn't fire. But if it does, advance one
-                // byte to guarantee forward progress.
-                state.index = @min(state.index + 1, source.len);
-            },
-        }
+        try parseStatement(&state, allocator, &statements, &errors, &consts);
     }
 
     return .{
@@ -178,4 +69,231 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !ParseTree {
         .errors = try errors.toOwnedSlice(allocator),
         .allocator = allocator,
     };
+}
+
+fn cleanupStatements(allocator: std.mem.Allocator, statements: *std.ArrayList(ast.Statement)) void {
+    for (statements.items) |s| switch (s) {
+        .const_decl => |c| ast.freeExpr(allocator, c.expr),
+        else => {},
+    };
+    statements.deinit(allocator);
+}
+
+// ---------- statement dispatch ----------
+
+fn parseStatement(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+) !void {
+    const stmt_start = state.index;
+
+    // `const NAME = <expr>` — must be checked before generic
+    // labels, since the bare `const` lexeme would otherwise be
+    // taken as a label's identifier.
+    if (consumeKeyword(state, "const")) {
+        return parseConstDecl(state, allocator, stmt_start, statements, errors, consts);
+    }
+
+    // Label: `ident ":"`. The colon distinguishes a label from an
+    // instruction line that happens to start with an identifier.
+    if (try tryParseLabel(state, allocator, stmt_start, statements)) return;
+
+    // Anything else: record the line as an `unknown` statement,
+    // emit a diagnostic, and recover to the next newline.
+    try recordUnknown(state, allocator, stmt_start, statements, errors);
+}
+
+// ---------- label ----------
+
+fn tryParseLabel(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+) !bool {
+    const saved = state.index;
+    skipBlanksInLine(state);
+    const ident_result = lexer.identP.parseFn(state);
+    if (ident_result != .ok) {
+        state.index = saved;
+        return false;
+    }
+    const ident_token = ident_result.ok.value;
+    skipBlanksInLine(state);
+    const colon_result = lexer.colonP.parseFn(state);
+    if (colon_result != .ok) {
+        state.index = saved;
+        return false;
+    }
+    const colon_token = colon_result.ok.value;
+    _ = stmt_start;
+    try statements.append(allocator, .{ .label = .{
+        .name = ast.Span.fromToken(ident_token),
+        .span = ast.Span.join(ast.Span.fromToken(ident_token), ast.Span.fromToken(colon_token)),
+    } });
+    return true;
+}
+
+// ---------- const directive ----------
+
+fn parseConstDecl(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+) !void {
+    skipBlanksInLine(state);
+
+    // Name.
+    const name_result = lexer.identP.parseFn(state);
+    if (name_result != .ok) {
+        try errors.append(allocator, .{
+            .parse_error = core.parseError(
+                "const",
+                state.index,
+                "expected identifier after `const` keyword",
+                .{ .expected = "identifier", .kind = .syntactic },
+            ),
+        });
+        try recoverToNewline(state);
+        try statements.append(allocator, .{ .unknown = .{
+            .span = spanFrom(stmt_start, state.index),
+        } });
+        return;
+    }
+    const name_token = name_result.ok.value;
+
+    skipBlanksInLine(state);
+
+    // `=`.
+    const eq_result = lexer.equalsP.parseFn(state);
+    if (eq_result != .ok) {
+        try errors.append(allocator, .{
+            .parse_error = core.parseError(
+                "const",
+                state.index,
+                "expected `=` after const name",
+                .{ .expected = "=", .kind = .syntactic },
+            ),
+        });
+        try recoverToNewline(state);
+        try statements.append(allocator, .{ .unknown = .{
+            .span = spanFrom(stmt_start, state.index),
+        } });
+        return;
+    }
+
+    // RHS expression.
+    const rhs = expr.parseExpression(state, allocator, errors) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ParseFailed => {
+            try recoverToNewline(state);
+            try statements.append(allocator, .{ .unknown = .{
+                .span = spanFrom(stmt_start, state.index),
+            } });
+            return;
+        },
+    };
+
+    // Evaluate against the constants visible so far. Failure
+    // becomes a diagnostic but we still keep the AST node — the
+    // symbol-table pass can re-walk it later if it wants.
+    const eval = expr.evalExpr(rhs, state.input, consts.*);
+    switch (eval) {
+        .ok => |v| {
+            const name_text = state.input[name_token.start..name_token.end];
+            try consts.put(name_text, v);
+        },
+        .err => |diag| try errors.append(allocator, diag),
+    }
+
+    try statements.append(allocator, .{ .const_decl = .{
+        .name = ast.Span.fromToken(name_token),
+        .expr = rhs,
+        .span = spanFrom(stmt_start, state.index),
+    } });
+}
+
+// ---------- unknown / recovery ----------
+
+fn recordUnknown(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+) !void {
+    try errors.append(allocator, .{
+        .parse_error = core.parseError(
+            "statement",
+            stmt_start,
+            "unrecognized statement shape (directives + instructions arrive in follow-up PRs)",
+            .{ .kind = .syntactic },
+        ),
+    });
+    try recoverToNewline(state);
+    try statements.append(allocator, .{ .unknown = .{
+        .span = spanFrom(stmt_start, state.index),
+    } });
+}
+
+fn recoverToNewline(state: *core.ParseState) !void {
+    while (state.index < state.input.len and state.input[state.index] != '\n') {
+        state.advance(1);
+    }
+}
+
+// ---------- helpers ----------
+
+fn consumeKeyword(state: *core.ParseState, kw: []const u8) bool {
+    const saved = state.index;
+    skipBlanksInLine(state);
+    const r = lexer.identP.parseFn(state);
+    if (r != .ok) {
+        state.index = saved;
+        return false;
+    }
+    const token = r.ok.value;
+    const lex = state.input[token.start..token.end];
+    if (!std.mem.eql(u8, lex, kw)) {
+        state.index = saved;
+        return false;
+    }
+    return true;
+}
+
+fn skipBlanksInLine(state: *core.ParseState) void {
+    while (state.index < state.input.len) {
+        const b = state.input[state.index];
+        if (b == ' ' or b == '\t') {
+            state.advance(1);
+        } else if (b == ';') {
+            while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
+        } else {
+            break;
+        }
+    }
+}
+
+fn skipSeparators(state: *core.ParseState) void {
+    while (state.index < state.input.len) {
+        const b = state.input[state.index];
+        if (b == ' ' or b == '\t' or b == '\n') {
+            state.advance(1);
+        } else if (b == ';') {
+            while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
+        } else {
+            break;
+        }
+    }
+}
+
+fn spanFrom(start: usize, end: usize) ast.Span {
+    // safety: source offsets bounded by max_file_size (16 MiB) per include.zig.
+    return .{ .start = @intCast(start), .end = @intCast(end) };
 }
