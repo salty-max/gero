@@ -152,6 +152,12 @@ fn tryParseLabel(
 ) !bool {
     const saved = state.index;
     skipBlanksInLine(state);
+    // Local label: `.foo:` — the leading `.` is part of the name
+    // span. Codegen mangles to `parent.foo` against the most
+    // recent global label.
+    const has_dot = state.index < state.input.len and state.input[state.index] == '.';
+    const name_start: u32 = u32At(state.index);
+    if (has_dot) state.advance(1);
     const ident_result = lexer.identP.parseFn(state);
     if (ident_result != .ok) {
         state.index = saved;
@@ -166,11 +172,17 @@ fn tryParseLabel(
     }
     const colon_token = colon_result.ok.value;
     _ = stmt_start;
+    const name_span: ast.Span = .{ .start = name_start, .end = ident_token.end };
     try statements.append(allocator, .{ .label = .{
-        .name = ast.Span.fromToken(ident_token),
-        .span = ast.Span.join(ast.Span.fromToken(ident_token), ast.Span.fromToken(colon_token)),
+        .name = name_span,
+        .span = ast.Span.join(name_span, ast.Span.fromToken(colon_token)),
     } });
     return true;
+}
+
+fn u32At(i: usize) u32 {
+    // @as: fused-source byte offsets fit in u32 (max_file_size = 16 MiB).
+    return @as(u32, @intCast(i));
 }
 
 // ---------- const directive ----------
@@ -386,9 +398,14 @@ fn parseDataValue(
                 .span = .{ .start = tok.start, .end = tok.end },
             } };
         }
-        // Fall through — the string parser refused (probably
-        // unterminated). Let the lexer's earlier error stand;
-        // we'll surface a generic "expected value" below.
+        // The leading byte was `"` — anything past that is a
+        // malformed string literal (unterminated, bad escape).
+        // Surface the lexer's specific error with its E-code.
+        try errors.append(state.allocator, .{
+            .code = include.ErrorCode.fromLexerMessage(r.err.message),
+            .parse_error = r.err,
+        });
+        return error.ParseFailed;
     }
 
     // `&FFFF` address literal — must come before the expression
@@ -854,6 +871,26 @@ fn parseOperand(
         return error.ParseFailed;
     }
 
+    // Local-label ref: `.foo` (codegen mangles via parent label).
+    if (b == '.') {
+        const dot_start: u32 = u32At(state.index);
+        state.advance(1);
+        const r = lexer.identP.parseFn(state);
+        if (r != .ok) {
+            try errors.append(state.allocator, .{
+                .parse_error = core.parseError(
+                    "operand",
+                    state.index,
+                    "expected identifier after `.` for a local-label reference",
+                    .{ .expected = "local label name", .kind = .syntactic },
+                ),
+            });
+            return error.ParseFailed;
+        }
+        const tok = r.ok.value;
+        return .{ .label_ref = .{ .span = .{ .start = dot_start, .end = tok.end } } };
+    }
+
     // Identifier — either a register name or a label/const reference.
     if ((b >= 'A' and b <= 'Z') or (b >= 'a' and b <= 'z') or b == '_') {
         const r = lexer.identP.parseFn(state);
@@ -1143,7 +1180,7 @@ fn recordUnknown(
         .parse_error = core.parseError(
             "statement",
             stmt_start,
-            "unrecognized statement shape (directives + instructions arrive in follow-up PRs)",
+            "unrecognized statement",
             .{ .kind = .syntactic },
         ),
     });

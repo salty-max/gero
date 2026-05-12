@@ -74,6 +74,71 @@ test "codegen: int $10 narrows to 1-byte imm8 operand (0xFC 0x10)" {
     try std.testing.expectEqualSlices(u8, &.{ 0xFC, 0x10 }, out.imageBody());
 }
 
+test "codegen: int CONST narrows when const value ≤ u8" {
+    // `const PRINT = $10` resolves the bare ident to an imm8
+    // operand, matching the `int Imm8` shape. Same on-wire bytes
+    // as `int $10`.
+    var out = try assemble(
+        \\const PRINT = $10
+        \\int PRINT
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqualSlices(u8, &.{ 0xFC, 0x10 }, out.imageBody());
+}
+
+test "codegen: local labels resolve against the enclosing global" {
+    var out = try assemble(
+        \\main:
+        \\.loop:
+        \\  jmp .loop
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    // image: jmp(0x70) + addr LE(0x0000) — local label resolves to
+    // offset 0, the address of `main:` / `.loop:` (they share the
+    // same byte address since neither emits code before .loop).
+    try std.testing.expectEqualSlices(u8, &.{ 0x70, 0x00, 0x00 }, out.imageBody());
+}
+
+test "codegen: same local-label name reuses across global scopes" {
+    var out = try assemble(
+        \\first:
+        \\.done:
+        \\  hlt
+        \\second:
+        \\.done:
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+}
+
+test "codegen: local label with no enclosing global is E004-shape" {
+    var out = try assemble(
+        \\.orphan:
+        \\hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(out.cg.hasErrors());
+}
+
+test "codegen: int CONST errors when const value > u8" {
+    // `const BIG = $1234` → label_ref reports .imm16, no imm16
+    // shape for `int`, no widening possible — E003.
+    var out = try assemble(
+        \\const BIG = $1234
+        \\int BIG
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(out.cg.hasErrors());
+}
+
 test "codegen: shl r1, $03 uses imm8 shape (0x58 reg imm8)" {
     var out = try assemble("shl r1, $03\n", .{});
     defer out.deinit();
@@ -229,6 +294,37 @@ test "codegen: header magic + version + entry_point + image_size" {
     // bank_count = 0, sram_bank_count = 0.
     try std.testing.expectEqual(@as(u8, 0), out.cg.image[12]);
     try std.testing.expectEqual(@as(u8, 0), out.cg.image[13]);
+}
+
+test "codegen: entry_point auto-detects a `main:` label" {
+    // `nop` then `main:` then `hlt`. main is at offset 1.
+    var out = try assemble(
+        \\nop
+        \\main:
+        \\hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[8]);
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[9]);
+}
+
+test "codegen: entry_point defaults to 0 when no `main:` label exists" {
+    var out = try assemble("hlt\n", .{});
+    defer out.deinit();
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[8]);
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[9]);
+}
+
+test "codegen: explicit entry_point overrides `main:` auto-detect" {
+    var out = try assemble(
+        \\main:
+        \\hlt
+        \\
+    , .{ .entry_point = 0x2222 });
+    defer out.deinit();
+    try std.testing.expectEqual(@as(u8, 0x22), out.cg.image[8]);
+    try std.testing.expectEqual(@as(u8, 0x22), out.cg.image[9]);
 }
 
 // ---------- errors ----------

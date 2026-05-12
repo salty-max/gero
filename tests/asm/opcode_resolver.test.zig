@@ -72,6 +72,17 @@ test "opres: indexed addressing emits 3-byte operand (addr + reg)" {
     try std.testing.expectEqualSlices(u8, &.{ 0x17, 0x20, 0x26, 0x02, 0x03 }, cg.image[16..]);
 }
 
+test "opres: mov8 indexed emits 5-byte operand (opcode + addr + 2 regs)" {
+    const src = "mov8 [&3000 + r1], r2\n";
+    var pt = try gero.asm_.parse(alloc, src);
+    defer pt.deinit();
+    var cg = try gero.asm_.assemble(alloc, src, pt, .{});
+    defer cg.deinit();
+    try std.testing.expect(!cg.hasErrors());
+    // 0x29 + addr LE (00 30) + idx_reg (r1 = 0x02) + dst_reg (r2 = 0x03)
+    try std.testing.expectEqualSlices(u8, &.{ 0x29, 0x00, 0x30, 0x02, 0x03 }, cg.image[16..]);
+}
+
 test "opres: imm8 narrowing — mov8 picks Imm8 shape over widening" {
     // `mov8 $42, r1` — value fits u8, mov8 has an Imm8,Reg shape
     // exactly. Total 3 bytes: opcode + imm8 + reg.
