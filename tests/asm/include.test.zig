@@ -337,4 +337,30 @@ test "include: formatDiagnostic produces path:line:col prefix" {
     const out = allocating.written();
     try std.testing.expect(std.mem.indexOf(u8, out, "main.gas") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "not found") != null);
+    // E015 = include target not found — the code prefix must appear.
+    try std.testing.expect(std.mem.indexOf(u8, out, "[E015]") != null);
+}
+
+test "include: formatPretty emits a caret line under the column" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("main.gas", "include \"nope.gas\"\n");
+
+    const main_path = try fx.pathOf("main.gas");
+    defer alloc.free(main_path);
+
+    var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, main_path);
+    defer fused.deinit();
+
+    var allocating = std.Io.Writer.Allocating.init(alloc);
+    defer allocating.deinit();
+    try gero.asm_.formatPretty(&allocating.writer, fused.source_map, fused.errors[0]);
+
+    const out = allocating.written();
+    // Header line has the [E015] prefix.
+    try std.testing.expect(std.mem.indexOf(u8, out, "[E015]") != null);
+    // Snippet line shows the actual source line.
+    try std.testing.expect(std.mem.indexOf(u8, out, "include \"nope.gas\"") != null);
+    // A caret line exists.
+    try std.testing.expect(std.mem.indexOf(u8, out, "^") != null);
 }

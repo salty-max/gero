@@ -425,6 +425,7 @@ fn symRefLookup(s: ast.SymRef, source: []const u8, consts: ConstantTable) EvalRe
     const name = if (lex.len > 0 and lex[0] == '@') lex[1..] else lex;
     if (consts.get(name)) |value| return .{ .ok = value };
     return .{ .err = .{
+        .code = .undefined_symbol,
         .parse_error = core.parseError(
             "expression",
             s.span.start,
@@ -438,6 +439,7 @@ fn identLookup(i: ast.IdentRef, source: []const u8, consts: ConstantTable) EvalR
     const name = source[i.span.start..i.span.end];
     if (consts.get(name)) |value| return .{ .ok = value };
     return .{ .err = .{
+        .code = .undefined_symbol,
         .parse_error = core.parseError(
             "expression",
             i.span.start,
@@ -481,6 +483,7 @@ fn evalBinary(b: ast.Binary, source: []const u8, consts: ConstantTable) EvalResu
 
 fn divByZero(span: ast.Span) EvalResult {
     return .{ .err = .{
+        .code = .div_by_zero,
         .parse_error = core.parseError(
             "expression",
             span.start,

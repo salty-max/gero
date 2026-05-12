@@ -367,7 +367,9 @@ test "parser: data16 with string literal surfaces a diagnostic" {
     try std.testing.expect(pt.hasErrors());
     var saw_data16_rejection = false;
     for (pt.errors) |e| {
-        if (std.mem.indexOf(u8, e.parse_error.message, "string literals are only allowed in `data8`") != null) {
+        if (e.code == .operand_type_mismatch and
+            std.mem.indexOf(u8, e.parse_error.message, "string literals are only allowed in `data8`") != null)
+        {
             saw_data16_rejection = true;
         }
     }
@@ -541,7 +543,9 @@ test "parser: struct unknown field type" {
     try std.testing.expect(pt.hasErrors());
     var saw_unknown_type = false;
     for (pt.errors) |e| {
-        if (std.mem.indexOf(u8, e.parse_error.message, "unknown field type") != null) {
+        if (e.code == .operand_type_mismatch and
+            std.mem.indexOf(u8, e.parse_error.message, "unknown field type") != null)
+        {
             saw_unknown_type = true;
         }
     }

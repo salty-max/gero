@@ -31,12 +31,16 @@ pub const SourceMap = include.SourceMap;
 pub const Located = include.Located;
 /// Re-export: diagnostic carrying a fused-buffer byte offset.
 pub const Diagnostic = include.Diagnostic;
+/// Re-export: asm spec §8 error codes (E001..E016) for semantic errors.
+pub const ErrorCode = include.ErrorCode;
 /// Re-export: result of `resolveIncludes` — fused source + source map + errors.
 pub const FusedSource = include.FusedSource;
 /// Re-export: walk the include graph, return one fused source string.
 pub const resolveIncludes = include.resolveIncludes;
-/// Re-export: format one `Diagnostic` as `<path>:<line>:<col>: <msg>`.
+/// Re-export: format one `Diagnostic` as `<path>:<line>:<col>: [Exxx] <msg>`.
 pub const formatDiagnostic = include.formatDiagnostic;
+/// Re-export: pretty-format a `Diagnostic` with a caret-style snippet.
+pub const formatPretty = include.formatPretty;
 
 /// Re-export: source span — `{start, end}` byte offsets in the fused source.
 pub const Span = ast_mod.Span;

@@ -145,6 +145,7 @@ fn layoutPass(
                 symbols.putBorrowed(name, .{ .kind = .label, .value = addr }) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.Duplicate => try errors.append(symbols.allocator, .{
+                        .code = .duplicate_label,
                         .parse_error = core.parseError(
                             "codegen",
                             l.name.start,
@@ -178,6 +179,7 @@ fn layoutPass(
                 symbols.putBorrowed(name, .{ .kind = .data, .value = addr }) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.Duplicate => try errors.append(symbols.allocator, .{
+                        .code = .duplicate_label,
                         .parse_error = core.parseError(
                             "codegen",
                             d.name.start,
@@ -202,6 +204,7 @@ fn layoutPass(
                 if (o.addr) |target| {
                     if (target < cursor) {
                         try errors.append(symbols.allocator, .{
+                            .code = .backward_org,
                             .parse_error = core.parseError(
                                 "org",
                                 o.span.start,
@@ -224,8 +227,10 @@ fn layoutPass(
                     cursor += res.size;
                 } else {
                     // Unknown mnemonic OR operand-shape mismatch.
-                    const kind: []const u8 = if (opres.isKnownMnemonic(mnem)) "operand type mismatch" else "unknown mnemonic";
+                    const known = opres.isKnownMnemonic(mnem);
+                    const kind: []const u8 = if (known) "operand type mismatch" else "unknown mnemonic";
                     try errors.append(symbols.allocator, .{
+                        .code = if (known) .operand_type_mismatch else .unknown_mnemonic,
                         .parse_error = core.parseError(
                             "codegen",
                             i.mnemonic.start,
@@ -366,6 +371,7 @@ fn emitDataValues(
                 try emitValue(allocator, image, val, word_size);
             } else {
                 try errors.append(allocator, .{
+                    .code = .undefined_symbol,
                     .parse_error = core.parseError(
                         "codegen",
                         s.span.start,
@@ -523,6 +529,7 @@ fn emitSymRef(
         try emitValue(allocator, image, val, 2);
     } else {
         try errors.append(allocator, .{
+            .code = .undefined_symbol,
             .parse_error = core.parseError(
                 "codegen",
                 s.span.start,
@@ -547,6 +554,7 @@ fn emitLabelRef(
         try emitValue(allocator, image, val, 2);
     } else {
         try errors.append(allocator, .{
+            .code = .undefined_symbol,
             .parse_error = core.parseError(
                 "codegen",
                 l.span.start,
@@ -574,6 +582,7 @@ fn emitCast(
 
     const sym_val: u16 = if (consts.get(sym_name)) |v| v else blk: {
         try errors.append(allocator, .{
+            .code = .undefined_symbol,
             .parse_error = core.parseError(
                 "codegen",
                 c.sym_ref.span.start,
@@ -589,6 +598,7 @@ fn emitCast(
     defer allocator.free(qualified);
     const offset: u16 = if (consts.get(qualified)) |v| v else blk: {
         try errors.append(allocator, .{
+            .code = .undefined_symbol,
             .parse_error = core.parseError(
                 "codegen",
                 c.field_name.start,

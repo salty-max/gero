@@ -373,6 +373,7 @@ fn parseDataValue(
             const tok = r.ok.value;
             if (kind == .data16) {
                 try errors.append(state.allocator, .{
+                    .code = .operand_type_mismatch,
                     .parse_error = core.parseError(
                         "data16",
                         tok.start,
@@ -620,6 +621,7 @@ fn parseStructField(
     const type_lex = state.input[type_token.start..type_token.end];
     const ty: ast.FieldType = std.meta.stringToEnum(ast.FieldType, type_lex) orelse {
         try errors.append(state.allocator, .{
+            .code = .operand_type_mismatch,
             .parse_error = core.parseError(
                 "struct",
                 type_token.start,
@@ -959,6 +961,7 @@ fn parseBracketOperand(
     // Inner doesn't match either shape — surface a diagnostic
     // and let the outer recovery handle it.
     try errors.append(state.allocator, .{
+        .code = .operand_type_mismatch,
         .parse_error = core.parseError(
             "operand",
             inner.span().start,
