@@ -55,6 +55,23 @@ test "symtab: putOwned owns the key memory" {
     // Cleanup via st.deinit() frees the owned key — no leak.
 }
 
+test "symtab: suggestSimilar finds a close match for a typo" {
+    var st = gero.asm_.SymbolTable.init(alloc);
+    defer st.deinit();
+    try st.putBorrowed("nowhere", .{ .kind = .label, .value = 0x10 });
+    try st.putBorrowed("main", .{ .kind = .label, .value = 0x20 });
+    // `nowher` (1 deletion) → "nowhere"
+    try std.testing.expectEqualStrings("nowhere", st.suggestSimilar("nowher").?);
+}
+
+test "symtab: suggestSimilar returns null when nothing is close" {
+    var st = gero.asm_.SymbolTable.init(alloc);
+    defer st.deinit();
+    try st.putBorrowed("foo", .{ .kind = .label, .value = 0 });
+    try st.putBorrowed("bar", .{ .kind = .label, .value = 0 });
+    try std.testing.expect(st.suggestSimilar("xyzqwertyu") == null);
+}
+
 test "symtab: toConstantTable projects to expr.ConstantTable" {
     var st = gero.asm_.SymbolTable.init(alloc);
     defer st.deinit();

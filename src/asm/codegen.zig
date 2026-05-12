@@ -430,7 +430,7 @@ fn emitPass(
             .const_decl, .struct_decl, .unknown => {},
             .data8, .data16 => |d| {
                 const word_size: u32 = if (stmt == .data8) 1 else 2;
-                try emitDataValues(allocator, image, errors, source, d.values, word_size, consts);
+                try emitDataValues(allocator, image, errors, source, d.values, word_size, consts, symbols);
                 cursor = @intCast(image.items.len);
             },
             .org => |o| {
@@ -463,6 +463,7 @@ fn emitDataValues(
     values: []const ast.DataValue,
     word_size: u32,
     consts: expr.ConstantTable,
+    symbols: *const symtab.SymbolTable,
 ) !void {
     for (values) |v| switch (v) {
         .expr => |e| {
@@ -484,6 +485,7 @@ fn emitDataValues(
             } else {
                 try errors.append(allocator, .{
                     .code = .undefined_symbol,
+                    .note = symbols.suggestSimilar(name),
                     .parse_error = core.parseError(
                         "codegen",
                         s.span.start,
@@ -601,10 +603,10 @@ fn emitInstruction(
             try emitValue(allocator, image, val, width);
         },
         .addr_lit => |a| try emitValue(allocator, image, a.value, 2),
-        .sym_ref => |s| try emitSymRef(allocator, image, errors, source, s, consts),
+        .sym_ref => |s| try emitSymRef(allocator, image, errors, source, s, consts, symbols),
         .label_ref => |l| {
             const width: u32 = if (res.kinds[op_idx] == .imm8) 1 else 2;
-            try emitLabelRef(allocator, image, errors, source, l, consts, width, parent_label);
+            try emitLabelRef(allocator, image, errors, source, l, consts, width, parent_label, symbols);
         },
         .addr_expr => |a| {
             const result = expr.evalExpr(a.expr, source, consts);
@@ -617,7 +619,7 @@ fn emitInstruction(
             };
             try emitValue(allocator, image, val, 2);
         },
-        .cast => |c| try emitCast(allocator, image, errors, source, c, consts),
+        .cast => |c| try emitCast(allocator, image, errors, source, c, consts, symbols),
         .indirect => |ind| try image.append(allocator, @intFromEnum(ind.reg.id)),
         .indexed => |idx| {
             const result = expr.evalExpr(idx.addr, source, consts);
@@ -641,6 +643,7 @@ fn emitSymRef(
     source: []const u8,
     s: ast.SymRef,
     consts: expr.ConstantTable,
+    symbols: *const symtab.SymbolTable,
 ) !void {
     const lex = source[s.span.start..s.span.end];
     const name = if (lex.len > 0 and lex[0] == '@') lex[1..] else lex;
@@ -649,6 +652,7 @@ fn emitSymRef(
     } else {
         try errors.append(allocator, .{
             .code = .undefined_symbol,
+            .note = symbols.suggestSimilar(name),
             .parse_error = core.parseError(
                 "codegen",
                 s.span.start,
@@ -669,6 +673,7 @@ fn emitLabelRef(
     consts: expr.ConstantTable,
     width: u32,
     parent_label: ?[]const u8,
+    symbols: *const symtab.SymbolTable,
 ) !void {
     const lex = source[l.span.start..l.span.end];
     const resolved = resolveLabelKey(lex, parent_label, allocator) catch {
@@ -690,6 +695,7 @@ fn emitLabelRef(
     } else {
         try errors.append(allocator, .{
             .code = .undefined_symbol,
+            .note = symbols.suggestSimilar(resolved.key),
             .parse_error = core.parseError(
                 "codegen",
                 l.span.start,
@@ -708,6 +714,7 @@ fn emitCast(
     source: []const u8,
     c: ast.CastOperand,
     consts: expr.ConstantTable,
+    symbols: *const symtab.SymbolTable,
 ) !void {
     // `<Type> @sym.field` desugars to `@sym + Type.field`.
     const sym_lex = source[c.sym_ref.span.start..c.sym_ref.span.end];
@@ -718,6 +725,7 @@ fn emitCast(
     const sym_val: u16 = if (consts.get(sym_name)) |v| v else blk: {
         try errors.append(allocator, .{
             .code = .undefined_symbol,
+            .note = symbols.suggestSimilar(sym_name),
             .parse_error = core.parseError(
                 "codegen",
                 c.sym_ref.span.start,
@@ -734,6 +742,7 @@ fn emitCast(
     const offset: u16 = if (consts.get(qualified)) |v| v else blk: {
         try errors.append(allocator, .{
             .code = .undefined_symbol,
+            .note = symbols.suggestSimilar(qualified),
             .parse_error = core.parseError(
                 "codegen",
                 c.field_name.start,

@@ -129,9 +129,12 @@ pub const Located = struct {
 /// `parse_error.index`). Use `SourceMap.lookup` to resolve.
 /// `code` is set for semantic errors that map to asm spec §8's
 /// E001..E016 list; generic syntax errors leave it `null`.
+/// `note` is an optional borrowed hint (e.g. "did you mean `foo`?")
+/// that the formatter renders below the main diagnostic line.
 pub const Diagnostic = struct {
     parse_error: core.ParseError,
     code: ?ErrorCode = null,
+    note: ?[]const u8 = null,
 };
 
 /// Asm spec §8 error codes. Numerical IDs match the spec's
@@ -581,6 +584,7 @@ pub fn formatPretty(
     const lc = computeLineCol(loc.file.content, loc.file_offset);
     try writeHeader(writer, loc.file.path, lc, err, style);
     try writeCaretSnippet(writer, loc.file.content, loc.file_offset, lc, style);
+    try writeNote(writer, err.note, style);
 }
 
 /// Same as `formatPretty` but without the leading `<path>:` —
@@ -609,6 +613,7 @@ pub fn formatPrettyBody(
     }
     try writer.print("{s}\n", .{err.parse_error.message});
     try writeCaretSnippet(writer, loc.file.content, loc.file_offset, lc, style);
+    try writeNote(writer, err.note, style);
 }
 
 /// `<path>:<line>:<col>: [Exxx] <message>` header line, shared
@@ -625,6 +630,13 @@ fn writeHeader(
         try writer.print("{s}[{s}]{s} ", .{ style.code, c.shortLabel(), style.reset });
     }
     try writer.print("{s}\n", .{err.parse_error.message});
+}
+
+/// Render an optional `note:` suggestion line below the caret.
+fn writeNote(writer: anytype, note: ?[]const u8, style: Style) !void {
+    if (note) |n| {
+        try writer.print("{s}     ={s} note: did you mean `{s}{s}{s}`?\n", .{ style.gutter, style.reset, style.location, n, style.reset });
+    }
 }
 
 /// Two lines: the source line with line-number gutter + the

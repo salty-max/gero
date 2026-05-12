@@ -89,6 +89,61 @@ pub const SymbolTable = struct {
         return self.entries.get(name);
     }
 
+    /// Scan every known name for one that's "close" to `query`
+    /// by Levenshtein distance. Returns the closest match within
+    /// threshold (1 for short names, 2 for longer) or `null`. The
+    /// returned slice borrows from the symbol table's keys —
+    /// callers must treat it as valid only for the table's
+    /// lifetime. Used to power "did you mean?" hints on E004.
+    pub fn suggestSimilar(self: SymbolTable, query: []const u8) ?[]const u8 {
+        if (query.len == 0) return null;
+        const threshold: usize = if (query.len <= 4) 1 else 2;
+        var best: ?[]const u8 = null;
+        var best_dist: usize = std.math.maxInt(usize);
+        var it = self.entries.keyIterator();
+        while (it.next()) |k_ptr| {
+            const k = k_ptr.*;
+            // Length filter: anything farther in length than the
+            // threshold can't possibly fit. Cheap pre-check before
+            // the O(n*m) edit-distance walk.
+            const dlen = if (k.len > query.len) k.len - query.len else query.len - k.len;
+            if (dlen > threshold) continue;
+            const d = levenshtein(query, k);
+            if (d <= threshold and d < best_dist) {
+                best_dist = d;
+                best = k;
+            }
+        }
+        return best;
+    }
+
+    /// Compact Levenshtein implementation backed by a small
+    /// stack buffer. Used only for "did you mean?" suggestions on
+    /// names of typical asm-symbol length, so the cap is fine.
+    fn levenshtein(a: []const u8, b: []const u8) usize {
+        const max_len: usize = 64;
+        if (a.len > max_len or b.len > max_len) {
+            // Beyond the buffer — return a value past every
+            // sensible threshold so the candidate is skipped.
+            return std.math.maxInt(usize);
+        }
+        var prev: [max_len + 1]usize = undefined;
+        var curr: [max_len + 1]usize = undefined;
+        for (0..b.len + 1) |j| prev[j] = j;
+        for (1..a.len + 1) |i| {
+            curr[0] = i;
+            for (1..b.len + 1) |j| {
+                const cost: usize = if (a[i - 1] == b[j - 1]) 0 else 1;
+                curr[j] = @min(
+                    @min(curr[j - 1] + 1, prev[j] + 1),
+                    prev[j - 1] + cost,
+                );
+            }
+            @memcpy(prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
+        }
+        return prev[b.len];
+    }
+
     /// Project this table down to a `ConstantTable` so the
     /// expression evaluator can use it. Keys + values are
     /// borrowed — the returned table's lifetime is bounded by
