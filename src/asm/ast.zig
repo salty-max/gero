@@ -60,6 +60,9 @@ pub const Statement = union(enum) {
 /// Resolution (forward refs, duplicates) lives in #35.
 pub const Label = struct {
     /// Span of the bare identifier (without the trailing colon).
+    /// For a local label `.foo:`, this covers `.foo` (the leading
+    /// dot is the marker codegen uses to mangle against the most
+    /// recent global label).
     name: Span,
     /// Span covering both the identifier and the colon.
     span: Span,
@@ -323,6 +326,9 @@ pub const IndirectReg = struct {
 /// (`jmp loop`) or a previously-defined `const`. The symbol pass
 /// (#35) resolves it; the parser just records the lexeme span.
 pub const LabelRef = struct {
+    /// The lexeme span. For a local-label ref `.foo`, the span
+    /// covers `.foo` and codegen mangles via the most recent
+    /// global label.
     span: Span,
 };
 

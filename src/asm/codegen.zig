@@ -50,8 +50,11 @@ pub const Codegen = struct {
 /// Configuration knobs for `assemble`. v0.1 just exposes the
 /// entry point; banking + SRAM land later.
 pub const Options = struct {
-    /// `ip` value at boot. Per ISA §7.1.
-    entry_point: u16 = 0x0000,
+    /// `ip` value at boot per ISA §7.1. `null` (default) triggers
+    /// auto-detection: if the program defines a `main:` label, its
+    /// address is used; otherwise the entry point is `0x0000`
+    /// (start of image). Set explicitly to override.
+    entry_point: ?u16 = null,
 };
 
 /// Run the full codegen pipeline against a parsed program.
@@ -86,11 +89,20 @@ pub fn assemble(
 
     try emitPass(allocator, &image_buf, &errors, source, tree, resolved_consts, &symbols, image_size);
 
-    // Prepend the .gx header per ISA §7.1.
+    // Prepend the .gx header per ISA §7.1. Resolve the entry
+    // point: explicit option wins; otherwise prefer a `main:`
+    // label if present, else default to `0x0000`.
     const image_bytes = try image_buf.toOwnedSlice(allocator);
     errdefer allocator.free(image_bytes);
 
-    const final = try buildArchive(allocator, image_bytes, opts);
+    const resolved_entry: u16 = opts.entry_point orelse blk: {
+        if (symbols.get("main")) |sym| {
+            if (sym.kind == .label) break :blk sym.value;
+        }
+        break :blk 0x0000;
+    };
+
+    const final = try buildArchive(allocator, image_bytes, resolved_entry);
     allocator.free(image_bytes);
 
     return .{
@@ -108,9 +120,20 @@ pub fn assemble(
 /// layout, only forward-resolved consts can disambiguate;
 /// unknown names default to `.addr` (same byte width as `.imm16`,
 /// so sizing is correct either way).
-fn classifyForLayout(op: ast.Operand, source: []const u8, symbols: symtab.SymbolTable) opres.Kind {
+fn classifyForLayout(
+    op: ast.Operand,
+    source: []const u8,
+    symbols: symtab.SymbolTable,
+    parent_label: ?[]const u8,
+    scratch: std.mem.Allocator,
+) opres.Kind {
     return switch (op) {
-        .label_ref => |l| opres.labelRefKind(source[l.span.start..l.span.end], symbols),
+        .label_ref => |l| blk: {
+            const lex = source[l.span.start..l.span.end];
+            const resolved = resolveLabelKey(lex, parent_label, scratch) catch break :blk .addr;
+            defer if (resolved.owned) scratch.free(resolved.key);
+            break :blk opres.labelRefKind(resolved.key, symbols);
+        },
         .immediate => |e| narrowImm(e, source, symbols),
         else => opres.classify(op, null),
     };
@@ -119,12 +142,44 @@ fn classifyForLayout(op: ast.Operand, source: []const u8, symbols: symtab.Symbol
 /// Same as `classifyForLayout` but used in the emit pass. By
 /// emit time, every label and const lives in the symbol table
 /// with its true kind, so `label_ref` resolves precisely.
-fn classifyForEmit(op: ast.Operand, source: []const u8, symbols: symtab.SymbolTable) opres.Kind {
+fn classifyForEmit(
+    op: ast.Operand,
+    source: []const u8,
+    symbols: symtab.SymbolTable,
+    parent_label: ?[]const u8,
+    scratch: std.mem.Allocator,
+) opres.Kind {
     return switch (op) {
-        .label_ref => |l| opres.labelRefKind(source[l.span.start..l.span.end], symbols),
+        .label_ref => |l| blk: {
+            const lex = source[l.span.start..l.span.end];
+            const resolved = resolveLabelKey(lex, parent_label, scratch) catch break :blk .addr;
+            defer if (resolved.owned) scratch.free(resolved.key);
+            break :blk opres.labelRefKind(resolved.key, symbols);
+        },
         .immediate => |e| narrowImm(e, source, symbols),
         else => opres.classify(op, null),
     };
+}
+
+/// Result of expanding a label-style lexeme into its symbol-table
+/// key. Local labels (`.foo`) get prefixed with the most recent
+/// global label; `owned == true` means the caller frees `key`.
+const ResolvedKey = struct {
+    key: []const u8,
+    owned: bool,
+};
+
+/// If `name` starts with `.`, mangle it to `parent.name` using
+/// `scratch`; otherwise return the name verbatim (borrowed).
+/// Returns an error if a local label appears with no enclosing
+/// parent — caller can fall back to a plain lookup.
+fn resolveLabelKey(name: []const u8, parent: ?[]const u8, scratch: std.mem.Allocator) !ResolvedKey {
+    if (name.len > 0 and name[0] == '.') {
+        const p = parent orelse return error.NoParentLabel;
+        const joined = try std.fmt.allocPrint(scratch, "{s}{s}", .{ p, name });
+        return .{ .key = joined, .owned = true };
+    }
+    return .{ .key = name, .owned = false };
 }
 
 /// Pick the narrowest immediate kind that fits the folded value.
@@ -150,6 +205,7 @@ fn layoutPass(
     out_image_size: *u32,
 ) !void {
     var cursor: u32 = 0;
+    var parent_label: ?[]const u8 = null;
     for (tree.program.statements) |stmt| {
         switch (stmt) {
             .label => |l| {
@@ -157,18 +213,51 @@ fn layoutPass(
                 // safety: cursor is bounded by max u16 image (the
                 //         ISA caps at 64k) — cast won't truncate.
                 const addr: u16 = @intCast(cursor);
-                symbols.putBorrowed(name, .{ .kind = .label, .value = addr }) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.Duplicate => try errors.append(symbols.allocator, .{
-                        .code = .duplicate_label,
-                        .parse_error = core.parseError(
-                            "codegen",
-                            l.name.start,
-                            "duplicate label",
-                            .{ .expected = "unique label name", .actual = name, .kind = .semantic },
-                        ),
-                    }),
-                };
+                if (name.len > 0 and name[0] == '.') {
+                    // Local label: register as `parent.name`.
+                    if (parent_label) |p| {
+                        const qualified = try std.fmt.allocPrint(symbols.allocator, "{s}{s}", .{ p, name });
+                        symbols.putOwned(qualified, .{ .kind = .label, .value = addr }) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            error.Duplicate => {
+                                symbols.allocator.free(qualified);
+                                try errors.append(symbols.allocator, .{
+                                    .code = .duplicate_label,
+                                    .parse_error = core.parseError(
+                                        "codegen",
+                                        l.name.start,
+                                        "duplicate local label",
+                                        .{ .expected = "unique local-label name within the enclosing global label", .actual = name, .kind = .semantic },
+                                    ),
+                                });
+                            },
+                        };
+                    } else {
+                        try errors.append(symbols.allocator, .{
+                            .code = .undefined_symbol,
+                            .parse_error = core.parseError(
+                                "codegen",
+                                l.name.start,
+                                "local label has no enclosing global label",
+                                .{ .expected = "preceding global label", .actual = name, .kind = .semantic },
+                            ),
+                        });
+                    }
+                } else {
+                    symbols.putBorrowed(name, .{ .kind = .label, .value = addr }) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.Duplicate => try errors.append(symbols.allocator, .{
+                            .code = .duplicate_label,
+                            .parse_error = core.parseError(
+                                "codegen",
+                                l.name.start,
+                                "duplicate label",
+                                .{ .expected = "unique label name", .actual = name, .kind = .semantic },
+                            ),
+                        }),
+                    };
+                    parent_label = name;
+                }
             },
             .const_decl => |c| {
                 // The parser already evaluated and stored this in
@@ -237,7 +326,7 @@ fn layoutPass(
             .instruction => |i| {
                 const mnem = source[i.mnemonic.start..i.mnemonic.end];
                 var kinds: [3]opres.Kind = undefined;
-                for (i.operands, 0..) |op, idx| kinds[idx] = classifyForLayout(op, source, symbols.*);
+                for (i.operands, 0..) |op, idx| kinds[idx] = classifyForLayout(op, source, symbols.*, parent_label, symbols.allocator);
                 if (opres.resolve(mnem, kinds[0..i.operands.len])) |res| {
                     cursor += res.size;
                 } else {
@@ -328,9 +417,14 @@ fn emitPass(
     image_size: u32,
 ) !void {
     var cursor: u32 = 0;
+    var parent_label: ?[]const u8 = null;
     for (tree.program.statements) |stmt| {
         switch (stmt) {
-            .label, .const_decl, .struct_decl, .unknown => {},
+            .label => |l| {
+                const name = source[l.name.start..l.name.end];
+                if (name.len == 0 or name[0] != '.') parent_label = name;
+            },
+            .const_decl, .struct_decl, .unknown => {},
             .data8, .data16 => |d| {
                 const word_size: u32 = if (stmt == .data8) 1 else 2;
                 try emitDataValues(allocator, image, errors, source, d.values, word_size, consts);
@@ -348,7 +442,7 @@ fn emitPass(
                 }
             },
             .instruction => |i| {
-                try emitInstruction(allocator, image, errors, source, i, consts, symbols);
+                try emitInstruction(allocator, image, errors, source, i, consts, symbols, parent_label);
                 cursor = @intCast(image.items.len);
             },
         }
@@ -470,10 +564,11 @@ fn emitInstruction(
     inst: ast.Instruction,
     consts: expr.ConstantTable,
     symbols: *const symtab.SymbolTable,
+    parent_label: ?[]const u8,
 ) !void {
     const mnem = source[inst.mnemonic.start..inst.mnemonic.end];
     var kinds: [3]opres.Kind = undefined;
-    for (inst.operands, 0..) |op, idx| kinds[idx] = classifyForEmit(op, source, symbols.*);
+    for (inst.operands, 0..) |op, idx| kinds[idx] = classifyForEmit(op, source, symbols.*, parent_label, allocator);
     const res = opres.resolve(mnem, kinds[0..inst.operands.len]) orelse {
         // Pass 1 already raised the diagnostic; emit a NOP-shape
         // 1 byte (0xFF / `hlt`) so the cursor advances by the
@@ -504,7 +599,10 @@ fn emitInstruction(
         },
         .addr_lit => |a| try emitValue(allocator, image, a.value, 2),
         .sym_ref => |s| try emitSymRef(allocator, image, errors, source, s, consts),
-        .label_ref => |l| try emitLabelRef(allocator, image, errors, source, l, consts),
+        .label_ref => |l| {
+            const width: u32 = if (res.kinds[op_idx] == .imm8) 1 else 2;
+            try emitLabelRef(allocator, image, errors, source, l, consts, width, parent_label);
+        },
         .addr_expr => |a| {
             const result = expr.evalExpr(a.expr, source, consts);
             const val: u16 = switch (result) {
@@ -566,10 +664,26 @@ fn emitLabelRef(
     source: []const u8,
     l: ast.LabelRef,
     consts: expr.ConstantTable,
+    width: u32,
+    parent_label: ?[]const u8,
 ) !void {
-    const name = source[l.span.start..l.span.end];
-    if (consts.get(name)) |val| {
-        try emitValue(allocator, image, val, 2);
+    const lex = source[l.span.start..l.span.end];
+    const resolved = resolveLabelKey(lex, parent_label, allocator) catch {
+        try errors.append(allocator, .{
+            .code = .undefined_symbol,
+            .parse_error = core.parseError(
+                "codegen",
+                l.span.start,
+                "local label reference has no enclosing global label",
+                .{ .expected = "preceding global label", .actual = lex, .kind = .semantic },
+            ),
+        });
+        try emitValue(allocator, image, 0, width);
+        return;
+    };
+    defer if (resolved.owned) allocator.free(resolved.key);
+    if (consts.get(resolved.key)) |val| {
+        try emitValue(allocator, image, val, width);
     } else {
         try errors.append(allocator, .{
             .code = .undefined_symbol,
@@ -577,10 +691,10 @@ fn emitLabelRef(
                 "codegen",
                 l.span.start,
                 "undefined symbol",
-                .{ .expected = "defined label / const", .actual = name, .kind = .semantic },
+                .{ .expected = "defined label / const", .actual = resolved.key, .kind = .semantic },
             ),
         });
-        try emitValue(allocator, image, 0, 2);
+        try emitValue(allocator, image, 0, width);
     }
 }
 
@@ -635,7 +749,7 @@ fn emitCast(
 /// Magic bytes at the start of a `.gx` file — "GERO" in ASCII.
 const gx_magic = [4]u8{ 'G', 'E', 'R', 'O' };
 
-fn buildArchive(allocator: std.mem.Allocator, image_bytes: []const u8, opts: Options) ![]u8 {
+fn buildArchive(allocator: std.mem.Allocator, image_bytes: []const u8, entry_point: u16) ![]u8 {
     // Header layout per ISA §7.1:
     //   0x00..0x04  magic = "GERO"
     //   0x04..0x06  u16le version = 0x0001
@@ -652,7 +766,7 @@ fn buildArchive(allocator: std.mem.Allocator, image_bytes: []const u8, opts: Opt
     @memcpy(out[0..4], &gx_magic);
     writeU16Le(out[4..6], 0x0001); // version
     writeU16Le(out[6..8], 0x0000); // flags
-    writeU16Le(out[8..10], opts.entry_point);
+    writeU16Le(out[8..10], entry_point);
     // safety: image_size capped at 64 KiB by the ISA's 16-bit
     //         address space; cart code larger than that needs
     //         banking, which is a v0.1 follow-up.

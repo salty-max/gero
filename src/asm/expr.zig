@@ -16,6 +16,7 @@ const knit = @import("knit");
 const core = knit.core;
 const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
+const include = @import("include.zig");
 
 // ---------- ConstantTable ----------
 
@@ -92,7 +93,7 @@ pub const ParseError = error{
 pub fn parseExpression(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
-    errors: *std.ArrayList(@import("include.zig").Diagnostic),
+    errors: *std.ArrayList(include.Diagnostic),
 ) ParseError!*ast.Expr {
     return parseBitOr(state, allocator, errors);
 }
@@ -110,7 +111,7 @@ pub fn parseExpression(
 fn parseBitOr(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
-    errors: *std.ArrayList(@import("include.zig").Diagnostic),
+    errors: *std.ArrayList(include.Diagnostic),
 ) ParseError!*ast.Expr {
     var lhs = try parseBitXor(state, allocator, errors);
     while (peekKind(state, .pipe)) {
@@ -127,7 +128,7 @@ fn parseBitOr(
 fn parseBitXor(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
-    errors: *std.ArrayList(@import("include.zig").Diagnostic),
+    errors: *std.ArrayList(include.Diagnostic),
 ) ParseError!*ast.Expr {
     var lhs = try parseBitAnd(state, allocator, errors);
     while (peekKind(state, .caret)) {
@@ -144,7 +145,7 @@ fn parseBitXor(
 fn parseBitAnd(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
-    errors: *std.ArrayList(@import("include.zig").Diagnostic),
+    errors: *std.ArrayList(include.Diagnostic),
 ) ParseError!*ast.Expr {
     var lhs = try parseShift(state, allocator, errors);
     while (peekKind(state, .ampersand)) {
@@ -161,7 +162,7 @@ fn parseBitAnd(
 fn parseShift(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
-    errors: *std.ArrayList(@import("include.zig").Diagnostic),
+    errors: *std.ArrayList(include.Diagnostic),
 ) ParseError!*ast.Expr {
     var lhs = try parseAdd(state, allocator, errors);
     while (true) {
@@ -183,7 +184,7 @@ fn parseShift(
 fn parseAdd(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
-    errors: *std.ArrayList(@import("include.zig").Diagnostic),
+    errors: *std.ArrayList(include.Diagnostic),
 ) ParseError!*ast.Expr {
     var lhs = try parseMul(state, allocator, errors);
     while (true) {
@@ -205,7 +206,7 @@ fn parseAdd(
 fn parseMul(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
-    errors: *std.ArrayList(@import("include.zig").Diagnostic),
+    errors: *std.ArrayList(include.Diagnostic),
 ) ParseError!*ast.Expr {
     var lhs = try parseUnary(state, allocator, errors);
     while (true) {
@@ -228,7 +229,7 @@ fn parseMul(
 fn parseUnary(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
-    errors: *std.ArrayList(@import("include.zig").Diagnostic),
+    errors: *std.ArrayList(include.Diagnostic),
 ) ParseError!*ast.Expr {
     skipBlanks(state);
     if (peekKind(state, .tilde)) {
@@ -249,7 +250,7 @@ fn parseUnary(
 fn parsePrimary(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
-    errors: *std.ArrayList(@import("include.zig").Diagnostic),
+    errors: *std.ArrayList(include.Diagnostic),
 ) ParseError!*ast.Expr {
     skipBlanks(state);
     const start = state.index;
@@ -296,6 +297,15 @@ fn parsePrimary(
             } };
             return expr;
         }
+        // The leading byte was `$` — anything past that is a
+        // malformed hex literal, never "this isn't hex at all".
+        // Surface the lexer's specific message + map it to an
+        // E-code per asm spec §8.
+        try errors.append(state.allocator, .{
+            .code = include.ErrorCode.fromLexerMessage(r.err.message),
+            .parse_error = r.err,
+        });
+        return error.ParseFailed;
     } else if (next == '\'') {
         const r = lexer.charP.parseFn(state);
         if (r == .ok) {
@@ -307,6 +317,11 @@ fn parsePrimary(
             } };
             return expr;
         }
+        try errors.append(state.allocator, .{
+            .code = include.ErrorCode.fromLexerMessage(r.err.message),
+            .parse_error = r.err,
+        });
+        return error.ParseFailed;
     } else if (next == '&') {
         // `&FFFF` address literal as expression primary. The
         // wider `&[...]` form lives at the operand layer; it
@@ -321,6 +336,11 @@ fn parsePrimary(
             } };
             return expr;
         }
+        try errors.append(state.allocator, .{
+            .code = include.ErrorCode.fromLexerMessage(r.err.message),
+            .parse_error = r.err,
+        });
+        return error.ParseFailed;
     } else if (next == '@') {
         const r = lexer.symRefP.parseFn(state);
         if (r == .ok) {
@@ -390,7 +410,7 @@ fn isIdentStart(b: u8) bool {
 /// describing why folding failed (unknown ident, div-by-zero, etc.).
 pub const EvalResult = union(enum) {
     ok: u16,
-    err: @import("include.zig").Diagnostic,
+    err: include.Diagnostic,
 };
 
 /// Fold an expression tree to a `u16` using the visible

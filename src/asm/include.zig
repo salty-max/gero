@@ -170,6 +170,22 @@ pub const ErrorCode = enum(u8) {
     /// E016: char literal must be exactly one byte.
     char_literal_size = 16,
 
+    /// Map a lexer-level `ParseError.message` to the asm spec §8
+    /// code, or `null` when the message isn't one of the four
+    /// lex-level categories that map to E-codes (E006 / E010 /
+    /// E011 / E016). Substring match — the lexer messages are
+    /// stable strings; keep this lookup close to the enum so
+    /// drift is easy to spot.
+    pub fn fromLexerMessage(message: []const u8) ?ErrorCode {
+        if (std.mem.indexOf(u8, message, "hex literal exceeds 4 digits") != null) return .hex_out_of_range;
+        if (std.mem.indexOf(u8, message, "unterminated string literal") != null) return .unterminated_string;
+        if (std.mem.indexOf(u8, message, "unknown escape sequence") != null) return .unknown_escape;
+        if (std.mem.indexOf(u8, message, "empty char literal") != null) return .char_literal_size;
+        if (std.mem.indexOf(u8, message, "char literal must be exactly one byte") != null) return .char_literal_size;
+        if (std.mem.indexOf(u8, message, "unterminated char literal") != null) return .char_literal_size;
+        return null;
+    }
+
     /// Render as `E001`..`E016`. Caller owns nothing — the
     /// returned slice has static storage.
     pub fn shortLabel(self: ErrorCode) []const u8 {

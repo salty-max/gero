@@ -73,6 +73,7 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "mov8", .kinds = &.{ .addr, .reg }, .opcode = 0x22 },
     .{ .mnemonic = "mov8", .kinds = &.{ .reg, .reg_indirect }, .opcode = 0x23 },
     .{ .mnemonic = "mov8", .kinds = &.{ .reg_indirect, .reg }, .opcode = 0x24 },
+    .{ .mnemonic = "mov8", .kinds = &.{ .indexed, .reg }, .opcode = 0x29 },
     .{ .mnemonic = "movh", .kinds = &.{ .reg, .addr }, .opcode = 0x25 },
     .{ .mnemonic = "movl", .kinds = &.{ .reg, .addr }, .opcode = 0x26 },
 
@@ -205,13 +206,17 @@ fn classifyLabelRef(l: ast.LabelRef, symbols: ?*const symtab.SymbolTable) Kind {
 }
 
 /// Resolve a `label_ref` operand's `Kind` given its lexeme and
-/// the populated `SymbolTable`. A `const` resolves to `imm16`;
-/// a label or data symbol resolves to `addr`; an unknown name
-/// (forward reference or genuine miss) defaults to `addr`.
+/// the populated `SymbolTable`. A `const` resolves to `imm8` when
+/// its value fits in `u8`, otherwise `imm16`; a label or data
+/// symbol resolves to `addr`; an unknown name (forward reference
+/// or genuine miss) defaults to `addr`. The same narrowing rule
+/// that `codegen.narrowImm` applies to literal `.immediate`
+/// operands also applies here so symbolic ergonomics (`int PRINT`
+/// where `PRINT = $10`) work with imm8-only opcodes.
 pub fn labelRefKind(name: []const u8, symbols: symtab.SymbolTable) Kind {
     if (symbols.get(name)) |sym| {
         return switch (sym.kind) {
-            .const_value, .struct_field => .imm16,
+            .const_value, .struct_field => if (sym.value <= 0xFF) .imm8 else .imm16,
             .label, .data => .addr,
         };
     }

@@ -361,6 +361,50 @@ test "parser: data16 accepts the same forms minus strings" {
     }
 }
 
+test "parser: hex literal exceeding 4 digits surfaces [E006]" {
+    var pt = try parseSource("data16 X = $12345\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+    var saw = false;
+    for (pt.errors) |e| if (e.code == .hex_out_of_range) {
+        saw = true;
+    };
+    try std.testing.expect(saw);
+}
+
+test "parser: unknown string escape surfaces [E010]" {
+    var pt = try parseSource("data8 X = \"a\\q\"\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+    var saw = false;
+    for (pt.errors) |e| if (e.code == .unknown_escape) {
+        saw = true;
+    };
+    try std.testing.expect(saw);
+}
+
+test "parser: unterminated string surfaces [E011]" {
+    var pt = try parseSource("data8 X = \"oops\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+    var saw = false;
+    for (pt.errors) |e| if (e.code == .unterminated_string) {
+        saw = true;
+    };
+    try std.testing.expect(saw);
+}
+
+test "parser: multi-byte char literal surfaces [E016]" {
+    var pt = try parseSource("data8 X = 'AB'\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+    var saw = false;
+    for (pt.errors) |e| if (e.code == .char_literal_size) {
+        saw = true;
+    };
+    try std.testing.expect(saw);
+}
+
 test "parser: data16 with string literal surfaces a diagnostic" {
     var pt = try parseSource("data16 bad = \"hi\"\n");
     defer pt.deinit();
