@@ -82,6 +82,8 @@ fn cleanupStatements(allocator: std.mem.Allocator, statements: *std.ArrayList(as
             };
             allocator.free(d.values);
         },
+        .struct_decl => |sd| allocator.free(sd.fields),
+        .org => |o| ast.freeExpr(allocator, o.addr_expr),
         else => {},
     };
     statements.deinit(allocator);
@@ -112,6 +114,9 @@ fn parseStatement(
     }
     if (consumeKeyword(state, "struct")) {
         return parseStructDecl(state, allocator, stmt_start, statements, errors, consts);
+    }
+    if (consumeKeyword(state, "org")) {
+        return parseOrgDecl(state, allocator, stmt_start, statements, errors, consts);
     }
 
     // Label: `ident ":"`. The colon distinguishes a label from an
@@ -631,6 +636,51 @@ fn recoverToEndOfBlock(state: *core.ParseState) !void {
         state.advance(1);
         if (b == '}') return;
     }
+}
+
+// ---------- org directive ----------
+
+fn parseOrgDecl(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+) !void {
+    skipBlanksInLine(state);
+
+    // RHS expression.
+    const rhs = expr.parseExpression(state, allocator, errors) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ParseFailed => {
+            try recoverToNewline(state);
+            try statements.append(allocator, .{ .unknown = .{
+                .span = spanFrom(stmt_start, state.index),
+            } });
+            return;
+        },
+    };
+
+    // Fold against the visible constants. Backward-`org` overlap
+    // (E014) is a codegen-time check — the parser doesn't track
+    // the emit position, so it just records the address here.
+    const addr: ?u16 = blk: {
+        const eval = expr.evalExpr(rhs, state.input, consts.*);
+        switch (eval) {
+            .ok => |v| break :blk v,
+            .err => |d| {
+                try errors.append(allocator, d);
+                break :blk null;
+            },
+        }
+    };
+
+    try statements.append(allocator, .{ .org = .{
+        .addr_expr = rhs,
+        .addr = addr,
+        .span = spanFrom(stmt_start, state.index),
+    } });
 }
 
 // ---------- unknown / recovery ----------

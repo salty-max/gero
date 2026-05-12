@@ -72,6 +72,8 @@ pub const StructDecl = ast_mod.StructDecl;
 pub const StructField = ast_mod.StructField;
 /// Re-export: field type (u8 / u16) per asm spec §2.2.
 pub const FieldType = ast_mod.FieldType;
+/// Re-export: `org $ADDR` directive AST shape.
+pub const OrgDecl = ast_mod.OrgDecl;
 /// Re-export: name → u16 lookup for compile-time constants.
 pub const ConstantTable = expr_mod.ConstantTable;
 /// Re-export: fold an `Expr` tree to a `u16` using a `ConstantTable`.

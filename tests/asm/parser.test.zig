@@ -591,3 +591,90 @@ test "parser: expression with `Foo.` (missing field) surfaces an error" {
     defer pt.deinit();
     try std.testing.expect(pt.hasErrors());
 }
+
+// ---------- org directive ----------
+
+test "parser: org with hex literal evaluates eagerly" {
+    var pt = try parseSource("org $1000\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), pt.program.statements.len);
+    switch (pt.program.statements[0]) {
+        .org => |o| try std.testing.expectEqual(@as(u16, 0x1000), o.addr.?),
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: org with const reference resolves" {
+    var pt = try parseSource(
+        \\const IVT_BASE = $1000
+        \\org IVT_BASE
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[1]) {
+        .org => |o| try std.testing.expectEqual(@as(u16, 0x1000), o.addr.?),
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: org with compile-time arithmetic" {
+    var pt = try parseSource("org ($10 << $08) + $24\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        // (0x10 << 8) + 0x24 = 0x1024
+        .org => |o| try std.testing.expectEqual(@as(u16, 0x1024), o.addr.?),
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: org with unknown identifier surfaces a diagnostic" {
+    var pt = try parseSource("org NOPE\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+    var saw_unknown_ident = false;
+    for (pt.errors) |e| {
+        if (std.mem.indexOf(u8, e.parse_error.message, "unknown identifier") != null) {
+            saw_unknown_ident = true;
+        }
+    }
+    try std.testing.expect(saw_unknown_ident);
+    // The org statement is still recorded (with addr = null) so
+    // the parser keeps walking.
+    try std.testing.expectEqual(@as(usize, 1), pt.program.statements.len);
+    switch (pt.program.statements[0]) {
+        .org => |o| try std.testing.expect(o.addr == null),
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: org missing expression" {
+    var pt = try parseSource("org\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
+
+test "parser: classic IVT setup pattern" {
+    // The canonical use case from asm spec §2.2 — place data at
+    // the IVT base, then move the cursor for user code.
+    var pt = try parseSource(
+        \\org $1000
+        \\data16 ivt_keydown = $2000
+        \\org $1100
+        \\start:
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 4), pt.program.statements.len);
+    switch (pt.program.statements[0]) {
+        .org => |o| try std.testing.expectEqual(@as(u16, 0x1000), o.addr.?),
+        else => return error.WrongStatementKind,
+    }
+    switch (pt.program.statements[2]) {
+        .org => |o| try std.testing.expectEqual(@as(u16, 0x1100), o.addr.?),
+        else => return error.WrongStatementKind,
+    }
+}
