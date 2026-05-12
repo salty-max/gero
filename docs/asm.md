@@ -425,8 +425,8 @@ mov &[@player + 2], acu              ; load player.mp into acu
 mov acu, &[@player + Player.mp]      ; same, with a struct-cast offset
 
 ; (b) indexed addressing — at most one register addend, opcode 0x17
-mov [&table + r1], acu               ; acu <- mem[table + r1]
-mov r2, [&table + r1]                ; mem[table + r1] <- r2
+mov [@table + r1], acu               ; acu <- mem[table + r1]
+mov r2, [@table + r1]                ; mem[table + r1] <- r2
 ```
 
 The two are distinguished by whether the expression contains a

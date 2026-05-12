@@ -86,6 +86,12 @@ pub const Register = gero.vm.Register;
 pub const IndirectReg = ast_mod.IndirectReg;
 /// Re-export: bare identifier in operand position (label / const reference).
 pub const LabelRef = ast_mod.LabelRef;
+/// Re-export: `&[expr]` compile-time address expression operand (form a).
+pub const AddrExpr = ast_mod.AddrExpr;
+/// Re-export: `[addr + reg]` indexed addressing operand (form b).
+pub const IndexedAddr = ast_mod.IndexedAddr;
+/// Re-export: `<Type> @sym.field` cast operand.
+pub const CastOperand = ast_mod.CastOperand;
 /// Re-export: name → u16 lookup for compile-time constants.
 pub const ConstantTable = expr_mod.ConstantTable;
 /// Re-export: fold an `Expr` tree to a `u16` using a `ConstantTable`.

@@ -889,3 +889,163 @@ test "parser: instruction with 3-operand form (indexed-style placeholder)" {
         else => return error.WrongStatementKind,
     }
 }
+
+// ---------- instructions (slice B: complex address forms) ----------
+
+test "parser: mov &[$1100], acu (addr_expr form a with hex)" {
+    var pt = try parseSource("mov &[$1100], acu\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| {
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .addr_expr), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0]));
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .register), @as(std.meta.Tag(gero.asm_.Operand), i.operands[1]));
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: mov &[@player + $02], acu (addr_expr with sym + offset)" {
+    var pt = try parseSource("mov &[@player + $02], acu\n");
+    defer pt.deinit();
+    // Eval will surface "unresolved symbol" because @player isn't
+    // defined in this single-statement source; AST itself is fine.
+    // We accept that diagnostic — the operand still parses.
+    switch (pt.program.statements[0]) {
+        .instruction => |i| {
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .addr_expr), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0]));
+            switch (i.operands[0]) {
+                .addr_expr => |a| {
+                    // Inner expr is `binary(+, sym_ref(@player), hex($02))`
+                    try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Expr), .binary), @as(std.meta.Tag(gero.asm_.Expr), a.expr.*));
+                },
+                else => unreachable,
+            }
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: mov [&2620 + r1], acu (indexed form b with hex addr literal)" {
+    var pt = try parseSource("mov [&2620 + r1], acu\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| switch (i.operands[0]) {
+            .indexed => |idx| {
+                try std.testing.expectEqual(gero.asm_.Register.r1, idx.reg.id);
+                try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Expr), .addr_lit), @as(std.meta.Tag(gero.asm_.Expr), idx.addr.*));
+            },
+            else => return error.WrongOperandKind,
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: mov [@base + r2], acu (indexed with sym base)" {
+    var pt = try parseSource("mov [@base + r2], acu\n");
+    defer pt.deinit();
+    switch (pt.program.statements[0]) {
+        .instruction => |i| {
+            switch (i.operands[0]) {
+                .indexed => |idx| {
+                    try std.testing.expectEqual(gero.asm_.Register.r2, idx.reg.id);
+                    try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Expr), .sym_ref), @as(std.meta.Tag(gero.asm_.Expr), idx.addr.*));
+                },
+                else => return error.WrongOperandKind,
+            }
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: [r1] still parses as indirect (single-register inside)" {
+    var pt = try parseSource("mov [r1], r2\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| {
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .indirect), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0]));
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: mov acu, <Player> @player.hp (cast operand)" {
+    var pt = try parseSource(
+        \\struct Player { hp: u16, mp: u16 }
+        \\mov acu, <Player> @player.hp
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[1]) {
+        .instruction => |i| {
+            switch (i.operands[1]) {
+                .cast => |c| {
+                    const src =
+                        \\struct Player { hp: u16, mp: u16 }
+                        \\mov acu, <Player> @player.hp
+                        \\
+                    ;
+                    try std.testing.expectEqualStrings("Player", src[c.type_name.start..c.type_name.end]);
+                    try std.testing.expectEqualStrings("hp", src[c.field_name.start..c.field_name.end]);
+                    try std.testing.expectEqualStrings("@player", src[c.sym_ref.span.start..c.sym_ref.span.end]);
+                },
+                else => return error.WrongOperandKind,
+            }
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: const + addr_expr resolves at parse time" {
+    var pt = try parseSource(
+        \\const BASE = $1100
+        \\mov &[BASE + $20], r1
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    // The addr_expr's inner expression should fold to $1120 once
+    // the codegen pass evaluates against the ConstantTable.
+    switch (pt.program.statements[1]) {
+        .instruction => |i| {
+            switch (i.operands[0]) {
+                .addr_expr => |a| {
+                    var consts = gero.asm_.ConstantTable.init(alloc);
+                    defer consts.deinit();
+                    try consts.put("BASE", 0x1100);
+                    const result = gero.asm_.evalExpr(a.expr, "const BASE = $1100\nmov &[BASE + $20], r1\n", consts);
+                    try std.testing.expectEqual(@as(u16, 0x1120), result.ok);
+                },
+                else => return error.WrongOperandKind,
+            }
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: cast with malformed type position" {
+    var pt = try parseSource("mov acu, < @player.hp\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
+
+test "parser: cast missing closing '>'" {
+    var pt = try parseSource("mov acu, <Player @player.hp\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
+
+test "parser: indexed missing '+' between addr and reg" {
+    var pt = try parseSource("mov [@table r1], acu\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
+
+test "parser: addr_expr missing closing ']'" {
+    var pt = try parseSource("mov &[$1100, r1\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
