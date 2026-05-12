@@ -3,7 +3,6 @@ const gero = @import("gero");
 
 const alloc = std.testing.allocator;
 
-/// Bundle a `tmpDir` plus a few helpers so tests stay readable.
 const Fixture = struct {
     tmp: std.testing.TmpDir,
 
@@ -28,17 +27,24 @@ const Fixture = struct {
     }
 };
 
-fn countKind(tokens: []const gero.asm_.Token, kind: gero.asm_.Token.Kind) usize {
-    var n: usize = 0;
-    for (tokens) |t| if (t.kind == kind) {
-        n += 1;
-    };
-    return n;
+/// Count non-overlapping occurrences of `needle` in `haystack`.
+fn occurrences(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) {
+        if (std.mem.eql(u8, haystack[i .. i + needle.len], needle)) {
+            count += 1;
+            i += needle.len;
+        } else {
+            i += 1;
+        }
+    }
+    return count;
 }
 
 // ---------- happy path ----------
 
-test "include: root file with no includes round-trips its token kinds" {
+test "include: root file with no includes round-trips its bytes" {
     var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("main.gas", "hlt\n");
@@ -50,15 +56,11 @@ test "include: root file with no includes round-trips its token kinds" {
     defer fused.deinit();
 
     try std.testing.expect(!fused.hasErrors());
-    try std.testing.expectEqual(@as(usize, 1), fused.file_table.files.items.len);
-
-    // Should see: ident(hlt), newline. (eof isn't copied by the resolver.)
-    try std.testing.expectEqual(@as(usize, 1), countKind(fused.tokens, .ident));
-    try std.testing.expectEqual(@as(usize, 1), countKind(fused.tokens, .newline));
-    try std.testing.expectEqual(@as(u16, 0), fused.tokens[0].file_id);
+    try std.testing.expectEqualStrings("hlt\n", fused.source);
+    try std.testing.expectEqual(@as(usize, 1), fused.source_map.files.items.len);
 }
 
-test "include: single include splices the target's tokens, drops the include statement" {
+test "include: single include splices the target's bytes and elides the directive" {
     var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("lib.gas", "nop\n");
@@ -75,11 +77,14 @@ test "include: single include splices the target's tokens, drops the include sta
     defer fused.deinit();
 
     try std.testing.expect(!fused.hasErrors());
-    try std.testing.expectEqual(@as(usize, 2), fused.file_table.files.items.len);
-    // Two ident tokens: `nop` from lib, `hlt` from main. The `include`
-    // and `"lib.gas"` themselves are consumed by the resolver.
-    try std.testing.expectEqual(@as(usize, 2), countKind(fused.tokens, .ident));
-    try std.testing.expectEqual(@as(usize, 0), countKind(fused.tokens, .string));
+    // The `include` line itself doesn't survive; lib's `nop` does.
+    try std.testing.expect(std.mem.indexOf(u8, fused.source, "include") == null);
+    try std.testing.expect(std.mem.indexOf(u8, fused.source, "nop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fused.source, "hlt") != null);
+    // Order: lib first, then main's remaining body.
+    const nop_idx = std.mem.indexOf(u8, fused.source, "nop").?;
+    const hlt_idx = std.mem.indexOf(u8, fused.source, "hlt").?;
+    try std.testing.expect(nop_idx < hlt_idx);
 }
 
 test "include: nested 3-deep include resolves in order" {
@@ -104,21 +109,11 @@ test "include: nested 3-deep include resolves in order" {
     defer fused.deinit();
 
     try std.testing.expect(!fused.hasErrors());
-    try std.testing.expectEqual(@as(usize, 3), fused.file_table.files.items.len);
-
-    // Walking the token stream we should hit c_ident, b_ident, a_ident in that order.
-    var idents: [3][]const u8 = undefined;
-    var idx: usize = 0;
-    for (fused.tokens) |t| {
-        if (t.kind != .ident) continue;
-        const f = fused.file_table.get(t.file_id);
-        idents[idx] = f.content[t.start..t.end];
-        idx += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 3), idx);
-    try std.testing.expectEqualStrings("c_ident", idents[0]);
-    try std.testing.expectEqualStrings("b_ident", idents[1]);
-    try std.testing.expectEqualStrings("a_ident", idents[2]);
+    const c_idx = std.mem.indexOf(u8, fused.source, "c_ident").?;
+    const b_idx = std.mem.indexOf(u8, fused.source, "b_ident").?;
+    const a_idx = std.mem.indexOf(u8, fused.source, "a_ident").?;
+    try std.testing.expect(c_idx < b_idx);
+    try std.testing.expect(b_idx < a_idx);
 }
 
 // ---------- textual splice (re-include emits every time) ----------
@@ -127,14 +122,8 @@ test "include: diamond — utils is spliced TWICE per asm tradition" {
     var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("utils.gas", "u_ident\n");
-    try fx.write("a.gas",
-        \\include "utils.gas"
-        \\
-    );
-    try fx.write("b.gas",
-        \\include "utils.gas"
-        \\
-    );
+    try fx.write("a.gas", "include \"utils.gas\"\n");
+    try fx.write("b.gas", "include \"utils.gas\"\n");
     try fx.write("main.gas",
         \\include "a.gas"
         \\include "b.gas"
@@ -148,20 +137,10 @@ test "include: diamond — utils is spliced TWICE per asm tradition" {
     defer fused.deinit();
 
     try std.testing.expect(!fused.hasErrors());
-    // utils.gas gets a FileTable entry per inclusion — the file table
-    // tracks each splice, not each unique file.
-    try std.testing.expect(fused.file_table.files.items.len >= 4);
-    // u_ident should appear TWICE in the fused stream (textual splice).
-    var u_ident_count: usize = 0;
-    for (fused.tokens) |t| {
-        if (t.kind != .ident) continue;
-        const f = fused.file_table.get(t.file_id);
-        if (std.mem.eql(u8, f.content[t.start..t.end], "u_ident")) u_ident_count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 2), u_ident_count);
+    try std.testing.expectEqual(@as(usize, 2), occurrences(fused.source, "u_ident"));
 }
 
-test "include: two direct includes of the same file emit its tokens twice" {
+test "include: two direct includes of the same file emit its bytes twice" {
     var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("shared.gas", "s_ident\n");
@@ -178,13 +157,50 @@ test "include: two direct includes of the same file emit its tokens twice" {
     defer fused.deinit();
 
     try std.testing.expect(!fused.hasErrors());
-    var s_count: usize = 0;
-    for (fused.tokens) |t| {
-        if (t.kind != .ident) continue;
-        const f = fused.file_table.get(t.file_id);
-        if (std.mem.eql(u8, f.content[t.start..t.end], "s_ident")) s_count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 2), s_count);
+    try std.testing.expectEqual(@as(usize, 2), occurrences(fused.source, "s_ident"));
+}
+
+// ---------- include matcher edge cases ----------
+
+test "include: directive inside a comment is NOT processed" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gas", "lib_body\n");
+    try fx.write("main.gas",
+        \\; include "lib.gas"
+        \\hlt
+        \\
+    );
+
+    const main_path = try fx.pathOf("main.gas");
+    defer alloc.free(main_path);
+
+    var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, main_path);
+    defer fused.deinit();
+
+    try std.testing.expect(!fused.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, fused.source, "lib_body") == null);
+}
+
+test "include: 'include' literal inside a string is NOT processed" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("main.gas",
+        \\data8 msg = "include \"x.gas\""
+        \\
+    );
+
+    const main_path = try fx.pathOf("main.gas");
+    defer alloc.free(main_path);
+
+    var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, main_path);
+    defer fused.deinit();
+
+    // The string-literal-tracker in the include scanner makes sure
+    // we don't recurse on the word `include` that lives inside the
+    // double-quoted body. Source survives unchanged.
+    try std.testing.expect(!fused.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, fused.source, "data8") != null);
 }
 
 // ---------- cycle / depth / missing ----------
@@ -203,8 +219,7 @@ test "include: direct self-include detected as cycle (E012)" {
     try std.testing.expect(fused.hasErrors());
     var saw_cycle = false;
     for (fused.errors) |e| {
-        if (std.mem.eql(u8, e.parse_error.parser, "include") and
-            std.mem.indexOf(u8, e.parse_error.message, "cycle") != null) saw_cycle = true;
+        if (std.mem.indexOf(u8, e.parse_error.message, "cycle") != null) saw_cycle = true;
     }
     try std.testing.expect(saw_cycle);
 }
@@ -229,7 +244,7 @@ test "include: indirect cycle a→b→a detected (E012)" {
     try std.testing.expect(saw_cycle);
 }
 
-test "include: missing target produces E015-shape error pointing at including file" {
+test "include: missing target produces E015-shape error" {
     var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("main.gas", "include \"nope.gas\"\n");
@@ -242,18 +257,12 @@ test "include: missing target produces E015-shape error pointing at including fi
 
     try std.testing.expect(fused.hasErrors());
     try std.testing.expectEqual(@as(usize, 1), fused.errors.len);
-    const e = fused.errors[0];
-    try std.testing.expect(std.mem.indexOf(u8, e.parse_error.message, "not found") != null);
-    // Error should be attached to main (the file doing the include),
-    // not the missing target.
-    const main_info = fused.file_table.get(e.file_id);
-    try std.testing.expect(std.mem.endsWith(u8, main_info.path, "main.gas"));
+    try std.testing.expect(std.mem.indexOf(u8, fused.errors[0].parse_error.message, "not found") != null);
 }
 
 test "include: deep chain exceeding 32 levels is rejected (E013)" {
     var fx = Fixture.init();
     defer fx.deinit();
-    // Build 34 files where file_N includes file_{N+1}.
     var name_buf: [32]u8 = undefined;
     var next_buf: [32]u8 = undefined;
     var i: usize = 0;
@@ -283,19 +292,17 @@ test "include: deep chain exceeding 32 levels is rejected (E013)" {
     try std.testing.expect(saw_depth);
 }
 
-// ---------- error-site preservation ----------
+// ---------- SourceMap + format helper ----------
 
-test "include: lexer error in an included file references that file's path + line" {
+test "include: SourceMap.lookup resolves offsets back to their file" {
     var fx = Fixture.init();
     defer fx.deinit();
-    // `$ABCDE` is a 5-digit hex literal — rejected by the lexer.
-    // Put it on line 2 of the included file so we can check line/col.
-    try fx.write("bad.gas",
-        \\hlt
-        \\mov $ABCDE, r1
+    try fx.write("lib.gas", "lib_ident\n");
+    try fx.write("main.gas",
+        \\include "lib.gas"
+        \\main_ident
         \\
     );
-    try fx.write("main.gas", "include \"bad.gas\"\n");
 
     const main_path = try fx.pathOf("main.gas");
     defer alloc.free(main_path);
@@ -303,29 +310,19 @@ test "include: lexer error in an included file references that file's path + lin
     var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, main_path);
     defer fused.deinit();
 
-    try std.testing.expect(fused.hasErrors());
+    const lib_off = std.mem.indexOf(u8, fused.source, "lib_ident").?;
+    const main_off = std.mem.indexOf(u8, fused.source, "main_ident").?;
 
-    // Find the lexer error (parser == "hexLiteral") and check the
-    // file pinned on it is bad.gas, not main.gas.
-    var saw_in_bad = false;
-    for (fused.errors) |e| {
-        if (std.mem.eql(u8, e.parse_error.parser, "hexLiteral")) {
-            const info = fused.file_table.get(e.file_id);
-            if (std.mem.endsWith(u8, info.path, "bad.gas")) saw_in_bad = true;
-        }
-    }
-    try std.testing.expect(saw_in_bad);
+    const lib_loc = fused.source_map.lookup(@intCast(lib_off)).?;
+    const main_loc = fused.source_map.lookup(@intCast(main_off)).?;
+    try std.testing.expect(std.mem.endsWith(u8, lib_loc.file.path, "lib.gas"));
+    try std.testing.expect(std.mem.endsWith(u8, main_loc.file.path, "main.gas"));
 }
 
 test "include: formatDiagnostic produces path:line:col prefix" {
     var fx = Fixture.init();
     defer fx.deinit();
-    try fx.write("bad.gas",
-        \\hlt
-        \\$ABCDE
-        \\
-    );
-    try fx.write("main.gas", "include \"bad.gas\"\n");
+    try fx.write("main.gas", "include \"nope.gas\"\n");
 
     const main_path = try fx.pathOf("main.gas");
     defer alloc.free(main_path);
@@ -335,58 +332,9 @@ test "include: formatDiagnostic produces path:line:col prefix" {
 
     var allocating = std.Io.Writer.Allocating.init(alloc);
     defer allocating.deinit();
-
-    // Find the hex-literal error and format it.
-    for (fused.errors) |e| {
-        if (std.mem.eql(u8, e.parse_error.parser, "hexLiteral")) {
-            try gero.asm_.formatDiagnostic(&allocating.writer, fused.file_table, e);
-            break;
-        }
-    }
+    try gero.asm_.formatDiagnostic(&allocating.writer, fused.source_map, fused.errors[0]);
 
     const out = allocating.written();
-    try std.testing.expect(std.mem.indexOf(u8, out, "bad.gas") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, ":2:") != null); // line 2
-}
-
-// ---------- token stream invariants ----------
-
-test "include: token file_ids match the files they came from" {
-    var fx = Fixture.init();
-    defer fx.deinit();
-    try fx.write("lib.gas", "lib_token\n");
-    try fx.write("main.gas",
-        \\include "lib.gas"
-        \\main_token
-        \\
-    );
-
-    const main_path = try fx.pathOf("main.gas");
-    defer alloc.free(main_path);
-
-    var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, main_path);
-    defer fused.deinit();
-
-    try std.testing.expect(!fused.hasErrors());
-    for (fused.tokens) |t| {
-        if (t.kind != .ident) continue;
-        const f = fused.file_table.get(t.file_id);
-        const lex = f.content[t.start..t.end];
-        if (std.mem.eql(u8, lex, "lib_token")) {
-            try std.testing.expect(std.mem.endsWith(u8, f.path, "lib.gas"));
-        } else if (std.mem.eql(u8, lex, "main_token")) {
-            try std.testing.expect(std.mem.endsWith(u8, f.path, "main.gas"));
-        }
-    }
-}
-
-test "include: standalone tokenize still emits file_id = 0" {
-    // The lexer is file-agnostic — only the resolver sets file_id.
-    // Anyone calling `tokenize` directly (e.g., tests, smoke tools)
-    // should still see the default.
-    var ts = try gero.asm_.tokenize(alloc, "hlt\n");
-    defer ts.deinit();
-    for (ts.tokens) |t| {
-        try std.testing.expectEqual(@as(u16, 0), t.file_id);
-    }
+    try std.testing.expect(std.mem.indexOf(u8, out, "main.gas") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "not found") != null);
 }
