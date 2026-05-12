@@ -117,6 +117,27 @@ test "codegen: same local-label name reuses across global scopes" {
     try std.testing.expect(!out.cg.hasErrors());
 }
 
+test "codegen: undefined label_ref suggests a close-by name via `note`" {
+    var out = try assemble(
+        \\nowhere:
+        \\  hlt
+        \\main:
+        \\  jmp nowher
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(out.cg.hasErrors());
+    var found = false;
+    for (out.cg.errors) |e| {
+        if (e.code == .undefined_symbol) {
+            if (e.note) |n| if (std.mem.eql(u8, n, "nowhere")) {
+                found = true;
+            };
+        }
+    }
+    try std.testing.expect(found);
+}
+
 test "codegen: local label with no enclosing global is E004-shape" {
     var out = try assemble(
         \\.orphan:
