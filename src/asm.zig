@@ -74,6 +74,16 @@ pub const StructField = ast_mod.StructField;
 pub const FieldType = ast_mod.FieldType;
 /// Re-export: `org $ADDR` directive AST shape.
 pub const OrgDecl = ast_mod.OrgDecl;
+/// Re-export: instruction AST shape (mnemonic + operands).
+pub const Instruction = ast_mod.Instruction;
+/// Re-export: one operand of an instruction.
+pub const Operand = ast_mod.Operand;
+/// Re-export: register reference (`r1`, `acu`, ...).
+pub const RegisterRef = ast_mod.RegisterRef;
+/// Re-export: indirect-via-register `[r1]`.
+pub const IndirectReg = ast_mod.IndirectReg;
+/// Re-export: bare identifier in operand position (label / const reference).
+pub const LabelRef = ast_mod.LabelRef;
 /// Re-export: name → u16 lookup for compile-time constants.
 pub const ConstantTable = expr_mod.ConstantTable;
 /// Re-export: fold an `Expr` tree to a `u16` using a `ConstantTable`.

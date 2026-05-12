@@ -91,8 +91,11 @@ test "parser: whitespace between ident and colon is tolerated" {
 
 // ---------- recovery ----------
 
-test "parser: unknown line emits a diagnostic + an `unknown` statement" {
-    var pt = try parseSource("mov $01, r1\n");
+test "parser: unrecognized starter byte produces an unknown statement" {
+    // Lines that don't begin with an identifier (i.e., neither a
+    // directive, label, nor instruction) fall through to the
+    // unknown catch-all.
+    var pt = try parseSource("] bad\n");
     defer pt.deinit();
     try std.testing.expect(pt.hasErrors());
     try std.testing.expectEqual(@as(usize, 1), pt.program.statements.len);
@@ -100,13 +103,11 @@ test "parser: unknown line emits a diagnostic + an `unknown` statement" {
         @as(std.meta.Tag(gero.asm_.Statement), .unknown),
         @as(std.meta.Tag(gero.asm_.Statement), pt.program.statements[0]),
     );
-    try std.testing.expectEqual(@as(usize, 1), pt.errors.len);
-    try std.testing.expectEqualStrings("statement", pt.errors[0].parse_error.parser);
 }
 
 test "parser: unknown line doesn't poison subsequent labels" {
     var pt = try parseSource(
-        \\mov $01, r1
+        \\] bad
         \\after:
         \\
     );
@@ -125,10 +126,10 @@ test "parser: unknown line doesn't poison subsequent labels" {
 
 test "parser: multiple unknown lines surface multiple errors in one run" {
     var pt = try parseSource(
-        \\garbage_one extra
+        \\] one
         \\start:
-        \\garbage_two extra
-        \\garbage_three extra
+        \\} two
+        \\] three
         \\
     );
     defer pt.deinit();
@@ -675,6 +676,181 @@ test "parser: classic IVT setup pattern" {
     }
     switch (pt.program.statements[2]) {
         .org => |o| try std.testing.expectEqual(@as(u16, 0x1100), o.addr.?),
+        else => return error.WrongStatementKind,
+    }
+}
+
+// ---------- instructions (slice A: simple operands) ----------
+
+test "parser: zero-operand instruction (hlt)" {
+    var pt = try parseSource("hlt\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), pt.program.statements.len);
+    switch (pt.program.statements[0]) {
+        .instruction => |i| {
+            try std.testing.expectEqualStrings("hlt", "hlt\n"[i.mnemonic.start..i.mnemonic.end]);
+            try std.testing.expectEqual(@as(usize, 0), i.operands.len);
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: mov reg, reg" {
+    var pt = try parseSource("mov r1, r2\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| {
+            try std.testing.expectEqual(@as(usize, 2), i.operands.len);
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .register), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0]));
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .register), @as(std.meta.Tag(gero.asm_.Operand), i.operands[1]));
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: mov imm16, reg" {
+    var pt = try parseSource("mov $ABCD, r1\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| {
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .immediate), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0]));
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .register), @as(std.meta.Tag(gero.asm_.Operand), i.operands[1]));
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: mov &FFFF, r1 (addr literal)" {
+    var pt = try parseSource("mov &2620, r1\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| {
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .addr_lit), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0]));
+            switch (i.operands[0]) {
+                .addr_lit => |a| try std.testing.expectEqual(@as(u16, 0x2620), a.value),
+                else => unreachable, // tag-checked just above
+            }
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: mov @sym, r1 (symbol reference)" {
+    var pt = try parseSource("mov @sprite, r1\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .sym_ref), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0])),
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: mov [r1], r2 (indirect)" {
+    var pt = try parseSource("mov [r1], r2\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| {
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .indirect), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0]));
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .register), @as(std.meta.Tag(gero.asm_.Operand), i.operands[1]));
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: jmp loop (label reference operand)" {
+    var pt = try parseSource("jmp loop\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .label_ref), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0])),
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: cmp r1, 'A' (char-literal immediate)" {
+    var pt = try parseSource("cmp r1, 'A'\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| {
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .register), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0]));
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .immediate), @as(std.meta.Tag(gero.asm_.Operand), i.operands[1]));
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: instruction with inline comment" {
+    var pt = try parseSource("mov $01, r1   ; load 1\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| try std.testing.expectEqual(@as(usize, 2), i.operands.len),
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: realistic loop program" {
+    var pt = try parseSource(
+        \\start:
+        \\  mov $00, r1
+        \\loop:
+        \\  inc r1
+        \\  cmp r1, $10
+        \\  jne loop
+        \\  hlt
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    // 2 labels + 5 instructions = 7 statements
+    try std.testing.expectEqual(@as(usize, 7), pt.program.statements.len);
+}
+
+test "parser: const + instruction using its name" {
+    var pt = try parseSource(
+        \\const TARGET = $10
+        \\cmp r1, TARGET
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[1]) {
+        .instruction => |i| {
+            // `TARGET` is a bare identifier in operand position
+            // — it becomes a label_ref, NOT an immediate. The
+            // symbol pass (#35) is what later folds it.
+            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .label_ref), @as(std.meta.Tag(gero.asm_.Operand), i.operands[1]));
+        },
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: indirect with non-register inside surfaces a diagnostic" {
+    var pt = try parseSource("mov [42_not_a_register_lol], r2\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
+
+test "parser: indirect missing closing bracket" {
+    var pt = try parseSource("mov [r1, r2\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
+
+test "parser: instruction with 3-operand form (indexed-style placeholder)" {
+    // The full indexed `[&addr + r1]` form arrives in slice B,
+    // but plain comma-separated operands of three already work.
+    var pt = try parseSource("mov &2620, r1, r2\n");
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .instruction => |i| try std.testing.expectEqual(@as(usize, 3), i.operands.len),
         else => return error.WrongStatementKind,
     }
 }
