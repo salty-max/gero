@@ -354,6 +354,48 @@ test "codegen: sram_banks N populates the header byte" {
     try std.testing.expectEqual(@as(u8, 2), out.cg.image[0x0C]); // bank_count
 }
 
+test "codegen: org in base image targeting bank window is E007" {
+    var out = try assemble(
+        \\org $C100
+        \\hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(out.cg.hasErrors());
+    var found = false;
+    for (out.cg.errors) |e| if (e.code == .addr_out_of_range) {
+        found = true;
+    };
+    try std.testing.expect(found);
+}
+
+test "codegen: org inside `bank N` targeting outside the window is E007" {
+    var out = try assemble(
+        \\bank $00
+        \\org $0010
+        \\hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(out.cg.hasErrors());
+    var found = false;
+    for (out.cg.errors) |e| if (e.code == .addr_out_of_range) {
+        found = true;
+    };
+    try std.testing.expect(found);
+}
+
+test "codegen: org inside `bank N` targeting the window is accepted" {
+    var out = try assemble(
+        \\bank $00
+        \\org $C100
+        \\hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+}
+
 test "codegen: labels inside `bank N` resolve to bank-window addresses" {
     // `call greet` should emit a `call $C000` (the greet label
     // sits at offset 0 of bank 0 → CPU $C000 when mb = $00).
