@@ -264,17 +264,20 @@ fn layoutPass(
                 // its internal ConstantTable, but that table got
                 // dropped at end-of-parse. Re-eval here against
                 // the symbol table we're building up.
+                // On eval failure we stay silent: the parser
+                // already surfaced the same diagnostic when it
+                // tried to fold this expression. Re-raising would
+                // duplicate the user-facing error.
                 const name = source[c.name.start..c.name.end];
                 var consts = try symbols.toConstantTable();
                 defer consts.deinit();
-                const result = expr.evalExpr(c.expr, source, consts);
-                switch (result) {
+                switch (expr.evalExpr(c.expr, source, consts)) {
                     .ok => |v| symbols.putBorrowed(name, .{ .kind = .const_value, .value = v }) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         // safety: const_value never triggers Duplicate per putBorrowed's rules
                         error.Duplicate => unreachable,
                     },
-                    .err => |d| try errors.append(symbols.allocator, d),
+                    .err => {},
                 }
             },
             .data8, .data16 => |d| {

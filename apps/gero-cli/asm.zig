@@ -32,22 +32,29 @@ pub fn execute(
     };
     defer fused.deinit();
 
+    // Collect diagnostics across every phase so the user sees the
+    // full picture in one run. Include errors that can't be
+    // recovered from (no fused source = no parse) short-circuit
+    // before parse.
     if (fused.errors.len > 0) {
         try printDiagnostics(stdout, fused.source_map, fused.errors);
         return 3;
     }
 
+    // Parse always returns a tree (statement-level recovery means
+    // `Unknown` nodes stand in for failed statements). We run
+    // codegen even when parse surfaced errors so codegen-level
+    // diagnostics (E001/E003/E004/E005/E014) for the well-formed
+    // statements still surface in the same run.
     var pt = try gero.asm_.parse(arena, fused.source);
     defer pt.deinit();
-    if (pt.hasErrors()) {
-        try printDiagnostics(stdout, fused.source_map, pt.errors);
-        return 3;
-    }
 
     var cg = try gero.asm_.assemble(arena, fused.source, pt, .{});
     defer cg.deinit();
-    if (cg.hasErrors()) {
-        try printDiagnostics(stdout, fused.source_map, cg.errors);
+
+    const had_errors = pt.hasErrors() or cg.hasErrors();
+    if (had_errors) {
+        try printAllDiagnostics(arena, stdout, fused.source_map, pt.errors, cg.errors);
         return 3;
     }
 
@@ -77,6 +84,28 @@ fn printDiagnostics(
     errors: []const gero.asm_.Diagnostic,
 ) !void {
     for (errors) |d| try gero.asm_.formatPretty(stdout, source_map, d);
+}
+
+/// Merge parse + codegen diagnostics, sort by fused-source offset
+/// so the user sees errors in source order regardless of which
+/// pass raised them.
+fn printAllDiagnostics(
+    arena: std.mem.Allocator,
+    stdout: *std.Io.Writer,
+    source_map: gero.asm_.SourceMap,
+    parse_errors: []const gero.asm_.Diagnostic,
+    codegen_errors: []const gero.asm_.Diagnostic,
+) !void {
+    const total = parse_errors.len + codegen_errors.len;
+    const all = try arena.alloc(gero.asm_.Diagnostic, total);
+    @memcpy(all[0..parse_errors.len], parse_errors);
+    @memcpy(all[parse_errors.len..], codegen_errors);
+    std.mem.sort(gero.asm_.Diagnostic, all, {}, byIndex);
+    try printDiagnostics(stdout, source_map, all);
+}
+
+fn byIndex(_: void, a: gero.asm_.Diagnostic, b: gero.asm_.Diagnostic) bool {
+    return a.parse_error.index < b.parse_error.index;
 }
 
 /// Resolve the `.gx` output path from `--out` plus the source.
