@@ -1,0 +1,29 @@
+; hello.gas — smallest meaningful gero program.
+;
+; Walks a NUL-terminated `data8` string with `mov8` indexed-load,
+; prints each byte through the host `int $10` syscall, then halts.
+;
+; Run:
+;   gero asm hello.gas
+;   gero run hello.gx
+;
+; Expected stdout: "Hello, gero!\n"
+
+const PRINT   = $10
+const NEWLINE = $0A
+
+main:
+  mov $00, r3                ; index = 0
+.loop:
+  mov8 [@GREETING + r3], r1
+  cmp r1, $00
+  jeq .done
+  int PRINT
+  inc r3
+  jmp .loop
+.done:
+  mov NEWLINE, r1
+  int PRINT
+  hlt
+
+data8 GREETING = "Hello, gero!", $00
