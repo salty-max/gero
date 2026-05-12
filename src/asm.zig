@@ -11,6 +11,7 @@ const lexer = @import("asm/lexer.zig");
 const include = @import("asm/include.zig");
 const ast_mod = @import("asm/ast.zig");
 const parser = @import("asm/parser.zig");
+const expr_mod = @import("asm/expr.zig");
 
 /// Re-export: lexer token.
 pub const Token = lexer.Token;
@@ -48,6 +49,17 @@ pub const Program = ast_mod.Program;
 pub const ParseTree = parser.ParseTree;
 /// Re-export: parse a fused source string into a `ParseTree`.
 pub const parse = parser.parse;
+
+/// Re-export: compile-time expression AST root.
+pub const Expr = ast_mod.Expr;
+/// Re-export: const declaration AST shape.
+pub const ConstDecl = ast_mod.ConstDecl;
+/// Re-export: name → u16 lookup for compile-time constants.
+pub const ConstantTable = expr_mod.ConstantTable;
+/// Re-export: fold an `Expr` tree to a `u16` using a `ConstantTable`.
+pub const evalExpr = expr_mod.evalExpr;
+/// Re-export: evaluator outcome (ok value or diagnostic).
+pub const EvalResult = expr_mod.EvalResult;
 
 /// Errors the assembler can emit. Restricted while the smoke
 /// parser is the only producer; the real assembler will grow
