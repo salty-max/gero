@@ -34,6 +34,7 @@ pub const Statement = union(enum) {
     data8: DataDecl,
     data16: DataDecl,
     struct_decl: StructDecl,
+    org: OrgDecl,
     /// Catch-all for unrecognized lines — carries a span so the
     /// consumer can skip past it cleanly.
     unknown: Unknown,
@@ -46,6 +47,7 @@ pub const Statement = union(enum) {
             .data8 => |d| d.span,
             .data16 => |d| d.span,
             .struct_decl => |s| s.span,
+            .org => |o| o.span,
             .unknown => |u| u.span,
         };
     }
@@ -213,6 +215,23 @@ pub const FieldType = enum {
     }
 };
 
+/// `org $ADDR` — relocate the codegen emit cursor. The RHS is a
+/// compile-time expression (typically a hex literal or a const
+/// reference). The parser folds it eagerly so codegen can use
+/// `addr` directly. Backward-`org` checking (overlap → E014)
+/// happens at codegen against the actual emit position, not
+/// here.
+pub const OrgDecl = struct {
+    /// RHS expression tree, owned by the program allocator.
+    addr_expr: *Expr,
+    /// Folded address value, or `null` if eval failed (in which
+    /// case a diagnostic was emitted). Codegen treats `null` as
+    /// a no-op for the directive.
+    addr: ?u16,
+    /// Span covering `org <expr>` end-to-end.
+    span: Span,
+};
+
 /// Compile-time expression — what shows up on the RHS of `const`,
 /// inside `&[ ... ]` address expressions, and as `data8`/`data16`
 /// value-list entries. Walks via `expr.evalExpr` to a `u16` (or
@@ -343,6 +362,7 @@ pub const Program = struct {
                     self.allocator.free(d.values);
                 },
                 .struct_decl => |sd| self.allocator.free(sd.fields),
+                .org => |o| freeExpr(self.allocator, o.addr_expr),
                 else => {},
             }
         }
