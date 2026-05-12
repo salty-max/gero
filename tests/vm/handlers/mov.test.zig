@@ -28,12 +28,12 @@ test "mov 0x10 imm16,reg: writes immediate to register" {
     try std.testing.expectEqual(@as(u16, 0x1104), vm.regs.read(.ip));
 }
 
-test "mov 0x11 reg,reg: copies between registers (dst, src order)" {
+test "mov 0x11 reg,reg: copies between registers (src, dst order)" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
     vm.regs.write(.r2, 0xDEAD);
-    loadProgram(&vm, &.{ 0x11, 0x02, 0x03 }); // mov r1, r2
+    loadProgram(&vm, &.{ 0x11, 0x03, 0x02 }); // mov r2, r1 — src=r2, dst=r1
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0xDEAD), vm.regs.read(.r1));
     try std.testing.expectEqual(@as(u16, 0xDEAD), vm.regs.read(.r2));
@@ -246,7 +246,7 @@ test "mov family: no variant touches flags" {
     // Run a representative variant from each section.
     for ([_][]const u8{
         &.{ 0x10, 0x00, 0x00, 0x02 }, // mov imm16,reg
-        &.{ 0x11, 0x02, 0x03 }, // mov reg,reg
+        &.{ 0x11, 0x03, 0x02 }, // mov r2, r1 (src, dst)
         &.{ 0x12, 0x02, 0x00, 0x20 }, // mov reg,addr
         &.{ 0x13, 0x00, 0x20, 0x02 }, // mov addr,reg
         &.{ 0x21, 0x42, 0x02 }, // mov8 imm8,reg
@@ -264,8 +264,8 @@ test "mov: invalid register index raises invalid-register fault" {
     // Install an ISR for the invalid-register fault.
     vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
 
-    // mov r1, <out-of-range>
-    loadProgram(&vm, &.{ 0x11, 0x02, 0xFF });
+    // mov <out-of-range>, r1 — src is the invalid register
+    loadProgram(&vm, &.{ 0x11, 0xFF, 0x02 });
     try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }

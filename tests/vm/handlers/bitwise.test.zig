@@ -48,7 +48,7 @@ test "and 0x51 reg,reg clears C+V even if preset" {
     vm.regs.write(.r2, 0xFF0F);
     vm.regs.setFlag(.carry, true);
     vm.regs.setFlag(.overflow, true);
-    loadProgram(&vm, &.{ 0x51, 0x02, 0x03 }); // and r1, r2
+    loadProgram(&vm, &.{ 0x51, 0x03, 0x02 }); // and r2, r1 → r1 &= r2 (src, dst)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0xFF00), vm.regs.read(.r1));
     try std.testing.expect(!flags(&vm).c);
@@ -71,7 +71,7 @@ test "or 0x53 reg,reg" {
     defer vm.deinit();
     vm.regs.write(.r1, 0xF000);
     vm.regs.write(.r2, 0x000F);
-    loadProgram(&vm, &.{ 0x53, 0x02, 0x03 });
+    loadProgram(&vm, &.{ 0x53, 0x03, 0x02 }); // or r2, r1 → r1 |= r2 (src, dst)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0xF00F), vm.regs.read(.r1));
 }

@@ -372,6 +372,41 @@ mov $80, r1            ; 0x1A — zero-page load
 The assembler rejects invalid combinations (`mov &addr, &addr` has
 no opcode) at assembly time with `E003`.
 
+### 2.4 Operand order convention
+
+Every binary instruction reads as **`<op> src, dst`** — the first
+operand is the source, the second is the destination (modified
+in-place). This is the AT&T-style ordering and it is uniform
+across every form: immediate-to-register, register-to-register,
+register-to-memory, memory-to-register, etc.
+
+```asm
+mov $1234, r1          ; r1 ← $1234           (src=$1234, dst=r1)
+mov r1, r2             ; r2 ← r1              (src=r1, dst=r2)
+mov &2620, r1          ; r1 ← mem[$2620]      (src=mem, dst=r1)
+mov r1, &2620          ; mem[$2620] ← r1      (src=r1, dst=mem)
+
+add $10, r1            ; r1 ← r1 + $10        (src=$10, dst=r1)
+add r2, r1             ; r1 ← r1 + r2         (src=r2, dst=r1)
+sub r2, r1             ; r1 ← r1 - r2         (src=r2, dst=r1)
+and r2, r1             ; r1 ← r1 & r2         (src=r2, dst=r1)
+```
+
+Two families are intentionally different:
+
+- **`cmp` and `tst`** — both operands are inputs (no destination),
+  the result is just the flags. `cmp r1, $10` reads naturally as
+  *"compare r1 to $10"*: it sets flags from `r1 - $10` so that
+  `jlt` jumps when `r1 < $10`. The first operand is the value
+  being inspected.
+- **Shift / rotate (`shl`, `shr`, `rol`, `ror`)** — the first
+  operand is the target register being shifted in-place, the
+  second is the shift count. `shl r1, $03` shifts r1 by 3.
+  Modify-in-place shape, no separate source register.
+
+The 3-operand block ops (`bcpy`, `bset`) keep `(dst, src, len)` /
+`(dst, len, val)` — they mirror the C standard library shape.
+
 ---
 
 ## 3. Operands

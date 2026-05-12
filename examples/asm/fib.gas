@@ -20,13 +20,13 @@ main:
   mov $0A, r1                ; n = 10
   call fib                   ; r1 ← fib(10) = $37
 
-  ; print r1.lo as 2 hex digits. Note: `mov reg, reg` is Intel-
-  ; order (dst, src) — opposite of the imm / addr forms which
-  ; are src-first. So `mov r2, r1` copies r1 INTO r2.
-  mov r2, r1                 ; r2 ← r1 (save the full value)
+  ; print r1.lo as 2 hex digits. The asm uses src-first
+  ; convention for every form including `mov reg, reg` —
+  ; `mov r1, r2` means r2 ← r1.
+  mov r1, r2                 ; r2 ← r1 (save the full value)
   shr r1, $04                ; r1 = high nibble
   call print_nibble
-  mov r1, r2                 ; r1 ← r2 (restore)
+  mov r2, r1                 ; r1 ← r2 (restore)
   and r1, $0F                ; r1 = low nibble
   call print_nibble
 
@@ -47,13 +47,13 @@ fib:
   push r1                    ; save n
   dec r1
   call fib                   ; r1 = fib(n-1)
-  pop r2                     ; r2 = n  (Intel order — pop reg means pop INTO reg)
+  pop r2                     ; r2 = n
   push r1                    ; save fib(n-1)
-  mov r1, r2                 ; r1 ← r2 (restore n into r1 for the n-2 recursion)
+  mov r2, r1                 ; r1 ← r2 (restore n into r1 for the n-2 recursion)
   sub $02, r1                ; r1 = n - 2
   call fib                   ; r1 = fib(n-2)
   pop r2                     ; r2 = fib(n-1)
-  add r1, r2                 ; r1 ← r1 + r2 = fib(n-2) + fib(n-1)
+  add r2, r1                 ; r1 += r2  (asm: src, dst — r2 onto r1)
 .base:
   ret
 

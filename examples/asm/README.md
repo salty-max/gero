@@ -41,15 +41,18 @@ asm grows those features:
 - `save.gas` — write to SRAM + `int $21` flush, demonstrating
   persistence to a `.sav` file.
 
-## Operand-order quirk
+## Operand order
 
-`mov reg, reg` (and `add reg, reg`) use **Intel order** (dst first),
-while all other forms are AT&T-style (src first). See issue #94 for
-the discussion. Until that's resolved, the rule for these examples is:
+Every binary instruction reads as `<op> src, dst` — the first
+operand is the source, the second is the destination modified
+in-place. See `docs/asm.md §2.4` for the full convention. Quick
+reference:
 
 ```asm
-mov $10, r1     ; src first  → r1 ← $10
-mov r2, r1      ; dst first  → r2 ← r1
-add $10, r1     ; src first  → r1 += $10
-add r1, r2      ; dst first  → r1 += r2
+mov $10, r1     ; r1 ← $10
+mov r2, r1      ; r1 ← r2
+add $10, r1     ; r1 += $10
+add r2, r1      ; r1 += r2
 ```
+
+`cmp` / `tst` / shifts are intentionally different — see the spec.

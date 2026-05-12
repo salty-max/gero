@@ -42,11 +42,11 @@ pub fn andRegImm16(vm: *VM) StepResult {
     return writeLogical(vm, reg, a & imm);
 }
 
-/// `0x51` — `and Reg, Reg` → `dst ← dst & src`.
+/// `0x51` — `and Reg, Reg` → `dst ← dst & src` (asm: `and src, dst`).
 pub fn andRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeLogical(vm, dst, a & b);
@@ -61,11 +61,11 @@ pub fn orRegImm16(vm: *VM) StepResult {
     return writeLogical(vm, reg, a | imm);
 }
 
-/// `0x53` — `or Reg, Reg` → `dst ← dst | src`.
+/// `0x53` — `or Reg, Reg` → `dst ← dst | src` (asm: `or src, dst`).
 pub fn orRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeLogical(vm, dst, a | b);
@@ -80,11 +80,11 @@ pub fn xorRegImm16(vm: *VM) StepResult {
     return writeLogical(vm, reg, a ^ imm);
 }
 
-/// `0x55` — `xor Reg, Reg` → `dst ← dst ^ src`.
+/// `0x55` — `xor Reg, Reg` → `dst ← dst ^ src` (asm: `xor src, dst`).
 pub fn xorRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
-    const dst = vm.readByte(ip +% 1);
-    const src = vm.readByte(ip +% 2);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
     const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
     const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
     return writeLogical(vm, dst, a ^ b);
