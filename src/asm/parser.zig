@@ -19,6 +19,7 @@ const lexer = @import("lexer.zig");
 const include = @import("include.zig");
 const ast = @import("ast.zig");
 const expr = @import("expr.zig");
+const vm = @import("../vm/vm.zig");
 
 /// Output of `parse` — the program AST plus any diagnostics
 /// raised while building it. Errors don't abort parsing; the
@@ -696,25 +697,13 @@ fn parseOrgDecl(
 
 // ---------- instructions ----------
 
-/// Register names per ISA §2. Used to disambiguate operand
-/// identifiers (a register name resolves to `.register`, anything
-/// else to `.label_ref`).
-const register_names: [15][]const u8 = .{
-    "ip",  "acu",
-    "r1",  "r2",
-    "r3",  "r4",
-    "r5",  "r6",
-    "r7",  "r8",
-    "sp",  "fp",
-    "mb",  "im",
-    "flg",
-};
-
-fn isRegisterName(name: []const u8) bool {
-    for (register_names) |r| {
-        if (std.mem.eql(u8, r, name)) return true;
-    }
-    return false;
+/// Resolve an identifier lexeme to a `vm.Register` if it names
+/// one. Returns `null` for anything else (which the operand
+/// parser then routes to `.label_ref`). The `vm.Register` enum
+/// is the canonical name → operand-index map for the ISA, so we
+/// reuse it directly here instead of duplicating the table.
+fn parseRegister(name: []const u8) ?vm.Register {
+    return std.meta.stringToEnum(vm.Register, name);
 }
 
 fn tryParseInstruction(
@@ -823,7 +812,7 @@ fn parseOperand(
         }
         const inner_token = inner_result.ok.value;
         const inner_lex = state.input[inner_token.start..inner_token.end];
-        if (!isRegisterName(inner_lex)) {
+        const inner_reg = parseRegister(inner_lex) orelse {
             try errors.append(state.allocator, .{
                 .parse_error = core.parseError(
                     "operand",
@@ -833,7 +822,7 @@ fn parseOperand(
                 ),
             });
             return error.ParseFailed;
-        }
+        };
         skipBlanksInLine(state);
         if (!peekByte(state, ']')) {
             try errors.append(state.allocator, .{
@@ -848,7 +837,7 @@ fn parseOperand(
         }
         state.advance(1);
         return .{ .indirect = .{
-            .reg = .{ .span = ast.Span.fromToken(inner_token) },
+            .reg = .{ .id = inner_reg, .span = ast.Span.fromToken(inner_token) },
             .span = spanFrom(start, state.index),
         } };
     }
@@ -913,8 +902,8 @@ fn parseOperand(
         }
         const tok = r.ok.value;
         const lex = state.input[tok.start..tok.end];
-        if (isRegisterName(lex)) {
-            return .{ .register = .{ .span = ast.Span.fromToken(tok) } };
+        if (parseRegister(lex)) |id| {
+            return .{ .register = .{ .id = id, .span = ast.Span.fromToken(tok) } };
         }
         return .{ .label_ref = .{ .span = ast.Span.fromToken(tok) } };
     }

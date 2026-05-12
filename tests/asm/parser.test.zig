@@ -703,10 +703,45 @@ test "parser: mov reg, reg" {
     switch (pt.program.statements[0]) {
         .instruction => |i| {
             try std.testing.expectEqual(@as(usize, 2), i.operands.len);
-            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .register), @as(std.meta.Tag(gero.asm_.Operand), i.operands[0]));
-            try std.testing.expectEqual(@as(std.meta.Tag(gero.asm_.Operand), .register), @as(std.meta.Tag(gero.asm_.Operand), i.operands[1]));
+            switch (i.operands[0]) {
+                .register => |r| try std.testing.expectEqual(gero.asm_.Register.r1, r.id),
+                else => return error.WrongOperandKind,
+            }
+            switch (i.operands[1]) {
+                .register => |r| try std.testing.expectEqual(gero.asm_.Register.r2, r.id),
+                else => return error.WrongOperandKind,
+            }
         },
         else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: register identity covers the full ISA name set" {
+    // Round-trip every named register through parseSource and
+    // assert the enum value comes back. Catches typos in the
+    // name table immediately.
+    inline for (.{
+        .{ "ip", gero.asm_.Register.ip },
+        .{ "acu", gero.asm_.Register.acu },
+        .{ "r1", gero.asm_.Register.r1 },
+        .{ "r8", gero.asm_.Register.r8 },
+        .{ "sp", gero.asm_.Register.sp },
+        .{ "fp", gero.asm_.Register.fp },
+        .{ "mb", gero.asm_.Register.mb },
+        .{ "im", gero.asm_.Register.im },
+        .{ "flg", gero.asm_.Register.flg },
+    }) |case| {
+        const src = "push " ++ case[0] ++ "\n";
+        var pt = try parseSource(src);
+        defer pt.deinit();
+        try std.testing.expect(!pt.hasErrors());
+        switch (pt.program.statements[0]) {
+            .instruction => |i| switch (i.operands[0]) {
+                .register => |r| try std.testing.expectEqual(case[1], r.id),
+                else => return error.WrongOperandKind,
+            },
+            else => return error.WrongStatementKind,
+        }
     }
 }
 

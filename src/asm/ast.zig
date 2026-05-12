@@ -4,6 +4,7 @@
 /// `SourceMap` from the include resolver.
 const std = @import("std");
 const lexer = @import("lexer.zig");
+const vm = @import("../vm/vm.zig");
 
 /// Byte range in the fused source buffer. The `SourceMap`
 /// (`include.zig`) resolves these to per-file `(line, col)` at
@@ -286,10 +287,11 @@ pub const Operand = union(enum) {
     }
 };
 
-/// Register reference (`r1`, `acu`, …). The lexeme bytes recover
-/// the canonical name via `source[span.start..span.end]`. Codegen
-/// maps the name to its register-index byte per ISA §2.
+/// Register reference (`r1`, `acu`, …). The parser resolves the
+/// identifier to a `vm.Register` enum at parse time so codegen
+/// can emit the operand index directly via `@intFromEnum`.
 pub const RegisterRef = struct {
+    id: vm.Register,
     span: Span,
 };
 
