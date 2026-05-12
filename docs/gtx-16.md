@@ -1,4 +1,4 @@
-# gtx-16 — Fantasy Console Spec v0.2 (DRAFT)
+# gtx-16 — Fantasy Console Spec v0.1 (DRAFT)
 
 The fantasy-console layer that consumes [Gero](./isa.md) as its CPU /
 VM. gtx-16 defines: display peripheral, audio peripheral, input
@@ -16,12 +16,6 @@ and the built-in editor suite.
 > two specs co-evolve closely and gero authors need the gtx-16
 > contract handy. A future cleanup may move this to gtx-16's own
 > docs.
-
-> **What changed since v0.1.** v0.1 modeled the display as an
-> NES-style PPU (tiles + sprites + tilemap). v0.2 switches to a
-> Picotron-class linear framebuffer with host-side drawing
-> primitives. The gero VM is **unchanged** — all impact is on
-> gtx-16's host implementation. See §16 for the rationale.
 
 ---
 
@@ -358,7 +352,7 @@ Header:
 | Offset | Size | Field |
 |--------|------|-------|
 | `0x00` | 4 | Magic = `"GTX1"` (ASCII) |
-| `0x04` | 2 | u16le version = `0x0002` |
+| `0x04` | 2 | u16le version = `0x0001` |
 | `0x06` | 2 | u16le flags |
 | `0x08` | 2 | u16le entry point |
 | `0x0A` | 2 | u16le image_size |
@@ -477,7 +471,7 @@ automation, write a cart.)
 ### 10.2 Prompt
 
 ```
-gtx-16 v0.2.0
+gtx-16 v0.1.0
 type 'help' for commands, 'splore' to browse carts
 
 /> _
@@ -578,11 +572,11 @@ next round of additions.
 
 ---
 
-## 15. Roadmap (post-v0.2)
+## 15. Roadmap (post-v0.1)
 
 | Feature | Why |
 |---------|-----|
-| Rotation primitives (`spr_rotated`, full affine matrix) | If user demand emerges. v0.2 has scale only. |
+| Rotation primitives (`spr_rotated`, full affine matrix) | If user demand emerges. v0.1 has scale only. |
 | Per-scanline palette / palette HDMA equivalent | Sky gradients, atmospheric effects. Easy to add later. |
 | Multi-process / background music while editing | Optional — would push the project toward "fantasy workstation" identity vs "fantasy console". |
 | Network access (read-only BBS) | If a curated cart-sharing platform makes sense. Sandbox stays strict. |
@@ -599,12 +593,14 @@ them:
   modern for the visual identity we want. 320×240 is the VGA
   Mode-X cousin — DOS-era games visually. 480×270 is more modern
   but loses the "early 90s" charm.
-- **Why linear FB and not PPU?** v0.1's PPU design ruled out
-  raycasters and made software-rendered effects much harder. The
-  Picotron model (linear FB + host-side drawing primitives)
-  delivers more creative ceiling at similar implementation cost.
-  See conversation log in PR #80 for the full reasoning.
-- **Why no rotation primitive in v0.2?** Implementation cost (bilinear
+- **Why linear FB and not PPU?** An earlier draft of this spec
+  modeled the display as an NES-style PPU (tiles + sprites +
+  tilemap). That design ruled out raycasters and made software-
+  rendered effects much harder. Switching to the Picotron model
+  (linear FB + host-side drawing primitives) delivers more
+  creative ceiling at similar implementation cost. See PR #81
+  conversation log for the full reasoning.
+- **Why no rotation primitive in v0.1?** Implementation cost (bilinear
   sampling, careful clipping) for a feature most carts don't need.
   Sprite sheets with pre-rotated frames cover 90% of the use case.
   Adding rotation later is non-breaking.
@@ -626,7 +622,7 @@ them:
 
 ## 17. Versioning
 
-This is gtx-16 v0.2. Locking it requires:
+This is gtx-16 v0.1. Locking it requires:
 - Pinning the Song struct layout (§3.3)
 - Pinning the cart `.gtx.png` encoding scheme (§8.3)
 - Pinning the editor cart contracts (§11)
