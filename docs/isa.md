@@ -100,18 +100,18 @@ the host's `MemoryMapper` (§3.5) can remap any region to a device.
 | `0x0100..0x0FFF` | 3.75 KB | **Low RAM** — conventional stack range. `sp` initialized at `0xFFFE` but stack lives wherever the program puts it; this region is the canonical home. |
 | `0x1000..0x10FF` | 256 B | **Interrupt vector table** — 64 entries × 2 bytes each. Vector `N` lives at `0x1000 + 2*N`. |
 | `0x1100..0x7FFF` | ~28 KB | **User RAM** — code + data. Program image loads here at boot. |
-| `0x8000..0xBFFF` | 16 KB | **Mapped region A** — host-defined. Plain RAM by default. gtx-16 v0.2 leaves this region as plain RAM and recommends carts use it for sprite-sheet storage + other large assets (the cart sets `SPRITESHEET_BASE` here). Previous gtx-16 versions mapped VRAM here; v0.2 moved drawing entirely to IO commands. |
+| `0x8000..0xBFFF` | 16 KB | **Mapped region A** — host-defined. Plain RAM by default. gtx-16 leaves this region as plain RAM and recommends carts use it for sprite-sheet storage + other large assets (the cart sets `SPRITESHEET_BASE` here). |
 | `0xC000..0xFEFF` | ~15.75 KB | **Bank window** — mirrors bank `mb` if the program is banked, otherwise plain RAM. |
-| `0xFF00..0xFFFF` | 256 B | **Mapped region B / IO page** — host-defined peripheral registers. gtx-16 v0.2 maps display registers, drawing command surface, audio channels, input, RNG, timer, and KV store here. Plain RAM if no host device claims it. |
+| `0xFF00..0xFFFF` | 256 B | **Mapped region B / IO page** — host-defined peripheral registers. gtx-16 maps display registers, drawing command surface, audio channels, input, RNG, timer, and KV store here. Plain RAM if no host device claims it. |
 
 The two **Mapped region** ranges (`0x8000..0xBFFF` and
 `0xFF00..0xFFFF`) are the convention for embedding hosts. A pure
 "compute" program (one that never expects graphics) sees plain RAM
 there and can use it freely. A gtx-16-targeted program issues
 drawing commands via the IO page (`0xFE50..0xFE61` for the
-command surface in gtx-16 v0.2) and stores sprite data wherever
-it wants in cart memory — typically in mapped region A — see
-gtx-16 §2 for the full mapping.
+command surface) and stores sprite data wherever it wants in
+cart memory — typically in mapped region A — see gtx-16 §2 for
+the full mapping.
 
 ### 3.2 Banks
 
