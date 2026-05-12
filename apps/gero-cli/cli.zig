@@ -114,35 +114,126 @@ fn commandSummary(cmd: Command) []const u8 {
     };
 }
 
-/// Top-level help text. Printed for `gero` (no args) and
-/// `gero --help`.
-pub fn topHelp(out: *std.Io.Writer) std.Io.Writer.Error!void {
-    try out.print("gero — VM + asm + lang toolchain\n\n", .{});
-    try out.print("USAGE\n  gero <subcommand> [flags] [args]\n\n", .{});
-    try out.print("SUBCOMMANDS\n", .{});
-    inline for (std.meta.fields(Command)) |f| {
-        const cmd: Command = @enumFromInt(f.value);
-        try out.print("  {s:<8} {s}\n", .{ commandName(cmd), commandSummary(cmd) });
-    }
-    try out.print("\nRun `gero <subcommand> --help` for per-command flags.\n", .{});
-    try out.print("Run `gero --version` to print the build version.\n", .{});
+/// True for subcommands that have a real implementation today.
+/// The rest are intentionally listed in help so the surface is
+/// discoverable, but split into a separate "planned" section.
+fn commandIsImplemented(cmd: Command) bool {
+    return switch (cmd) {
+        .asm_, .run, .info => true,
+        .compile, .test_, .bench, .fmt, .check, .build, .disasm => false,
+    };
 }
 
-/// Per-subcommand help. Currently the same template; concrete
-/// flag lists land with each subcommand's real implementation.
-pub fn commandHelp(out: *std.Io.Writer, cmd: Command) std.Io.Writer.Error!void {
-    try out.print("gero {s} — {s}\n\n", .{ commandName(cmd), commandSummary(cmd) });
-    try out.print("USAGE\n  gero {s} [flags] [args]\n\n", .{commandName(cmd)});
-    try out.print("COMMON FLAGS\n", .{});
-    try out.print("  --help / -h         Print this help.\n", .{});
-    try out.print("  --version / -V      Print build version.\n", .{});
-    try out.print("  --quiet / -q        Suppress non-error output.\n", .{});
-    try out.print("  --verbose / -v      Extra diagnostics + per-phase timings.\n", .{});
-    try out.print("  --target / -t=<s>   vm (default) or gtx-16.\n", .{});
-    try out.print("  --optimize / -O=<m> debug (default) / release / size.\n", .{});
-    try out.print("  --out / -o=<path>   Output destination for file-producing commands.\n", .{});
-    try out.print("  --color / -c=<m>    auto (default) / always / never.\n", .{});
-    try out.print("  --no-color          Shortcut for --color=never.\n", .{});
+/// ANSI helpers used only inside the help text. Kept inline so
+/// `cli.zig` doesn't have to pull in the asm-side `Style` struct.
+const HelpAnsi = struct {
+    bold: []const u8,
+    dim: []const u8,
+    cyan: []const u8,
+    yellow: []const u8,
+    reset: []const u8,
+
+    fn pick(color: bool) HelpAnsi {
+        return if (color) .{
+            .bold = "\x1b[1m",
+            .dim = "\x1b[2m",
+            .cyan = "\x1b[36m",
+            .yellow = "\x1b[33m",
+            .reset = "\x1b[0m",
+        } else .{
+            .bold = "",
+            .dim = "",
+            .cyan = "",
+            .yellow = "",
+            .reset = "",
+        };
+    }
+};
+
+/// Top-level help text. Printed for `gero` (no args) and
+/// `gero --help`. `color` toggles ANSI escapes for section
+/// headers and key terms.
+pub fn topHelp(out: *std.Io.Writer, color: bool) std.Io.Writer.Error!void {
+    const a = HelpAnsi.pick(color);
+
+    try out.print("{s}gero{s} — 16-bit VM + asm + lang toolchain  {s}(v{s}){s}\n\n", .{ a.bold, a.reset, a.dim, version_string, a.reset });
+
+    try out.print("{s}USAGE{s}\n", .{ a.yellow, a.reset });
+    try out.print("  {s}gero{s} <subcommand> [flags] [args]\n", .{ a.cyan, a.reset });
+    try out.print("  {s}gero{s} --version\n", .{ a.cyan, a.reset });
+    try out.print("  {s}gero{s} --help\n\n", .{ a.cyan, a.reset });
+
+    try out.print("{s}SUBCOMMANDS{s}\n", .{ a.yellow, a.reset });
+    inline for (std.meta.fields(Command)) |f| {
+        const cmd: Command = @enumFromInt(f.value);
+        if (commandIsImplemented(cmd))
+            try out.print("  {s}{s:<8}{s} {s}\n", .{ a.cyan, commandName(cmd), a.reset, commandSummary(cmd) });
+    }
+
+    try out.print("\n{s}PLANNED{s} {s}(not yet implemented){s}\n", .{ a.yellow, a.reset, a.dim, a.reset });
+    inline for (std.meta.fields(Command)) |f| {
+        const cmd: Command = @enumFromInt(f.value);
+        if (!commandIsImplemented(cmd))
+            try out.print("  {s}{s:<8}{s} {s}{s}{s}\n", .{ a.dim, commandName(cmd), a.reset, a.dim, commandSummary(cmd), a.reset });
+    }
+
+    try out.print("\n{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+    try out.print("  {s}gero asm prog.gas{s}                Assemble to prog.gx (next to source)\n", .{ a.cyan, a.reset });
+    try out.print("  {s}gero asm prog.gas -o build/{s}      Output into a directory\n", .{ a.cyan, a.reset });
+    try out.print("  {s}gero asm prog.gas -v{s}             Verbose — print per-phase timings\n", .{ a.cyan, a.reset });
+    try out.print("  {s}gero info prog.gx{s}                Print the .gx header\n", .{ a.cyan, a.reset });
+    try out.print("  {s}gero run prog.gx{s}                 Boot the VM and execute\n", .{ a.cyan, a.reset });
+
+    try out.print("\nRun `{s}gero <subcommand> --help{s}` for per-command flags.\n", .{ a.cyan, a.reset });
+}
+
+/// Per-subcommand help. Implemented commands get a tailored
+/// usage line + example; planned commands print a one-liner
+/// reminder so the user isn't left wondering.
+pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer.Error!void {
+    const a = HelpAnsi.pick(color);
+
+    try out.print("{s}gero {s}{s} — {s}\n\n", .{ a.bold, commandName(cmd), a.reset, commandSummary(cmd) });
+
+    if (!commandIsImplemented(cmd)) {
+        try out.print("{s}Not yet implemented{s} in this build (v{s}).\n", .{ a.yellow, a.reset, version_string });
+        try out.print("Track progress: {s}https://github.com/salty-max/gero/issues{s}\n", .{ a.cyan, a.reset });
+        return;
+    }
+
+    try out.print("{s}USAGE{s}\n", .{ a.yellow, a.reset });
+    switch (cmd) {
+        .asm_ => {
+            try out.print("  {s}gero asm{s} <file.gas> [-o <path>] [-v] [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero asm prog.gas{s}                {s}# → prog.gx{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero asm prog.gas -o build/{s}      {s}# → build/prog.gx{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero asm prog.gas -o named.gx{s}    {s}# → named.gx{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero asm prog.gas -v{s}             {s}# per-phase timings{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+        },
+        .run => {
+            try out.print("  {s}gero run{s} <file.gx> [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero run prog.gx{s}                 {s}# boot + execute until hlt{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+        },
+        .info => {
+            try out.print("  {s}gero info{s} <file.gx>\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero info prog.gx{s}                {s}# print the .gx header{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+        },
+        else => unreachable, // allow-strict: commandIsImplemented() filtered above
+    }
+
+    try out.print("\n{s}COMMON FLAGS{s}\n", .{ a.yellow, a.reset });
+    try out.print("  {s}--help / -h{s}         Print this help.\n", .{ a.cyan, a.reset });
+    try out.print("  {s}--version / -V{s}      Print build version.\n", .{ a.cyan, a.reset });
+    try out.print("  {s}--quiet / -q{s}        Suppress non-error output.\n", .{ a.cyan, a.reset });
+    try out.print("  {s}--verbose / -v{s}      Extra diagnostics + per-phase timings.\n", .{ a.cyan, a.reset });
+    try out.print("  {s}--target / -t=<s>{s}   vm (default) or gtx-16.\n", .{ a.cyan, a.reset });
+    try out.print("  {s}--optimize / -O=<m>{s} debug (default) / release / size.\n", .{ a.cyan, a.reset });
+    try out.print("  {s}--out / -o=<path>{s}   Output destination for file-producing commands.\n", .{ a.cyan, a.reset });
+    try out.print("  {s}--color / -c=<m>{s}    auto (default) / always / never.\n", .{ a.cyan, a.reset });
+    try out.print("  {s}--no-color{s}          Shortcut for --color=never.\n", .{ a.cyan, a.reset });
 }
 
 /// Print the version line consumed by `gero --version` / `gero -V`.
@@ -298,12 +389,12 @@ pub fn parse(args: []const []const u8) ParseError!Parsed {
 /// 2 = bad usage).
 pub fn run(parsed: Parsed, stdout: *std.Io.Writer, stderr: *std.Io.Writer) std.Io.Writer.Error!u8 {
     if (parsed.command == null) {
-        try topHelp(stdout);
+        try topHelp(stdout, false);
         return 0;
     }
     const cmd = parsed.command.?;
     if (parsed.options.help) {
-        try commandHelp(stdout, cmd);
+        try commandHelp(stdout, cmd, false);
         return 0;
     }
     try stderr.print("gero {s}: not yet implemented\n", .{commandName(cmd)});
