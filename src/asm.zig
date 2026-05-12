@@ -80,6 +80,8 @@ pub const Instruction = ast_mod.Instruction;
 pub const Operand = ast_mod.Operand;
 /// Re-export: register reference (`r1`, `acu`, ...).
 pub const RegisterRef = ast_mod.RegisterRef;
+/// Re-export: the canonical register enum (alias for `vm.Register`).
+pub const Register = gero.vm.Register;
 /// Re-export: indirect-via-register `[r1]`.
 pub const IndirectReg = ast_mod.IndirectReg;
 /// Re-export: bare identifier in operand position (label / const reference).
