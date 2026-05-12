@@ -204,16 +204,18 @@ pub const StructField = struct {
 };
 
 /// Field type per asm spec §2.2. The width values are 1 byte for
-/// `u8`, 2 bytes for `u16`; nothing wider in v0.1.
+/// `u8`, 2 bytes for `u16`; nothing wider in v0.1. Variant names
+/// match the source-level keyword so `std.meta.stringToEnum`
+/// resolves them directly.
 pub const FieldType = enum {
-    u8_t,
-    u16_t,
+    u8,
+    u16,
 
     /// Byte width of this type.
     pub fn width(self: FieldType) u16 {
         return switch (self) {
-            .u8_t => 1,
-            .u16_t => 2,
+            .u8 => 1,
+            .u16 => 2,
         };
     }
 };
