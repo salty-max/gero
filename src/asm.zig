@@ -17,15 +17,17 @@ pub const TokenStream = lexer.TokenStream;
 /// Re-export: `.gas` tokenizer.
 pub const tokenize = lexer.tokenize;
 
-/// Re-export: one file in the fused image (canonical path + raw content).
+/// Re-export: one file's contribution to the fused source buffer.
 pub const FileInfo = include.FileInfo;
-/// Re-export: the per-build file registry.
-pub const FileTable = include.FileTable;
-/// Re-export: diagnostic with originating file pinned.
+/// Re-export: fused-offset → (file, file_offset) resolver.
+pub const SourceMap = include.SourceMap;
+/// Re-export: lookup result from `SourceMap.lookup`.
+pub const Located = include.Located;
+/// Re-export: diagnostic carrying a fused-buffer byte offset.
 pub const Diagnostic = include.Diagnostic;
-/// Re-export: result of `resolveIncludes` — fused token stream + file table + errors.
+/// Re-export: result of `resolveIncludes` — fused source + source map + errors.
 pub const FusedSource = include.FusedSource;
-/// Re-export: walk the include graph, return a single fused stream.
+/// Re-export: walk the include graph, return one fused source string.
 pub const resolveIncludes = include.resolveIncludes;
 /// Re-export: format one `Diagnostic` as `<path>:<line>:<col>: <msg>`.
 pub const formatDiagnostic = include.formatDiagnostic;

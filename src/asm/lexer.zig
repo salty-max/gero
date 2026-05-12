@@ -9,8 +9,11 @@ const knit = @import("knit");
 const core = knit.core;
 
 /// One syntactic atom. `start..end` are byte offsets into the
-/// source file identified by `file_id`; numeric tokens also carry
-/// the parsed value.
+/// source string the lexer was called with; numeric tokens also
+/// carry the parsed value. When the source has been fused by the
+/// include resolver, offsets are global — the resolver's
+/// `SourceMap` translates them back to (file, line, col) for
+/// diagnostics.
 pub const Token = struct {
     kind: Kind,
     start: u32,
@@ -18,11 +21,6 @@ pub const Token = struct {
     /// `0` for non-numeric tokens; the parsed `u16` for `.hex`
     /// and `.addr`; the resolved byte for `.char`.
     value: u16,
-    /// Source-file ID — `0` for tokens emitted by the standalone
-    /// lexer (no include resolution). The include resolver
-    /// (`src/asm/include.zig`) overwrites this with the right
-    /// `FileTable` index when it fuses streams across files.
-    file_id: u16 = 0,
 
     /// Token classes the lexer emits.
     pub const Kind = enum {
