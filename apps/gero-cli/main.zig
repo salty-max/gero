@@ -45,17 +45,25 @@ pub fn main(init: std.process.Init) !u8 {
     );
     var term = term_mod.Term{ .out = stderr, .color = stderr_color };
 
+    // Help + version write to stdout, so resolve color against
+    // stdout's TTY (a user piping to less expects no escapes).
+    const stdout_color = term_mod.resolve(
+        toTermChoice(parsed.options.color),
+        envFlag(init.environ_map, "NO_COLOR"),
+        std.Io.File.stdout().isTty(io) catch false,
+    );
+
     if (parsed.options.version) {
         try cli.printVersion(stdout);
         return 0;
     }
     if (parsed.command == null) {
-        try cli.topHelp(stdout);
+        try cli.topHelp(stdout, stdout_color);
         return 0;
     }
     const cmd = parsed.command.?;
     if (parsed.options.help) {
-        try cli.commandHelp(stdout, cmd);
+        try cli.commandHelp(stdout, cmd, stdout_color);
         return 0;
     }
 
