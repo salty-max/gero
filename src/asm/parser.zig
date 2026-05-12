@@ -88,7 +88,9 @@ fn cleanupStatements(allocator: std.mem.Allocator, statements: *std.ArrayList(as
         .instruction => |i| {
             for (i.operands) |op| switch (op) {
                 .immediate => |e| ast.freeExpr(allocator, e),
-                .register, .indirect, .addr_lit, .sym_ref, .label_ref => {},
+                .addr_expr => |a| ast.freeExpr(allocator, a.expr),
+                .indexed => |idx| ast.freeExpr(allocator, idx.addr),
+                .register, .indirect, .addr_lit, .sym_ref, .label_ref, .cast => {},
             };
             allocator.free(i.operands);
         },
@@ -790,59 +792,20 @@ fn parseOperand(
 
     const b = state.input[state.index];
 
-    // `[reg]` — indirect via register.
+    // `[...]` — either indirect (single register inside) or
+    // indexed (`<addr-expr> + <reg>` inside). Distinguished by
+    // parsing the inner expression then inspecting its shape.
     if (b == '[') {
-        state.advance(1);
-        skipBlanksInLine(state);
-        const inner_result = lexer.identP.parseFn(state);
-        if (inner_result != .ok) {
-            try errors.append(state.allocator, .{
-                .parse_error = core.parseError(
-                    "operand",
-                    state.index,
-                    "expected register name inside `[...]`",
-                    .{ .expected = "register", .kind = .syntactic },
-                ),
-            });
-            return error.ParseFailed;
-        }
-        const inner_token = inner_result.ok.value;
-        const inner_lex = state.input[inner_token.start..inner_token.end];
-        const inner_reg = parseRegister(inner_lex) orelse {
-            try errors.append(state.allocator, .{
-                .parse_error = core.parseError(
-                    "operand",
-                    inner_token.start,
-                    "expected a register name inside `[...]`",
-                    .{ .expected = "register", .actual = inner_lex, .kind = .semantic },
-                ),
-            });
-            return error.ParseFailed;
-        };
-        skipBlanksInLine(state);
-        if (!peekByte(state, ']')) {
-            try errors.append(state.allocator, .{
-                .parse_error = core.parseError(
-                    "operand",
-                    state.index,
-                    "expected `]` to close indirect operand",
-                    .{ .expected = "]", .kind = .syntactic },
-                ),
-            });
-            return error.ParseFailed;
-        }
-        state.advance(1);
-        return .{ .indirect = .{
-            .reg = .{ .id = inner_reg, .span = ast.Span.fromToken(inner_token) },
-            .span = spanFrom(start, state.index),
-        } };
+        return parseBracketOperand(state, allocator, errors, start);
     }
 
-    // `&FFFF` — address literal. Slice B will add the `&[expr]`
-    // form (form a) here; for now `&` not followed by hex is an
-    // error (the lexer's addrP path produces a structured
-    // refusal we don't try to surface here).
+    // `&FFFF` literal OR `&[<expr>]` compile-time address expr
+    // (form a, asm spec §3.4). The trailing `[` after `&` is the
+    // discriminator.
     if (b == '&') {
+        if (state.index + 1 < state.input.len and state.input[state.index + 1] == '[') {
+            return parseAddrExprOperand(state, allocator, errors, start);
+        }
         const r = lexer.addrP.parseFn(state);
         if (r == .ok) {
             const tok = r.ok.value;
@@ -855,11 +818,18 @@ fn parseOperand(
             .parse_error = core.parseError(
                 "operand",
                 state.index,
-                "expected `&FFFF` address literal (the `&[expr]` form arrives in a later PR)",
-                .{ .expected = "address literal", .kind = .syntactic },
+                "expected `&FFFF` address literal or `&[expr]` address expression",
+                .{ .expected = "address operand", .kind = .syntactic },
             ),
         });
         return error.ParseFailed;
+    }
+
+    // `<Type> @sym.field` — cast sugar (asm spec §3.4). The
+    // leading `<` discriminates from the bitwise-`<` operator
+    // (which never appears at operand-start position).
+    if (b == '<') {
+        return parseCastOperand(state, errors, start);
     }
 
     // `@sym` — symbol reference.
@@ -912,10 +882,247 @@ fn parseOperand(
     return .{ .immediate = e };
 }
 
+/// `[ ... ]` — either indirect or indexed. The discriminator is
+/// the inner shape:
+///   - single register identifier → indirect
+///   - `<expr> + <reg>` → indexed (form b)
+///
+/// We parse the inner content as one expression. If the top-level
+/// node is `binary(+, lhs, rhs)` and `rhs` is a bare ident that
+/// names a register, it's indexed. If the inner content is just
+/// a bare ident naming a register, it's indirect. Anything else
+/// is a structured error.
+fn parseBracketOperand(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    errors: *std.ArrayList(include.Diagnostic),
+    start: usize,
+) expr.ParseError!ast.Operand {
+    state.advance(1); // consume `[`
+    skipBlanksInLine(state);
+
+    const inner = try expr.parseExpression(state, allocator, errors);
+
+    skipBlanksInLine(state);
+    if (!peekByte(state, ']')) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected `]` to close indirect or indexed operand",
+                .{ .expected = "]", .kind = .syntactic },
+            ),
+        });
+        ast.freeExpr(allocator, inner);
+        return error.ParseFailed;
+    }
+    state.advance(1);
+
+    // Indirect: inner is a single register ident.
+    if (inner.* == .ident) {
+        const lex = state.input[inner.ident.span.start..inner.ident.span.end];
+        if (parseRegister(lex)) |id| {
+            const reg = ast.RegisterRef{ .id = id, .span = inner.ident.span };
+            ast.freeExpr(allocator, inner);
+            return .{ .indirect = .{
+                .reg = reg,
+                .span = spanFrom(start, state.index),
+            } };
+        }
+    }
+
+    // Indexed: top-level node is `binary(+, lhs, rhs)` where rhs
+    // is a register ident.
+    if (inner.* == .binary and inner.binary.op == .add) {
+        const rhs = inner.binary.rhs;
+        if (rhs.* == .ident) {
+            const lex = state.input[rhs.ident.span.start..rhs.ident.span.end];
+            if (parseRegister(lex)) |id| {
+                const lhs = inner.binary.lhs;
+                const reg = ast.RegisterRef{ .id = id, .span = rhs.ident.span };
+                // Pre-fold deferred to codegen — the parser
+                // doesn't have ConstantTable visibility this
+                // deep, and the common case is forward symbol
+                // refs anyway.
+                ast.freeExpr(allocator, rhs);
+                allocator.destroy(inner); // drop the outer binary; lhs survives
+                return .{ .indexed = .{
+                    .addr = lhs,
+                    .addr_value = null,
+                    .reg = reg,
+                    .span = spanFrom(start, state.index),
+                } };
+            }
+        }
+    }
+
+    // Inner doesn't match either shape — surface a diagnostic
+    // and let the outer recovery handle it.
+    try errors.append(state.allocator, .{
+        .parse_error = core.parseError(
+            "operand",
+            inner.span().start,
+            "expected `[reg]` indirect or `[addr + reg]` indexed addressing",
+            .{ .expected = "register or addr-expr + register", .kind = .semantic },
+        ),
+    });
+    ast.freeExpr(allocator, inner);
+    return error.ParseFailed;
+}
+
+/// `&[<expr>]` — compile-time address expression (form a). The
+/// expression follows §1.7 operator rules; if every symbol it
+/// references is resolved at parse time, the result is pre-folded
+/// for codegen. Otherwise codegen retries against the symbol table.
+fn parseAddrExprOperand(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    errors: *std.ArrayList(include.Diagnostic),
+    start: usize,
+) expr.ParseError!ast.Operand {
+    state.advance(2); // consume `&[`
+    skipBlanksInLine(state);
+
+    const inner = try expr.parseExpression(state, allocator, errors);
+
+    skipBlanksInLine(state);
+    if (!peekByte(state, ']')) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected `]` to close `&[...]` address expression",
+                .{ .expected = "]", .kind = .syntactic },
+            ),
+        });
+        ast.freeExpr(allocator, inner);
+        return error.ParseFailed;
+    }
+    state.advance(1);
+
+    return .{
+        .addr_expr = .{
+            .expr = inner,
+            // Pre-fold deferred to codegen; the parser doesn't have
+            // a ConstantTable handle this deep, and forward symbol
+            // refs are the common case here anyway.
+            .value = null,
+            .span = spanFrom(start, state.index),
+        },
+    };
+}
+
+/// `<Type> @sym.field` — cast sugar (asm spec §3.4). Parsed in
+/// raw form; codegen resolves `Type.field` against the struct
+/// registry and `@sym` against the symbol table, then emits the
+/// same bytes as the desugared `&[@sym + Type.field]`.
+fn parseCastOperand(
+    state: *core.ParseState,
+    errors: *std.ArrayList(include.Diagnostic),
+    start: usize,
+) expr.ParseError!ast.Operand {
+    state.advance(1); // consume `<`
+    skipBlanksInLine(state);
+
+    // Type name.
+    const type_result = lexer.identP.parseFn(state);
+    if (type_result != .ok) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected struct type name after `<`",
+                .{ .expected = "identifier", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+    const type_token = type_result.ok.value;
+
+    skipBlanksInLine(state);
+    if (!peekByte(state, '>')) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected `>` to close cast type",
+                .{ .expected = ">", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+    state.advance(1);
+
+    skipBlanksInLine(state);
+
+    // `@sym`.
+    if (!peekByte(state, '@')) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected `@sym` after `<Type>` cast",
+                .{ .expected = "@sym", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+    const sym_result = lexer.symRefP.parseFn(state);
+    if (sym_result != .ok) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected `@sym` after `<Type>` cast",
+                .{ .expected = "symbol reference", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+    const sym_token = sym_result.ok.value;
+
+    // `.field`.
+    if (!peekByte(state, '.')) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected `.field` after `<Type> @sym`",
+                .{ .expected = ".", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+    state.advance(1);
+
+    const field_result = lexer.identP.parseFn(state);
+    if (field_result != .ok) {
+        try errors.append(state.allocator, .{
+            .parse_error = core.parseError(
+                "operand",
+                state.index,
+                "expected field name after `.`",
+                .{ .expected = "identifier", .kind = .syntactic },
+            ),
+        });
+        return error.ParseFailed;
+    }
+    const field_token = field_result.ok.value;
+
+    return .{ .cast = .{
+        .type_name = ast.Span.fromToken(type_token),
+        .sym_ref = .{ .span = ast.Span.fromToken(sym_token) },
+        .field_name = ast.Span.fromToken(field_token),
+        .span = spanFrom(start, state.index),
+    } };
+}
+
 fn cleanupOperands(allocator: std.mem.Allocator, operands: *std.ArrayList(ast.Operand)) void {
     for (operands.items) |op| switch (op) {
         .immediate => |e| ast.freeExpr(allocator, e),
-        .register, .indirect, .addr_lit, .sym_ref, .label_ref => {},
+        .addr_expr => |a| ast.freeExpr(allocator, a.expr),
+        .indexed => |idx| ast.freeExpr(allocator, idx.addr),
+        .register, .indirect, .addr_lit, .sym_ref, .label_ref, .cast => {},
     };
     operands.deinit(allocator);
 }

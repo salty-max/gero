@@ -307,6 +307,30 @@ fn parsePrimary(
             } };
             return expr;
         }
+    } else if (next == '&') {
+        // `&FFFF` address literal as expression primary. The
+        // wider `&[...]` form lives at the operand layer; it
+        // doesn't show up inside expressions directly.
+        const r = lexer.addrP.parseFn(state);
+        if (r == .ok) {
+            const tok = r.ok.value;
+            const expr = try allocator.create(ast.Expr);
+            expr.* = .{ .addr_lit = .{
+                .value = tok.value,
+                .span = .{ .start = tok.start, .end = tok.end },
+            } };
+            return expr;
+        }
+    } else if (next == '@') {
+        const r = lexer.symRefP.parseFn(state);
+        if (r == .ok) {
+            const tok = r.ok.value;
+            const expr = try allocator.create(ast.Expr);
+            expr.* = .{ .sym_ref = .{
+                .span = .{ .start = tok.start, .end = tok.end },
+            } };
+            return expr;
+        }
     } else if (isIdentStart(next)) {
         const r = lexer.identP.parseFn(state);
         if (r == .ok) {
@@ -381,11 +405,33 @@ pub fn evalExpr(expr: *const ast.Expr, source: []const u8, consts: ConstantTable
     return switch (expr.*) {
         .hex => |h| .{ .ok = h.value },
         .char => |c| .{ .ok = c.value },
+        .addr_lit => |a| .{ .ok = a.value },
+        .sym_ref => |s| symRefLookup(s, source, consts),
         .ident => |i| identLookup(i, source, consts),
         .paren => |p| evalExpr(p.inner, source, consts),
         .unary => |u| evalUnary(u, source, consts),
         .binary => |b| evalBinary(b, source, consts),
     };
+}
+
+/// Resolve a `@sym` reference. The lexeme span includes the
+/// leading `@`; we look up the name part (after the `@`) in the
+/// table. Returns "unknown identifier" if not bound — the
+/// codegen pass (#36) re-evaluates with a fuller symbol table.
+fn symRefLookup(s: ast.SymRef, source: []const u8, consts: ConstantTable) EvalResult {
+    // Strip the leading `@` byte to match how `const` and struct
+    // field offsets are keyed in the table.
+    const lex = source[s.span.start..s.span.end];
+    const name = if (lex.len > 0 and lex[0] == '@') lex[1..] else lex;
+    if (consts.get(name)) |value| return .{ .ok = value };
+    return .{ .err = .{
+        .parse_error = core.parseError(
+            "expression",
+            s.span.start,
+            "unresolved symbol reference (symbol-table pass will retry)",
+            .{ .expected = "a defined label or const", .kind = .semantic },
+        ),
+    } };
 }
 
 fn identLookup(i: ast.IdentRef, source: []const u8, consts: ConstantTable) EvalResult {

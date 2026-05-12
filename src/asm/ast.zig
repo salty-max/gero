@@ -275,6 +275,18 @@ pub const Operand = union(enum) {
     /// Bare identifier in operand position — refers to a label
     /// or a `const`. Resolution is the symbol-table pass's job.
     label_ref: LabelRef,
+    /// `&[<expr>]` — compile-time address expression (form a,
+    /// asm spec §3.4). Folds to a `u16` at codegen if every
+    /// symbol it references is resolved.
+    addr_expr: AddrExpr,
+    /// `[<addr-expr> + <reg>]` — indexed addressing (form b,
+    /// asm spec §3.4). Emits opcode `0x17` with the register as
+    /// the runtime addend.
+    indexed: IndexedAddr,
+    /// `<Type> @sym.field` — cast sugar (asm spec §3.4). Codegen
+    /// resolves this to `mem[@sym + Type.field]`, equivalent to
+    /// an `addr_expr` with the desugared expression.
+    cast: CastOperand,
 
     /// Smallest `Span` covering the operand.
     pub fn span(self: Operand) Span {
@@ -285,6 +297,9 @@ pub const Operand = union(enum) {
             .addr_lit => |a| a.span,
             .sym_ref => |s| s.span,
             .label_ref => |l| l.span,
+            .addr_expr => |a| a.span,
+            .indexed => |i| i.span,
+            .cast => |c| c.span,
         };
     }
 };
@@ -311,6 +326,50 @@ pub const LabelRef = struct {
     span: Span,
 };
 
+/// `&[ <expr> ]` — compile-time address expression (form a). The
+/// inner `expr` follows §1.7 operator rules and folds to a `u16`
+/// that codegen consumes as an `Addr`. If every symbol in `expr`
+/// is resolved at parse time, `value` is pre-folded; otherwise
+/// codegen retries against the full symbol table.
+pub const AddrExpr = struct {
+    expr: *Expr,
+    /// Pre-folded value, or `null` if the parser couldn't fully
+    /// resolve at parse time (typically because of forward
+    /// symbol references).
+    value: ?u16,
+    /// Span covering `&[ ... ]` including the brackets.
+    span: Span,
+};
+
+/// `[ <addr-expr> + <reg> ]` — indexed addressing (form b).
+/// Codegen emits opcode `0x17` with `addr` as the base Addr and
+/// `reg` as the runtime index.
+pub const IndexedAddr = struct {
+    /// Base address expression (anything that folds to a `u16`).
+    addr: *Expr,
+    /// Pre-folded base value, or `null` for forward references.
+    addr_value: ?u16,
+    /// Runtime register addend.
+    reg: RegisterRef,
+    /// Span covering `[ ... ]` including the brackets.
+    span: Span,
+};
+
+/// `<Type> @sym.field` — cast sugar. Stored unfolded so codegen
+/// can resolve `Type.field` against the struct registry + `@sym`
+/// against the symbol table. Equivalent at emit time to an
+/// `addr_expr` whose inner is `binary(+, sym_ref, ident("Type.field"))`.
+pub const CastOperand = struct {
+    /// Span of the type name between `<` and `>`.
+    type_name: Span,
+    /// `@sym` — the address being offset into.
+    sym_ref: SymRef,
+    /// Field name (the part after the `.`).
+    field_name: Span,
+    /// Span covering `<Type> @sym.field` end-to-end.
+    span: Span,
+};
+
 /// Compile-time expression — what shows up on the RHS of `const`,
 /// inside `&[ ... ]` address expressions, and as `data8`/`data16`
 /// value-list entries. Walks via `expr.evalExpr` to a `u16` (or
@@ -319,6 +378,8 @@ pub const LabelRef = struct {
 pub const Expr = union(enum) {
     hex: HexLit,
     char: CharLit,
+    addr_lit: AddrLit,
+    sym_ref: SymRef,
     ident: IdentRef,
     paren: Paren,
     unary: Unary,
@@ -329,6 +390,8 @@ pub const Expr = union(enum) {
         return switch (self) {
             .hex => |h| h.span,
             .char => |c| c.span,
+            .addr_lit => |a| a.span,
+            .sym_ref => |s| s.span,
             .ident => |i| i.span,
             .paren => |p| p.span,
             .unary => |u| u.span,
@@ -408,7 +471,7 @@ pub const BinaryOp = enum {
 /// allocator that built the tree (typically the program's).
 pub fn freeExpr(allocator: std.mem.Allocator, expr: *Expr) void {
     switch (expr.*) {
-        .hex, .char, .ident => {},
+        .hex, .char, .addr_lit, .sym_ref, .ident => {},
         .paren => |p| freeExpr(allocator, p.inner),
         .unary => |u| freeExpr(allocator, u.operand),
         .binary => |b| {
@@ -445,7 +508,9 @@ pub const Program = struct {
                 .instruction => |i| {
                     for (i.operands) |op| switch (op) {
                         .immediate => |e| freeExpr(self.allocator, e),
-                        .register, .indirect, .addr_lit, .sym_ref, .label_ref => {},
+                        .addr_expr => |a| freeExpr(self.allocator, a.expr),
+                        .indexed => |idx| freeExpr(self.allocator, idx.addr),
+                        .register, .indirect, .addr_lit, .sym_ref, .label_ref, .cast => {},
                     };
                     self.allocator.free(i.operands);
                 },
