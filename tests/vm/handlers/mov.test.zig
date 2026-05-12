@@ -106,6 +106,19 @@ test "mov 0x17 addr,reg,reg: indexed load (base + offset_reg)" {
     try std.testing.expectEqual(@as(u16, 0x1105), vm.regs.read(.ip));
 }
 
+test "mov8 0x29 addr,reg,reg: indexed BYTE load (base + offset_reg)" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    vm.regs.write(.r1, 0x10); // offset
+    vm.mmap.writeByte(0x2010, 0x42);
+    vm.mmap.writeByte(0x2011, 0xFF); // adjacent byte — must NOT bleed into r2 hi
+    loadProgram(&vm, &.{ 0x29, 0x00, 0x20, 0x02, 0x03 }); // r2 ← mem[0x2000 + r1]
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x0042), vm.regs.read(.r2));
+    try std.testing.expectEqual(@as(u16, 0x1105), vm.regs.read(.ip));
+}
+
 test "mov 0x18 imm16,[reg]: imm to memory via pointer register" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();

@@ -29,12 +29,12 @@ test "opcodes: OpcodeInfo.size sums opcode + operands" {
     try std.testing.expectEqual(@as(u8, 5), movix.size());
 }
 
-test "opcodes: table holds exactly 92 named entries" {
+test "opcodes: table holds exactly 93 named entries" {
     var count: usize = 0;
     for (table) |entry| if (entry != null) {
         count += 1;
     };
-    try std.testing.expectEqual(@as(usize, 92), count);
+    try std.testing.expectEqual(@as(usize, 93), count);
 }
 
 test "opcodes: every named entry has a non-empty mnemonic" {
@@ -96,15 +96,15 @@ test "opcodes: instruction sizes span the full 1-5 byte range" {
     try std.testing.expectEqual(@as(u8, 4), table[0x40].?.size()); // add imm16,reg
     try std.testing.expectEqual(@as(u8, 4), table[0x7E].?.size()); // djnz reg,addr
 
-    // 5 bytes — only the indexed mov.
+    // 5 bytes — indexed mov (word) + indexed mov8 (byte).
     try std.testing.expectEqual(@as(u8, 5), table[0x17].?.size()); // mov addr,reg,reg
+    try std.testing.expectEqual(@as(u8, 5), table[0x29].?.size()); // mov8 addr,reg,reg
 }
 
 test "opcodes: unused byte values are null" {
     // Spot-check several gaps in the spec's opcode space.
     try std.testing.expect(table[0x00] == null);
     try std.testing.expect(table[0x0F] == null);
-    try std.testing.expect(table[0x29] == null);
     try std.testing.expect(table[0x33] == null);
     try std.testing.expect(table[0x57] == null);
     try std.testing.expect(table[0x68] == null);

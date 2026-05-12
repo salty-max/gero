@@ -267,6 +267,7 @@ Useful for character buffers and packed data.
 | `0x22` | `mov8`   | `Addr, Reg`     | reg.lo ← mem[addr]; reg.hi ← 0 |
 | `0x23` | `mov8`   | `Reg, [Reg]`    | mem[ptr] ← reg.lo |
 | `0x24` | `mov8`   | `[Reg], Reg`    | reg.lo ← mem[ptr]; reg.hi ← 0 |
+| `0x29` | `mov8`   | `[Addr + Reg], Reg` | reg.lo ← mem[addr + idx]; reg.hi ← 0 (byte-level indexed load — useful for stepping through `data8` arrays) |
 | `0x25` | `movh`   | `Reg, Addr`     | mem[addr] ← reg.hi |
 | `0x26` | `movl`   | `Reg, Addr`     | mem[addr] ← reg.lo |
 | `0x27` | `bcpy`   | `Reg, Reg, Reg` | block copy: mem[dst..dst+len] ← mem[src..src+len]. Operand order: `dst, src, len` (Intel-style dst first). Length is the third register's `u16` value (0..65535 bytes). Copies low-to-high; overlapping ranges with `dst > src` produce corruption — split or use disjoint regions. Address arithmetic wraps. Doesn't touch flags. |
