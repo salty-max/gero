@@ -6,6 +6,7 @@ const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
 const run_cmd = @import("run.zig");
 const info_cmd = @import("info.zig");
+const asm_cmd = @import("asm.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
@@ -55,6 +56,7 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     return switch (cmd) {
+        .asm_ => asm_cmd.execute(io, arena, parsed.options, stdout, &term),
         .run => runDispatch(io, arena, parsed.options, stdout, &term),
         .info => infoDispatch(io, arena, parsed.options, stdout, &term),
         else => blk: {
