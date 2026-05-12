@@ -12,6 +12,9 @@ const include = @import("asm/include.zig");
 const ast_mod = @import("asm/ast.zig");
 const parser = @import("asm/parser.zig");
 const expr_mod = @import("asm/expr.zig");
+const symtab_mod = @import("asm/symtab.zig");
+const codegen_mod = @import("asm/codegen.zig");
+const opres_mod = @import("asm/opcode_resolver.zig");
 
 /// Re-export: lexer token.
 pub const Token = lexer.Token;
@@ -92,6 +95,19 @@ pub const AddrExpr = ast_mod.AddrExpr;
 pub const IndexedAddr = ast_mod.IndexedAddr;
 /// Re-export: `<Type> @sym.field` cast operand.
 pub const CastOperand = ast_mod.CastOperand;
+
+/// Re-export: name → (kind, address) symbol table.
+pub const SymbolTable = symtab_mod.SymbolTable;
+/// Re-export: one entry in `SymbolTable`.
+pub const Symbol = symtab_mod.Symbol;
+/// Re-export: symbol classification.
+pub const SymbolKind = symtab_mod.SymbolKind;
+/// Re-export: codegen output — bytes + symbols + errors.
+pub const Codegen = codegen_mod.Codegen;
+/// Re-export: codegen options (entry point etc.).
+pub const CodegenOptions = codegen_mod.Options;
+/// Re-export: assemble a parsed program into a `.gx` byte image.
+pub const assemble = codegen_mod.assemble;
 /// Re-export: name → u16 lookup for compile-time constants.
 pub const ConstantTable = expr_mod.ConstantTable;
 /// Re-export: fold an `Expr` tree to a `u16` using a `ConstantTable`.
