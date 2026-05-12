@@ -66,6 +66,12 @@ pub const SymRef = ast_mod.SymRef;
 pub const StringLit = ast_mod.StringLit;
 /// Re-export: `reserve N` form.
 pub const ReserveForm = ast_mod.ReserveForm;
+/// Re-export: struct directive AST shape.
+pub const StructDecl = ast_mod.StructDecl;
+/// Re-export: one field in a struct declaration.
+pub const StructField = ast_mod.StructField;
+/// Re-export: field type (u8 / u16) per asm spec §2.2.
+pub const FieldType = ast_mod.FieldType;
 /// Re-export: name → u16 lookup for compile-time constants.
 pub const ConstantTable = expr_mod.ConstantTable;
 /// Re-export: fold an `Expr` tree to a `u16` using a `ConstantTable`.

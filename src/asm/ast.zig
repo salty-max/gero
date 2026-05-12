@@ -33,6 +33,7 @@ pub const Statement = union(enum) {
     const_decl: ConstDecl,
     data8: DataDecl,
     data16: DataDecl,
+    struct_decl: StructDecl,
     /// Catch-all for unrecognized lines — carries a span so the
     /// consumer can skip past it cleanly.
     unknown: Unknown,
@@ -44,6 +45,7 @@ pub const Statement = union(enum) {
             .const_decl => |c| c.span,
             .data8 => |d| d.span,
             .data16 => |d| d.span,
+            .struct_decl => |s| s.span,
             .unknown => |u| u.span,
         };
     }
@@ -160,6 +162,55 @@ pub const ReserveForm = struct {
     /// no-op for the failed entry.
     count: ?u16,
     span: Span,
+};
+
+/// `struct NAME { field: TYPE, ... }` — compile-time struct
+/// layout. No bytes get emitted at the struct's source position;
+/// each field produces an offset constant accessible as
+/// `NAME.field` in expressions (the parser injects these into
+/// the `ConstantTable` as it walks fields).
+pub const StructDecl = struct {
+    /// Span of the struct type name (without `struct` keyword
+    /// or the `{`).
+    name: Span,
+    /// Fields in declaration order. The parser computes each
+    /// field's offset as it walks: `u8` adds 1 to the running
+    /// offset, `u16` adds 2. Layout is packed — no padding.
+    fields: []StructField,
+    /// Total layout size (= last field's offset + its width).
+    /// `0` for an empty struct.
+    size: u16,
+    /// Span covering `struct NAME { ... }` end-to-end.
+    span: Span,
+};
+
+/// One field of a `struct` block. Field offsets start at zero
+/// for the first field and accumulate as fields are walked.
+pub const StructField = struct {
+    /// Span of the field's identifier.
+    name: Span,
+    /// `u8` (1 byte) or `u16` (2 bytes). Per asm spec §2.2 these
+    /// are the only field types in v0.1.
+    ty: FieldType,
+    /// Byte offset within the struct.
+    offset: u16,
+    /// Span covering `field: type` end-to-end.
+    span: Span,
+};
+
+/// Field type per asm spec §2.2. The width values are 1 byte for
+/// `u8`, 2 bytes for `u16`; nothing wider in v0.1.
+pub const FieldType = enum {
+    u8_t,
+    u16_t,
+
+    /// Byte width of this type.
+    pub fn width(self: FieldType) u16 {
+        return switch (self) {
+            .u8_t => 1,
+            .u16_t => 2,
+        };
+    }
 };
 
 /// Compile-time expression — what shows up on the RHS of `const`,
@@ -291,6 +342,7 @@ pub const Program = struct {
                     };
                     self.allocator.free(d.values);
                 },
+                .struct_decl => |sd| self.allocator.free(sd.fields),
                 else => {},
             }
         }
