@@ -5,6 +5,7 @@
 /// parsing is fully wired so the eventual implementations only
 /// need to read `Options`.
 const std = @import("std");
+const build_options = @import("build_options");
 
 /// Recognized subcommands.
 pub const Command = enum {
@@ -382,8 +383,10 @@ fn needsValue(kind: FlagKind) bool {
 }
 
 /// Build-time-captured semver from `build.zig.zon`. Stamped into
-/// `gero --version` output. Bumped via `zig build version`.
-pub const version_string: []const u8 = "0.0.0";
+/// `gero --version` output. `build.zig` reads the `.version` field
+/// at configure time and injects it through the `build_options`
+/// module — single source of truth, no manual bump here.
+pub const version_string: []const u8 = build_options.version;
 
 /// Parse `argv[1..]` into a `Parsed`. The first non-flag token
 /// is the subcommand; everything after it is forwarded to the
