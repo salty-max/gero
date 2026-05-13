@@ -16,10 +16,51 @@ const decoder = @import("decoder.zig");
 /// mnemonic plus one trailing space.
 const mnemonic_col_width: usize = 6;
 
+/// ANSI escape strings the disasm printer wraps around each
+/// rendered piece. `Style.plain` emits no escapes (round-trip);
+/// `Style.ansi` is the human-facing palette the CLI flips to
+/// when stdout is a TTY.
+pub const Style = struct {
+    /// `XXXX:` address gutter.
+    address: []const u8 = "",
+    /// `10 30 00 02` hex-bytes column.
+    bytes_col: []const u8 = "",
+    /// `mov`, `int`, `hlt`, … mnemonic.
+    mnemonic: []const u8 = "",
+    /// `r1`, `acu`, `mb`, … register names.
+    register: []const u8 = "",
+    /// `$1234`, `&5678`, hex/addr literals.
+    literal: []const u8 = "",
+    /// `; .byte`, `; truncated` warnings on undecodable bytes.
+    comment: []const u8 = "",
+    /// `; entry point` callout.
+    entry: []const u8 = "",
+    /// Reset escape emitted after every wrapped piece.
+    reset: []const u8 = "",
+
+    /// No ANSI — default for tests, round-trip, and non-TTY.
+    pub const plain: Style = .{};
+
+    /// Standard palette: dim gutter / bytes, bold mnemonic, cyan
+    /// registers, yellow literals, dim comments, bold-yellow entry.
+    pub const ansi: Style = .{
+        .address = "\x1b[2m",
+        .bytes_col = "\x1b[2m",
+        .mnemonic = "\x1b[1m",
+        .register = "\x1b[36m",
+        .literal = "\x1b[33m",
+        .comment = "\x1b[2m",
+        .entry = "\x1b[1;33m",
+        .reset = "\x1b[0m",
+    };
+};
+
 /// Render one instruction to `writer`. Caller controls leading
-/// indent / label emission separately.
-pub fn writeInstruction(writer: *std.Io.Writer, inst: decoder.Instruction) std.Io.Writer.Error!void {
-    try writer.print("{s}", .{inst.mnemonic});
+/// indent / label emission separately. Pass `Style.plain` for the
+/// round-trip-friendly bare output; `Style.ansi` for the colored
+/// CLI view.
+pub fn writeInstruction(writer: *std.Io.Writer, inst: decoder.Instruction, style: Style) std.Io.Writer.Error!void {
+    try writer.print("{s}{s}{s}", .{ style.mnemonic, inst.mnemonic, style.reset });
     // Pad the mnemonic column — only when operands follow. A
     // zero-operand mnemonic (`hlt`, `nop`, `ret`, …) prints
     // unpadded so the line has no trailing spaces.
@@ -33,7 +74,7 @@ pub fn writeInstruction(writer: *std.Io.Writer, inst: decoder.Instruction) std.I
 
     for (inst.operands, 0..) |op, i| {
         if (i != 0) try writer.writeAll(", ");
-        try writeOperand(writer, op);
+        try writeOperand(writer, op, style);
     }
 }
 
@@ -70,6 +111,9 @@ pub const PrintOptions = struct {
     /// `; entry point` comment to that line. `null` skips the
     /// marker. Only meaningful with `base_addr` set.
     entry_addr: ?u16 = null,
+    /// ANSI palette to wrap around each rendered piece. Default
+    /// `Style.plain` emits no escapes.
+    style: Style = .plain,
 };
 
 /// Same shape as `writeBytes` but with `PrintOptions` for the
@@ -86,20 +130,20 @@ pub fn writeBytesPretty(
         if (out_or_err) |out| {
             defer decoder.freeInstruction(allocator, out.instruction);
             try writePrefix(writer, bytes, offset, out.instruction.size, opts);
-            try writeInstruction(writer, out.instruction);
+            try writeInstruction(writer, out.instruction, opts.style);
             try writeEntryMarker(writer, offset, opts);
             try writer.writeByte('\n');
             offset = out.next_offset;
         } else |err| switch (err) {
             error.UnknownOpcode => {
                 try writePrefix(writer, bytes, offset, 1, opts);
-                try writer.print("; .byte ${X:0>2}", .{bytes[offset]});
+                try writer.print("{s}; .byte ${X:0>2}{s}", .{ opts.style.comment, bytes[offset], opts.style.reset });
                 try writeEntryMarker(writer, offset, opts);
                 try writer.writeByte('\n');
                 offset += 1;
             },
             error.Truncated => {
-                try writer.print("; truncated at offset ${X:0>4}\n", .{offset});
+                try writer.print("{s}; truncated at offset ${X:0>4}{s}\n", .{ opts.style.comment, offset, opts.style.reset });
                 break;
             },
             error.OutOfMemory => return error.OutOfMemory,
@@ -120,13 +164,15 @@ fn writePrefix(
     if (opts.base_addr) |base| {
         // @as: offset bounded by caller's slice (max 64 KiB image / 16 KiB bank) so the u16 narrow never truncates.
         const addr: u16 = base +% @as(u16, @intCast(offset));
-        try writer.print("{X:0>4}:  ", .{addr});
+        try writer.print("{s}{X:0>4}:{s}  ", .{ opts.style.address, addr, opts.style.reset });
     }
     if (opts.show_bytes) {
         const end = @min(offset + size, bytes.len);
         const max_inst_bytes: usize = 5;
+        try writer.writeAll(opts.style.bytes_col);
         var i: usize = offset;
         while (i < end) : (i += 1) try writer.print("{X:0>2} ", .{bytes[i]});
+        try writer.writeAll(opts.style.reset);
         // Pad to fixed width so the asm column aligns.
         var pad: usize = (max_inst_bytes - (end - offset)) * 3;
         while (pad > 0) : (pad -= 1) try writer.writeByte(' ');
@@ -142,38 +188,40 @@ fn writeEntryMarker(
     if (opts.entry_addr) |e| if (opts.base_addr) |base| {
         // @as: same bound as writePrefix — offset fits u16 within the bank window / base image.
         const addr: u16 = base +% @as(u16, @intCast(offset));
-        if (addr == e) try writer.writeAll("  ; entry point");
+        if (addr == e) try writer.print("  {s}; entry point{s}", .{ opts.style.entry, opts.style.reset });
     };
 }
 
-fn writeOperand(writer: *std.Io.Writer, op: decoder.Operand) std.Io.Writer.Error!void {
+fn writeOperand(writer: *std.Io.Writer, op: decoder.Operand, style: Style) std.Io.Writer.Error!void {
     switch (op) {
-        .reg => |r| try writeReg(writer, r),
-        .imm8 => |v| try writer.print("${X:0>2}", .{v}),
-        .imm16 => |v| try writer.print("${X:0>4}", .{v}),
-        .addr => |v| try writer.print("&{X:0>4}", .{v}),
-        .zp => |v| try writer.print("${X:0>2}", .{v}),
+        .reg => |r| try writeReg(writer, r, style),
+        .imm8 => |v| try writer.print("{s}${X:0>2}{s}", .{ style.literal, v, style.reset }),
+        .imm16 => |v| try writer.print("{s}${X:0>4}{s}", .{ style.literal, v, style.reset }),
+        .addr => |v| try writer.print("{s}&{X:0>4}{s}", .{ style.literal, v, style.reset }),
+        .zp => |v| try writer.print("{s}${X:0>2}{s}", .{ style.literal, v, style.reset }),
         .reg_indirect => |r| {
             try writer.writeByte('[');
-            try writeReg(writer, r);
+            try writeReg(writer, r, style);
             try writer.writeByte(']');
         },
         .indexed => |idx| {
-            try writer.print("[&{X:0>4} + ", .{idx.addr});
-            try writeReg(writer, idx.reg);
+            try writer.print("[{s}&{X:0>4}{s} + ", .{ style.literal, idx.addr, style.reset });
+            try writeReg(writer, idx.reg, style);
             try writer.writeByte(']');
         },
     }
 }
 
-fn writeReg(writer: *std.Io.Writer, idx: u8) std.Io.Writer.Error!void {
+fn writeReg(writer: *std.Io.Writer, idx: u8, style: Style) std.Io.Writer.Error!void {
     // Map the raw 0..14 index back to the canonical asm name via
     // the `vm.Register` enum. Out-of-range bytes (the VM would
     // fault on these at runtime) round-trip as `r?<hex>` so the
     // disasm output is still readable instead of crashing.
+    try writer.writeAll(style.register);
     if (std.enums.fromInt(gero.vm.Register, idx)) |reg| {
         try writer.writeAll(@tagName(reg));
     } else {
         try writer.print("r?{X:0>2}", .{idx});
     }
+    try writer.writeAll(style.reset);
 }
