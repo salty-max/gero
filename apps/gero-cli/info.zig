@@ -38,7 +38,23 @@ pub fn format(
         const noun: []const u8 = if (h.sram_bank_count == 1) "bank" else "banks";
         try out.print("sram:    {d} {s} (battery-backed)\n", .{ h.sram_bank_count, noun });
     }
-    try out.print("debug:   {s}\n", .{if (h.hasDebugSymbols()) "yes" else "no"});
+    if (h.hasDebugSymbols()) {
+        // Parse the trailing debug blob to extract the symbol
+        // count for the summary line. The slice is borrowed; we
+        // only read the count header (no allocation needed here).
+        const count = peekSymbolCount(loaded.debug);
+        try out.print("debug:   yes (symbols: {d})\n", .{count});
+    } else {
+        try out.print("debug:   no\n", .{});
+    }
+}
+
+/// Read just the first 2-byte u16 from the debug blob — that's
+/// the symbol count per ISA §7.3. Returns 0 if the blob is too
+/// short (treated as "no symbols").
+fn peekSymbolCount(debug: []const u8) u16 {
+    if (debug.len < 2) return 0;
+    return @as(u16, debug[0]) | (@as(u16, debug[1]) << 8);
 }
 
 // ---------- tests ----------

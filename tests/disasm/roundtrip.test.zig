@@ -14,10 +14,12 @@ const gero = @import("gero");
 const alloc = std.testing.allocator;
 
 /// Assemble `src` and return the raw image bytes (header stripped).
+/// Debug symbols disabled so the round-trip compare only looks at
+/// base + banks bytes — the disasm side strips labels anyway.
 fn assembleImage(src: []const u8) ![]u8 {
     var pt = try gero.asm_.parse(alloc, src);
     defer pt.deinit();
-    var cg = try gero.asm_.assemble(alloc, src, pt, .{});
+    var cg = try gero.asm_.assemble(alloc, src, pt, .{ .debug_symbols = false });
     defer cg.deinit();
     if (cg.hasErrors()) return error.AssemblyFailed;
     return alloc.dupe(u8, cg.image[16..]);

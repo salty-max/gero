@@ -12,6 +12,33 @@
 const std = @import("std");
 const gero = @import("../gero.zig");
 
+/// One row of the debug-symbol table per ISA §7.3.
+pub const Symbol = struct {
+    address: u16,
+    name: []const u8,
+};
+
+/// Parsed debug-symbol section — an `address → name` lookup for
+/// the disasm printer. Borrows name bytes from the input blob.
+pub const Symbols = struct {
+    entries: []const Symbol,
+
+    /// `null` when no symbol covers `addr`. Linear scan — the
+    /// symbol count tops out at ~thousands per cart so binary
+    /// search isn't worth the complexity for v0.1.
+    pub fn lookup(self: Symbols, addr: u16) ?[]const u8 {
+        for (self.entries) |e| if (e.address == addr) return e.name;
+        return null;
+    }
+
+    /// Release the entries slice. The borrowed name bytes
+    /// inside each entry are NOT freed — they remain valid as
+    /// long as the caller's source buffer does.
+    pub fn deinit(self: Symbols, allocator: std.mem.Allocator) void {
+        allocator.free(self.entries);
+    }
+};
+
 /// One file's worth of decoded header info + section slices, all
 /// borrowed from the caller's `bytes` buffer.
 pub const Header = struct {
@@ -56,6 +83,41 @@ pub const Header = struct {
 /// `LoaderError` — the disasm exposes them as one unified set so
 /// `gero disasm` can map them to E-codes downstream.
 pub const DecodeError = gero.vm.LoaderError;
+
+/// Failures specific to the optional debug-symbol section.
+pub const SymbolsError = error{
+    /// Section length doesn't fit the declared `symbol_count`.
+    TruncatedSymbolSection,
+    OutOfMemory,
+};
+
+/// Parse the debug-symbol blob attached to a `.gx` per ISA §7.3.
+/// Returns an empty `Symbols` if the cart has no symbol section.
+/// Caller owns the returned entries slice — release via
+/// `Symbols.deinit`.
+pub fn parseSymbols(allocator: std.mem.Allocator, debug_bytes: []const u8) SymbolsError!Symbols {
+    if (debug_bytes.len == 0) return .{ .entries = &.{} };
+    if (debug_bytes.len < 2) return error.TruncatedSymbolSection;
+
+    // @as: widen each u8 byte to u16 so the OR / shift produces a u16 count.
+    const count: u16 = @as(u16, debug_bytes[0]) | (@as(u16, debug_bytes[1]) << 8);
+    var entries = try allocator.alloc(Symbol, count);
+    errdefer allocator.free(entries);
+
+    var cursor: usize = 2;
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        if (cursor + 3 > debug_bytes.len) return error.TruncatedSymbolSection;
+        // @as: widen each u8 byte to u16 for the LE u16 read.
+        const addr: u16 = @as(u16, debug_bytes[cursor]) | (@as(u16, debug_bytes[cursor + 1]) << 8);
+        const name_len: usize = debug_bytes[cursor + 2];
+        cursor += 3;
+        if (cursor + name_len > debug_bytes.len) return error.TruncatedSymbolSection;
+        entries[i] = .{ .address = addr, .name = debug_bytes[cursor..][0..name_len] };
+        cursor += name_len;
+    }
+    return .{ .entries = entries };
+}
 
 /// Parse `bytes` as a `.gx` archive. Strict: rejects unknown
 /// flag bits and any version != `0x0001`. The returned slices

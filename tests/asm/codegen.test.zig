@@ -20,7 +20,23 @@ const Output = struct {
     }
 };
 
-fn assemble(source: []const u8, opts: gero.asm_.CodegenOptions) !Output {
+fn assemble(source: []const u8, opts_in: gero.asm_.CodegenOptions) !Output {
+    var pt = try gero.asm_.parse(alloc, source);
+    errdefer pt.deinit();
+    // Force-disable debug symbols by default so byte-layout
+    // tests stay tight against the expected image / banks bytes.
+    // The dedicated debug-symbols tests pass their own opts with
+    // `.debug_symbols = true`.
+    var opts = opts_in;
+    opts.debug_symbols = false;
+    const cg = try gero.asm_.assemble(alloc, source, pt, opts);
+    return .{ .pt = pt, .cg = cg };
+}
+
+/// Variant that keeps the caller's opts intact (no automatic
+/// debug-symbol stripping). Used by the `#100` debug-symbols
+/// tests that need to inspect the trailing blob.
+fn assembleRaw(source: []const u8, opts: gero.asm_.CodegenOptions) !Output {
     var pt = try gero.asm_.parse(alloc, source);
     errdefer pt.deinit();
     const cg = try gero.asm_.assemble(alloc, source, pt, opts);
@@ -413,6 +429,62 @@ test "codegen: labels inside `bank N` resolve to bank-window addresses" {
     try std.testing.expectEqual(@as(u8, 0x80), out.cg.image[16]);
     try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[17]);
     try std.testing.expectEqual(@as(u8, 0xC0), out.cg.image[18]);
+}
+
+// ---------- debug symbols (issue #100) ----------
+
+test "codegen: debug symbols emit by default — flag bit + sorted entries" {
+    var out = try assembleRaw(
+        \\main:
+        \\  hlt
+        \\helper:
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    // Flags low byte: bit 1 = has-debug
+    try std.testing.expect((out.cg.image[6] & 0x02) != 0);
+    // Trailing blob: count u16 LE = 2, then sorted by address
+    const tail_start = 16 + 2; // header + 2-byte image (2 hlt)
+    try std.testing.expectEqual(@as(u8, 0x02), out.cg.image[tail_start]);
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 1]);
+    // First entry: addr 0x0000 → "main"
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 2]);
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 3]);
+    try std.testing.expectEqual(@as(u8, 4), out.cg.image[tail_start + 4]);
+    try std.testing.expectEqualSlices(u8, "main", out.cg.image[tail_start + 5 ..][0..4]);
+    // Second entry: addr 0x0001 → "helper"
+    try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[tail_start + 9]);
+    try std.testing.expectEqualSlices(u8, "helper", out.cg.image[tail_start + 12 ..][0..6]);
+}
+
+test "codegen: debug_symbols=false skips the section + flag" {
+    var out = try assembleRaw("main:\n  hlt\n", .{ .debug_symbols = false });
+    defer out.deinit();
+    try std.testing.expectEqual(@as(u8, 0), out.cg.image[6] & 0x02); // flag bit clear
+    // Total = 16 header + 1 image byte (hlt), no trailing blob.
+    try std.testing.expectEqual(@as(usize, 17), out.cg.image.len);
+}
+
+test "codegen: debug symbols skip local labels + consts" {
+    // Locals (`.loop`) get mangled with a `.` which isn't a valid
+    // ident — exclude. Consts are values, not addresses — also
+    // exclude. Only `main` should make it into the blob.
+    var out = try assembleRaw(
+        \\const N = $05
+        \\main:
+        \\.loop:
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    const tail_start = 16 + 1; // header + 1 image byte (hlt)
+    // symbol_count = 1
+    try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[tail_start]);
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 1]);
+    // The one entry is "main"
+    try std.testing.expectEqual(@as(u8, 4), out.cg.image[tail_start + 4]);
+    try std.testing.expectEqualSlices(u8, "main", out.cg.image[tail_start + 5 ..][0..4]);
 }
 
 test "codegen: header magic + version + entry_point + image_size" {

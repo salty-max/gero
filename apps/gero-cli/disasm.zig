@@ -61,11 +61,22 @@ pub fn execute(
     const base_addr: u16 = if (opts.bank == null) 0x0000 else bank_window_base;
     const entry_addr: ?u16 = if (opts.bank == null) header.entry_point else null;
     const style: gero.disasm.Style = if (term.color) .ansi else .plain;
+
+    // Parse the debug-symbol section (if present) so the printer
+    // renders `call greet` instead of `call &C000` etc. Borrows
+    // name bytes from `header.debug`; valid for the lifetime of
+    // this function.
+    const symbols = gero.disasm.parseSymbols(arena, header.debug) catch |err| {
+        try term.err("gero disasm: malformed debug section ({s})", .{@errorName(err)});
+        return 1;
+    };
+
     try gero.disasm.writeBytesPretty(arena, stdout, target_bytes, .{
         .base_addr = base_addr,
         .show_bytes = true,
         .entry_addr = entry_addr,
         .style = style,
+        .symbols = symbols,
     });
     return 0;
 }
