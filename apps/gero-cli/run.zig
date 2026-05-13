@@ -1,13 +1,10 @@
 /// `gero run` — load a `.gx`, boot a fresh VM, execute until
-/// halt / fault / breakpoint. The bare-VM target intercepts two
+/// halt / fault / breakpoint. The bare-VM intercepts two
 /// reserved `int N` syscalls before they reach the IVT:
 ///
 ///   `int 0x10` — print the low byte of `r1` to stdout.
 ///   `int 0x21` — flush the SRAM bytes through the host sink
 ///                (typically a write of `<basename>.sav`).
-///
-/// `--target=gtx-16` is intentionally not wired here — the
-/// fantasy-console shim lives in a separate crate.
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
@@ -33,8 +30,7 @@ pub const SramSink = struct {
 
 /// Drive a parsed `.gx` to completion. Returns the CLI exit
 /// code per cli.md §3.3: `0` on `hlt`, `6` on unhandled fault,
-/// `1` on host-level error / bad file / unsupported target,
-/// `2` on a `brk` breakpoint.
+/// `1` on host-level error / bad file, `2` on a `brk` breakpoint.
 pub fn execute(
     allocator: std.mem.Allocator,
     opts: cli.Options,
@@ -43,11 +39,6 @@ pub fn execute(
     sram_sink: ?*SramSink,
     gx_bytes: []const u8,
 ) !u8 {
-    if (opts.target == .gtx_16) {
-        try term.err("gero run: --target=gtx-16 is not implemented in this build", .{});
-        return 1;
-    }
-
     const loaded = gero.vm.parseGx(gx_bytes) catch |err| {
         try term.err("gero run: invalid .gx file ({s})", .{@errorName(err)});
         return 1;
@@ -231,20 +222,6 @@ test "execute: save syscall (int 0x21) hands SRAM bytes to the sink" {
     try testing.expectEqual(@as(usize, 0x4000), rec.bytes.items.len);
     try testing.expectEqual(@as(u8, 0xFE), rec.bytes.items[0]);
     try testing.expectEqual(@as(u8, 0xCA), rec.bytes.items[1]);
-}
-
-test "execute: --target=gtx-16 exits 1 with explicit message" {
-    const buf = [_]u8{0} ** 16;
-    var out_buf: [128]u8 = undefined;
-    var err_buf: [256]u8 = undefined;
-    var out: std.Io.Writer = .fixed(&out_buf);
-    var err: std.Io.Writer = .fixed(&err_buf);
-    var term = term_mod.Term{ .out = &err, .color = false };
-
-    const opts: cli.Options = .{ .target = .gtx_16 };
-    const code = try execute(testing.allocator, opts, &out, &term, null, &buf);
-    try testing.expectEqual(@as(u8, 1), code);
-    try testing.expect(std.mem.indexOf(u8, err_buf[0..err.end], "gtx-16") != null);
 }
 
 test "execute: bad magic exits 1 with structured message" {

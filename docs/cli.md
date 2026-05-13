@@ -22,10 +22,10 @@ gero <subcommand> [flags] [args]
 Discover the command list with `gero --help`. Discover per-command
 flags with `gero <cmd> --help`.
 
-The CLI loads its target (gero VM, optionally with the gtx-16 host
-shim) from an internal lookup — there's no separate runtime install.
 A single `gero` binary covers asm, compile, run, test, bench, fmt,
-check, build, disasm, info.
+check, build, disasm, info. The bare-VM runtime is the only target
+this repo produces — fantasy-console hosts (e.g. gtx-16) live
+downstream and consume `.gx` files as library inputs.
 
 ---
 
@@ -38,7 +38,6 @@ Accepted by every subcommand (where meaningful):
 | `--help` / `-h` | — | Print help for the command and exit 0. |
 | `--quiet` / `-q` | off | Suppress non-error output. |
 | `--verbose` / `-v` | off | Extra info: timings, allocation counts, intermediate sizes. |
-| `--target=<spec>` | `vm` | `vm` (bare gero VM) or `gtx-16` (loads display/audio/input shims, different default IO layout). |
 | `--optimize=<mode>` | `debug` | `debug` / `release` / `size`. Mirrors Zig modes. |
 | `--out=<path>` / `-o` | (per-cmd default) | Output path for commands that produce files. |
 
@@ -95,17 +94,14 @@ Loads a `.gx` into a fresh VM and executes from `entry_point`.
 
 ```bash
 gero run hello.gx
-gero run game.gx --target=gtx-16   # boot with FC peripherals mapped
 ```
 
 **Behavior:**
-- Default target `vm` runs the bare VM — `print` syscalls go to
-  stdout, `int 0x21` (save-flush) writes `<basename>.sav` next to
-  the `.gx`.
-- `--target=gtx-16` boots the FC host: opens a 320×240 window
-  (4:3 retro PC), wires up the IO command surface for drawing,
-  8-channel audio, gamepad + keyboard + mouse input. Full spec
-  in `docs/gtx-16.md`.
+- Runs the bare VM — `print` syscalls go to stdout, `int 0x21`
+  (save-flush) writes `<basename>.sav` next to the `.gx`.
+- Fantasy-console hosts (e.g. gtx-16) embed gero as a library
+  and provide their own runtime — they're not invoked through
+  `gero run`.
 
 **Exit:** 0 on `hlt` clean exit; 6 on unhandled fault (invalid
 opcode, /0, etc.); 1 on host-level error (file missing, version
@@ -274,7 +270,6 @@ v0.1 conventions (no `gero.toml` yet).
 ```bash
 gero build                        # → out/<project-basename>.gx
 gero build --optimize=release
-gero build --target=gtx-16
 ```
 
 **Behavior:**
@@ -339,14 +334,13 @@ parseable by editors / CI tools.
 
 ## 8. Future: project file (`gero.toml`)
 
-Once `gero init` / multi-target / dependency management land, a
-project file will be needed:
+Once `gero init` / dependency management land, a project file
+will be needed:
 
 ```toml
 [project]
 name = "my-game"
 version = "0.1.0"
-target = "gtx-16"
 
 [deps]
 loom = { git = "https://github.com/salty-max/loom" }

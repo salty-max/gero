@@ -20,9 +20,6 @@ pub const Command = enum {
     info,
 };
 
-/// `--target` values per `cli.md` §2.
-pub const Target = enum { vm, gtx_16 };
-
 /// `--optimize` values per `cli.md` §2.
 pub const Optimize = enum { debug, release, size };
 
@@ -40,7 +37,6 @@ pub const Options = struct {
     version: bool = false,
     quiet: bool = false,
     verbose: bool = false,
-    target: Target = .vm,
     optimize: Optimize = .debug,
     out: ?[]const u8 = null,
     color: ColorChoice = .auto,
@@ -87,8 +83,8 @@ pub const ParseError = error{
 pub const Diagnostic = struct {
     /// The argv token that triggered the error (e.g.
     /// `--not-show-bytes` for `UnknownFlag`, `frobnicate` for
-    /// `UnknownCommand`, `--target=mainframe` for
-    /// `InvalidEnumValue`). `null` until the parser hits an error.
+    /// `UnknownCommand`, `--color=neon` for `InvalidEnumValue`).
+    /// `null` until the parser hits an error.
     bad_token: ?[]const u8 = null,
 };
 
@@ -270,7 +266,6 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .version => .{ .sig = "--version / -V", .desc = "Print build version." },
         .quiet => .{ .sig = "--quiet / -q", .desc = "Suppress non-error output." },
         .verbose => .{ .sig = "--verbose / -v", .desc = "Extra diagnostics + per-phase timings." },
-        .target => .{ .sig = "--target / -t=<s>", .desc = "vm (default) or gtx-16." },
         .optimize => .{ .sig = "--optimize / -O=<m>", .desc = "debug (default) / release / size." },
         .out => .{ .sig = "--out / -o=<path>", .desc = "Output destination." },
         .color => .{ .sig = "--color / -c=<m>", .desc = "auto (default) / always / never." },
@@ -299,12 +294,6 @@ pub fn printVersion(out: *std.Io.Writer) std.Io.Writer.Error!void {
     try out.print("gero {s}\n", .{version_string});
 }
 
-fn parseTarget(s: []const u8) ParseError!Target {
-    if (std.mem.eql(u8, s, "vm")) return .vm;
-    if (std.mem.eql(u8, s, "gtx-16")) return .gtx_16;
-    return error.InvalidEnumValue;
-}
-
 fn parseOptimize(s: []const u8) ParseError!Optimize {
     if (std.mem.eql(u8, s, "debug")) return .debug;
     if (std.mem.eql(u8, s, "release")) return .release;
@@ -319,14 +308,13 @@ fn parseColor(s: []const u8) ParseError!ColorChoice {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, target, optimize, out, color, no_color, bank, show_bytes, no_show_bytes };
+const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
     if (std.mem.eql(u8, s, "version")) return .version;
     if (std.mem.eql(u8, s, "quiet")) return .quiet;
     if (std.mem.eql(u8, s, "verbose")) return .verbose;
-    if (std.mem.eql(u8, s, "target")) return .target;
     if (std.mem.eql(u8, s, "optimize")) return .optimize;
     if (std.mem.eql(u8, s, "out")) return .out;
     if (std.mem.eql(u8, s, "color")) return .color;
@@ -342,7 +330,6 @@ fn shortFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "V")) return .version; // upper-case — convention from rustc / clang
     if (std.mem.eql(u8, s, "q")) return .quiet;
     if (std.mem.eql(u8, s, "v")) return .verbose;
-    if (std.mem.eql(u8, s, "t")) return .target;
     if (std.mem.eql(u8, s, "O")) return .optimize; // upper-case — convention from clang / gcc
     if (std.mem.eql(u8, s, "o")) return .out;
     if (std.mem.eql(u8, s, "c")) return .color;
@@ -355,7 +342,6 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .version => opts.version = true,
         .quiet => opts.quiet = true,
         .verbose => opts.verbose = true,
-        .target => opts.target = try parseTarget(value orelse return error.MissingFlagValue),
         .optimize => opts.optimize = try parseOptimize(value orelse return error.MissingFlagValue),
         .out => opts.out = value orelse return error.MissingFlagValue,
         .color => opts.color = try parseColor(value orelse return error.MissingFlagValue),
@@ -372,7 +358,7 @@ fn parseBank(s: []const u8) ParseError!u8 {
 
 fn needsValue(kind: FlagKind) bool {
     return switch (kind) {
-        .target, .optimize, .out, .color, .bank => true,
+        .optimize, .out, .color, .bank => true,
         else => false,
     };
 }
@@ -562,9 +548,9 @@ test "parse: long flag with =value" {
 }
 
 test "parse: long flag with separate value" {
-    const args = [_][]const u8{ "run", "--target", "gtx-16", "game.gx" };
+    const args = [_][]const u8{ "run", "--color", "never", "game.gx" };
     const p = try parse(&args);
-    try testing.expectEqual(Target.gtx_16, p.options.target);
+    try testing.expectEqual(ColorChoice.never, p.options.color);
     try testing.expectEqualStrings("game.gx", p.options.positional()[0]);
 }
 
@@ -606,19 +592,9 @@ test "parseWithDiagnostic: populates bad_token on UnknownCommand" {
 
 test "parseWithDiagnostic: populates bad_token on InvalidEnumValue" {
     var diag: Diagnostic = .{};
-    const args = [_][]const u8{ "run", "--target=mainframe" };
+    const args = [_][]const u8{ "run", "--color=neon" };
     try testing.expectError(error.InvalidEnumValue, parseWithDiagnostic(&args, &diag));
-    try testing.expectEqualStrings("--target=mainframe", diag.bad_token.?);
-}
-
-test "parse: --target with bad value errors" {
-    const args = [_][]const u8{ "run", "--target=mainframe" };
-    try testing.expectError(error.InvalidEnumValue, parse(&args));
-}
-
-test "parse: --target without a value errors" {
-    const args = [_][]const u8{ "run", "--target" };
-    try testing.expectError(error.MissingFlagValue, parse(&args));
+    try testing.expectEqualStrings("--color=neon", diag.bad_token.?);
 }
 
 test "parse: --optimize=release accepted" {
