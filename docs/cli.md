@@ -177,9 +177,10 @@ Bytecode → asm text. The inverse of `gero asm`. Uses the `.gx`'s
 debug symbol section if present to annotate addresses with names.
 
 ```bash
-gero disasm game.gx               # whole cart (base + every bank)
-gero disasm game.gx -o game.gas   # to file
-gero disasm game.gx --bank=3      # only bank 3
+gero disasm game.gx                   # whole cart (base + every bank)
+gero disasm game.gx -o game.gas       # to file
+gero disasm game.gx --bank=3          # only bank 3
+gero disasm game.gx --check-roundtrip # CI gate — asm → disasm → asm equality
 ```
 
 When `--bank` is omitted, the whole cart is rendered: the base image
@@ -187,10 +188,18 @@ first, then every bank slot in turn, each prefixed with a
 `; --- base image ---` / `; --- bank N ---` section header. Carts
 with no banks render unchanged (no headers, single transcript).
 
+`--check-roundtrip` skips all rendering and instead drives the archive
+through `asm → disasm → asm`, exiting non-zero if the re-assembled
+base image differs from the original. Bank bytes are excluded from the
+compare (the round-trip helper disassembles the base image only).
+`--quiet` suppresses the one-line ok summary. Wired into
+`zig build test-examples` so every shipped example is gated.
+
 **Output:** asm-syntax-clean source the user could re-assemble (round-
 trip property — modulo formatting).
 
-**Exit:** 0 on success; 1 on file / version error.
+**Exit:** 0 on success; 1 on file / version error or round-trip
+mismatch.
 
 ### 3.7 `gero info <file.gx>` — header info
 

@@ -90,6 +90,18 @@ for gas in "${gas_files[@]}"; do
         continue
     fi
 
+    # Drive the CLI disasm round-trip gate (see issue #41).
+    # Validates: parseHeader + parseSymbols + writeBytesPretty +
+    # the assembler all agree end-to-end at the binary boundary.
+    rc=0
+    "$GERO_BIN" disasm --check-roundtrip --quiet "$gx" >"$work/rt.out" 2>"$work/rt.err" || rc=$?
+    if (( rc != 0 )); then
+        printf '%sFAIL%s (round-trip, exit=%d)\n' "$RED" "$RESET" "$rc"
+        sed 's/^/      /' "$work/rt.err"
+        fail=$((fail+1))
+        continue
+    fi
+
     printf '%sok%s\n' "$GREEN" "$RESET"
     pass=$((pass+1))
 done
