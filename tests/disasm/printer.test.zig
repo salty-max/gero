@@ -126,3 +126,71 @@ test "printer: multi-instruction sequence emits one line each" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("mov   $0048, r1\nint   $10\nhlt\n", out);
 }
+
+test "printer: zero run ≥ 4 collapses to single `org $XXXX` comment" {
+    // 6 leading $00 bytes (padding), then `hlt`. The 6 zeros
+    // should fold into one annotated comment instead of 6
+    // `; .byte $00` lines.
+    const bytes = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF };
+    var allocating = std.Io.Writer.Allocating.init(alloc);
+    defer allocating.deinit();
+    try gero.disasm.writeBytesPretty(alloc, &allocating.writer, &bytes, .{
+        .base_addr = 0x0000,
+    });
+    const out = allocating.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "; 6 bytes zero padding (org $0006)") != null);
+    // The hlt at offset 6 still renders normally.
+    try std.testing.expect(std.mem.indexOf(u8, out, "hlt") != null);
+    // No bare `; .byte $00` lines (they all collapsed).
+    try std.testing.expect(std.mem.indexOf(u8, out, "; .byte $00") == null);
+}
+
+test "printer: zero run < 4 stays as individual `.byte $00` lines" {
+    // 3 zeros + hlt — under threshold, no collapse.
+    const bytes = [_]u8{ 0x00, 0x00, 0x00, 0xFF };
+    var allocating = std.Io.Writer.Allocating.init(alloc);
+    defer allocating.deinit();
+    try gero.disasm.writeBytesPretty(alloc, &allocating.writer, &bytes, .{
+        .base_addr = 0x0000,
+    });
+    const out = allocating.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "zero padding") == null);
+    // Each $00 still gets its own `; .byte $00` line.
+    var occurrences: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, out, search_from, "; .byte $00")) |pos| {
+        occurrences += 1;
+        search_from = pos + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), occurrences);
+}
+
+test "printer: zero run stops at a symbol that lands inside it" {
+    // 4 zeros — would collapse — but a `main` label sits at offset
+    // 2. The run must split: 2 zeros before, label-decode resumes
+    // at offset 2.
+    const bytes = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0xFF };
+    const entries = [_]gero.disasm.Symbol{
+        .{ .address = 0x0002, .kind = .label, .name = "main" },
+    };
+    const symbols: gero.disasm.Symbols = .{ .entries = &entries };
+
+    var allocating = std.Io.Writer.Allocating.init(alloc);
+    defer allocating.deinit();
+    try gero.disasm.writeBytesPretty(alloc, &allocating.writer, &bytes, .{
+        .base_addr = 0x0000,
+        .symbols = symbols,
+    });
+    const out = allocating.written();
+    // The 2-byte head is below the collapse threshold and stays
+    // as two `; .byte $00` lines.
+    try std.testing.expect(std.mem.indexOf(u8, out, "zero padding") == null);
+    var byte_lines: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, out, search_from, "; .byte $00")) |pos| {
+        byte_lines += 1;
+        search_from = pos + 1;
+    }
+    // 2 leading + 2 more between `main` and `hlt` = 4 lines total.
+    try std.testing.expectEqual(@as(usize, 4), byte_lines);
+}
