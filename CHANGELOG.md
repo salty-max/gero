@@ -5,6 +5,12 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.1.1 - 2026-05-13
+
+### Fixed
+
+- Release tarballs now ship the `gero` CLI binary. v0.1.0 artifacts shipped `zig-out/lib/libgero.a` only — the executable was built but not copied into the dist archive, so the GitHub Release tarballs were unusable end-to-end. The packaging step now copies `zig-out/bin/` alongside `zig-out/lib/` and `zig-out/include/`.
+
 ## v0.1.0 - 2026-05-13
 
 First tagged release. The asm path — VM kernel, assembler,
