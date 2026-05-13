@@ -40,6 +40,7 @@ pub fn execute(
     // unused bytes; printing 16 KiB of `; .byte $00` is just
     // noise for the user).
     const bank_size: usize = 0x4000;
+    const bank_window_base: u16 = 0xC000;
     const target_bytes: []const u8 = if (opts.bank) |b| blk: {
         if (b >= header.bank_count) {
             try term.err("gero disasm: --bank={d} out of range (cart has {d} bank(s))", .{ b, header.bank_count });
@@ -51,7 +52,18 @@ pub fn execute(
         break :blk trimTrailingZeros(raw);
     } else header.image;
 
-    try gero.disasm.writeBytes(arena, stdout, target_bytes);
+    // Pretty view: address + hex-bytes columns, `; entry point`
+    // marker. The base image starts at CPU address $0000; a bank
+    // is mirrored at the window base $C000 when its `mb` is
+    // selected. Entry-point comment only makes sense for the
+    // base image (the loader stores the address there).
+    const base_addr: u16 = if (opts.bank == null) 0x0000 else bank_window_base;
+    const entry_addr: ?u16 = if (opts.bank == null) header.entry_point else null;
+    try gero.disasm.writeBytesPretty(arena, stdout, target_bytes, .{
+        .base_addr = base_addr,
+        .show_bytes = true,
+        .entry_addr = entry_addr,
+    });
     return 0;
 }
 

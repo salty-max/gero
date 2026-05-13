@@ -33,7 +33,16 @@ pub const freeInstruction = decoder_mod.freeInstruction;
 pub const writeInstruction = printer_mod.writeInstruction;
 /// Re-export: walk a byte buffer and emit one asm line per
 /// instruction. Unknown opcodes surface as `.byte` comments.
+/// Round-trip-friendly: re-assembling the output produces the
+/// same bytes (for all-code programs).
 pub const writeBytes = printer_mod.writeBytes;
+
+/// Re-export: pretty version of `writeBytes` with address +
+/// hex-bytes columns and an `; entry point` marker. Not
+/// round-trip-friendly — for the human-facing CLI view only.
+pub const writeBytesPretty = printer_mod.writeBytesPretty;
+/// Re-export: knob bundle for `writeBytesPretty`.
+pub const PrintOptions = printer_mod.PrintOptions;
 
 /// Re-export: drive the full asm → disasm → asm pipeline for
 /// byte-equality round-trip tests. See `disasm/roundtrip.zig`
