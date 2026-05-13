@@ -1,0 +1,35 @@
+; cmp_branch.gas — pick one of two literal chars based on a
+; comparison, prove both arms of a jeq/jmp are reachable.
+;
+; Exercises register-to-register cmp, jeq, jmp, and the
+; fall-through path of a two-arm conditional.
+
+const PRINT   = $10
+const NEWLINE = $0A
+
+main:
+  mov $07, r1
+  mov $07, r2
+  cmp r1, r2
+  jeq .equal
+  mov 'N', r1
+  jmp .emit
+.equal:
+  mov 'Y', r1
+.emit:
+  int PRINT
+
+  mov $04, r1
+  mov $09, r2
+  cmp r1, r2
+  jeq .equal2
+  mov 'N', r1
+  jmp .emit2
+.equal2:
+  mov 'Y', r1
+.emit2:
+  int PRINT
+
+  mov NEWLINE, r1
+  int PRINT
+  hlt

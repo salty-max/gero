@@ -1,0 +1,26 @@
+; arith.gas — compute (7 - 4) + (3 * 2) via repeated add and
+; print the resulting digit, then newline.
+;
+; Exercises: `add src, dst` and `sub src, dst` operand order
+; (dst ← dst ± src), `dec` on a non-r1 register, and the
+; `add $30, r1` digit-to-ASCII idiom seen in fib.gas.
+
+const PRINT   = $10
+const NEWLINE = $0A
+
+main:
+  mov $07, r1
+  sub $04, r1            ; r1 = 3
+  mov $02, r2            ; r2 = 2 (loop counter)
+  mov $03, r3            ; r3 = 3 (running result)
+.times:
+  add r3, r1             ; r1 += 3
+  dec r2
+  cmp r2, $00
+  jne .times             ; total adds: 2  → r1 = 3 + 3 + 3 = 9
+
+  add $30, r1            ; '0' + 9 = '9'
+  int PRINT
+  mov NEWLINE, r1
+  int PRINT
+  hlt

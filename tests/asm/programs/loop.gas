@@ -1,0 +1,20 @@
+; loop.gas — print '*' five times then newline.
+;
+; Exercises the inc / cmp / jne three-line loop idiom in
+; isolation, plus char-literal immediates (`mov '*', r1`).
+
+const PRINT   = $10
+const NEWLINE = $0A
+
+main:
+  mov $00, r2            ; counter
+.loop:
+  mov '*', r1
+  int PRINT
+  inc r2
+  cmp r2, $05
+  jne .loop
+
+  mov NEWLINE, r1
+  int PRINT
+  hlt

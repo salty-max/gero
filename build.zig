@@ -95,6 +95,16 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-disasm",
         .root_module = disasm_cli_mod,
     });
+    const test_cli_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_cli_mod.addImport("gero", gero_mod);
+    const test_cli_test = b.addTest(.{
+        .name = "test-cli-test",
+        .root_module = test_cli_mod,
+    });
 
     // ----- Format ----------------------------------------------------------
 
@@ -133,6 +143,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(info_test).step);
     test_step.dependOn(&b.addRunArtifact(asm_test).step);
     test_step.dependOn(&b.addRunArtifact(disasm_cli_test).step);
+    test_step.dependOn(&b.addRunArtifact(test_cli_test).step);
     for (test_files) |rel| {
         const t = makeTest(b, gero_mod, examples_opts, rel, target, optimize);
         test_step.dependOn(&b.addRunArtifact(t).step);

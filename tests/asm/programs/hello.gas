@@ -1,0 +1,22 @@
+; hello.gas — print a fixed greeting and halt.
+;
+; Indexed-load over a NUL-terminated data8 blob, one byte per
+; `int $10` (the host stdout syscall). Smoke test for the
+; minimum-viable end-to-end pipeline: lexer → parser → codegen →
+; VM → host int dispatch.
+
+const PRINT = $10
+
+main:
+  mov $00, r3
+.loop:
+  mov8 [@GREETING + r3], r1
+  cmp r1, $00
+  jeq .done
+  int PRINT
+  inc r3
+  jmp .loop
+.done:
+  hlt
+
+data8 GREETING = "OK", $0A, $00

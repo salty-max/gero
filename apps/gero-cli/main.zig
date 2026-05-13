@@ -8,6 +8,7 @@ const run_cmd = @import("run.zig");
 const info_cmd = @import("info.zig");
 const asm_cmd = @import("asm.zig");
 const disasm_cmd = @import("disasm.zig");
+const test_cmd = @import("test.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
@@ -75,6 +76,7 @@ pub fn main(init: std.process.Init) !u8 {
         .run => runDispatch(io, arena, parsed.options, stdout, &term),
         .info => infoDispatch(io, arena, parsed.options, stdout, &term),
         .disasm => disasm_cmd.execute(io, arena, parsed.options, stdout, &term),
+        .test_ => test_cmd.execute(io, arena, parsed.options, stdout, &term),
         else => blk: {
             try term.err("gero {s}: not yet implemented", .{cli.commandName(cmd)});
             break :blk 1;

@@ -109,35 +109,54 @@ mismatch).
 
 ### 3.4 `gero test [pattern]` — run tests
 
-Compiles the project (or a single file) in **test profile** —
-`@test` functions are included, `@bench` and `@asm` are stripped /
-skipped — runs each test, reports pass/fail.
+> **v0.1 shape (shipped):** asm-level golden-stdout harness. The
+> runner walks `tests/asm/` for `.gas` programs paired with a
+> sibling `<name>.expected` file, assembles each, boots a fresh VM,
+> captures stdout (via the host `int $10` print syscall), and diffs
+> against the golden. The lang-level form described below (`@test`
+> functions, structured assertion diagnostics) lands with the
+> language compiler in v0.2.
 
 ```bash
-gero test                         # all tests in cwd's project
-gero test combat                  # only tests matching "combat"
-gero test --verbose               # show each test name + duration
+gero test                         # all .gas tests under tests/asm/
+gero test loop                    # only tests with "loop" in the name
+gero test --verbose               # show per-test duration
 ```
 
-**Output format (default):**
+**Output format (v0.1, asm-level):**
 
 ```
-running 12 tests
-test damage_floor_is_one ... ok
-test element_chart_consistent ... ok
-test parse_attack_command_rejects_short ... FAIL
-  expected: ((0, 0), "usage: ...")
-  got:      ((0, 0), "wrong message")
-  at main.gr:147
+running 4 tests
+test arith ... ok
+test cmp_branch ... ok
+test hello ... ok
+test loop ... FAIL
 
-11 passed, 1 failed (24.3 ms)
+FAIL loop: stdout differs from .expected
+  expected:
+    *****
+  got:
+    ****
+  at tests/asm/programs/loop.gas
+
+3 passed, 1 failed (4.2 ms)
 ```
 
-**Behavior:**
-- Pattern is a substring match against function name.
-- Each test function gets a fresh VM instance (no cross-test state).
-- `assert(...)` failures emit a structured diagnostic; runtime
-  faults (`hlt`, `/0`) treated as failures too.
+**Behavior (v0.1):**
+- Pattern is a substring match against the `.gas` basename
+  (without extension).
+- Each test gets a fresh VM instance (no cross-test state).
+- The `int $21` SRAM-save syscall is no-op'd — only stdout is
+  part of the golden compare.
+- Each test is capped at a fixed cycle budget; a `.gas` that
+  doesn't reach `hlt` fails with a timeout outcome.
+- Unhandled faults and `brk` breakpoints count as failures.
+
+**v0.2 lang-level shape (planned):** compile the project in
+**test profile** — `@test` functions are included, `@bench` and
+`@asm` are stripped / skipped. Pattern matches function names;
+`assert(...)` failures emit structured diagnostics with the
+expected / got values and source location.
 
 **Exit:** 0 if all tests pass; 7 on at least one failure.
 
