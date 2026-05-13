@@ -43,6 +43,8 @@ pub const writeBytes = printer_mod.writeBytes;
 pub const writeBytesPretty = printer_mod.writeBytesPretty;
 /// Re-export: knob bundle for `writeBytesPretty`.
 pub const PrintOptions = printer_mod.PrintOptions;
+/// Re-export: ANSI palette for the disasm pretty view.
+pub const Style = printer_mod.Style;
 
 /// Re-export: drive the full asm → disasm → asm pipeline for
 /// byte-equality round-trip tests. See `disasm/roundtrip.zig`

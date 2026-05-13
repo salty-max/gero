@@ -53,16 +53,19 @@ pub fn execute(
     } else header.image;
 
     // Pretty view: address + hex-bytes columns, `; entry point`
-    // marker. The base image starts at CPU address $0000; a bank
-    // is mirrored at the window base $C000 when its `mb` is
-    // selected. Entry-point comment only makes sense for the
-    // base image (the loader stores the address there).
+    // marker, optional ANSI color. The base image starts at CPU
+    // address $0000; a bank is mirrored at the window base
+    // $C000 when its `mb` is selected. Entry-point comment only
+    // makes sense for the base image (the loader stores the
+    // address there).
     const base_addr: u16 = if (opts.bank == null) 0x0000 else bank_window_base;
     const entry_addr: ?u16 = if (opts.bank == null) header.entry_point else null;
+    const style: gero.disasm.Style = if (term.color) .ansi else .plain;
     try gero.disasm.writeBytesPretty(arena, stdout, target_bytes, .{
         .base_addr = base_addr,
         .show_bytes = true,
         .entry_addr = entry_addr,
+        .style = style,
     });
     return 0;
 }
