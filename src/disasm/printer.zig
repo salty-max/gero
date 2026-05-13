@@ -17,6 +17,13 @@ const header = @import("header.zig");
 /// mnemonic plus one trailing space.
 const mnemonic_col_width: usize = 6;
 
+/// Minimum number of consecutive `$00` bytes (with no symbol
+/// landing inside them) before the printer collapses the run into
+/// a single `; N bytes zero padding (org $XXXX)` comment. Below
+/// this threshold the bytes still render as individual
+/// `; .byte $00` lines so small genuine gaps aren't hidden.
+const zero_run_collapse_threshold: usize = 4;
+
 /// ANSI escape strings the disasm printer wraps around each
 /// rendered piece. `Style.plain` emits no escapes (round-trip);
 /// `Style.ansi` is the human-facing palette the CLI flips to
@@ -148,6 +155,19 @@ pub fn writeBytesPretty(
             offset += len;
             continue;
         }
+        // Detect a run of $00 bytes with no symbol landing inside
+        // them. Anything ≥ 4 is almost certainly leading or
+        // mid-image padding from an `org $XXXX` directive in the
+        // source — collapse to a single annotated comment instead
+        // of N noisy `; .byte $00` lines.
+        if (bytes[offset] == 0x00) {
+            const run_end = scanZeroRun(bytes, offset, opts);
+            if (run_end - offset >= zero_run_collapse_threshold) {
+                try writeZeroRunComment(writer, offset, run_end - offset, opts);
+                offset = run_end;
+                continue;
+            }
+        }
         const out_or_err = decoder.decodeOne(allocator, bytes, offset);
         if (out_or_err) |out| {
             defer decoder.freeInstruction(allocator, out.instruction);
@@ -240,6 +260,59 @@ fn writeDataBlock(
         try writer.print("{s}${X:0>2}{s}", .{ opts.style.literal, bytes[i], opts.style.reset });
     }
     try writer.writeByte('\n');
+}
+
+/// Walk forward from `start` while `bytes[i] == 0x00`, stopping
+/// at end-of-buffer or at any symbol whose CPU address lands at
+/// or after the run (to avoid swallowing a labeled region that
+/// happens to begin with zero bytes). Returns the offset of the
+/// first non-zero byte / next symbol / end of buffer.
+fn scanZeroRun(bytes: []const u8, start: usize, opts: PrintOptions) usize {
+    var i: usize = start;
+    while (i < bytes.len and bytes[i] == 0x00) : (i += 1) {
+        // A symbol exactly at offset `start` was already handled
+        // by the caller (`dataSymbolAt`/label path), so only stop
+        // when a *later* symbol lands inside the run.
+        if (i > start and symbolAtOffset(i, opts)) break;
+    }
+    return i;
+}
+
+/// `true` if any symbol in `opts.symbols` has its CPU address
+/// equal to `base_addr + offset`. Used by `scanZeroRun` to stop
+/// the run at the next labeled region.
+fn symbolAtOffset(offset: usize, opts: PrintOptions) bool {
+    const symbols = opts.symbols orelse return false;
+    const base = opts.base_addr orelse return false;
+    // @as: offset bounded by caller's slice (≤ 64 KiB image / 16 KiB bank).
+    const addr: u16 = base +% @as(u16, @intCast(offset));
+    for (symbols.entries) |e| if (e.address == addr) return true;
+    return false;
+}
+
+/// Render a collapsed zero-padding run as a single annotated
+/// comment line: `XXXX:  ; N bytes zero padding (org $YYYY)`.
+/// `YYYY` is the CPU address of the first byte AFTER the run —
+/// re-assembling with that `org` directive reproduces the same
+/// padding (codegen zero-fills up to the directive's address).
+fn writeZeroRunComment(
+    writer: *std.Io.Writer,
+    offset: usize,
+    run_len: usize,
+    opts: PrintOptions,
+) std.Io.Writer.Error!void {
+    if (opts.base_addr) |base| {
+        // @as: offset bounded by caller's slice.
+        const addr: u16 = base +% @as(u16, @intCast(offset));
+        try writer.print("{s}{X:0>4}:{s}  ", .{ opts.style.address, addr, opts.style.reset });
+    }
+    // Match the width the instruction lines reserve for the
+    // hex-bytes column when `show_bytes` is on, so the comment
+    // sits at the mnemonic column.
+    if (opts.show_bytes) try writer.writeAll(" " ** 16);
+    const after: u16 = @intCast(offset + run_len);
+    const next: u16 = if (opts.base_addr) |b| b +% after else after;
+    try writer.print("{s}; {d} bytes zero padding (org ${X:0>4}){s}\n", .{ opts.style.comment, run_len, next, opts.style.reset });
 }
 
 /// `XXXX:  ` address column + optional hex-bytes column. Width
