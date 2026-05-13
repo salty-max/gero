@@ -169,8 +169,8 @@ if [[ -f CHANGELOG.md ]]; then
     { print }
   ' CHANGELOG.md)
   rest=$(awk '
+    /^## / { in_rest = 1 }
     in_rest { print }
-    /^## / { in_rest = 1; print }
   ' CHANGELOG.md)
 else
   header="# Changelog
