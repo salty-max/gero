@@ -253,16 +253,45 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
         else => unreachable, // allow-strict: commandIsImplemented() filtered above
     }
 
-    try out.print("\n{s}COMMON FLAGS{s}\n", .{ a.yellow, a.reset });
-    try out.print("  {s}--help / -h{s}         Print this help.\n", .{ a.cyan, a.reset });
-    try out.print("  {s}--version / -V{s}      Print build version.\n", .{ a.cyan, a.reset });
-    try out.print("  {s}--quiet / -q{s}        Suppress non-error output.\n", .{ a.cyan, a.reset });
-    try out.print("  {s}--verbose / -v{s}      Extra diagnostics + per-phase timings.\n", .{ a.cyan, a.reset });
-    try out.print("  {s}--target / -t=<s>{s}   vm (default) or gtx-16.\n", .{ a.cyan, a.reset });
-    try out.print("  {s}--optimize / -O=<m>{s} debug (default) / release / size.\n", .{ a.cyan, a.reset });
-    try out.print("  {s}--out / -o=<path>{s}   Output destination for file-producing commands.\n", .{ a.cyan, a.reset });
-    try out.print("  {s}--color / -c=<m>{s}    auto (default) / always / never.\n", .{ a.cyan, a.reset });
-    try out.print("  {s}--no-color{s}          Shortcut for --color=never.\n", .{ a.cyan, a.reset });
+    try out.print("\n{s}FLAGS{s}\n", .{ a.yellow, a.reset });
+    for (flagsForCommand(cmd)) |f| {
+        const h = flagHelpLine(f);
+        try out.print("  {s}{s:<22}{s} {s}\n", .{ a.cyan, h.sig, a.reset, h.desc });
+    }
+}
+
+/// One row of the per-command FLAGS block — the left-column
+/// signature and the right-column description.
+const FlagHelpLine = struct { sig: []const u8, desc: []const u8 };
+
+fn flagHelpLine(kind: FlagKind) FlagHelpLine {
+    return switch (kind) {
+        .help => .{ .sig = "--help / -h", .desc = "Print this help." },
+        .version => .{ .sig = "--version / -V", .desc = "Print build version." },
+        .quiet => .{ .sig = "--quiet / -q", .desc = "Suppress non-error output." },
+        .verbose => .{ .sig = "--verbose / -v", .desc = "Extra diagnostics + per-phase timings." },
+        .target => .{ .sig = "--target / -t=<s>", .desc = "vm (default) or gtx-16." },
+        .optimize => .{ .sig = "--optimize / -O=<m>", .desc = "debug (default) / release / size." },
+        .out => .{ .sig = "--out / -o=<path>", .desc = "Output destination." },
+        .color => .{ .sig = "--color / -c=<m>", .desc = "auto (default) / always / never." },
+        .no_color => .{ .sig = "--no-color", .desc = "Shortcut for --color=never." },
+        .bank => .{ .sig = "--bank=<N>", .desc = "Pick a bank slot to disassemble (default: base image)." },
+        .show_bytes => .{ .sig = "--show-bytes", .desc = "(default) Show the hex-bytes column." },
+        .no_show_bytes => .{ .sig = "--no-show-bytes", .desc = "Strip the hex-bytes column for a cleaner view." },
+    };
+}
+
+/// Which flags each subcommand actually consumes. The per-command
+/// help block iterates this list — anything not here doesn't get
+/// listed (and would be a no-op even if the parser accepted it).
+fn flagsForCommand(cmd: Command) []const FlagKind {
+    return switch (cmd) {
+        .asm_ => &.{ .help, .out, .quiet, .verbose, .color, .no_color },
+        .run => &.{ .help, .verbose, .color, .no_color },
+        .info => &.{ .help, .color, .no_color },
+        .disasm => &.{ .help, .bank, .no_show_bytes, .color, .no_color },
+        .compile, .test_, .bench, .fmt, .check, .build => &.{.help},
+    };
 }
 
 /// Print the version line consumed by `gero --version` / `gero -V`.
