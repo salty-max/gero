@@ -579,9 +579,19 @@ metadata.
 [u16le symbol_count]
 For each symbol:
   [u16le address]
+  [u8 kind]                 — 0 = label (code), 1 = data
   [u8 name_len]
   [name_len bytes — UTF-8 symbol name]
 ```
+
+`kind` lets the disassembler tell apart code labels and `data8`/
+`data16` blocks. A label produces `call <name>` / `jmp <name>`
+substitutions in the disasm; a data symbol switches the
+disassembler into data mode at that address, emitting
+`data8 <name> = $XX, $YY, ...` until the next symbol (or end of
+section). Unknown `kind` values reserved for future use are
+treated as `label` (fail-safe — the bytes still try to decode as
+instructions).
 
 Used by the disassembler to annotate addresses and by debuggers to
 resolve names. Stripped from release builds.

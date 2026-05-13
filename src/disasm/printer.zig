@@ -137,6 +137,17 @@ pub fn writeBytesPretty(
 ) (std.Io.Writer.Error || std.mem.Allocator.Error)!void {
     var offset: usize = 0;
     while (offset < bytes.len) {
+        // Before trying to decode an instruction, check whether
+        // the cursor lands at a *data* symbol — if so, render
+        // those bytes as a `data8` block instead of fake
+        // instructions. Length goes from this symbol's address
+        // to the next symbol's address (or end of section).
+        if (dataSymbolAt(offset, opts)) |info| {
+            const len = @min(info.length, bytes.len - offset);
+            try writeDataBlock(writer, bytes, offset, len, info.name, opts);
+            offset += len;
+            continue;
+        }
         const out_or_err = decoder.decodeOne(allocator, bytes, offset);
         if (out_or_err) |out| {
             defer decoder.freeInstruction(allocator, out.instruction);
@@ -160,6 +171,70 @@ pub fn writeBytesPretty(
             error.OutOfMemory => return error.OutOfMemory,
         }
     }
+}
+
+/// What `dataSymbolAt` returns — a matched data symbol's name
+/// plus how many bytes the data block spans (from this offset
+/// to the next symbol's address or to end-of-section).
+const DataBlock = struct {
+    name: []const u8,
+    length: usize,
+};
+
+/// If `offset` corresponds to the CPU address of a `data`-kind
+/// symbol, return its name + length. `null` otherwise. Length is
+/// the gap to the next symbol in the same section (whether label
+/// or data); when no later symbol exists we return a "rest of
+/// section" sentinel that `writeDataBlock` caps at `bytes.len`.
+fn dataSymbolAt(offset: usize, opts: PrintOptions) ?DataBlock {
+    const symbols = opts.symbols orelse return null;
+    const base = opts.base_addr orelse return null;
+    // @as: offset bounded by caller's slice — fits u16 in the base image / bank window contexts.
+    const cur_addr: u16 = base +% @as(u16, @intCast(offset));
+    for (symbols.entries, 0..) |e, i| {
+        if (e.address != cur_addr) continue;
+        if (e.kind != .data) return null;
+        // Find the smallest later-symbol address that lives in
+        // the same section (`> cur_addr`). Entries are sorted by
+        // address ascending, so the first hit wins.
+        for (symbols.entries[i + 1 ..]) |later| {
+            if (later.address > cur_addr) {
+                return .{ .name = e.name, .length = later.address - cur_addr };
+            }
+        }
+        // No later symbol — let writeDataBlock cap at bytes.len.
+        return .{ .name = e.name, .length = std.math.maxInt(usize) };
+    }
+    return null;
+}
+
+/// Render `bytes[offset..offset+length]` as a `data8 <name> = $XX, ...`
+/// directive — round-trippable through the assembler. Uses its
+/// own minimal prefix (address only, no hex-bytes column since
+/// the bytes are inlined in the directive itself).
+fn writeDataBlock(
+    writer: *std.Io.Writer,
+    bytes: []const u8,
+    offset: usize,
+    length: usize,
+    name: []const u8,
+    opts: PrintOptions,
+) std.Io.Writer.Error!void {
+    const end = @min(offset + length, bytes.len);
+    if (opts.base_addr) |base| {
+        // @as: offset bounded by caller's slice (≤ 64 KiB image / 16 KiB bank).
+        const addr: u16 = base +% @as(u16, @intCast(offset));
+        try writer.print("{s}{X:0>4}:{s}  ", .{ opts.style.address, addr, opts.style.reset });
+    }
+    try writer.print("{s}data8{s} {s}{s}{s} = ", .{ opts.style.mnemonic, opts.style.reset, opts.style.register, name, opts.style.reset });
+    var i: usize = offset;
+    var first = true;
+    while (i < end) : (i += 1) {
+        if (!first) try writer.writeAll(", ");
+        first = false;
+        try writer.print("{s}${X:0>2}{s}", .{ opts.style.literal, bytes[i], opts.style.reset });
+    }
+    try writer.writeByte('\n');
 }
 
 /// `XXXX:  ` address column + optional hex-bytes column. Width
