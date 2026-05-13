@@ -26,15 +26,17 @@ pub fn main(init: std.process.Init) !u8 {
     const args = try arena.alloc([]const u8, raw_args.len);
     for (raw_args, 0..) |a, i| args[i] = a;
 
-    const parsed = cli.parse(args[1..]) catch |err| {
+    var diag: cli.Diagnostic = .{};
+    const parsed = cli.parseWithDiagnostic(args[1..], &diag) catch |err| {
         // Color isn't known yet, so write a plain error.
         var fallback = term_mod.Term{ .out = stderr, .color = false };
+        const bad = diag.bad_token orelse "?";
         switch (err) {
-            error.UnknownCommand => try fallback.err("unknown subcommand. Run `gero --help` for the list.", .{}),
-            error.UnknownFlag => try fallback.err("unknown flag.", .{}),
-            error.MissingFlagValue => try fallback.err("flag is missing its value.", .{}),
-            error.InvalidEnumValue => try fallback.err("flag value is not recognized.", .{}),
-            error.TooManyPositionals => try fallback.err("too many positional args (max 16).", .{}),
+            error.UnknownCommand => try fallback.err("unknown subcommand: {s}. Run `gero --help` for the list.", .{bad}),
+            error.UnknownFlag => try fallback.err("unknown flag: {s}", .{bad}),
+            error.MissingFlagValue => try fallback.err("flag is missing its value: {s}", .{bad}),
+            error.InvalidEnumValue => try fallback.err("flag value is not recognized: {s}", .{bad}),
+            error.TooManyPositionals => try fallback.err("too many positional args (max 16): {s}", .{bad}),
         }
         return 2;
     };
