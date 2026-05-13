@@ -226,6 +226,11 @@ fn writeDataBlock(
         const addr: u16 = base +% @as(u16, @intCast(offset));
         try writer.print("{s}{X:0>4}:{s}  ", .{ opts.style.address, addr, opts.style.reset });
     }
+    // Pad with the same width the instruction lines use for the
+    // hex-bytes column (5 bytes × 3 chars + 1 trailing space) so
+    // the `data8` keyword aligns with the mnemonic column above
+    // and below it.
+    if (opts.show_bytes) try writer.writeAll(" " ** 16);
     try writer.print("{s}data8{s} {s}{s}{s} = ", .{ opts.style.mnemonic, opts.style.reset, opts.style.register, name, opts.style.reset });
     var i: usize = offset;
     var first = true;
