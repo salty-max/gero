@@ -1,17 +1,36 @@
 #!/usr/bin/env bash
 # changeset-version.sh — consume every pending changeset, bump
-# build.zig.zon's version, prepend a section to CHANGELOG.md, and delete
-# the consumed changeset files.
+# build.zig.zon's version, prepend a CHANGELOG.md section grouped by
+# bump level, and delete the consumed changeset files.
 #
 # Usage:
 #   bash scripts/changeset-version.sh
 #
+# CHANGELOG section shape:
+#
+#   ## vMAJOR.MINOR.PATCH - YYYY-MM-DD
+#
+#   ### Breaking      <- only if at least one `bump: major`
+#   - <first paragraph of changeset body, joined into one line>
+#
+#   ### Added         <- only if at least one `bump: minor`
+#   - <...>
+#
+#   ### Fixed         <- only if at least one `bump: patch`
+#   - <...>
+#
+# Each bullet is the changeset body's first paragraph (everything
+# between the closing `---` and the first blank line), with hard line
+# breaks collapsed into single spaces. Anything past the first
+# paragraph is dropped — keep extra detail in PR descriptions, not in
+# the CHANGELOG.
+#
 # Idempotent: running twice with no pending changesets is a no-op.
+
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Clean up any temp files we might leave on interrupt.
 cleanup() { rm -f build.zig.zon.tmp CHANGELOG.md.tmp; }
 trap cleanup EXIT INT TERM
 
@@ -29,9 +48,11 @@ if [[ ${#changesets[@]} -eq 0 ]]; then
   exit 0
 fi
 
-# Aggregate: highest bump level + bullet list of summaries.
+# Bullets grouped by bump level; highest bump drives the version step.
 highest_bump="patch"
-bullets=""
+major_bullets=""
+minor_bullets=""
+patch_bullets=""
 
 bump_rank() {
   case "$1" in
@@ -40,6 +61,24 @@ bump_rank() {
     patch) echo 1 ;;
     *) echo 0 ;;
   esac
+}
+
+# Pull the changeset body's first paragraph and join newlines into spaces.
+extract_summary() {
+  awk '
+    BEGIN { n = 0; in_body = 0; paragraph = ""; done = 0 }
+    /^---$/ { n++; if (n == 2) in_body = 1; next }
+    done { next }
+    in_body && NF == 0 {
+      if (paragraph != "") { print paragraph; done = 1 }
+      next
+    }
+    in_body {
+      if (paragraph == "") paragraph = $0
+      else paragraph = paragraph " " $0
+    }
+    END { if (!done && paragraph != "") print paragraph }
+  ' "$1"
 }
 
 for cs in "${changesets[@]}"; do
@@ -63,18 +102,17 @@ for cs in "${changesets[@]}"; do
     highest_bump="$bump"
   fi
 
-  # First non-empty line of the body.
-  summary=$(awk '
-    BEGIN { n = 0; in_body = 0 }
-    /^---$/ { n++; if (n == 2) { in_body = 1 }; next }
-    in_body && NF > 0 { print; exit }
-  ' "$cs")
+  summary=$(extract_summary "$cs")
   if [[ -z "$summary" ]]; then
     echo "Missing summary in $cs" >&2
     exit 1
   fi
 
-  bullets+="- $summary"$'\n'
+  case "$bump" in
+    major) major_bullets+="- $summary"$'\n' ;;
+    minor) minor_bullets+="- $summary"$'\n' ;;
+    patch) patch_bullets+="- $summary"$'\n' ;;
+  esac
 done
 
 # Read current version from build.zig.zon. Constrain to N.N.N so we fail
@@ -100,13 +138,29 @@ esac
 sed -E "s/(\.version[[:space:]]*=[[:space:]]*\")$current(\")/\1$new_version\2/" build.zig.zon >build.zig.zon.tmp
 mv build.zig.zon.tmp build.zig.zon
 
+# Compose the per-bump subsections in priority order (Breaking → Added → Fixed).
+section_body=""
+add_subsection() {
+  local label="$1"
+  local bullets="$2"
+  [[ -z "$bullets" ]] && return
+  section_body+="### $label"$'\n\n'
+  section_body+="$bullets"
+  section_body+=$'\n'
+}
+add_subsection "Breaking" "$major_bullets"
+add_subsection "Added" "$minor_bullets"
+add_subsection "Fixed" "$patch_bullets"
+# Trim the trailing blank line so the next H2 sits flush.
+section_body="${section_body%$'\n'}"
+
 # Prepend a new section to CHANGELOG.md, preserving the existing header + body.
 # UTC date so two maintainers in different timezones cutting the same tag
 # get the same CHANGELOG entry.
 date_iso=$(date -u +%Y-%m-%d)
 new_section="## v$new_version - $date_iso
 
-$bullets"
+$section_body"
 
 if [[ -f CHANGELOG.md ]]; then
   # Split: keep H1 + tagline at the top, insert section, then the rest.
@@ -129,6 +183,8 @@ fi
   printf '%s' "$new_section"
   if [[ -n "$rest" ]]; then
     printf '\n%s\n' "$rest"
+  else
+    printf '\n'
   fi
 } >CHANGELOG.md.tmp
 mv CHANGELOG.md.tmp CHANGELOG.md
@@ -140,4 +196,4 @@ done
 
 echo "Bumped $current → $new_version (level: $highest_bump)"
 echo "Consumed ${#changesets[@]} changeset(s)"
-echo "Edit build.zig.zon and CHANGELOG.md before committing if needed."
+echo "CHANGELOG.md grouped by bump level — edit the narrative before committing if needed."

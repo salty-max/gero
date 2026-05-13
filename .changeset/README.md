@@ -11,7 +11,12 @@ Every PR with a user-visible change drops a markdown file here.
 bump: patch | minor | major
 ---
 
-Human-readable summary for the CHANGELOG.
+First paragraph — this is the CHANGELOG bullet. Hard line breaks are
+collapsed into spaces. End it with a blank line.
+
+Anything past the first paragraph is dropped from the CHANGELOG —
+keep extra detail (motivation, design notes, follow-ups) in the PR
+description, not here.
 ```
 
 ## Workflow
@@ -19,6 +24,12 @@ Human-readable summary for the CHANGELOG.
 - `zig build changeset` — scaffold a new changeset interactively
 - `zig build version` — consume every pending changeset, bump
   `build.zig.zon`'s version, and prepend a CHANGELOG.md section
+  grouped by bump level (Breaking → Added → Fixed)
+
+`zig build version` is mechanical: it produces a flat per-bump bullet
+list. Edit the resulting CHANGELOG.md section by hand before
+committing if the release deserves a narrative pass (sub-sections per
+area, grouped highlights, deprecation callouts).
 
 ## When to add
 
