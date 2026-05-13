@@ -70,3 +70,14 @@ jobs:
           version: 0.16.0
       - name: test-all (compile-only on extra targets)
         run: zig build test-all -freference-trace
+
+  examples:
+    name: Example integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: test-examples (assemble + run + diff each example)
+        run: zig build test-examples -freference-trace

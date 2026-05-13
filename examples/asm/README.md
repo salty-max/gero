@@ -29,8 +29,14 @@ zig build              # builds zig-out/bin/gero
 ./zig-out/bin/gero run examples/asm/hello.gx | diff - examples/asm/hello.expected
 ```
 
-A clean run produces no diff and exits 0. (`zig build test-examples`
-will land in #48 to bundle this into CI.)
+A clean run produces no diff and exits 0. To drive every example
+at once:
+
+```bash
+zig build test-examples
+```
+
+That step is wired into `zig build ci` and runs on every PR.
 
 ## Operand order
 

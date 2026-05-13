@@ -214,12 +214,28 @@ pub fn build(b: *std.Build) void {
     lint_step.dependOn(&check_docs.step);
     lint_step.dependOn(&check_naming.step);
 
+    // ----- Example integration tests ---------------------------------------
+    //
+    // Drive every examples/asm/*.gas through the installed `gero`
+    // CLI (assemble + run) and diff stdout against its golden
+    // `.expected` file. Depends on the install step so the binary
+    // is on disk before the script runs.
+
+    const test_examples_cmd = b.addSystemCommand(&.{ "bash", "scripts/test-examples.sh" });
+    test_examples_cmd.step.dependOn(b.getInstallStep());
+    const test_examples_step = b.step(
+        "test-examples",
+        "Assemble + run every examples/asm/*.gas and diff against its .expected",
+    );
+    test_examples_step.dependOn(&test_examples_cmd.step);
+
     // ----- All-in-one CI ---------------------------------------------------
 
-    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all");
+    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + test-examples");
     ci_step.dependOn(lint_step);
     ci_step.dependOn(test_modes_step);
     ci_step.dependOn(test_all);
+    ci_step.dependOn(&test_examples_cmd.step);
 
     // ----- Changesets ------------------------------------------------------
 
