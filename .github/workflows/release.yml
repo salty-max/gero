@@ -62,7 +62,11 @@ jobs:
           set -euo pipefail
           name="gero-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          # zig install produces zig-out/lib (and possibly zig-out/include).
+          # zig install produces zig-out/{bin,lib} (and possibly zig-out/include).
+          # bin/ ships the `gero` CLI; lib/ ships libgero.a for downstream linking.
+          if [[ -d zig-out/bin ]]; then
+            cp -r zig-out/bin "dist/$name/"
+          fi
           if [[ -d zig-out/lib ]]; then
             cp -r zig-out/lib "dist/$name/"
           fi
