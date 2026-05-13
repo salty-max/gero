@@ -5,6 +5,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Single source of truth for the package version. The CLI picks
+    // this up via `@import("build_options")` so `gero --version`
+    // tracks `build.zig.zon` automatically — no second site to bump.
+    const package_version: []const u8 = @import("build.zig.zon").version;
+    const cli_options = b.addOptions();
+    cli_options.addOption([]const u8, "version", package_version);
+
     // ----- Library module + artifact ---------------------------------------
 
     const knit_dep = b.dependency("knit", .{ .target = target, .optimize = optimize });
@@ -31,6 +38,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     cli_mod.addImport("gero", gero_mod);
+    cli_mod.addOptions("build_options", cli_options);
 
     const cli_exe = b.addExecutable(.{
         .name = "gero",
@@ -39,13 +47,15 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(cli_exe);
 
     // Tests embedded in the CLI source — wire them into `zig build test`.
+    const cli_test_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/cli.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    cli_test_mod.addOptions("build_options", cli_options);
     const cli_test = b.addTest(.{
         .name = "test-cli",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("apps/gero-cli/cli.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = cli_test_mod,
     });
     const run_cmd_mod = b.createModule(.{
         .root_source_file = b.path("apps/gero-cli/run.zig"),
@@ -53,6 +63,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     run_cmd_mod.addImport("gero", gero_mod);
+    run_cmd_mod.addOptions("build_options", cli_options);
     const run_cmd_test = b.addTest(.{
         .name = "test-cli-run",
         .root_module = run_cmd_mod,
@@ -81,6 +92,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     asm_mod.addImport("gero", gero_mod);
+    asm_mod.addOptions("build_options", cli_options);
     const asm_test = b.addTest(.{
         .name = "test-cli-asm",
         .root_module = asm_mod,
@@ -91,6 +103,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     disasm_cli_mod.addImport("gero", gero_mod);
+    disasm_cli_mod.addOptions("build_options", cli_options);
     const disasm_cli_test = b.addTest(.{
         .name = "test-cli-disasm",
         .root_module = disasm_cli_mod,
@@ -101,6 +114,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_cli_mod.addImport("gero", gero_mod);
+    test_cli_mod.addOptions("build_options", cli_options);
     const test_cli_test = b.addTest(.{
         .name = "test-cli-test",
         .root_module = test_cli_mod,
