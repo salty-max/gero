@@ -9,7 +9,13 @@ console and other Gero-ecosystem consumers.
 
 ## Quickstart
 
-Build the `gero` CLI from source:
+Install via Homebrew (macOS Apple Silicon + Linux):
+
+```bash
+brew install salty-max/tap/gero
+```
+
+Or build from source:
 
 ```bash
 git clone https://github.com/salty-max/gero
@@ -20,13 +26,14 @@ zig build                          # produces ./zig-out/bin/gero
 Assemble and run the smallest meaningful program:
 
 ```bash
-./zig-out/bin/gero asm examples/asm/hello.gas    # → examples/asm/hello.gx
-./zig-out/bin/gero run examples/asm/hello.gx     # → Hello, gero!
+gero asm examples/asm/hello.gas    # → examples/asm/hello.gx
+gero run examples/asm/hello.gx     # → Hello, gero!
 ```
 
-That's the entire asm path. To put `gero` on your `$PATH`, run
-`zig build install --prefix ~/.local` (drops the binary into
-`~/.local/bin`).
+That's the entire asm path. If you built from source, run the commands
+from the repo root and prefix them with `./zig-out/bin/` — or run
+`zig build install --prefix ~/.local` to drop the binary into
+`~/.local/bin`.
 
 ## What's here
 
