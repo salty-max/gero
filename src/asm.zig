@@ -15,6 +15,7 @@ const expr_mod = @import("asm/expr.zig");
 const symtab_mod = @import("asm/symtab.zig");
 const codegen_mod = @import("asm/codegen.zig");
 const opres_mod = @import("asm/opcode_resolver.zig");
+const printer_mod = @import("asm/printer.zig");
 
 /// Re-export: lexer token.
 pub const Token = lexer.Token;
@@ -116,6 +117,13 @@ pub const Codegen = codegen_mod.Codegen;
 pub const CodegenOptions = codegen_mod.Options;
 /// Re-export: assemble a parsed program into a `.gx` byte image.
 pub const assemble = codegen_mod.assemble;
+/// Re-export: canonical-printer knobs (indent etc.).
+pub const PrintOptions = printer_mod.PrintOptions;
+/// Re-export: default canonical-printer options.
+pub const default_print_options = printer_mod.default_options;
+/// Re-export: emit an `ast.Program` as canonical `.gas` source.
+pub const printProgram = printer_mod.print;
+
 /// Re-export: name → u16 lookup for compile-time constants.
 pub const ConstantTable = expr_mod.ConstantTable;
 /// Re-export: fold an `Expr` tree to a `u16` using a `ConstantTable`.
