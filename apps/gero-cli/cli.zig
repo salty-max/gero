@@ -49,6 +49,12 @@ pub const Options = struct {
     /// view; `false` strips the column for a cleaner asm-only
     /// output.
     show_bytes: bool = true,
+    /// `--check-roundtrip` for `gero disasm` — drive the archive
+    /// through `asm → disasm → asm` and exit non-zero if base +
+    /// bank bytes don't match. No textual output is produced on
+    /// success aside from a one-line ok summary (suppressed by
+    /// `--quiet`). Intended for CI use against shipped examples.
+    check_roundtrip: bool = false,
     positional_buf: [max_positionals][]const u8 = undefined,
     positional_count: usize = 0,
 
@@ -240,11 +246,12 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero info prog.gx{s}                {s}# print the .gx header{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .disasm => {
-            try out.print("  {s}gero disasm{s} <file.gx> [--bank=N] [--no-show-bytes]\n\n", .{ a.cyan, a.reset });
+            try out.print("  {s}gero disasm{s} <file.gx> [--bank=N] [--no-show-bytes] [--check-roundtrip]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
             try out.print("  {s}gero disasm prog.gx{s}              {s}# disassemble the base image to stdout{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero disasm prog.gx --bank=0{s}     {s}# disassemble bank slot 0{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero disasm prog.gx --no-show-bytes{s}  {s}# strip the hex-bytes column{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero disasm prog.gx --check-roundtrip{s}  {s}# verify asm → disasm → asm equality{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         else => unreachable, // allow-strict: commandIsImplemented() filtered above
     }
@@ -273,6 +280,7 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .bank => .{ .sig = "--bank=<N>", .desc = "Pick a bank slot to disassemble (default: base image)." },
         .show_bytes => .{ .sig = "--show-bytes", .desc = "(default) Show the hex-bytes column." },
         .no_show_bytes => .{ .sig = "--no-show-bytes", .desc = "Strip the hex-bytes column for a cleaner view." },
+        .check_roundtrip => .{ .sig = "--check-roundtrip", .desc = "Verify asm → disasm → asm yields identical bytes (CI gate)." },
     };
 }
 
@@ -284,7 +292,7 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .asm_ => &.{ .help, .out, .quiet, .verbose, .color, .no_color },
         .run => &.{ .help, .verbose, .color, .no_color },
         .info => &.{ .help, .color, .no_color },
-        .disasm => &.{ .help, .bank, .no_show_bytes, .color, .no_color },
+        .disasm => &.{ .help, .bank, .no_show_bytes, .check_roundtrip, .quiet, .color, .no_color },
         .compile, .test_, .bench, .fmt, .check, .build => &.{.help},
     };
 }
@@ -308,7 +316,7 @@ fn parseColor(s: []const u8) ParseError!ColorChoice {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes };
+const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
@@ -322,6 +330,7 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "bank")) return .bank;
     if (std.mem.eql(u8, s, "show-bytes")) return .show_bytes;
     if (std.mem.eql(u8, s, "no-show-bytes")) return .no_show_bytes;
+    if (std.mem.eql(u8, s, "check-roundtrip")) return .check_roundtrip;
     return null;
 }
 
@@ -349,6 +358,7 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .bank => opts.bank = try parseBank(value orelse return error.MissingFlagValue),
         .show_bytes => opts.show_bytes = true,
         .no_show_bytes => opts.show_bytes = false,
+        .check_roundtrip => opts.check_roundtrip = true,
     }
 }
 
@@ -612,6 +622,14 @@ test "parse: --show-bytes default is true, --no-show-bytes disables" {
 
     const off_p = try parse(&[_][]const u8{ "disasm", "--no-show-bytes", "x.gx" });
     try testing.expect(!off_p.options.show_bytes);
+}
+
+test "parse: --check-roundtrip defaults off, opts in when set" {
+    const default_p = try parse(&[_][]const u8{ "disasm", "x.gx" });
+    try testing.expect(!default_p.options.check_roundtrip);
+
+    const on_p = try parse(&[_][]const u8{ "disasm", "--check-roundtrip", "x.gx" });
+    try testing.expect(on_p.options.check_roundtrip);
 }
 
 test "run: no command prints top help, exit 0" {

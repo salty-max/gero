@@ -38,6 +38,8 @@ pub fn execute(
         return 1;
     };
 
+    if (opts.check_roundtrip) return checkRoundTrip(arena, bytes, header, src_path, opts.quiet, stdout, term);
+
     // Parse the debug-symbol section (if present) so the printer
     // renders `call greet` instead of `call &C000` etc. Borrows
     // name bytes from `header.debug`; valid for the lifetime of
@@ -140,4 +142,40 @@ test "disasm: writeBankSection labels the bank by index" {
     defer out.deinit();
     try writeBankSection(&out.writer, gero.disasm.Style.plain, 3);
     try std.testing.expectEqualStrings("\n; --- bank 3 ---\n", out.written());
+}
+
+/// Drive `bytes` through `roundTripArchive` and assert that the
+/// base image comes back byte-identical. The debug section's
+/// symbol order can shift without breaking losslessness, so it
+/// is excluded. Bank sections are excluded too — the underlying
+/// `roundTripArchive` only disassembles the base image, so a
+/// multi-bank archive's `header.banks` always disagrees with the
+/// re-assembled side. Extending the round-trip helper to cover
+/// banks is tracked separately.
+fn checkRoundTrip(
+    arena: std.mem.Allocator,
+    bytes: []const u8,
+    header: gero.disasm.Header,
+    src_path: []const u8,
+    quiet: bool,
+    stdout: *std.Io.Writer,
+    term: *term_mod.Term,
+) !u8 {
+    const reasm = gero.disasm.roundTripArchive(arena, bytes) catch |err| {
+        try term.err("gero disasm: round-trip failed for {s} ({s})", .{ src_path, @errorName(err) });
+        return 1;
+    };
+
+    const h_reasm = gero.disasm.parseHeader(reasm) catch |err| {
+        try term.err("gero disasm: re-assembled archive is malformed ({s})", .{@errorName(err)});
+        return 1;
+    };
+
+    if (!std.mem.eql(u8, header.image, h_reasm.image)) {
+        try term.err("gero disasm: round-trip image mismatch for {s} ({d} vs {d} bytes)", .{ src_path, header.image.len, h_reasm.image.len });
+        return 1;
+    }
+
+    if (!quiet) try stdout.print("round-trip ok: {s} ({d} image bytes)\n", .{ src_path, header.image.len });
+    return 0;
 }
