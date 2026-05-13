@@ -47,6 +47,12 @@ pub const Options = struct {
     /// `--bank=N` for `gero disasm` — selects which bank slot to
     /// disassemble. `null` (default) = base image.
     bank: ?u8 = null,
+    /// `--show-bytes` / `--no-show-bytes` for `gero disasm` —
+    /// toggle the hex-bytes column between the address gutter and
+    /// the asm line. `true` (default) keeps the objdump-style
+    /// view; `false` strips the column for a cleaner asm-only
+    /// output.
+    show_bytes: bool = true,
     positional_buf: [max_positionals][]const u8 = undefined,
     positional_count: usize = 0,
 
@@ -225,10 +231,11 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero info prog.gx{s}                {s}# print the .gx header{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .disasm => {
-            try out.print("  {s}gero disasm{s} <file.gx> [--bank=N]\n\n", .{ a.cyan, a.reset });
+            try out.print("  {s}gero disasm{s} <file.gx> [--bank=N] [--no-show-bytes]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
             try out.print("  {s}gero disasm prog.gx{s}              {s}# disassemble the base image to stdout{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero disasm prog.gx --bank=0{s}     {s}# disassemble bank slot 0{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero disasm prog.gx --no-show-bytes{s}  {s}# strip the hex-bytes column{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         else => unreachable, // allow-strict: commandIsImplemented() filtered above
     }
@@ -270,7 +277,7 @@ fn parseColor(s: []const u8) ParseError!ColorChoice {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, target, optimize, out, color, no_color, bank };
+const FlagKind = enum { help, version, quiet, verbose, target, optimize, out, color, no_color, bank, show_bytes, no_show_bytes };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
@@ -283,6 +290,8 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "color")) return .color;
     if (std.mem.eql(u8, s, "no-color")) return .no_color;
     if (std.mem.eql(u8, s, "bank")) return .bank;
+    if (std.mem.eql(u8, s, "show-bytes")) return .show_bytes;
+    if (std.mem.eql(u8, s, "no-show-bytes")) return .no_show_bytes;
     return null;
 }
 
@@ -310,6 +319,8 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .color => opts.color = try parseColor(value orelse return error.MissingFlagValue),
         .no_color => opts.color = .never,
         .bank => opts.bank = try parseBank(value orelse return error.MissingFlagValue),
+        .show_bytes => opts.show_bytes = true,
+        .no_show_bytes => opts.show_bytes = false,
     }
 }
 
@@ -504,6 +515,17 @@ test "parse: --optimize=release accepted" {
     const args = [_][]const u8{ "asm", "--optimize=release" };
     const p = try parse(&args);
     try testing.expectEqual(Optimize.release, p.options.optimize);
+}
+
+test "parse: --show-bytes default is true, --no-show-bytes disables" {
+    const default_p = try parse(&[_][]const u8{"disasm"});
+    try testing.expect(default_p.options.show_bytes);
+
+    const on_p = try parse(&[_][]const u8{ "disasm", "--show-bytes", "x.gx" });
+    try testing.expect(on_p.options.show_bytes);
+
+    const off_p = try parse(&[_][]const u8{ "disasm", "--no-show-bytes", "x.gx" });
+    try testing.expect(!off_p.options.show_bytes);
 }
 
 test "run: no command prints top help, exit 0" {
