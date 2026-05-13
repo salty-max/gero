@@ -177,10 +177,15 @@ Bytecode → asm text. The inverse of `gero asm`. Uses the `.gx`'s
 debug symbol section if present to annotate addresses with names.
 
 ```bash
-gero disasm game.gx               # to stdout
+gero disasm game.gx               # whole cart (base + every bank)
 gero disasm game.gx -o game.gas   # to file
 gero disasm game.gx --bank=3      # only bank 3
 ```
+
+When `--bank` is omitted, the whole cart is rendered: the base image
+first, then every bank slot in turn, each prefixed with a
+`; --- base image ---` / `; --- bank N ---` section header. Carts
+with no banks render unchanged (no headers, single transcript).
 
 **Output:** asm-syntax-clean source the user could re-assemble (round-
 trip property — modulo formatting).
