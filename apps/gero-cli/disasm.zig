@@ -73,7 +73,7 @@ pub fn execute(
 
     try gero.disasm.writeBytesPretty(arena, stdout, target_bytes, .{
         .base_addr = base_addr,
-        .show_bytes = true,
+        .show_bytes = opts.show_bytes,
         .entry_addr = entry_addr,
         .style = style,
         .symbols = symbols,
