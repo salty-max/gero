@@ -8,3 +8,7 @@ pub const vm = @import("vm/vm.zig");
 /// Assembler — text `.gas` source → `.gx` bytecode. Scaffold;
 /// real parser / codegen lands in follow-up PRs.
 pub const asm_ = @import("asm.zig");
+
+/// Disassembler — `.gx` bytecode → `.gas` source. Inverse of
+/// `asm_`; consumes the same `.gx` shape the VM loads.
+pub const disasm = @import("disasm.zig");

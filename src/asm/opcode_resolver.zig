@@ -41,8 +41,9 @@ pub const Kind = enum {
 };
 
 /// One row of the dispatch table — what opcode matches a given
-/// mnemonic + operand-kinds tuple.
-const Shape = struct {
+/// mnemonic + operand-kinds tuple. Public so the disassembler
+/// can re-use the table for byte→syntax mapping.
+pub const Shape = struct {
     mnemonic: []const u8,
     kinds: []const Kind,
     opcode: u8,
@@ -171,6 +172,16 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "rti", .kinds = &.{}, .opcode = 0xFD },
     .{ .mnemonic = "brk", .kinds = &.{}, .opcode = 0xFE },
     .{ .mnemonic = "hlt", .kinds = &.{}, .opcode = 0xFF },
+};
+
+/// 256-entry reverse lookup: opcode byte → asm-side `Shape`.
+/// Built once at comptime by walking `shapes`. `null` slots are
+/// opcodes the v0.1 ISA doesn't define. The disassembler indexes
+/// this directly to render bytes back into asm syntax.
+pub const shape_by_opcode: [256]?Shape = blk: {
+    var t = [_]?Shape{null} ** 256;
+    for (shapes) |s| t[s.opcode] = s;
+    break :blk t;
 };
 
 /// Classify a parsed operand to its encoding `Kind`. Most
