@@ -112,10 +112,17 @@ pub fn writeBytes(
 
 /// Optional decoration knobs for `writeBytesPretty`.
 pub const PrintOptions = struct {
-    /// Start address of `bytes[0]` in CPU space. When set, each
-    /// line gets a leading `XXXX:  ` column. `null` (default) =
-    /// no address column (the round-trip path uses this).
+    /// Start address of `bytes[0]` in CPU space. Set this when
+    /// either the address gutter, the entry marker, or
+    /// symbol-address mapping needs a meaningful CPU address.
+    /// `null` (default) disables all three.
     base_addr: ?u16 = null,
+    /// When `true` (default) and `base_addr` is set, each line
+    /// gets a leading `XXXX:  ` gutter. Set to `false` to keep
+    /// symbol mapping but suppress the gutter — the round-trip
+    /// path needs symbol-aware rendering whose output is still
+    /// parseable by the assembler.
+    show_addresses: bool = true,
     /// `true` → emit a fixed-width hex-bytes column between the
     /// address and the asm line (objdump style). Requires
     /// `base_addr` to be meaningful for alignment; otherwise just
@@ -241,11 +248,11 @@ fn writeDataBlock(
     opts: PrintOptions,
 ) std.Io.Writer.Error!void {
     const end = @min(offset + length, bytes.len);
-    if (opts.base_addr) |base| {
+    if (opts.show_addresses) if (opts.base_addr) |base| {
         // @as: offset bounded by caller's slice (≤ 64 KiB image / 16 KiB bank).
         const addr: u16 = base +% @as(u16, @intCast(offset));
         try writer.print("{s}{X:0>4}:{s}  ", .{ opts.style.address, addr, opts.style.reset });
-    }
+    };
     // Pad with the same width the instruction lines use for the
     // hex-bytes column (5 bytes × 3 chars + 1 trailing space) so
     // the `data8` keyword aligns with the mnemonic column above
@@ -325,11 +332,11 @@ fn writePrefix(
     size: usize,
     opts: PrintOptions,
 ) std.Io.Writer.Error!void {
-    if (opts.base_addr) |base| {
+    if (opts.show_addresses) if (opts.base_addr) |base| {
         // @as: offset bounded by caller's slice (max 64 KiB image / 16 KiB bank) so the u16 narrow never truncates.
         const addr: u16 = base +% @as(u16, @intCast(offset));
         try writer.print("{s}{X:0>4}:{s}  ", .{ opts.style.address, addr, opts.style.reset });
-    }
+    };
     if (opts.show_bytes) {
         const end = @min(offset + size, bytes.len);
         const max_inst_bytes: usize = 5;

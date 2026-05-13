@@ -61,3 +61,10 @@ pub const Style = printer_mod.Style;
 /// byte-equality round-trip tests. See `disasm/roundtrip.zig`
 /// for the caveats around data sections.
 pub const roundTripImage = roundtrip_mod.roundTripImage;
+
+/// Re-export: round-trip a full `.gx` archive (header + base +
+/// banks + debug). Reads the contained debug-symbol section so
+/// sources mixing code + data survive the trip — the disasm
+/// renders data blocks as `data8 NAME = ...` instead of fake
+/// instructions.
+pub const roundTripArchive = roundtrip_mod.roundTripArchive;
