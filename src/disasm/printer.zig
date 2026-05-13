@@ -42,30 +42,108 @@ pub fn writeInstruction(writer: *std.Io.Writer, inst: decoder.Instruction) std.I
 /// line, terminated by `\n`. Stops on the first
 /// `error.UnknownOpcode` and emits a `; .byte $XX` comment so the
 /// surrounding context stays readable.
+///
+/// Output is round-trip-friendly: pass it to the assembler and
+/// you get the same bytes back (for all-code programs). For the
+/// human-facing "disassembly view" with address column + raw
+/// hex bytes + entry marker, use `writeBytesPretty`.
 pub fn writeBytes(
     allocator: std.mem.Allocator,
     writer: *std.Io.Writer,
     bytes: []const u8,
 ) (std.Io.Writer.Error || std.mem.Allocator.Error)!void {
+    return writeBytesPretty(allocator, writer, bytes, .{});
+}
+
+/// Optional decoration knobs for `writeBytesPretty`.
+pub const PrintOptions = struct {
+    /// Start address of `bytes[0]` in CPU space. When set, each
+    /// line gets a leading `XXXX:  ` column. `null` (default) =
+    /// no address column (the round-trip path uses this).
+    base_addr: ?u16 = null,
+    /// `true` → emit a fixed-width hex-bytes column between the
+    /// address and the asm line (objdump style). Requires
+    /// `base_addr` to be meaningful for alignment; otherwise just
+    /// shows the bytes inline.
+    show_bytes: bool = false,
+    /// When the cursor lands at `entry_addr`, append a
+    /// `; entry point` comment to that line. `null` skips the
+    /// marker. Only meaningful with `base_addr` set.
+    entry_addr: ?u16 = null,
+};
+
+/// Same shape as `writeBytes` but with `PrintOptions` for the
+/// disassembly view (address column, hex bytes, entry marker).
+pub fn writeBytesPretty(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    bytes: []const u8,
+    opts: PrintOptions,
+) (std.Io.Writer.Error || std.mem.Allocator.Error)!void {
     var offset: usize = 0;
     while (offset < bytes.len) {
-        const out = decoder.decodeOne(allocator, bytes, offset) catch |err| switch (err) {
+        const out_or_err = decoder.decodeOne(allocator, bytes, offset);
+        if (out_or_err) |out| {
+            defer decoder.freeInstruction(allocator, out.instruction);
+            try writePrefix(writer, bytes, offset, out.instruction.size, opts);
+            try writeInstruction(writer, out.instruction);
+            try writeEntryMarker(writer, offset, opts);
+            try writer.writeByte('\n');
+            offset = out.next_offset;
+        } else |err| switch (err) {
             error.UnknownOpcode => {
-                try writer.print("; .byte ${X:0>2}\n", .{bytes[offset]});
+                try writePrefix(writer, bytes, offset, 1, opts);
+                try writer.print("; .byte ${X:0>2}", .{bytes[offset]});
+                try writeEntryMarker(writer, offset, opts);
+                try writer.writeByte('\n');
                 offset += 1;
-                continue;
             },
             error.Truncated => {
                 try writer.print("; truncated at offset ${X:0>4}\n", .{offset});
                 break;
             },
             error.OutOfMemory => return error.OutOfMemory,
-        };
-        defer decoder.freeInstruction(allocator, out.instruction);
-        try writeInstruction(writer, out.instruction);
-        try writer.writeByte('\n');
-        offset = out.next_offset;
+        }
     }
+}
+
+/// `XXXX:  ` address column + optional hex-bytes column. Width
+/// of the hex column is fixed at 5 bytes (max v0.1 instruction
+/// width) so subsequent columns align.
+fn writePrefix(
+    writer: *std.Io.Writer,
+    bytes: []const u8,
+    offset: usize,
+    size: usize,
+    opts: PrintOptions,
+) std.Io.Writer.Error!void {
+    if (opts.base_addr) |base| {
+        // @as: offset bounded by caller's slice (max 64 KiB image / 16 KiB bank) so the u16 narrow never truncates.
+        const addr: u16 = base +% @as(u16, @intCast(offset));
+        try writer.print("{X:0>4}:  ", .{addr});
+    }
+    if (opts.show_bytes) {
+        const end = @min(offset + size, bytes.len);
+        const max_inst_bytes: usize = 5;
+        var i: usize = offset;
+        while (i < end) : (i += 1) try writer.print("{X:0>2} ", .{bytes[i]});
+        // Pad to fixed width so the asm column aligns.
+        var pad: usize = (max_inst_bytes - (end - offset)) * 3;
+        while (pad > 0) : (pad -= 1) try writer.writeByte(' ');
+        try writer.writeAll(" ");
+    }
+}
+
+fn writeEntryMarker(
+    writer: *std.Io.Writer,
+    offset: usize,
+    opts: PrintOptions,
+) std.Io.Writer.Error!void {
+    if (opts.entry_addr) |e| if (opts.base_addr) |base| {
+        // @as: same bound as writePrefix — offset fits u16 within the bank window / base image.
+        const addr: u16 = base +% @as(u16, @intCast(offset));
+        if (addr == e) try writer.writeAll("  ; entry point");
+    };
 }
 
 fn writeOperand(writer: *std.Io.Writer, op: decoder.Operand) std.Io.Writer.Error!void {
