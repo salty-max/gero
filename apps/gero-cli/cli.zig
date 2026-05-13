@@ -44,6 +44,9 @@ pub const Options = struct {
     optimize: Optimize = .debug,
     out: ?[]const u8 = null,
     color: ColorChoice = .auto,
+    /// `--bank=N` for `gero disasm` — selects which bank slot to
+    /// disassemble. `null` (default) = base image.
+    bank: ?u8 = null,
     positional_buf: [max_positionals][]const u8 = undefined,
     positional_count: usize = 0,
 
@@ -119,8 +122,8 @@ fn commandSummary(cmd: Command) []const u8 {
 /// discoverable, but split into a separate "planned" section.
 fn commandIsImplemented(cmd: Command) bool {
     return switch (cmd) {
-        .asm_, .run, .info => true,
-        .compile, .test_, .bench, .fmt, .check, .build, .disasm => false,
+        .asm_, .run, .info, .disasm => true,
+        .compile, .test_, .bench, .fmt, .check, .build => false,
     };
 }
 
@@ -221,6 +224,12 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
             try out.print("  {s}gero info prog.gx{s}                {s}# print the .gx header{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
+        .disasm => {
+            try out.print("  {s}gero disasm{s} <file.gx> [--bank=N]\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero disasm prog.gx{s}              {s}# disassemble the base image to stdout{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero disasm prog.gx --bank=0{s}     {s}# disassemble bank slot 0{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+        },
         else => unreachable, // allow-strict: commandIsImplemented() filtered above
     }
 
@@ -261,7 +270,7 @@ fn parseColor(s: []const u8) ParseError!ColorChoice {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, target, optimize, out, color, no_color };
+const FlagKind = enum { help, version, quiet, verbose, target, optimize, out, color, no_color, bank };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
@@ -273,6 +282,7 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "out")) return .out;
     if (std.mem.eql(u8, s, "color")) return .color;
     if (std.mem.eql(u8, s, "no-color")) return .no_color;
+    if (std.mem.eql(u8, s, "bank")) return .bank;
     return null;
 }
 
@@ -299,12 +309,17 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .out => opts.out = value orelse return error.MissingFlagValue,
         .color => opts.color = try parseColor(value orelse return error.MissingFlagValue),
         .no_color => opts.color = .never,
+        .bank => opts.bank = try parseBank(value orelse return error.MissingFlagValue),
     }
+}
+
+fn parseBank(s: []const u8) ParseError!u8 {
+    return std.fmt.parseInt(u8, s, 10) catch error.InvalidEnumValue;
 }
 
 fn needsValue(kind: FlagKind) bool {
     return switch (kind) {
-        .target, .optimize, .out, .color => true,
+        .target, .optimize, .out, .color, .bank => true,
         else => false,
     };
 }
