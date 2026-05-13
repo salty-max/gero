@@ -55,6 +55,11 @@ pub const Options = struct {
     /// address is used; otherwise the entry point is `0x0000`
     /// (start of image). Set explicitly to override.
     entry_point: ?u16 = null,
+    /// When `true` (default) emit the debug-symbol section per
+    /// ISA §7.3 — every global `label:` and `data8/16` declaration
+    /// becomes a `(address, name)` entry. Disable for "release"
+    /// builds that want to strip the names.
+    debug_symbols: bool = true,
 };
 
 /// Run the full codegen pipeline against a parsed program.
@@ -111,7 +116,7 @@ pub fn assemble(
         break :blk 0x0000;
     };
 
-    const final = try buildArchive(allocator, &emit, &layout, resolved_entry);
+    const final = try buildArchive(allocator, &emit, &layout, resolved_entry, &symbols, opts.debug_symbols);
 
     return .{
         .image = final,
@@ -886,7 +891,14 @@ fn emitCast(
 /// Magic bytes at the start of a `.gx` file — "GERO" in ASCII.
 const gx_magic = [4]u8{ 'G', 'E', 'R', 'O' };
 
-fn buildArchive(allocator: std.mem.Allocator, emit: *const Emit, layout: *const Layout, entry_point: u16) ![]u8 {
+fn buildArchive(
+    allocator: std.mem.Allocator,
+    emit: *const Emit,
+    layout: *const Layout,
+    entry_point: u16,
+    symbols: *const symtab.SymbolTable,
+    debug_symbols: bool,
+) ![]u8 {
     // Header layout per ISA §7.1:
     //   0x00..0x04  magic = "GERO"
     //   0x04..0x06  u16le version = 0x0001
@@ -897,8 +909,8 @@ fn buildArchive(allocator: std.mem.Allocator, emit: *const Emit, layout: *const 
     //   0x0D        u8 sram_bank_count
     //   0x0E..0x10  reserved (must be 0)
     //
-    // Archive body per ISA §7.1:
-    //   header + base_image + (bank_count × bank_disk_size)
+    // Archive body per ISA §7.1 / §7.3:
+    //   header + base_image + (bank_count × bank_disk_size) + debug_section?
     //
     // SRAM banks are NOT emitted — they're zero-init at boot.
     const header_size: usize = 16;
@@ -910,14 +922,24 @@ fn buildArchive(allocator: std.mem.Allocator, emit: *const Emit, layout: *const 
     const bank_count: u16 = if (layout.max_bank) |m| @as(u16, m) + 1 else 0;
     // @as: widen u16 / u32 to usize for the byte-count math (max 256 × 16 KiB = 4 MiB).
     const banked_bytes: usize = @as(usize, bank_count) * @as(usize, bank_disk_size);
-    const total = header_size + base_len + banked_bytes;
+
+    // Collect debug-symbol entries (sorted by address). When
+    // disabled or empty the blob stays empty + the flag bit is
+    // not set.
+    var debug_entries: std.ArrayList(DebugEntry) = .empty;
+    defer debug_entries.deinit(allocator);
+    if (debug_symbols) try collectDebugSymbols(allocator, symbols, &debug_entries);
+
+    const debug_bytes_len: usize = debugSectionByteSize(debug_entries.items);
+    const total = header_size + base_len + banked_bytes + debug_bytes_len;
     var out = try allocator.alloc(u8, total);
 
-    // Flag bit 0 (banked) — set whenever the cart has at least
-    // one bank. The loader uses this to know whether to slice the
-    // bank region from the archive.
+    // Flags per ISA §7.1: bit 0 = banked, bit 1 = has-debug.
     const flag_banked: u16 = 0x0001;
-    const flags: u16 = if (bank_count > 0) flag_banked else 0;
+    const flag_has_debug: u16 = 0x0002;
+    var flags: u16 = 0;
+    if (bank_count > 0) flags |= flag_banked;
+    if (debug_bytes_len > 0) flags |= flag_has_debug;
 
     @memcpy(out[0..4], &gx_magic);
     writeU16Le(out[4..6], 0x0001); // version
@@ -949,7 +971,69 @@ fn buildArchive(allocator: std.mem.Allocator, emit: *const Emit, layout: *const 
         cursor += bank_disk_size;
     }
 
+    // Debug-symbol section per ISA §7.3.
+    if (debug_bytes_len > 0) writeDebugSection(out[cursor..][0..debug_bytes_len], debug_entries.items);
+
     return out;
+}
+
+/// One row in the debug-symbol section: a CPU address + its
+/// human-readable name. Names are slices into the source / owned
+/// keys in the symbol table (borrowed for the lifetime of the
+/// build).
+const DebugEntry = struct {
+    address: u16,
+    name: []const u8,
+};
+
+/// Walk the symbol table, collect `.label` + `.data` entries
+/// (consts and struct fields are values, not addresses — skip),
+/// skip local-label mangled names (the `.` character isn't a
+/// valid ident in asm so they can't round-trip through the
+/// disasm). Sort the result by address ascending.
+fn collectDebugSymbols(
+    allocator: std.mem.Allocator,
+    symbols: *const symtab.SymbolTable,
+    out: *std.ArrayList(DebugEntry),
+) !void {
+    var it = symbols.entries.iterator();
+    while (it.next()) |entry| {
+        const sym = entry.value_ptr.*;
+        if (sym.kind != .label and sym.kind != .data) continue;
+        const name = entry.key_ptr.*;
+        if (std.mem.indexOfScalar(u8, name, '.') != null) continue;
+        if (name.len > 0xFF) continue; // ISA §7.3 caps name_len at u8
+        try out.append(allocator, .{ .address = sym.value, .name = name });
+    }
+    std.mem.sort(DebugEntry, out.items, {}, struct {
+        fn lt(_: void, a: DebugEntry, b: DebugEntry) bool {
+            return a.address < b.address;
+        }
+    }.lt);
+}
+
+/// Byte size of the encoded debug section, or 0 when empty.
+fn debugSectionByteSize(entries: []const DebugEntry) usize {
+    if (entries.len == 0) return 0;
+    var n: usize = 2; // symbol_count
+    for (entries) |e| n += 2 + 1 + e.name.len; // addr + len + name
+    return n;
+}
+
+/// Encode the debug section in-place per ISA §7.3.
+fn writeDebugSection(dst: []u8, entries: []const DebugEntry) void {
+    // safety: caller passes a buffer sized for at most
+    //         `debugSectionByteSize(entries)` — every write is
+    //         bounded by entries.len ≤ u16 max.
+    writeU16Le(dst[0..2], @intCast(entries.len));
+    var cursor: usize = 2;
+    for (entries) |e| {
+        writeU16Le(dst[cursor..][0..2], e.address);
+        // safety: collectDebugSymbols filters out names > 0xFF bytes.
+        dst[cursor + 2] = @intCast(e.name.len);
+        @memcpy(dst[cursor + 3 ..][0..e.name.len], e.name);
+        cursor += 3 + e.name.len;
+    }
 }
 
 fn writeU16Le(dst: []u8, value: u16) void {

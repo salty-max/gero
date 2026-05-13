@@ -19,6 +19,15 @@ pub const Header = header_mod.Header;
 pub const DecodeError = header_mod.DecodeError;
 /// Re-export: parse a `.gx` byte buffer.
 pub const parseHeader = header_mod.parse;
+/// Re-export: one debug-symbol entry (address + name).
+pub const Symbol = header_mod.Symbol;
+/// Re-export: parsed debug-symbol section (`address → name` lookup).
+pub const Symbols = header_mod.Symbols;
+/// Re-export: failure modes when parsing the debug-symbol section.
+pub const SymbolsError = header_mod.SymbolsError;
+/// Re-export: parse the debug-symbol blob (typically
+/// `Header.debug`) per ISA §7.3.
+pub const parseSymbols = header_mod.parseSymbols;
 
 /// Re-export: one decoded instruction (opcode + operands + size).
 pub const Instruction = decoder_mod.Instruction;

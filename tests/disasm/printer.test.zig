@@ -72,6 +72,30 @@ test "printer: truncated tail comments instead of crashing" {
     try std.testing.expect(std.mem.indexOf(u8, out, "truncated") != null);
 }
 
+test "printer: symbols substitute matching addresses" {
+    // jmp &0021 — with a symbol for $0021 named "fib", renders
+    // as `jmp fib`.
+    const bytes = [_]u8{ 0x70, 0x21, 0x00 };
+    const entries = [_]gero.disasm.Symbol{.{ .address = 0x0021, .name = "fib" }};
+    const symbols: gero.disasm.Symbols = .{ .entries = &entries };
+
+    var allocating = std.Io.Writer.Allocating.init(alloc);
+    defer allocating.deinit();
+    try gero.disasm.writeBytesPretty(alloc, &allocating.writer, &bytes, .{ .symbols = symbols });
+    try std.testing.expectEqualStrings("jmp   fib\n", allocating.written());
+}
+
+test "printer: unmatched address stays as &XXXX" {
+    const bytes = [_]u8{ 0x70, 0x22, 0x00 }; // jmp &0022
+    const entries = [_]gero.disasm.Symbol{.{ .address = 0x0021, .name = "fib" }}; // different addr
+    const symbols: gero.disasm.Symbols = .{ .entries = &entries };
+
+    var allocating = std.Io.Writer.Allocating.init(alloc);
+    defer allocating.deinit();
+    try gero.disasm.writeBytesPretty(alloc, &allocating.writer, &bytes, .{ .symbols = symbols });
+    try std.testing.expectEqualStrings("jmp   &0022\n", allocating.written());
+}
+
 test "printer: multi-instruction sequence emits one line each" {
     // mov $48, r1 ; int $10 ; hlt
     const bytes = [_]u8{ 0x10, 0x48, 0x00, 0x02, 0xFC, 0x10, 0xFF };

@@ -22,7 +22,12 @@ pub fn roundTripImage(allocator: std.mem.Allocator, original_image: []const u8) 
 
     var pt = try gero.asm_.parse(allocator, disasm_text.written());
     defer pt.deinit();
-    var cg = try gero.asm_.assemble(allocator, disasm_text.written(), pt, .{});
+    // Strip the debug-symbol section from the re-assembled
+    // archive — the disasm's bare output (no symbols) drops
+    // every label, so the re-asm's symbol table is empty
+    // anyway. Disabling here keeps the byte-equality compare
+    // tight against the original's base + banks tail.
+    var cg = try gero.asm_.assemble(allocator, disasm_text.written(), pt, .{ .debug_symbols = false });
     defer cg.deinit();
     if (cg.hasErrors()) return error.RoundTripAssemblyFailed;
 

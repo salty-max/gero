@@ -63,6 +63,60 @@ test "header: file shorter than header rejected" {
     try std.testing.expectError(error.TooSmall, gero.disasm.parseHeader(&buf));
 }
 
+// ---------- debug symbols (#100) ----------
+
+test "symbols: empty blob produces zero entries" {
+    const out = try gero.disasm.parseSymbols(std.testing.allocator, &.{});
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), out.entries.len);
+}
+
+test "symbols: parse count + (addr, name) entries" {
+    // count=2, entry1: addr $0010 name "main", entry2: addr $0042 name "fib"
+    const blob = [_]u8{
+        0x02, 0x00, // count = 2
+        0x10, 0x00,
+        0x04, 'm',
+        'a',  'i',
+        'n',  0x42,
+        0x00, 0x03,
+        'f',  'i',
+        'b',
+    };
+    const out = try gero.disasm.parseSymbols(std.testing.allocator, &blob);
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), out.entries.len);
+    try std.testing.expectEqual(@as(u16, 0x0010), out.entries[0].address);
+    try std.testing.expectEqualStrings("main", out.entries[0].name);
+    try std.testing.expectEqual(@as(u16, 0x0042), out.entries[1].address);
+    try std.testing.expectEqualStrings("fib", out.entries[1].name);
+}
+
+test "symbols: lookup returns name on hit, null on miss" {
+    const blob = [_]u8{
+        0x01, 0x00,
+        0x10, 0x00,
+        0x04, 'm',
+        'a',  'i',
+        'n',
+    };
+    const out = try gero.disasm.parseSymbols(std.testing.allocator, &blob);
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("main", out.lookup(0x0010).?);
+    try std.testing.expect(out.lookup(0x0042) == null);
+}
+
+test "symbols: truncated count rejected" {
+    const blob = [_]u8{0x02}; // only 1 of 2 bytes
+    try std.testing.expectError(error.TruncatedSymbolSection, gero.disasm.parseSymbols(std.testing.allocator, &blob));
+}
+
+test "symbols: truncated name rejected" {
+    // Declares 4 bytes of name but only has 2.
+    const blob = [_]u8{ 0x01, 0x00, 0x10, 0x00, 0x04, 'a', 'b' };
+    try std.testing.expectError(error.TruncatedSymbolSection, gero.disasm.parseSymbols(std.testing.allocator, &blob));
+}
+
 test "header: banked cart exposes bank slice + isBanked flag" {
     const bank_size: usize = 0x4000;
     var buf: [16 + 1 + bank_size]u8 = undefined;

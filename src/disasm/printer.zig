@@ -11,6 +11,7 @@
 const std = @import("std");
 const gero = @import("../gero.zig");
 const decoder = @import("decoder.zig");
+const header = @import("header.zig");
 
 /// Mnemonic column width in characters — covers every v0.1
 /// mnemonic plus one trailing space.
@@ -58,8 +59,14 @@ pub const Style = struct {
 /// Render one instruction to `writer`. Caller controls leading
 /// indent / label emission separately. Pass `Style.plain` for the
 /// round-trip-friendly bare output; `Style.ansi` for the colored
-/// CLI view.
-pub fn writeInstruction(writer: *std.Io.Writer, inst: decoder.Instruction, style: Style) std.Io.Writer.Error!void {
+/// CLI view. Optional `symbols` substitutes matching addresses
+/// with their name (e.g. `call greet` instead of `call &C000`).
+pub fn writeInstruction(
+    writer: *std.Io.Writer,
+    inst: decoder.Instruction,
+    style: Style,
+    symbols: ?header.Symbols,
+) std.Io.Writer.Error!void {
     try writer.print("{s}{s}{s}", .{ style.mnemonic, inst.mnemonic, style.reset });
     // Pad the mnemonic column — only when operands follow. A
     // zero-operand mnemonic (`hlt`, `nop`, `ret`, …) prints
@@ -74,7 +81,7 @@ pub fn writeInstruction(writer: *std.Io.Writer, inst: decoder.Instruction, style
 
     for (inst.operands, 0..) |op, i| {
         if (i != 0) try writer.writeAll(", ");
-        try writeOperand(writer, op, style);
+        try writeOperand(writer, op, style, symbols);
     }
 }
 
@@ -114,6 +121,10 @@ pub const PrintOptions = struct {
     /// ANSI palette to wrap around each rendered piece. Default
     /// `Style.plain` emits no escapes.
     style: Style = .plain,
+    /// Optional debug-symbol lookup. When set, `addr` operands
+    /// matching a known symbol render as the symbol name instead
+    /// of `&XXXX`. `null` keeps the raw addresses.
+    symbols: ?header.Symbols = null,
 };
 
 /// Same shape as `writeBytes` but with `PrintOptions` for the
@@ -130,7 +141,7 @@ pub fn writeBytesPretty(
         if (out_or_err) |out| {
             defer decoder.freeInstruction(allocator, out.instruction);
             try writePrefix(writer, bytes, offset, out.instruction.size, opts);
-            try writeInstruction(writer, out.instruction, opts.style);
+            try writeInstruction(writer, out.instruction, opts.style, opts.symbols);
             try writeEntryMarker(writer, offset, opts);
             try writer.writeByte('\n');
             offset = out.next_offset;
@@ -192,12 +203,17 @@ fn writeEntryMarker(
     };
 }
 
-fn writeOperand(writer: *std.Io.Writer, op: decoder.Operand, style: Style) std.Io.Writer.Error!void {
+fn writeOperand(
+    writer: *std.Io.Writer,
+    op: decoder.Operand,
+    style: Style,
+    symbols: ?header.Symbols,
+) std.Io.Writer.Error!void {
     switch (op) {
         .reg => |r| try writeReg(writer, r, style),
         .imm8 => |v| try writer.print("{s}${X:0>2}{s}", .{ style.literal, v, style.reset }),
         .imm16 => |v| try writer.print("{s}${X:0>4}{s}", .{ style.literal, v, style.reset }),
-        .addr => |v| try writer.print("{s}&{X:0>4}{s}", .{ style.literal, v, style.reset }),
+        .addr => |v| try writeAddrOrSymbol(writer, v, style, symbols),
         .zp => |v| try writer.print("{s}${X:0>2}{s}", .{ style.literal, v, style.reset }),
         .reg_indirect => |r| {
             try writer.writeByte('[');
@@ -205,11 +221,30 @@ fn writeOperand(writer: *std.Io.Writer, op: decoder.Operand, style: Style) std.I
             try writer.writeByte(']');
         },
         .indexed => |idx| {
-            try writer.print("[{s}&{X:0>4}{s} + ", .{ style.literal, idx.addr, style.reset });
+            try writer.writeByte('[');
+            try writeAddrOrSymbol(writer, idx.addr, style, symbols);
+            try writer.writeAll(" + ");
             try writeReg(writer, idx.reg, style);
             try writer.writeByte(']');
         },
     }
+}
+
+/// Render an address: prefer a matching symbol name (cyan, no
+/// `&` prefix) over the raw `&XXXX` literal. The asm accepts
+/// bare identifiers as label-refs so the symbolic form
+/// round-trips.
+fn writeAddrOrSymbol(
+    writer: *std.Io.Writer,
+    addr: u16,
+    style: Style,
+    symbols: ?header.Symbols,
+) std.Io.Writer.Error!void {
+    if (symbols) |s| if (s.lookup(addr)) |name| {
+        try writer.print("{s}{s}{s}", .{ style.register, name, style.reset });
+        return;
+    };
+    try writer.print("{s}&{X:0>4}{s}", .{ style.literal, addr, style.reset });
 }
 
 fn writeReg(writer: *std.Io.Writer, idx: u8, style: Style) std.Io.Writer.Error!void {
