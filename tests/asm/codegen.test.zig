@@ -444,18 +444,21 @@ test "codegen: debug symbols emit by default — flag bit + sorted entries" {
     defer out.deinit();
     // Flags low byte: bit 1 = has-debug
     try std.testing.expect((out.cg.image[6] & 0x02) != 0);
-    // Trailing blob: count u16 LE = 2, then sorted by address
+    // Trailing blob: count u16 LE = 2, then sorted by address.
+    // Entry layout per ISA §7.3: addr(2) + kind(1) + name_len(1) + name.
     const tail_start = 16 + 2; // header + 2-byte image (2 hlt)
     try std.testing.expectEqual(@as(u8, 0x02), out.cg.image[tail_start]);
     try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 1]);
-    // First entry: addr 0x0000 → "main"
+    // First entry: addr 0x0000, kind=label(0), name="main"
     try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 2]);
     try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 3]);
-    try std.testing.expectEqual(@as(u8, 4), out.cg.image[tail_start + 4]);
-    try std.testing.expectEqualSlices(u8, "main", out.cg.image[tail_start + 5 ..][0..4]);
-    // Second entry: addr 0x0001 → "helper"
-    try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[tail_start + 9]);
-    try std.testing.expectEqualSlices(u8, "helper", out.cg.image[tail_start + 12 ..][0..6]);
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 4]); // kind = label
+    try std.testing.expectEqual(@as(u8, 4), out.cg.image[tail_start + 5]); // name_len
+    try std.testing.expectEqualSlices(u8, "main", out.cg.image[tail_start + 6 ..][0..4]);
+    // Second entry: addr 0x0001, kind=label, name="helper" — starts at tail+10
+    try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[tail_start + 10]);
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 12]); // kind = label
+    try std.testing.expectEqualSlices(u8, "helper", out.cg.image[tail_start + 14 ..][0..6]);
 }
 
 test "codegen: debug_symbols=false skips the section + flag" {
@@ -482,9 +485,21 @@ test "codegen: debug symbols skip local labels + consts" {
     // symbol_count = 1
     try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[tail_start]);
     try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 1]);
-    // The one entry is "main"
-    try std.testing.expectEqual(@as(u8, 4), out.cg.image[tail_start + 4]);
-    try std.testing.expectEqualSlices(u8, "main", out.cg.image[tail_start + 5 ..][0..4]);
+    // The one entry is "main" — kind=label(0), name_len=4
+    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 4]); // kind = label
+    try std.testing.expectEqual(@as(u8, 4), out.cg.image[tail_start + 5]); // name_len
+    try std.testing.expectEqualSlices(u8, "main", out.cg.image[tail_start + 6 ..][0..4]);
+}
+
+test "codegen: data declarations emit with kind=1 (data)" {
+    var out = try assembleRaw(
+        \\data8 GREETING = $48, $69
+        \\
+    , .{});
+    defer out.deinit();
+    const tail_start = 16 + 2; // header + 2 image bytes
+    // First entry should have kind = data(1).
+    try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[tail_start + 4]);
 }
 
 test "codegen: header magic + version + entry_point + image_size" {

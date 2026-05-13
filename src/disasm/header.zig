@@ -12,9 +12,24 @@
 const std = @import("std");
 const gero = @import("../gero.zig");
 
+/// What flavor a symbol describes, per ISA §7.3.
+pub const SymbolKind = enum(u8) {
+    /// Code label — its bytes decode as instructions.
+    label = 0,
+    /// `data8` / `data16` block — its bytes are raw data, not
+    /// code. The disasm switches to data-mode rendering when
+    /// the cursor lands on one of these.
+    data = 1,
+    /// Anything past `1` is reserved — the disasm treats unknown
+    /// kinds as `label` so the bytes still try to decode (fail-
+    /// safe), but the field round-trips for forward compat.
+    _,
+};
+
 /// One row of the debug-symbol table per ISA §7.3.
 pub const Symbol = struct {
     address: u16,
+    kind: SymbolKind,
     name: []const u8,
 };
 
@@ -107,13 +122,14 @@ pub fn parseSymbols(allocator: std.mem.Allocator, debug_bytes: []const u8) Symbo
     var cursor: usize = 2;
     var i: usize = 0;
     while (i < count) : (i += 1) {
-        if (cursor + 3 > debug_bytes.len) return error.TruncatedSymbolSection;
+        if (cursor + 4 > debug_bytes.len) return error.TruncatedSymbolSection;
         // @as: widen each u8 byte to u16 for the LE u16 read.
         const addr: u16 = @as(u16, debug_bytes[cursor]) | (@as(u16, debug_bytes[cursor + 1]) << 8);
-        const name_len: usize = debug_bytes[cursor + 2];
-        cursor += 3;
+        const kind: SymbolKind = @enumFromInt(debug_bytes[cursor + 2]);
+        const name_len: usize = debug_bytes[cursor + 3];
+        cursor += 4;
         if (cursor + name_len > debug_bytes.len) return error.TruncatedSymbolSection;
-        entries[i] = .{ .address = addr, .name = debug_bytes[cursor..][0..name_len] };
+        entries[i] = .{ .address = addr, .kind = kind, .name = debug_bytes[cursor..][0..name_len] };
         cursor += name_len;
     }
     return .{ .entries = entries };

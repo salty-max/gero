@@ -76,7 +76,7 @@ test "printer: symbols substitute matching addresses" {
     // jmp &0021 — with a symbol for $0021 named "fib", renders
     // as `jmp fib`.
     const bytes = [_]u8{ 0x70, 0x21, 0x00 };
-    const entries = [_]gero.disasm.Symbol{.{ .address = 0x0021, .name = "fib" }};
+    const entries = [_]gero.disasm.Symbol{.{ .address = 0x0021, .kind = .label, .name = "fib" }};
     const symbols: gero.disasm.Symbols = .{ .entries = &entries };
 
     var allocating = std.Io.Writer.Allocating.init(alloc);
@@ -85,9 +85,32 @@ test "printer: symbols substitute matching addresses" {
     try std.testing.expectEqualStrings("jmp   fib\n", allocating.written());
 }
 
+test "printer: data symbol switches to data-mode rendering" {
+    // 3 bytes of data followed by a hlt. The first byte is a
+    // `data` symbol, so the disasm should emit a `data8 ... =`
+    // directive for those 3 bytes (up to next symbol = hlt label
+    // at offset 3) instead of trying to decode them as code.
+    const bytes = [_]u8{ 0x48, 0x69, 0x21, 0xFF };
+    const entries = [_]gero.disasm.Symbol{
+        .{ .address = 0x0000, .kind = .data, .name = "msg" },
+        .{ .address = 0x0003, .kind = .label, .name = "main" },
+    };
+    const symbols: gero.disasm.Symbols = .{ .entries = &entries };
+
+    var allocating = std.Io.Writer.Allocating.init(alloc);
+    defer allocating.deinit();
+    try gero.disasm.writeBytesPretty(alloc, &allocating.writer, &bytes, .{
+        .base_addr = 0x0000,
+        .symbols = symbols,
+    });
+    const out = allocating.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "data8 msg = $48, $69, $21") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "hlt") != null);
+}
+
 test "printer: unmatched address stays as &XXXX" {
     const bytes = [_]u8{ 0x70, 0x22, 0x00 }; // jmp &0022
-    const entries = [_]gero.disasm.Symbol{.{ .address = 0x0021, .name = "fib" }}; // different addr
+    const entries = [_]gero.disasm.Symbol{.{ .address = 0x0021, .kind = .label, .name = "fib" }};
     const symbols: gero.disasm.Symbols = .{ .entries = &entries };
 
     var allocating = std.Io.Writer.Allocating.init(alloc);

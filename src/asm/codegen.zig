@@ -977,14 +977,20 @@ fn buildArchive(
     return out;
 }
 
-/// One row in the debug-symbol section: a CPU address + its
-/// human-readable name. Names are slices into the source / owned
-/// keys in the symbol table (borrowed for the lifetime of the
-/// build).
+/// One row in the debug-symbol section per ISA §7.3: an address,
+/// a kind (label vs data), and a name. Names are borrowed from
+/// the source or owned keys in the symbol table.
 const DebugEntry = struct {
     address: u16,
+    /// 0 = code label, 1 = data block. Maps to ISA §7.3.
+    kind: u8,
     name: []const u8,
 };
+
+/// `kind` byte per ISA §7.3 — keeps the constant out of the
+/// codegen body so the disasm side can match.
+const debug_kind_label: u8 = 0;
+const debug_kind_data: u8 = 1;
 
 /// Walk the symbol table, collect `.label` + `.data` entries
 /// (consts and struct fields are values, not addresses — skip),
@@ -999,11 +1005,15 @@ fn collectDebugSymbols(
     var it = symbols.entries.iterator();
     while (it.next()) |entry| {
         const sym = entry.value_ptr.*;
-        if (sym.kind != .label and sym.kind != .data) continue;
+        const kind: u8 = switch (sym.kind) {
+            .label => debug_kind_label,
+            .data => debug_kind_data,
+            .const_value, .struct_field => continue, // not addresses
+        };
         const name = entry.key_ptr.*;
         if (std.mem.indexOfScalar(u8, name, '.') != null) continue;
         if (name.len > 0xFF) continue; // ISA §7.3 caps name_len at u8
-        try out.append(allocator, .{ .address = sym.value, .name = name });
+        try out.append(allocator, .{ .address = sym.value, .kind = kind, .name = name });
     }
     std.mem.sort(DebugEntry, out.items, {}, struct {
         fn lt(_: void, a: DebugEntry, b: DebugEntry) bool {
@@ -1016,7 +1026,7 @@ fn collectDebugSymbols(
 fn debugSectionByteSize(entries: []const DebugEntry) usize {
     if (entries.len == 0) return 0;
     var n: usize = 2; // symbol_count
-    for (entries) |e| n += 2 + 1 + e.name.len; // addr + len + name
+    for (entries) |e| n += 2 + 1 + 1 + e.name.len; // addr + kind + len + name
     return n;
 }
 
@@ -1029,10 +1039,11 @@ fn writeDebugSection(dst: []u8, entries: []const DebugEntry) void {
     var cursor: usize = 2;
     for (entries) |e| {
         writeU16Le(dst[cursor..][0..2], e.address);
+        dst[cursor + 2] = e.kind;
         // safety: collectDebugSymbols filters out names > 0xFF bytes.
-        dst[cursor + 2] = @intCast(e.name.len);
-        @memcpy(dst[cursor + 3 ..][0..e.name.len], e.name);
-        cursor += 3 + e.name.len;
+        dst[cursor + 3] = @intCast(e.name.len);
+        @memcpy(dst[cursor + 4 ..][0..e.name.len], e.name);
+        cursor += 4 + e.name.len;
     }
 }
 

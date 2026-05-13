@@ -71,34 +71,31 @@ test "symbols: empty blob produces zero entries" {
     try std.testing.expectEqual(@as(usize, 0), out.entries.len);
 }
 
-test "symbols: parse count + (addr, name) entries" {
-    // count=2, entry1: addr $0010 name "main", entry2: addr $0042 name "fib"
+test "symbols: parse count + (addr, kind, name) entries" {
+    // count=2, entry1: $0010 label "main", entry2: $0042 data "buf"
     const blob = [_]u8{
         0x02, 0x00, // count = 2
-        0x10, 0x00,
-        0x04, 'm',
-        'a',  'i',
-        'n',  0x42,
-        0x00, 0x03,
-        'f',  'i',
-        'b',
+        0x10, 0x00, 0x00, 0x04, 'm', 'a', 'i', 'n', // addr / kind=label / len / name
+        0x42, 0x00, 0x01, 0x03, 'b', 'u', 'f', // addr / kind=data / len / name
     };
     const out = try gero.disasm.parseSymbols(std.testing.allocator, &blob);
     defer out.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), out.entries.len);
     try std.testing.expectEqual(@as(u16, 0x0010), out.entries[0].address);
+    try std.testing.expectEqual(gero.disasm.SymbolKind.label, out.entries[0].kind);
     try std.testing.expectEqualStrings("main", out.entries[0].name);
     try std.testing.expectEqual(@as(u16, 0x0042), out.entries[1].address);
-    try std.testing.expectEqualStrings("fib", out.entries[1].name);
+    try std.testing.expectEqual(gero.disasm.SymbolKind.data, out.entries[1].kind);
+    try std.testing.expectEqualStrings("buf", out.entries[1].name);
 }
 
 test "symbols: lookup returns name on hit, null on miss" {
     const blob = [_]u8{
         0x01, 0x00,
         0x10, 0x00,
-        0x04, 'm',
-        'a',  'i',
-        'n',
+        0x00, 0x04,
+        'm',  'a',
+        'i',  'n',
     };
     const out = try gero.disasm.parseSymbols(std.testing.allocator, &blob);
     defer out.deinit(std.testing.allocator);
@@ -113,7 +110,7 @@ test "symbols: truncated count rejected" {
 
 test "symbols: truncated name rejected" {
     // Declares 4 bytes of name but only has 2.
-    const blob = [_]u8{ 0x01, 0x00, 0x10, 0x00, 0x04, 'a', 'b' };
+    const blob = [_]u8{ 0x01, 0x00, 0x10, 0x00, 0x00, 0x04, 'a', 'b' };
     try std.testing.expectError(error.TruncatedSymbolSection, gero.disasm.parseSymbols(std.testing.allocator, &blob));
 }
 
