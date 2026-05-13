@@ -79,6 +79,19 @@ pub const ParseError = error{
     TooManyPositionals,
 };
 
+/// Optional out-of-band diagnostic that the parser fills before
+/// returning a `ParseError`. Lets the caller include the
+/// offending token in the human-facing error message
+/// (e.g. "unknown flag: --not-show-bytes" instead of just
+/// "unknown flag.").
+pub const Diagnostic = struct {
+    /// The argv token that triggered the error (e.g.
+    /// `--not-show-bytes` for `UnknownFlag`, `frobnicate` for
+    /// `UnknownCommand`, `--target=mainframe` for
+    /// `InvalidEnumValue`). `null` until the parser hits an error.
+    bad_token: ?[]const u8 = null,
+};
+
 fn commandFromStr(s: []const u8) ?Command {
     if (std.mem.eql(u8, s, "asm")) return .asm_;
     if (std.mem.eql(u8, s, "compile")) return .compile;
@@ -344,8 +357,18 @@ pub const version_string: []const u8 = "0.0.0";
 /// command (positional args / its own flags get re-parsed by
 /// the subcommand). The first argument may also be `--help` /
 /// `-h` to request top-level help — that's surfaced via
-/// `Options.help` and `command == null`.
+/// `Options.help` and `command == null`. For richer error
+/// messages (`unknown flag: --not-show-bytes`), use
+/// `parseWithDiagnostic`.
 pub fn parse(args: []const []const u8) ParseError!Parsed {
+    return parseWithDiagnostic(args, null);
+}
+
+/// Same as `parse` but writes the offending argv token into
+/// `diag.bad_token` before returning a `ParseError`. The caller
+/// composes a helpful message instead of "unknown flag." with
+/// no context.
+pub fn parseWithDiagnostic(args: []const []const u8, diag: ?*Diagnostic) ParseError!Parsed {
     var opts: Options = .{};
     var cmd: ?Command = null;
 
@@ -355,10 +378,11 @@ pub fn parse(args: []const []const u8) ParseError!Parsed {
         if (a.len == 0) continue;
 
         if (std.mem.eql(u8, a, "--")) {
-            // Everything after `--` is positional, even tokens
-            // that look like flags.
             for (args[i + 1 ..]) |rest_arg| {
-                if (opts.positional_count >= max_positionals) return error.TooManyPositionals;
+                if (opts.positional_count >= max_positionals) {
+                    if (diag) |d| d.bad_token = rest_arg;
+                    return error.TooManyPositionals;
+                }
                 opts.positional_buf[opts.positional_count] = rest_arg;
                 opts.positional_count += 1;
             }
@@ -367,10 +391,16 @@ pub fn parse(args: []const []const u8) ParseError!Parsed {
 
         if (a[0] != '-') {
             if (cmd == null) {
-                cmd = commandFromStr(a) orelse return error.UnknownCommand;
+                cmd = commandFromStr(a) orelse {
+                    if (diag) |d| d.bad_token = a;
+                    return error.UnknownCommand;
+                };
                 continue;
             }
-            if (opts.positional_count >= max_positionals) return error.TooManyPositionals;
+            if (opts.positional_count >= max_positionals) {
+                if (diag) |d| d.bad_token = a;
+                return error.TooManyPositionals;
+            }
             opts.positional_buf[opts.positional_count] = a;
             opts.positional_count += 1;
             continue;
@@ -381,29 +411,59 @@ pub fn parse(args: []const []const u8) ParseError!Parsed {
             const eq = std.mem.indexOfScalar(u8, rest, '=');
             const name = if (eq) |p| rest[0..p] else rest;
             const inline_value: ?[]const u8 = if (eq) |p| rest[p + 1 ..] else null;
-            const kind = longFlag(name) orelse return error.UnknownFlag;
+            const kind = longFlag(name) orelse {
+                if (diag) |d| d.bad_token = a;
+                return error.UnknownFlag;
+            };
             if (needsValue(kind)) {
                 const v = inline_value orelse blk: {
                     i += 1;
-                    if (i >= args.len) return error.MissingFlagValue;
+                    if (i >= args.len) {
+                        if (diag) |d| d.bad_token = a;
+                        return error.MissingFlagValue;
+                    }
                     break :blk args[i];
                 };
-                try applyFlag(&opts, kind, v);
+                applyFlag(&opts, kind, v) catch |err| {
+                    if (diag) |d| d.bad_token = a;
+                    return err;
+                };
             } else {
-                if (inline_value != null) return error.InvalidEnumValue;
-                try applyFlag(&opts, kind, null);
+                if (inline_value != null) {
+                    if (diag) |d| d.bad_token = a;
+                    return error.InvalidEnumValue;
+                }
+                applyFlag(&opts, kind, null) catch |err| {
+                    if (diag) |d| d.bad_token = a;
+                    return err;
+                };
             }
         } else if (a.len > 1) {
             const rest = a[1..];
-            const kind = shortFlag(rest) orelse return error.UnknownFlag;
+            const kind = shortFlag(rest) orelse {
+                if (diag) |d| d.bad_token = a;
+                return error.UnknownFlag;
+            };
             if (needsValue(kind)) {
                 i += 1;
-                if (i >= args.len) return error.MissingFlagValue;
-                try applyFlag(&opts, kind, args[i]);
+                if (i >= args.len) {
+                    if (diag) |d| d.bad_token = a;
+                    return error.MissingFlagValue;
+                }
+                applyFlag(&opts, kind, args[i]) catch |err| {
+                    if (diag) |d| d.bad_token = a;
+                    return err;
+                };
             } else {
-                try applyFlag(&opts, kind, null);
+                applyFlag(&opts, kind, null) catch |err| {
+                    if (diag) |d| d.bad_token = a;
+                    return err;
+                };
             }
-        } else return error.UnknownFlag;
+        } else {
+            if (diag) |d| d.bad_token = a;
+            return error.UnknownFlag;
+        }
     }
 
     return .{ .command = cmd, .options = opts };
@@ -499,6 +559,27 @@ test "parse: -- terminator captures trailing positionals" {
 test "parse: unknown flag errors" {
     const args = [_][]const u8{ "run", "--zoinks" };
     try testing.expectError(error.UnknownFlag, parse(&args));
+}
+
+test "parseWithDiagnostic: populates bad_token on UnknownFlag" {
+    var diag: Diagnostic = .{};
+    const args = [_][]const u8{ "disasm", "--not-show-bytes", "x.gx" };
+    try testing.expectError(error.UnknownFlag, parseWithDiagnostic(&args, &diag));
+    try testing.expectEqualStrings("--not-show-bytes", diag.bad_token.?);
+}
+
+test "parseWithDiagnostic: populates bad_token on UnknownCommand" {
+    var diag: Diagnostic = .{};
+    const args = [_][]const u8{"frobnicate"};
+    try testing.expectError(error.UnknownCommand, parseWithDiagnostic(&args, &diag));
+    try testing.expectEqualStrings("frobnicate", diag.bad_token.?);
+}
+
+test "parseWithDiagnostic: populates bad_token on InvalidEnumValue" {
+    var diag: Diagnostic = .{};
+    const args = [_][]const u8{ "run", "--target=mainframe" };
+    try testing.expectError(error.InvalidEnumValue, parseWithDiagnostic(&args, &diag));
+    try testing.expectEqualStrings("--target=mainframe", diag.bad_token.?);
 }
 
 test "parse: --target with bad value errors" {
