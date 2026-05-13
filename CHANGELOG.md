@@ -5,6 +5,13 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.1.2 - 2026-05-13
+
+### Fixed
+
+- Release tarballs now include `x86_64-macos` — Intel Mac users can install via the Homebrew tap (a follow-up tap update lands separately) or download the `gero-vX.Y.Z-x86_64-macos.tar.gz` artifact directly. The release matrix in `.github/workflows/release.yml` cross-builds the target alongside the existing `aarch64-macos`, `x86_64-linux`, both Windows architectures, and `wasm32-wasi`.
+- `gero --version` now reflects the actual package version. Previously `apps/gero-cli/cli.zig` held a hard-coded `version_string = "0.0.0"` that `zig build version` didn't touch, so every shipped binary — including v0.1.0 and v0.1.1 — printed `gero 0.0.0` regardless of the release tag. `build.zig` now reads `build.zig.zon`'s `.version` field and injects it into the CLI via the `build_options` module, making `build.zig.zon` the single source of truth.
+
 ## v0.1.1 - 2026-05-13
 
 ### Fixed
