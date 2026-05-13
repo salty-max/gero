@@ -57,7 +57,7 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !ParseTree {
     var state = core.ParseState.init(source, allocator);
 
     while (state.index < source.len) {
-        skipSeparators(&state);
+        try skipSeparatorsCapturingComments(&state, &statements, allocator);
         if (state.index >= source.len) break;
         try parseStatement(&state, allocator, &statements, &errors, &consts);
     }
@@ -1301,9 +1301,12 @@ fn skipBlanksInLine(state: *core.ParseState) void {
         const b = state.input[state.index];
         if (b == ' ' or b == '\t') {
             state.advance(1);
-        } else if (b == ';') {
-            while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
         } else {
+            // Stop at `;` so the top-level `skipSeparatorsCapturing
+            // Comments` can capture trailing comments as first-class
+            // `Comment` statements. `atStatementEnd` recognizes `;`
+            // as a statement terminator, so the rest of intra-line
+            // parsing handles the same shape as today.
             break;
         }
     }
@@ -1316,6 +1319,33 @@ fn skipSeparators(state: *core.ParseState) void {
             state.advance(1);
         } else if (b == ';') {
             while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
+        } else {
+            break;
+        }
+    }
+}
+
+/// Same as `skipSeparators` but captures every `;` comment as a
+/// first-class `Statement.comment` and appends it to the program
+/// in parse order. Trailing comments on a statement line surface
+/// as standalone `Comment` statements following the statement
+/// they trailed — the pretty-printer uses span proximity in the
+/// source to recover the "trailing vs standalone" distinction.
+fn skipSeparatorsCapturingComments(
+    state: *core.ParseState,
+    statements: *std.ArrayList(ast.Statement),
+    allocator: std.mem.Allocator,
+) std.mem.Allocator.Error!void {
+    while (state.index < state.input.len) {
+        const b = state.input[state.index];
+        if (b == ' ' or b == '\t' or b == '\n') {
+            state.advance(1);
+        } else if (b == ';') {
+            const start = state.index;
+            while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
+            try statements.append(allocator, .{
+                .comment = .{ .span = spanFrom(start, state.index) },
+            });
         } else {
             break;
         }

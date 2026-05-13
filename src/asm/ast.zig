@@ -45,6 +45,14 @@ pub const Statement = union(enum) {
     /// body emitted.
     sram_banks_decl: SramBanksDecl,
     instruction: Instruction,
+    /// A `; ...` comment line. The parser surfaces these as
+    /// first-class statements so the pretty-printer (`gero fmt`)
+    /// can preserve them; codegen / symtab skip them as semantic
+    /// no-ops. Trailing comments on the same line as another
+    /// statement are emitted as separate `Comment` statements in
+    /// parse order — `gero fmt` therefore "demotes" them to their
+    /// own line.
+    comment: Comment,
     /// Catch-all for unrecognized lines — carries a span so the
     /// consumer can skip past it cleanly.
     unknown: Unknown,
@@ -61,9 +69,17 @@ pub const Statement = union(enum) {
             .bank_switch => |b| b.span,
             .sram_banks_decl => |s| s.span,
             .instruction => |i| i.span,
+            .comment => |c| c.span,
             .unknown => |u| u.span,
         };
     }
+};
+
+/// `; ...` — comment line. Span covers the leading `;` and the
+/// comment text up to (but not including) the line-terminating
+/// newline. Pure documentation: codegen + symtab skip these.
+pub const Comment = struct {
+    span: Span,
 };
 
 /// `name:` — binds the current emit address to `name`.

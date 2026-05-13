@@ -42,7 +42,7 @@ pub fn print(
     var prev: ?ast.Statement = null;
     for (program.statements) |stmt| {
         if (prev) |p| {
-            if (needsBlankLineBefore(stmt, p)) try writer.writeByte('\n');
+            if (needsBlankLineBefore(stmt, p, source)) try writer.writeByte('\n');
         }
         try writeStatement(writer, stmt, source, opts);
         try writer.writeByte('\n');
@@ -51,17 +51,49 @@ pub fn print(
 }
 
 /// True when the canonical layout puts a blank line between `prev`
-/// and `curr`. Instructions stay attached to their preceding label
-/// or directive; consecutive same-kind decls (consts together,
-/// data blocks together) cluster without separators.
-fn needsBlankLineBefore(curr: ast.Statement, prev: ast.Statement) bool {
-    // Instructions cling to the preceding label / directive.
+/// and `curr`. Rules:
+///
+/// - Instructions cling to the preceding label / directive.
+/// - After a label header, anything follows tightly.
+/// - Same-kind consecutive decls cluster (consts together, data
+///   blocks together, comments together).
+/// - Comments preserve the user's source blank-line intent: a
+///   comment that had a blank line before it in source gets one
+///   in the output too; a comment tight against its preceding
+///   statement stays tight. This makes trailing-comment demotion
+///   (`hlt ; halt` → `hlt\n; halt`) idempotent across re-formats.
+/// - A standalone comment leads into the following statement
+///   tightly (no blank between).
+fn needsBlankLineBefore(
+    curr: ast.Statement,
+    prev: ast.Statement,
+    source: []const u8,
+) bool {
     if (curr == .instruction) return false;
-    // After a label header, anything follows tightly.
     if (prev == .label) return false;
-    // Cluster same-kind decls (const-const, data8-data8, etc.).
     if (std.meta.activeTag(curr) == std.meta.activeTag(prev)) return false;
+    if (curr == .comment) {
+        // Preserve "≥1 blank line in source" by counting newlines
+        // in the inter-statement gap.
+        return sourceNewlineCount(source, prev.span().end, curr.span().start) >= 2;
+    }
+    if (prev == .comment) return false;
     return true;
+}
+
+/// Number of `\n` bytes in `source[end_a..start_b)`. Caps inputs
+/// at the source length for safety. Used by the blank-line rule
+/// to inspect the original gap between two AST nodes.
+fn sourceNewlineCount(source: []const u8, end_a: u32, start_b: u32) usize {
+    if (start_b <= end_a) return 0;
+    const lo: usize = end_a;
+    // @as: widen u32 → usize so `@min` matches `source.len`'s type.
+    const hi: usize = @min(@as(usize, start_b), source.len);
+    var n: usize = 0;
+    for (source[lo..hi]) |b| {
+        if (b == '\n') n += 1;
+    }
+    return n;
 }
 
 /// Render one statement to `writer` (no trailing newline — `print`
@@ -100,6 +132,7 @@ fn writeStatement(
             try writer.print("sram_banks ${X:0>2}", .{count});
         },
         .instruction => |i| try writeInstruction(writer, i, source, opts),
+        .comment => |c| try writer.writeAll(slice(source, c.span)),
         .unknown => |u| try writer.writeAll(slice(source, u.span)),
     }
 }
