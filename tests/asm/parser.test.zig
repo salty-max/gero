@@ -16,7 +16,7 @@ test "parser: empty source produces empty program, no errors" {
     try std.testing.expect(!pt.hasErrors());
 }
 
-test "parser: blank lines + comments produce no statements" {
+test "parser: blank lines around a comment produce one Comment statement" {
     var pt = try parseSource(
         \\
         \\; just a comment
@@ -24,7 +24,8 @@ test "parser: blank lines + comments produce no statements" {
         \\
     );
     defer pt.deinit();
-    try std.testing.expectEqual(@as(usize, 0), pt.program.statements.len);
+    try std.testing.expectEqual(@as(usize, 1), pt.program.statements.len);
+    try std.testing.expect(pt.program.statements[0] == .comment);
     try std.testing.expect(!pt.hasErrors());
 }
 

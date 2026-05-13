@@ -142,6 +142,48 @@ test "printProgram: sym-ref operand" {
     , p.text);
 }
 
+test "printProgram: standalone comment line preserved verbatim" {
+    var p = try parseAndPrint("; hello world\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings("; hello world\n", p.text);
+}
+
+test "printProgram: comment block before a label stays tight (no blank inserted)" {
+    var p = try parseAndPrint("; section header\n; line two\nmain:\n  hlt\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings(
+        \\; section header
+        \\; line two
+        \\main:
+        \\  hlt
+        \\
+    , p.text);
+}
+
+test "printProgram: blank line preserved before a standalone comment block" {
+    var p = try parseAndPrint("main:\n  hlt\n\n; trailing block\nfib:\n  ret\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings(
+        \\main:
+        \\  hlt
+        \\
+        \\; trailing block
+        \\fib:
+        \\  ret
+        \\
+    , p.text);
+}
+
+test "printProgram: trailing comment demotes to standalone (same line attachment preserved)" {
+    // Trailing comment was inline with `hlt`; printer recognizes
+    // the source-same-line proximity and skips the blank line,
+    // so the comment stays tight to the instruction on the next
+    // line.
+    var p = try parseAndPrint("main:\n  hlt ; halt\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings("main:\n  hlt\n; halt\n", p.text);
+}
+
 test "printProgram: idempotence — second pass matches first" {
     const src = "const PRINT = $10\n\nmain:\n  mov $00, r1\n  int PRINT\n  hlt\n";
     var p1 = try parseAndPrint(src);
