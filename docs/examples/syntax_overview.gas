@@ -11,9 +11,8 @@
 ; group) without committing to a coherent program. The runnable
 ; examples under `examples/asm/*.gas` cover end-to-end flows.
 ;
-; Note: multi-line `struct` body is grammar-side TBD on the
-; tree-sitter parser (gero's own parser accepts it). For now the
-; single-line struct form is shown.
+; Tracks tree-sitter-gero-asm@v0.1.2+ which supports the full
+; multi-line struct form (matching gero's parser).
 ; ====================================================================
 
 ; -------------------- directives ----------------------------
@@ -32,7 +31,11 @@ data8  STRING8  = "Hello", $00
 data16 STRING16 = $1234, $5678
 data8  CHAR_DATA = 'X', 'Y', 'Z', $00
 
-struct Sprite { pos: $00, size: $02, attr: $04 }
+struct Sprite {
+  pos:  u16,                 ; sprite x:y packed
+  size: u8,
+  attr: u8
+}
 
 ; -------------------- global + local labels -----------------
 
