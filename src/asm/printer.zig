@@ -14,10 +14,18 @@
 ///
 /// Comments are preserved: the parser surfaces every `; ...` line
 /// as a `Statement.comment` node and the printer emits it span-
-/// sliced from source. Trailing comments (`hlt ; halt`) demote to
-/// standalone (`hlt\n; halt`) on the first format pass and then
-/// stay stable — the blank-line rule counts newlines in the
-/// source gap so the layout is idempotent.
+/// sliced from source. Trailing comments (`hlt ; halt`) stay
+/// **inline** with their host, padded to `opts.comment_column`
+/// for vertical alignment across a block.
+///
+/// Additional canonical normalization:
+///
+///   - `const` / `data8` / `data16` blocks align their `=` column
+///     to the longest name within a consecutive same-kind run
+///     (`opts.align_kv`).
+///   - `HexLit` / `AddrLit` re-emit from their parsed `u16` value
+///     with case policy from `opts.hex_case` (upper / lower /
+///     preserve).
 ///
 /// Ignore directives let users opt regions out of canonicalization
 /// (same pattern as `// prettier-ignore` / `#[rustfmt::skip]`):
@@ -42,6 +50,28 @@ pub const PrintOptions = struct {
     /// Spaces to indent instruction lines under their enclosing
     /// label.
     indent: usize = 2,
+    /// Column (1-indexed) trailing comments are padded to. Set to
+    /// `0` to disable alignment (single space between host and
+    /// `;` — minimal canonical form). The default matches the
+    /// hand style across `examples/asm/`.
+    comment_column: usize = 32,
+    /// When `true`, aligns the `=` of consecutive `const`-decls
+    /// (and `data8`/`data16`-decls) by padding the name column to
+    /// the block's widest name.
+    align_kv: bool = true,
+    /// Case policy for `$XX` / `&XXXX` literals re-emitted from
+    /// their parsed `u16` value.
+    hex_case: HexCase = .upper,
+};
+
+/// Case policy for hex literals.
+pub const HexCase = enum {
+    /// `$ABCD`, `&FFFF` — canonical for v0.1 examples.
+    upper,
+    /// `$abcd`, `&ffff` — lowercase (some C / Rust shops).
+    lower,
+    /// Slice from source verbatim — don't normalize case.
+    preserve,
 };
 
 /// Default options — used by `gero fmt` and the round-trip tests.
@@ -68,7 +98,16 @@ pub fn print(
     var prev: ?ast.Statement = null;
     var in_block_ignore = false;
     var ignore_next_pending = false;
-    var skip_next = false; // set by trailing-ignore — consume the trailing comment as part of the host's slice
+    var skip_next = false;
+
+    // Const / data K=V alignment is computed lazily per block: the
+    // first decl in a same-kind run scans forward to its block end
+    // and remembers the longest name. Subsequent decls in the run
+    // reuse the cached width; once we exit the run, the cache is
+    // invalidated so the next block recomputes.
+    var kv_block_width: usize = 0;
+    var kv_block_end: usize = 0;
+
     for (program.statements, 0..) |stmt, i| {
         if (skip_next) {
             skip_next = false;
@@ -81,9 +120,6 @@ pub fn print(
 
         const directive = directiveOf(stmt, source);
 
-        // Any comment on the same source line as this statement —
-        // either the trailing-ignore directive itself, or a regular
-        // note that we want to glue to a separately-protected line.
         const trailing_comment: ?ast.Statement = blk: {
             if (stmt == .comment) break :blk null;
             if (i + 1 >= program.statements.len) break :blk null;
@@ -92,8 +128,6 @@ pub fn print(
             if (!sameSourceLine(stmt.span().end, next.span().start, source)) break :blk null;
             break :blk next;
         };
-        const trailing_is_directive = trailing_comment != null and
-            directiveOf(trailing_comment.?, source) == .trailing;
 
         // ---- decide whether this statement gets source-sliced ----
         const protected = blk: {
@@ -102,25 +136,46 @@ pub fn print(
                 break :blk true;
             }
             if (ignore_next_pending and stmt != .comment) break :blk true;
-            if (trailing_is_directive) break :blk true;
+            // Trailing-ignore on next line protects the host so the
+            // whole line stays as-typed (no canonicalization).
+            if (trailing_comment) |c| {
+                if (directiveOf(c, source) == .trailing) break :blk true;
+            }
             break :blk false;
         };
 
+        // ---- refresh K=V block cache if we're entering a new run ----
+        if (!protected and opts.align_kv and i >= kv_block_end and stmtIsKv(stmt)) {
+            const info = kvBlockExtent(program.statements, i, source);
+            kv_block_width = info.max_name_width;
+            kv_block_end = info.end_idx;
+        }
+
         // ---- emit ----
         if (protected) {
-            // Walk back to the start of the line so the user's
-            // leading indent (which lives outside `stmt.span()`)
-            // is preserved verbatim, and extend through any trailing
-            // comment on the same line so it stays glued to its host
-            // (alignment + comment both preserved). Without the
-            // trailing extension a non-directive comment would
-            // demote to its own line, breaking idempotence.
+            // Source-slice the entire line, including the user's
+            // leading indent (lives outside `stmt.span()`) and any
+            // trailing comment on the same source line. Preserves
+            // the user's exact byte-for-byte intent inside ignore
+            // regions; no canonical padding.
             const start = lineStartBefore(source, stmt.span().start);
             const end = if (trailing_comment) |c| c.span().end else stmt.span().end;
             try writer.writeAll(source[start..end]);
         } else {
-            try writeStatement(writer, stmt, source, opts);
+            const host_width = try writeStatementCanonical(writer, stmt, source, opts, kv_block_width);
+            // Glue the trailing comment on the same line, padded to
+            // the configured column. Single space if the host is
+            // already past the column or alignment is off.
+            if (trailing_comment) |c| {
+                const pad = if (opts.comment_column > 0 and opts.comment_column > host_width + 1)
+                    opts.comment_column - 1 - host_width
+                else
+                    1;
+                try writeSpaces(writer, pad);
+                try writer.writeAll(slice(source, c.span()));
+            }
         }
+
         try writer.writeByte('\n');
 
         // ---- update state for next iteration ----
@@ -131,12 +186,56 @@ pub fn print(
             .trailing, .file, .none => {},
         }
         if (protected and stmt != .comment) ignore_next_pending = false;
-        // Skip the trailing comment on the next iteration whenever
-        // we glued it to the protected host above.
-        if (protected and trailing_comment != null) skip_next = true;
+        if (trailing_comment != null) skip_next = true;
 
-        prev = if (protected and trailing_comment != null) trailing_comment.? else stmt;
+        prev = if (trailing_comment) |c| c else stmt;
     }
+}
+
+/// True when the statement is a key=value declaration eligible for
+/// `=`-column alignment within its consecutive same-kind block.
+fn stmtIsKv(stmt: ast.Statement) bool {
+    return switch (stmt) {
+        .const_decl, .data8, .data16 => true,
+        else => false,
+    };
+}
+
+/// Walk a consecutive run of same-kind K=V decls starting at
+/// `start`, return the longest name width seen and the index right
+/// past the run. Used by the K=V aligner.
+fn kvBlockExtent(
+    statements: []const ast.Statement,
+    start: usize,
+    source: []const u8,
+) struct { max_name_width: usize, end_idx: usize } {
+    const kind = std.meta.activeTag(statements[start]);
+    var max: usize = 0;
+    var i = start;
+    while (i < statements.len and std.meta.activeTag(statements[i]) == kind) : (i += 1) {
+        const name = kvName(statements[i]);
+        const w = name.end - name.start;
+        if (w > max) max = w;
+        _ = source;
+    }
+    return .{ .max_name_width = max, .end_idx = i };
+}
+
+/// Name span of a K=V statement (const / data8 / data16).
+fn kvName(stmt: ast.Statement) ast.Span {
+    return switch (stmt) {
+        .const_decl => |c| c.name,
+        .data8 => |d| d.name,
+        .data16 => |d| d.name,
+        // allow-strict: only K=V variants pass `stmtIsKv`
+        else => unreachable,
+    };
+}
+
+/// Emit `count` ASCII spaces.
+fn writeSpaces(writer: *std.Io.Writer, count: usize) std.Io.Writer.Error!void {
+    var i: usize = 0;
+    while (i < count) : (i += 1) try writer.writeByte(' ');
 }
 
 /// `; gero-fmt-...` directive flavors recognized by the printer.
@@ -242,44 +341,93 @@ fn sourceNewlineCount(source: []const u8, end_a: u32, start_b: u32) usize {
 }
 
 /// Render one statement to `writer` (no trailing newline — `print`
-/// adds it). Branches per `Statement` variant.
-fn writeStatement(
+/// adds it). Returns the width (in bytes) of what was emitted on
+/// the current line, used by the trailing-comment aligner. The
+/// optional `kv_block_width` is the longest name in the surrounding
+/// K=V block (0 → no alignment).
+fn writeStatementCanonical(
     writer: *std.Io.Writer,
     stmt: ast.Statement,
     source: []const u8,
     opts: PrintOptions,
-) std.Io.Writer.Error!void {
-    switch (stmt) {
-        .label => |l| try writer.print("{s}:", .{slice(source, l.name)}),
-        .const_decl => |c| try writer.print(
-            "const {s} = {s}",
-            .{ slice(source, c.name), slice(source, c.expr.span()) },
-        ),
-        .data8 => |d| try writeData(writer, "data8", d, source),
-        .data16 => |d| try writeData(writer, "data16", d, source),
+    kv_block_width: usize,
+) std.Io.Writer.Error!usize {
+    return switch (stmt) {
+        .label => |l| try writeLabel(writer, l, source),
+        .const_decl => |c| try writeConst(writer, c, source, opts, kv_block_width),
+        .data8 => |d| try writeData(writer, "data8", d, source, opts, kv_block_width),
+        .data16 => |d| try writeData(writer, "data16", d, source, opts, kv_block_width),
         .struct_decl => |s| try writeStruct(writer, s, source),
-        .org => |o| try writer.print(
-            "org {s}",
-            .{slice(source, o.addr_expr.span())},
-        ),
-        .bank_switch => |b| {
-            // Folded `u8` re-emitted as a 2-digit hex literal
-            // (`bank $00`) to match the asm-spec syntax — bare
-            // decimals aren't accepted by the lexer. `null` only
-            // happens when the parser flagged the RHS unresolvable;
-            // emit `bank $00` so the canonical text still re-parses
-            // cleanly (codegen has already raised the diagnostic).
-            const idx = b.index orelse 0;
-            try writer.print("bank ${X:0>2}", .{idx});
-        },
-        .sram_banks_decl => |s| {
-            const count = s.count orelse 0;
-            try writer.print("sram_banks ${X:0>2}", .{count});
-        },
+        .org => |o| try writeOrg(writer, o, source, opts),
+        .bank_switch => |b| try writeBankSwitch(writer, b.index orelse 0, opts),
+        .sram_banks_decl => |s| try writeSramBanks(writer, s.count orelse 0, opts),
         .instruction => |i| try writeInstruction(writer, i, source, opts),
-        .comment => |c| try writer.writeAll(slice(source, c.span)),
-        .unknown => |u| try writer.writeAll(slice(source, u.span)),
+        .comment => |c| blk: {
+            try writer.writeAll(slice(source, c.span));
+            break :blk c.span.end - c.span.start;
+        },
+        .unknown => |u| blk: {
+            try writer.writeAll(slice(source, u.span));
+            break :blk u.span.end - u.span.start;
+        },
+    };
+}
+
+fn writeLabel(writer: *std.Io.Writer, l: ast.Label, source: []const u8) std.Io.Writer.Error!usize {
+    const name = slice(source, l.name);
+    try writer.print("{s}:", .{name});
+    return name.len + 1;
+}
+
+fn writeConst(
+    writer: *std.Io.Writer,
+    c: ast.ConstDecl,
+    source: []const u8,
+    opts: PrintOptions,
+    kv_block_width: usize,
+) std.Io.Writer.Error!usize {
+    const name = slice(source, c.name);
+    try writer.writeAll("const ");
+    try writer.writeAll(name);
+    var pad: usize = 0;
+    if (opts.align_kv and kv_block_width > name.len) {
+        pad = kv_block_width - name.len;
+        try writeSpaces(writer, pad);
     }
+    try writer.writeAll(" = ");
+    const expr_width = try writeExpr(writer, c.expr, source, opts);
+    return "const ".len + name.len + pad + " = ".len + expr_width;
+}
+
+fn writeOrg(
+    writer: *std.Io.Writer,
+    o: ast.OrgDecl,
+    source: []const u8,
+    opts: PrintOptions,
+) std.Io.Writer.Error!usize {
+    try writer.writeAll("org ");
+    const expr_width = try writeExpr(writer, o.addr_expr, source, opts);
+    return "org ".len + expr_width;
+}
+
+fn writeBankSwitch(
+    writer: *std.Io.Writer,
+    idx: u8,
+    opts: PrintOptions,
+) std.Io.Writer.Error!usize {
+    _ = opts; // hex_case is fixed `upper` for these — `bank $00` is the canonical asm spec form.
+    try writer.print("bank ${X:0>2}", .{idx});
+    return "bank $00".len;
+}
+
+fn writeSramBanks(
+    writer: *std.Io.Writer,
+    count: u8,
+    opts: PrintOptions,
+) std.Io.Writer.Error!usize {
+    _ = opts;
+    try writer.print("sram_banks ${X:0>2}", .{count});
+    return "sram_banks $00".len;
 }
 
 /// `data8` / `data16 NAME = v1, v2, ...` — keyword + name + comma-
@@ -291,12 +439,31 @@ fn writeData(
     keyword: []const u8,
     d: ast.DataDecl,
     source: []const u8,
-) std.Io.Writer.Error!void {
-    try writer.print("{s} {s} = ", .{ keyword, slice(source, d.name) });
-    for (d.values, 0..) |v, i| {
-        if (i > 0) try writer.writeAll(", ");
-        try writer.writeAll(slice(source, v.span()));
+    opts: PrintOptions,
+    kv_block_width: usize,
+) std.Io.Writer.Error!usize {
+    _ = opts;
+    const name = slice(source, d.name);
+    try writer.writeAll(keyword);
+    try writer.writeByte(' ');
+    try writer.writeAll(name);
+    var pad: usize = 0;
+    if (kv_block_width > name.len) {
+        pad = kv_block_width - name.len;
+        try writeSpaces(writer, pad);
     }
+    try writer.writeAll(" = ");
+    var values_width: usize = 0;
+    for (d.values, 0..) |v, i| {
+        if (i > 0) {
+            try writer.writeAll(", ");
+            values_width += 2;
+        }
+        const text = slice(source, v.span());
+        try writer.writeAll(text);
+        values_width += text.len;
+    }
+    return keyword.len + 1 + name.len + pad + " = ".len + values_width;
 }
 
 /// Multi-line struct emission:
@@ -311,7 +478,7 @@ fn writeStruct(
     writer: *std.Io.Writer,
     s: ast.StructDecl,
     source: []const u8,
-) std.Io.Writer.Error!void {
+) std.Io.Writer.Error!usize {
     try writer.print("struct {s} {{\n", .{slice(source, s.name)});
     for (s.fields) |f| {
         try writer.print(
@@ -320,6 +487,11 @@ fn writeStruct(
         );
     }
     try writer.writeByte('}');
+    // The host-line width for trailing-comment alignment is the
+    // closing brace's column (1) — multi-line structs almost
+    // never carry trailing comments, but returning a sane value
+    // keeps the aligner well-behaved.
+    return 1;
 }
 
 /// Instruction emission: indent + mnemonic + comma-separated
@@ -330,36 +502,144 @@ fn writeInstruction(
     inst: ast.Instruction,
     source: []const u8,
     opts: PrintOptions,
-) std.Io.Writer.Error!void {
-    var pad: usize = opts.indent;
-    while (pad > 0) : (pad -= 1) try writer.writeByte(' ');
-    try writer.writeAll(slice(source, inst.mnemonic));
+) std.Io.Writer.Error!usize {
+    try writeSpaces(writer, opts.indent);
+    const mnemonic = slice(source, inst.mnemonic);
+    try writer.writeAll(mnemonic);
+    var width: usize = opts.indent + mnemonic.len;
     for (inst.operands, 0..) |op, i| {
-        try writer.writeAll(if (i == 0) " " else ", ");
-        try writeOperand(writer, op, source);
+        const sep: []const u8 = if (i == 0) " " else ", ";
+        try writer.writeAll(sep);
+        width += sep.len;
+        width += try writeOperand(writer, op, source, opts);
     }
+    return width;
 }
 
-/// One operand. Registers and indirect-via-register use the enum
-/// `@tagName` (deterministic — no source variability); everything
-/// else slices its span from `source` to preserve literal form
-/// (`$10` stays `$10`, not `$0010`).
+/// One operand. Registers + indirect-via-register use the enum
+/// `@tagName` (deterministic). HexLit / AddrLit operands re-emit
+/// from their parsed `u16` value with `opts.hex_case`. Everything
+/// else slices its span from `source`.
 fn writeOperand(
     writer: *std.Io.Writer,
     op: ast.Operand,
     source: []const u8,
-) std.Io.Writer.Error!void {
-    switch (op) {
-        .register => |r| try writer.writeAll(@tagName(r.id)),
-        .indirect => |i| try writer.print("[{s}]", .{@tagName(i.reg.id)}),
-        .immediate => |e| try writer.writeAll(slice(source, e.span())),
-        .addr_lit => |a| try writer.writeAll(slice(source, a.span)),
-        .sym_ref => |s| try writer.writeAll(slice(source, s.span)),
-        .label_ref => |l| try writer.writeAll(slice(source, l.span)),
-        .addr_expr => |a| try writer.writeAll(slice(source, a.span)),
-        .indexed => |i| try writer.writeAll(slice(source, i.span)),
-        .cast => |c| try writer.writeAll(slice(source, c.span)),
+    opts: PrintOptions,
+) std.Io.Writer.Error!usize {
+    return switch (op) {
+        .register => |r| blk: {
+            const name = @tagName(r.id);
+            try writer.writeAll(name);
+            break :blk name.len;
+        },
+        .indirect => |i| blk: {
+            const name = @tagName(i.reg.id);
+            try writer.print("[{s}]", .{name});
+            break :blk name.len + 2;
+        },
+        .immediate => |e| try writeExpr(writer, e, source, opts),
+        .addr_lit => |a| try writeAddrLit(writer, a, source, opts),
+        .sym_ref => |s| blk: {
+            const text = slice(source, s.span);
+            try writer.writeAll(text);
+            break :blk text.len;
+        },
+        .label_ref => |l| blk: {
+            const text = slice(source, l.span);
+            try writer.writeAll(text);
+            break :blk text.len;
+        },
+        .addr_expr => |a| blk: {
+            const text = slice(source, a.span);
+            try writer.writeAll(text);
+            break :blk text.len;
+        },
+        .indexed => |i| blk: {
+            const text = slice(source, i.span);
+            try writer.writeAll(text);
+            break :blk text.len;
+        },
+        .cast => |c| blk: {
+            const text = slice(source, c.span);
+            try writer.writeAll(text);
+            break :blk text.len;
+        },
+    };
+}
+
+/// Emit one `Expr`. Direct `HexLit` / `AddrLit` go through the
+/// hex-case re-emitter; composite forms (binary / unary / paren /
+/// ident / sym_ref / char) source-slice verbatim to preserve the
+/// user's operator spacing + grouping.
+fn writeExpr(
+    writer: *std.Io.Writer,
+    e: *const ast.Expr,
+    source: []const u8,
+    opts: PrintOptions,
+) std.Io.Writer.Error!usize {
+    return switch (e.*) {
+        .hex => |h| try writeHexLit(writer, h, source, opts),
+        .addr_lit => |a| try writeAddrLit(writer, a, source, opts),
+        else => blk: {
+            const text = slice(source, e.span());
+            try writer.writeAll(text);
+            break :blk text.len;
+        },
+    };
+}
+
+/// `$XX` / `$XXXX` — re-emit from `value` so case normalization
+/// is applied. Width follows the value: 2 digits when it fits in
+/// a byte, 4 when it needs the full word.
+fn writeHexLit(
+    writer: *std.Io.Writer,
+    h: ast.HexLit,
+    source: []const u8,
+    opts: PrintOptions,
+) std.Io.Writer.Error!usize {
+    if (opts.hex_case == .preserve) {
+        const text = slice(source, h.span);
+        try writer.writeAll(text);
+        return text.len;
     }
+    // `.preserve` was short-circuited above; only `.upper`/`.lower`
+    // reach here. A plain `if` avoids the third-arm `unreachable`
+    // that zig fmt won't let live on its own line with a comment.
+    if (h.value <= 0xFF) {
+        if (opts.hex_case == .upper) {
+            try writer.print("${X:0>2}", .{h.value});
+        } else {
+            try writer.print("${x:0>2}", .{h.value});
+        }
+        return "$XX".len;
+    }
+    if (opts.hex_case == .upper) {
+        try writer.print("${X:0>4}", .{h.value});
+    } else {
+        try writer.print("${x:0>4}", .{h.value});
+    }
+    return "$XXXX".len;
+}
+
+/// `&XXXX` — always 4 hex digits per asm convention; only the case
+/// policy varies.
+fn writeAddrLit(
+    writer: *std.Io.Writer,
+    a: ast.AddrLit,
+    source: []const u8,
+    opts: PrintOptions,
+) std.Io.Writer.Error!usize {
+    if (opts.hex_case == .preserve) {
+        const text = slice(source, a.span);
+        try writer.writeAll(text);
+        return text.len;
+    }
+    if (opts.hex_case == .upper) {
+        try writer.print("&{X:0>4}", .{a.value});
+    } else {
+        try writer.print("&{x:0>4}", .{a.value});
+    }
+    return "&XXXX".len;
 }
 
 inline fn slice(source: []const u8, span: ast.Span) []const u8 {
