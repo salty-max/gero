@@ -265,26 +265,31 @@ gero fmt src/                     # recurse into directory
 **Exit:** 0 (clean / formatted); 8 (`--check` would-modify); 3 on
 parse error in source.
 
-### 3.9 `gero check <files...>` — type-check / lint
+### 3.9 `gero check <file>` — validate without producing output
 
-Fast frontend-only path: lex + parse + type-check + lint, no codegen.
-Editor LSP-style use case.
+Run a source file through the full assembler pipeline (resolve
+includes → parse → codegen-validate) and report diagnostics
+without writing a `.gx` artifact. Editor-LSP-style use case + CI
+gate that catches asm spec drift faster than the full assemble-and-
+run round-trip.
 
 ```bash
-gero check main.gr                # one file
-gero check                        # whole project (cwd)
-gero check --format=json          # machine-readable for editor integration
+gero check main.gas               # one .gas file (v0.2 — current)
+gero check main.gr                # → "not yet implemented" until v0.3
+gero check main.gas --quiet       # suppress ok summary; exit code only
 ```
 
-**Output (default):** `<file>:<line>:<col>: <severity>: <message>`
-with caret underline.
+**Output (default):**
 
-**Output (`--format=json`):** one JSON object per diagnostic on its
-own line (jsonl), fields: `file`, `line`, `col`, `severity`,
-`message`, `code`.
+- On success: one-line `✓ <path>` summary (`--quiet` suppresses it).
+- On failure: a `<N> errors in <M> files` header, then per-file
+  caret-style diagnostics matching what `gero asm` would emit.
 
-**Exit:** 0 if clean (no errors); 4 if any errors; 1 if warnings
-only (configurable via `--werror`).
+**Exit:** `0` if clean; `4` on any diagnostic; `1` on host IO
+problem; `2` on usage error.
+
+**Roadmap:** `--format=json` for editor integration + `.gr` source
+support land alongside the lang front-end in v0.3 (#7).
 
 ### 3.10 `gero build` — build project
 
