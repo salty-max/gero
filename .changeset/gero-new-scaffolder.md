@@ -30,6 +30,12 @@ leading-dash, and shell-metacharacter names. Pre-existing target
 directory yields a clean "already exists" error (exit 1) rather
 than overwriting.
 
+`gero new .` (cargo / npm style) scaffolds into the current
+directory; the cwd's basename becomes the project name. In-place
+mode pre-flights every target path and refuses to overwrite if
+`gero.toml`, `src/main.gas`, `tests/smoke.gas`,
+`tests/smoke.expected`, or `README.md` already exist.
+
 Builds on top of the `gero.toml` parser from the previous patch
 (#133). `gero build` / project-aware `check`/`fmt`/`test` consume
 the same manifest shape in their own sub-issues.
