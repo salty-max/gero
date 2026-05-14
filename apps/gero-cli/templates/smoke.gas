@@ -7,10 +7,10 @@
 const PRINT = $10
 
 main:
-  mov $6F, r1                          ; 'o'
+  mov $6F, r1                ; 'o'
   int PRINT
-  mov $6B, r1                          ; 'k'
+  mov $6B, r1                ; 'k'
   int PRINT
-  mov $0A, r1                          ; '\n'
+  mov $0A, r1                ; '\n'
   int PRINT
   hlt

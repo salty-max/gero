@@ -7,7 +7,7 @@ const PRINT   = $10
 const NEWLINE = $0A
 
 main:
-  mov $00, r3                          ; index = 0
+  mov $00, r3                ; index = 0
 .loop:
   mov8 [@GREETING + r3], r1
   cmp r1, $00

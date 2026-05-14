@@ -19,6 +19,7 @@ const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
 const diagnostics = @import("diagnostics.zig");
 const footer = @import("footer.zig");
+const manifest_loader = @import("manifest_loader.zig");
 
 /// Drive `gero check` end-to-end against `opts.positional()`.
 /// Caller owns `arena`; every allocation is short-lived.
@@ -31,20 +32,40 @@ pub fn execute(
 ) !u8 {
     const t_start = std.Io.Timestamp.now(io, .awake);
     const positionals = opts.positional();
-    if (positionals.len < 1) {
-        try term.err("gero check: missing source file or directory path", .{});
-        return 2;
-    }
-
     const style: gero.asm_.Style = if (term.color) .ansi else .plain;
 
     var files: std.ArrayList([]const u8) = .empty;
-    for (positionals) |path| {
-        if (std.mem.endsWith(u8, path, ".gr")) {
-            try term.err("gero check: .gr support lands in v0.3 (gero-lang front-end)", .{});
-            return 1;
+    if (positionals.len == 0) {
+        // Project-aware fallback: load gero.toml from cwd or any
+        // ancestor and use [build].entry + [test].include as the
+        // implicit file list. No manifest → usage error (exit 2)
+        // since we have nothing to check.
+        const outcome = try manifest_loader.load(io, arena, term, "gero check");
+        switch (outcome) {
+            .not_found => {
+                try term.err("gero check: missing source file or directory path (or run inside a gero project)", .{});
+                return 2;
+            },
+            .failed => return 1,
+            .ok => |loaded| {
+                var loaded_mut = loaded;
+                defer loaded_mut.deinit(arena);
+                const entry_path = try manifest_loader.joinUnderRoot(arena, loaded.project_root, loaded.manifest.build.entry);
+                try files.append(arena, entry_path);
+                manifest_loader.expandIncludes(io, arena, term, "gero check", loaded.project_root, loaded.manifest.test_.include, &files) catch |err| switch (err) {
+                    error.LoadFailed => return 1,
+                    else => |e| return e,
+                };
+            },
         }
-        try collectGasFiles(io, arena, term, path, &files);
+    } else {
+        for (positionals) |path| {
+            if (std.mem.endsWith(u8, path, ".gr")) {
+                try term.err("gero check: .gr support lands in v0.3 (gero-lang front-end)", .{});
+                return 1;
+            }
+            try collectGasFiles(io, arena, term, path, &files);
+        }
     }
 
     if (files.items.len == 0) {

@@ -12,10 +12,7 @@ const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
-
-/// Root walked for `.gas` test programs. Recursive — files in any
-/// subdirectory are picked up.
-const tests_root: []const u8 = "tests/asm";
+const manifest_loader = @import("manifest_loader.zig");
 
 /// Hard cap on dispatched instructions per test, to prevent an
 /// infinite loop in a buggy program from hanging the runner. Each
@@ -79,16 +76,43 @@ pub fn execute(
     }
     const pattern: ?[]const u8 = if (positionals.len == 1) positionals[0] else null;
 
-    const programs = collectPrograms(io, arena, term, pattern) catch |err| {
-        try term.err("gero test: cannot walk {s} ({s})", .{ tests_root, @errorName(err) });
-        return 1;
+    // Project-driven test discovery: load gero.toml from cwd or an
+    // ancestor and walk [test].include for `.gas` + sibling
+    // `.expected` pairs. No manifest → usage error: there's no
+    // sensible default root for a CLI shipped as a binary.
+    const outcome = try manifest_loader.load(io, arena, term, "gero test");
+    var loaded = switch (outcome) {
+        .not_found => {
+            try term.err("gero test: no gero.toml in this directory or any parent (run `gero new` to scaffold a project, or `gero asm` + `gero run` for single-file programs)", .{});
+            return 2;
+        },
+        .failed => return 1,
+        .ok => |l| l,
+    };
+    defer loaded.deinit(arena);
+
+    if (loaded.manifest.test_.include.len == 0) {
+        try term.err("gero test: gero.toml has no [test].include entries — add at least one directory or .gas path to discover tests", .{});
+        return 2;
+    }
+
+    const programs = collectPrograms(
+        io,
+        arena,
+        term,
+        loaded.project_root,
+        loaded.manifest.test_.include,
+        pattern,
+    ) catch |err| switch (err) {
+        error.LoadFailed => return 1,
+        else => |e| return e,
     };
 
     if (programs.len == 0) {
         if (pattern) |p| {
-            try stdout.print("no tests matching '{s}' under {s}\n", .{ p, tests_root });
+            try stdout.print("no tests matching '{s}' under [test].include\n", .{p});
         } else {
-            try stdout.print("no tests under {s}\n", .{tests_root});
+            try stdout.print("no tests under [test].include\n", .{});
         }
         return 0;
     }
@@ -114,28 +138,25 @@ pub fn execute(
     return if (fail > 0) 7 else 0;
 }
 
-/// Walk `tests_root` recursively, collect `.gas` programs that
-/// have a sibling `.expected`, optionally filtered by `pattern`.
+/// Resolve every entry in `includes` (manifest-relative, file or
+/// directory) and collect `.gas` programs that have a sibling
+/// `.expected`. Optionally filtered by `pattern`.
 fn collectPrograms(
     io: std.Io,
     arena: std.mem.Allocator,
     term: *term_mod.Term,
+    project_root: []const u8,
+    includes: []const []const u8,
     pattern: ?[]const u8,
 ) ![]Program {
-    var dir = try std.Io.Dir.cwd().openDir(io, tests_root, .{ .iterate = true });
-    defer dir.close(io);
-    var walker = try dir.walk(arena);
-    defer walker.deinit();
+    var gas_files: std.ArrayList([]const u8) = .empty;
+    try manifest_loader.expandIncludes(io, arena, term, "gero test", project_root, includes, &gas_files);
 
     var list: std.ArrayList(Program) = .empty;
-    while (try walker.next(io)) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.path, ".gas")) continue;
-
-        const name_borrowed = stem(std.fs.path.basename(entry.path));
+    for (gas_files.items) |gas_path| {
+        const name_borrowed = stem(std.fs.path.basename(gas_path));
         if (pattern) |p| if (std.mem.indexOf(u8, name_borrowed, p) == null) continue;
 
-        const gas_path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ tests_root, entry.path });
         const expected_path = try std.fmt.allocPrint(
             arena,
             "{s}.expected",
