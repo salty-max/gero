@@ -227,7 +227,7 @@ Operand types:
 | `Addr`     | 2    | `0x0000..0xFFFF` | Little-endian 16-bit address — asm syntax `&XXXX` or `@SYM`. |
 | `RegIndirect` | 1 | `0x00..0x0E`     | Register index whose `u16` value is the effective address — asm syntax `[r1]`, `[r2]`, … |
 | `Indexed`  | 3    | (`Addr` + `Reg`) | 16-bit base address + 1-byte register index. Effective address = `base + reg.u16`. Asm syntax `[@SYM + r3]` or `[&XXXX + r1]`. |
-| `ZP`       | 1    | `0x00..0xFF`     | Zero-page address — 1-byte form of `Addr` for `0x0000..0x00FF`. **Reserved**: no shipped opcode emits `ZP` operands in v0.1. A future peephole pass will downgrade `Addr` operands that fit in the zero page; until then the opcode table reserves the slot for the downgraded forms. |
+| `ZP`       | 1    | `0x00..0xFF`     | Zero-page address — 1-byte form of `Addr` for `0x0000..0x00FF`. The assembler downgrades any `&XX` operand whose value fits in `0..0xFF` to its `ZP` variant automatically (peephole pass, opcodes `0x19`/`0x1A`/`0x1B`). Saves 1 byte per access — significant on programs with many global accesses (per-frame counters, scroll positions, etc.). |
 
 ---
 
@@ -262,9 +262,9 @@ assembler picks the correct one from operand types.
 | `0x16` | `mov`    | `[Reg], Reg`    | reg ← mem[ptr] (indirect load) |
 | `0x17` | `mov`    | `[Addr + Reg], Reg` | reg ← mem[base + idx] (indexed load — asm form `[@SYM + r3]`) |
 | `0x18` | `mov`    | `Imm16, [Reg]`  | mem[ptr] ← imm |
-| `0x19` | `mov`    | `Reg, ZP`       | (reserved — see §4 note on `ZP`) |
-| `0x1A` | `mov`    | `ZP, Reg`       | (reserved — see §4 note on `ZP`) |
-| `0x1B` | `mov`    | `Imm16, ZP`     | (reserved — see §4 note on `ZP`) |
+| `0x19` | `mov`    | `Reg, ZP`       | mem[zp] ← reg (zero-page store, 1-byte addr) |
+| `0x1A` | `mov`    | `ZP, Reg`       | reg ← mem[zp] (zero-page load) |
+| `0x1B` | `mov`    | `Imm16, ZP`     | mem[zp] ← imm (zero-page immediate store) |
 
 ### 5.2 Byte-sized data movement (`mov8` family)
 
@@ -281,6 +281,10 @@ Useful for character buffers and packed data.
 | `0x29` | `mov8`   | `[Addr + Reg], Reg` | reg.lo ← mem[addr + idx]; reg.hi ← 0 (byte-level indexed load — useful for stepping through `data8` arrays) |
 | `0x25` | `movh`   | `Reg, Addr`     | mem[addr] ← reg.hi |
 | `0x26` | `movl`   | `Reg, Addr`     | mem[addr] ← reg.lo |
+| `0x2A` | `mov8`   | `Imm8, ZP`      | mem[zp] ← imm (1 byte, zero-page store) |
+| `0x2B` | `mov8`   | `ZP, Reg`       | reg.lo ← mem[zp]; reg.hi ← 0 (zero-page byte load) |
+| `0x2C` | `movh`   | `Reg, ZP`       | mem[zp] ← reg.hi (zero-page hi-byte store) |
+| `0x2D` | `movl`   | `Reg, ZP`       | mem[zp] ← reg.lo (zero-page lo-byte store) |
 | `0x27` | `bcpy`   | `Reg, Reg, Reg` | block copy: mem[dst..dst+len] ← mem[src..src+len]. Operand order: `dst, src, len` (Intel-style dst first). Length is the third register's `u16` value (0..65535 bytes). Copies low-to-high; overlapping ranges with `dst > src` produce corruption — split or use disjoint regions. Address arithmetic wraps. Doesn't touch flags. |
 | `0x28` | `bset`   | `Reg, Reg, Reg` | block byte-fill: mem[addr..addr+len] ← val.lo for each byte. Operand order: `addr, len, val`. Length is the second register's `u16` value; `val.lo` is the low byte of the third register. Address arithmetic wraps. Doesn't touch flags. |
 

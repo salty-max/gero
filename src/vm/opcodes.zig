@@ -65,6 +65,12 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x25] = .{ .mnemonic = "movh", .operands = &.{ .reg, .addr } };
     t[0x26] = .{ .mnemonic = "movl", .operands = &.{ .reg, .addr } };
 
+    // mov8 / movh / movl — zero-page variants
+    t[0x2A] = .{ .mnemonic = "mov8", .operands = &.{ .imm8, .zp } };
+    t[0x2B] = .{ .mnemonic = "mov8", .operands = &.{ .zp, .reg } };
+    t[0x2C] = .{ .mnemonic = "movh", .operands = &.{ .reg, .zp } };
+    t[0x2D] = .{ .mnemonic = "movl", .operands = &.{ .reg, .zp } };
+
     // block memory ops
     t[0x27] = .{ .mnemonic = "bcpy", .operands = &.{ .reg, .reg, .reg } };
     t[0x28] = .{ .mnemonic = "bset", .operands = &.{ .reg, .reg, .reg } };

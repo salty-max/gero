@@ -772,7 +772,12 @@ fn emitInstruction(
             const width: u32 = if (res.kinds[op_idx] == .imm8) 1 else 2;
             try emitValue(allocator, image, val, width);
         },
-        .addr_lit => |a| try emitValue(allocator, image, a.value, 2),
+        .addr_lit => |a| {
+            // ZP-classified addr_lit emits as 1 byte (zero-page form);
+            // otherwise the regular 2-byte address encoding.
+            const width: u32 = if (res.kinds[op_idx] == .zp) 1 else 2;
+            try emitValue(allocator, image, a.value, width);
+        },
         .sym_ref => |s| try emitSymRef(allocator, image, errors, source, s, consts, symbols),
         .label_ref => |l| {
             const width: u32 = if (res.kinds[op_idx] == .imm8) 1 else 2;

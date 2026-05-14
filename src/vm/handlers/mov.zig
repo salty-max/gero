@@ -226,6 +226,53 @@ pub fn movlRegAddr(vm: *VM) StepResult {
     return ok;
 }
 
+// ---------- Zero-page byte-mov variants ----------
+//
+// Same semantics as their Addr counterparts (0x20 / 0x22 / 0x25 /
+// 0x26) but reading a 1-byte address operand. Peephole-picked when
+// an `&XX` literal fits in `0..0xFF`.
+
+/// `0x2A` — `mov8 Imm8, ZP` → `mem[zp] ← imm` (zero-page byte store).
+pub fn mov8Imm8Zp(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const imm = vm.readByte(ip +% 1);
+    const addr: u16 = vm.readByte(ip +% 2);
+    vm.writeByte(addr, imm);
+    return ok;
+}
+
+/// `0x2B` — `mov8 ZP, Reg` → `reg.lo ← mem[zp]; reg.hi ← 0`.
+pub fn mov8ZpReg(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const addr: u16 = vm.readByte(ip +% 1);
+    const reg = vm.readByte(ip +% 2);
+    const value = vm.readByte(addr);
+    if (!vm.regs.writeByIndex(reg, value)) return fault(vm, .invalid_register);
+    return ok;
+}
+
+/// `0x2C` — `movh Reg, ZP` → `mem[zp] ← reg.hi` (zero-page hi-byte store).
+pub fn movhRegZp(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const reg = vm.readByte(ip +% 1);
+    const addr: u16 = vm.readByte(ip +% 2);
+    const value = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
+    // safety: isolating the high byte is the spec'd "reg.hi" half
+    vm.writeByte(addr, @truncate(value >> 8));
+    return ok;
+}
+
+/// `0x2D` — `movl Reg, ZP` → `mem[zp] ← reg.lo` (zero-page lo-byte store).
+pub fn movlRegZp(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const reg = vm.readByte(ip +% 1);
+    const addr: u16 = vm.readByte(ip +% 2);
+    const value = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
+    // safety: isolating the low byte is the spec'd "reg.lo" half
+    vm.writeByte(addr, @truncate(value));
+    return ok;
+}
+
 /// `0x27` — `bcpy Reg, Reg, Reg` → block copy.
 /// `mem[dst..dst+len] ← mem[src..src+len]`, byte-by-byte from
 /// low to high (so overlapping ranges with `dst > src` will see
