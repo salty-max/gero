@@ -63,7 +63,13 @@ pub fn execute(
 
     const had_errors = pt.hasErrors() or cg.hasErrors();
     if (had_errors) {
-        try diagnostics.printMerged(arena, stdout, fused.source_map, pt.errors, cg.errors, style);
+        try diagnostics.printAllFailures(arena, stdout, style, &.{
+            .{
+                .source_map = fused.source_map,
+                .parse_errors = pt.errors,
+                .codegen_errors = cg.errors,
+            },
+        });
         try footer.writeFooter(stdout, io, style, t_start, .failed);
         return 3;
     }

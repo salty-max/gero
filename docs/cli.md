@@ -287,9 +287,12 @@ gero check main.gas --verbose     # per-phase timings (single-file only)
 - **Single-file pass:** `✓ <path>  (N bytes, M banks)` summary
   followed by a Cargo-style `Finished in X ms` footer.
   `--verbose` inserts per-phase timings between them.
-- **Multi-file:** one line per file (`✓ <path>` on success,
-  `✗ <path>` + caret-style diagnostic on failure), then a
-  `check: N files passed, M failures` line, then the footer.
+- **Multi-file:** one `✓ <path>` line per successful file, then a
+  single `N errors in M files` block grouping every diagnostic
+  under per-file caret sections, then a `check: N files passed, M
+  failures` summary line, then the footer. Failures from multiple
+  files share one summary header — no per-file "1 error in 1 file"
+  noise.
 - `--quiet` suppresses per-file ok lines + the summary but keeps
   failure diagnostics + the footer.
 
