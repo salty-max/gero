@@ -302,13 +302,22 @@ pub fn build(b: *std.Build) void {
     );
     check_examples_step.dependOn(&check_examples_cmd.step);
 
+    const check_broken_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-broken.sh" });
+    check_broken_cmd.step.dependOn(b.getInstallStep());
+    const check_broken_step = b.step(
+        "check-broken",
+        "Drive every tests/asm/check-broken/*.gas through `gero check` and assert each fails",
+    );
+    check_broken_step.dependOn(&check_broken_cmd.step);
+
     // ----- All-in-one CI ---------------------------------------------------
 
-    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + check-examples + test-examples");
+    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + check-examples + check-broken + test-examples");
     ci_step.dependOn(lint_step);
     ci_step.dependOn(test_modes_step);
     ci_step.dependOn(test_all);
     ci_step.dependOn(&check_examples_cmd.step);
+    ci_step.dependOn(&check_broken_cmd.step);
     ci_step.dependOn(&test_examples_cmd.step);
 
     // ----- Changesets ------------------------------------------------------

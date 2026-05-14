@@ -1,0 +1,9 @@
+; duplicate-label.gas — same global label declared twice.
+; Expected: `gero check` exits 4 with an [E005] "duplicate label"
+; diagnostic on the second definition.
+
+main:
+  hlt
+
+main:
+  hlt

@@ -1,0 +1,7 @@
+; unknown-mnemonic.gas — opcode the resolver doesn't recognize.
+; Expected: `gero check` exits 4 with an [E001] "unknown mnemonic"
+; diagnostic pointing at `badop`.
+
+main:
+  badop r1
+  hlt

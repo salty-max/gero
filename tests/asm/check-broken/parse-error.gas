@@ -1,0 +1,5 @@
+; parse-error.gas — invalid hex literal triggers the parser's
+; lexical-error path. Expected: `gero check` exits 4 with an
+; "expected 1-4 hex digits" diagnostic pointing at column 12.
+
+const A = $XYZ
