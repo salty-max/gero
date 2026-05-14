@@ -1,0 +1,3 @@
+[submodule "editors/tree-sitter-gero-asm"]
+	path = editors/tree-sitter-gero-asm
+	url = git@github.com:salty-max/tree-sitter-gero-asm.git
