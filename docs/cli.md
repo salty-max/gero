@@ -447,13 +447,14 @@ gero init --quiet                 # skip the next-steps banner
 
 Walks the ancestor chain for `gero.toml`, reads `[package]` +
 `[build]`, runs the asm pipeline against `build.entry`, and
-writes the resulting `.gx` to `<project_root>/<build.out>/<package.name>.gx`.
-
-Essentially `gero asm` wrapped with manifest resolution +
-output-path discipline. Reuses every existing asm-pipeline piece.
+writes the resulting `.gx` to
+`<project_root>/<build.out>/<build.optimize>/<stem>.gx`. The
+per-profile subdir (Cargo's `target/{debug,release}/` pattern)
+keeps debug and release artifacts side by side so rebuilding in
+one mode doesn't clobber the other.
 
 ```bash
-gero build                        # → out/<package.name>.gx
+gero build                        # → out/debug/<name>.gx
 gero build -v                     # per-phase timings
 gero build --target=vm            # explicit target override
 ```
@@ -462,10 +463,14 @@ gero build --target=vm            # explicit target override
 - Resolves `gero.toml` by ancestor walk — `gero build` works from
   any subdirectory of the project.
 - Manifest-relative `[build].entry` and `[build].out` are joined
-  under the project root (`dirname(gero.toml)`). `out/` is
-  created if missing.
-- Output filename is `<package.name>.gx`, not the entry's
-  basename — the manifest is the single source of truth.
+  under the project root (`dirname(gero.toml)`). The full output
+  directory is `<build.out>/<build.optimize>/` and is created if
+  missing.
+- Output filename stem is `[build].name` if set, else
+  `[package].name` — the manifest is the single source of truth,
+  matching Cargo's `[[bin]].name` convention.
+- `[build].debug_symbols = false` strips the `(address, name)`
+  debug table from the `.gx`. Default is `true`.
 - `--target=<vm|gtx-16>` overrides the manifest's `[package].target`.
   Only `vm` ships in v0.2; `gtx-16` is reserved (errors with
   "not yet implemented").
@@ -476,10 +481,11 @@ gero build --target=vm            # explicit target override
 usage (unknown target, positional); 3 on manifest parse error or
 asm pipeline error.
 
-**Roadmap:** `gero build --optimize=release` becomes meaningful
-once the lang back-end (v0.3) lands; today the asm pipeline has
-no optimizer to drive, so the `[build].optimize` key is read but
-its only consumer ships in v0.3+.
+**Roadmap:** `gero build --optimize=release` (flag override
+without editing the manifest) lands once the lang back-end (v0.3)
+has a meaningful release/debug distinction; today the asm
+pipeline doesn't optimize, so the `[build].optimize` key drives
+only the output subdirectory.
 
 ---
 
@@ -531,19 +537,60 @@ parseable by editors / CI tools.
 
 ---
 
-## 8. Future: project file (`gero.toml`)
+## 8. Project file (`gero.toml`)
 
-Once `gero init` / dependency management land, a project file
-will be needed:
+Full v0.2 shape — consumed by `gero build` / `gero check` /
+`gero fmt` / `gero test`. Walked by ancestor search, so any
+subcommand works from any subdirectory of the project. See
+`gero new` / `gero init` (§3.10 / §3.11) for the scaffold.
 
 ```toml
-[project]
-name = "my-game"
+[package]
+name = "my-cart"
 version = "0.1.0"
+target = "vm"                       # vm (default) | gtx-16 (deferred)
+description = "..."                 # optional
+license = "MIT"                     # optional, SPDX-style
+repository = "https://..."          # optional
+authors = ["Jane Doe <jane@..>"]    # optional
+keywords = ["vm", "demo"]           # optional
 
-[deps]
-loom = { git = "https://github.com/salty-max/loom" }
+[build]
+entry = "src/main.gas"              # required
+out = "out/"                        # output directory; default "out/"
+optimize = "debug"                  # debug (default) | release | size
+name = "cart-cli"                   # optional, defaults to package.name
+debug_symbols = true                # emit debug-symbol blob; default true
+
+[test]
+include = ["tests/"]                # paths walked for .gas + .expected
+exclude = ["tests/wip"]             # paths subtracted; default empty
+cycle_budget = 1_000_000            # per-test cycle cap; default 1M
+
+[fmt]                               # see §3.8 for full reference
+indent = 2
+comment_column = 30
+align_kv = true
+hex_case = "upper"
 ```
 
-Spec'd in v0.2 alongside `gero init`. For v0.1, conventions in §3.10
-suffice.
+**Defaults**: `[build].out` → `"out/"`; `[build].optimize` →
+`"debug"`; `[build].debug_symbols` → `true`; `[package].target` →
+`"vm"`; `[test].cycle_budget` → `1_000_000`. Every field outside
+those + `[package].name` / `[package].version` / `[build].entry`
+is optional.
+
+**Output path**: `<build.out>/<build.optimize>/<stem>.gx` —
+the per-profile subdir (Cargo's `target/{debug,release}/` pattern)
+keeps debug and release artifacts side by side. `<stem>` is
+`[build].name` if set, else `[package].name` (Cargo's
+`[[bin]].name` convention — decouple the binary name from the
+package name). Example: default scaffold ships
+`out/debug/my-cart.gx`.
+
+**Validation**: `[build].optimize` is checked against
+`{debug, release, size}` at parse time so a typo doesn't silently
+land artifacts in `out/relase/`. Invalid → exit 3 with line:col.
+
+**Future**: a `[deps]` / `[workspace]` section will land when a
+registry + multi-package layout exist (post-v0.3).

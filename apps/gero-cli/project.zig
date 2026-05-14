@@ -39,16 +39,44 @@ pub const Manifest = struct {
         name: []const u8,
         version: []const u8,
         target: []const u8,
+        /// Optional one-line package description. Surfaces in
+        /// future tooling (registry, doc generator) — has no
+        /// effect on the build today.
+        description: ?[]const u8,
+        /// Optional SPDX-style license identifier.
+        license: ?[]const u8,
+        /// Optional canonical repository URL.
+        repository: ?[]const u8,
+        /// Optional authors — `["Jane Doe <jane@example.com>"]` shape.
+        /// Empty slice when absent.
+        authors: []const []const u8,
+        /// Optional keywords for future search / registry use.
+        /// Empty slice when absent.
+        keywords: []const []const u8,
     };
 
     pub const Build = struct {
         entry: []const u8,
         out: []const u8,
         optimize: []const u8,
+        /// Output filename stem — the `.gx` lands at
+        /// `<out>/<name>.gx`. `null` falls back to `[package].name`
+        /// (mirrors Cargo's `[[bin]].name` convention).
+        name: ?[]const u8,
+        /// Emit a debug-symbol blob into the `.gx` so `gero info` /
+        /// `gero disasm` can print friendly names. Defaults to `true`.
+        debug_symbols: bool,
     };
 
     pub const Test = struct {
         include: []const []const u8,
+        /// Optional list of manifest-relative paths (file or
+        /// directory) to subtract from the discovered include set.
+        /// Empty slice when absent.
+        exclude: []const []const u8,
+        /// Per-test cycle budget enforced by `gero test`. Caps a
+        /// buggy program from hanging the runner. Defaults to 1M.
+        cycle_budget: usize,
     };
 
     /// `[fmt]` overrides for the canonical printer. Shape mirrors
@@ -69,6 +97,9 @@ pub const Manifest = struct {
     /// keeps responsibility for that.
     pub fn deinit(self: *Manifest, allocator: std.mem.Allocator) void {
         allocator.free(self.test_.include);
+        allocator.free(self.test_.exclude);
+        allocator.free(self.package.authors);
+        allocator.free(self.package.keywords);
     }
 };
 
@@ -78,10 +109,12 @@ pub const defaults = struct {
     pub const package_target: []const u8 = "vm";
     pub const build_out: []const u8 = "out/";
     pub const build_optimize: []const u8 = "debug";
+    pub const build_debug_symbols: bool = true;
     pub const fmt_indent: usize = 2;
     pub const fmt_comment_column: usize = 30;
     pub const fmt_align_kv: bool = true;
     pub const fmt_hex_case: Manifest.HexCase = .upper;
+    pub const test_cycle_budget: usize = 1_000_000;
 };
 
 /// One parse-time diagnostic with line / column for the
@@ -425,17 +458,36 @@ const Parser = struct {
 
     /// Unsigned decimal integer literal. `key` is only used for
     /// the diagnostic message; the parsed value is returned as
-    /// `usize`. No size suffix / radix prefix support — keep the
-    /// surface tight.
+    /// `usize`. Accepts TOML-style underscore separators
+    /// (`1_000_000`) — they're stripped before `parseInt`. No
+    /// radix prefix / sign support — keep the surface tight.
     fn parseInteger(self: *Parser, key: []const u8) ParseError!usize {
         const start = self.index;
         while (self.index < self.source.len) {
             const c = self.source[self.index];
-            if (c < '0' or c > '9') break;
+            if ((c < '0' or c > '9') and c != '_') break;
             self.advance(1);
         }
         const text = self.source[start..self.index];
-        return std.fmt.parseInt(usize, text, 10) catch {
+        // Strip underscores into a stack-local buffer before
+        // handing the digits to `parseInt`. v0.2 manifest values
+        // are short (cycle budgets, columns) — 32 bytes is plenty.
+        var scratch: [32]u8 = undefined;
+        var n: usize = 0;
+        for (text) |c| {
+            if (c == '_') continue;
+            if (n >= scratch.len) {
+                self.reportf("integer literal for key '{s}' is too long", .{key});
+                return error.ParseFailed;
+            }
+            scratch[n] = c;
+            n += 1;
+        }
+        if (n == 0) {
+            self.reportf("expected digits in integer literal for key '{s}'", .{key});
+            return error.ParseFailed;
+        }
+        return std.fmt.parseInt(usize, scratch[0..n], 10) catch {
             self.reportf("invalid integer literal for key '{s}'", .{key});
             return error.ParseFailed;
         };
@@ -481,10 +533,19 @@ const Pending = struct {
     pkg_name: ?[]const u8 = null,
     pkg_version: ?[]const u8 = null,
     pkg_target: ?[]const u8 = null,
+    pkg_description: ?[]const u8 = null,
+    pkg_license: ?[]const u8 = null,
+    pkg_repository: ?[]const u8 = null,
+    pkg_authors: ?[]const []const u8 = null,
+    pkg_keywords: ?[]const []const u8 = null,
     build_entry: ?[]const u8 = null,
     build_out: ?[]const u8 = null,
     build_optimize: ?[]const u8 = null,
+    build_name: ?[]const u8 = null,
+    build_debug_symbols: ?bool = null,
     test_include: ?[]const []const u8 = null,
+    test_exclude: ?[]const []const u8 = null,
+    test_cycle_budget: ?usize = null,
     fmt_indent: ?usize = null,
     fmt_comment_column: ?usize = null,
     fmt_align_kv: ?bool = null,
@@ -493,19 +554,39 @@ const Pending = struct {
     fn recordString(self: *Pending, parser: *Parser, key: []const u8, value: []const u8) ParseError!void {
         switch (parser.current_section) {
             .package => {
-                if (std.mem.eql(u8, key, "name")) self.pkg_name = value else if (std.mem.eql(u8, key, "version")) self.pkg_version = value else if (std.mem.eql(u8, key, "target")) self.pkg_target = value else {
+                if (std.mem.eql(u8, key, "name")) {
+                    self.pkg_name = value;
+                } else if (std.mem.eql(u8, key, "version")) {
+                    self.pkg_version = value;
+                } else if (std.mem.eql(u8, key, "target")) {
+                    self.pkg_target = value;
+                } else if (std.mem.eql(u8, key, "description")) {
+                    self.pkg_description = value;
+                } else if (std.mem.eql(u8, key, "license")) {
+                    self.pkg_license = value;
+                } else if (std.mem.eql(u8, key, "repository")) {
+                    self.pkg_repository = value;
+                } else {
                     parser.reportf("unknown key 'package.{s}'", .{key});
                     return error.ParseFailed;
                 }
             },
             .build => {
-                if (std.mem.eql(u8, key, "entry")) self.build_entry = value else if (std.mem.eql(u8, key, "out")) self.build_out = value else if (std.mem.eql(u8, key, "optimize")) self.build_optimize = value else {
+                if (std.mem.eql(u8, key, "entry")) {
+                    self.build_entry = value;
+                } else if (std.mem.eql(u8, key, "out")) {
+                    self.build_out = value;
+                } else if (std.mem.eql(u8, key, "optimize")) {
+                    self.build_optimize = value;
+                } else if (std.mem.eql(u8, key, "name")) {
+                    self.build_name = value;
+                } else {
                     parser.reportf("unknown key 'build.{s}'", .{key});
                     return error.ParseFailed;
                 }
             },
             .test_ => {
-                parser.reportf("unknown string key '[test].{s}' (only 'include' is supported)", .{key});
+                parser.reportf("unknown string key '[test].{s}' (only 'include' / 'exclude' arrays + 'cycle_budget' are accepted)", .{key});
                 return error.ParseFailed;
             },
             .fmt => {
@@ -529,6 +610,12 @@ const Pending = struct {
                     return error.ParseFailed;
                 }
             },
+            .test_ => {
+                if (std.mem.eql(u8, key, "cycle_budget")) self.test_cycle_budget = value else {
+                    parser.reportf("unknown integer key '[test].{s}'", .{key});
+                    return error.ParseFailed;
+                }
+            },
             else => {
                 parser.reportf("integer values aren't expected under section for key '{s}'", .{key});
                 return error.ParseFailed;
@@ -544,6 +631,12 @@ const Pending = struct {
                     return error.ParseFailed;
                 }
             },
+            .build => {
+                if (std.mem.eql(u8, key, "debug_symbols")) self.build_debug_symbols = value else {
+                    parser.reportf("unknown boolean key '[build].{s}'", .{key});
+                    return error.ParseFailed;
+                }
+            },
             else => {
                 parser.reportf("boolean values aren't expected under section for key '{s}'", .{key});
                 return error.ParseFailed;
@@ -553,14 +646,20 @@ const Pending = struct {
 
     fn recordStringArray(self: *Pending, parser: *Parser, key: []const u8, value: []const []const u8) ParseError!void {
         switch (parser.current_section) {
+            .package => {
+                if (std.mem.eql(u8, key, "authors")) self.pkg_authors = value else if (std.mem.eql(u8, key, "keywords")) self.pkg_keywords = value else {
+                    parser.reportf("unknown array key '[package].{s}'", .{key});
+                    return error.ParseFailed;
+                }
+            },
             .test_ => {
-                if (std.mem.eql(u8, key, "include")) self.test_include = value else {
+                if (std.mem.eql(u8, key, "include")) self.test_include = value else if (std.mem.eql(u8, key, "exclude")) self.test_exclude = value else {
                     parser.reportf("unknown array key '[test].{s}'", .{key});
                     return error.ParseFailed;
                 }
             },
             else => {
-                parser.reportf("array values only supported under [test].include", .{});
+                parser.reportf("array values aren't expected under this section for key '{s}'", .{key});
                 return error.ParseFailed;
             },
         }
@@ -580,10 +679,10 @@ const Pending = struct {
             return error.ParseFailed;
         };
 
-        const include_slice: []const []const u8 = if (self.test_include) |v| v else blk: {
-            const empty = try parser.allocator.alloc([]const u8, 0);
-            break :blk empty;
-        };
+        const include_slice: []const []const u8 = if (self.test_include) |v| v else try parser.allocator.alloc([]const u8, 0);
+        const exclude_slice: []const []const u8 = if (self.test_exclude) |v| v else try parser.allocator.alloc([]const u8, 0);
+        const authors_slice: []const []const u8 = if (self.pkg_authors) |v| v else try parser.allocator.alloc([]const u8, 0);
+        const keywords_slice: []const []const u8 = if (self.pkg_keywords) |v| v else try parser.allocator.alloc([]const u8, 0);
 
         // Validate hex_case against the three allowed values. Any
         // other string is a hard parse error with a clear
@@ -597,18 +696,43 @@ const Pending = struct {
             return error.ParseFailed;
         } else defaults.fmt_hex_case;
 
+        // Validate optimize too — it gates the per-profile output
+        // subdirectory (`out/<optimize>/...`), so a typo would
+        // silently land artifacts in `out/relase/` and confuse the
+        // user. Keep the surface in sync with the CLI's
+        // `--optimize` enum.
+        const optimize = self.build_optimize orelse defaults.build_optimize;
+        if (!std.mem.eql(u8, optimize, "debug") and
+            !std.mem.eql(u8, optimize, "release") and
+            !std.mem.eql(u8, optimize, "size"))
+        {
+            parser.reportf("invalid '[build].optimize' value '{s}' (expected 'debug', 'release', or 'size')", .{optimize});
+            return error.ParseFailed;
+        }
+
         return .{
             .package = .{
                 .name = name,
                 .version = version,
                 .target = self.pkg_target orelse defaults.package_target,
+                .description = self.pkg_description,
+                .license = self.pkg_license,
+                .repository = self.pkg_repository,
+                .authors = authors_slice,
+                .keywords = keywords_slice,
             },
             .build = .{
                 .entry = entry,
                 .out = self.build_out orelse defaults.build_out,
-                .optimize = self.build_optimize orelse defaults.build_optimize,
+                .optimize = optimize,
+                .name = self.build_name,
+                .debug_symbols = self.build_debug_symbols orelse defaults.build_debug_symbols,
             },
-            .test_ = .{ .include = include_slice },
+            .test_ = .{
+                .include = include_slice,
+                .exclude = exclude_slice,
+                .cycle_budget = self.test_cycle_budget orelse defaults.test_cycle_budget,
+            },
             .fmt = .{
                 .indent = self.fmt_indent orelse defaults.fmt_indent,
                 .comment_column = self.fmt_comment_column orelse defaults.fmt_comment_column,
@@ -891,4 +1015,145 @@ test "project: [fmt] rejects invalid boolean value" {
     const result = try parseWithDiagnostic(testing.allocator, src);
     try testing.expect(result == .err);
     try testing.expect(std.mem.indexOf(u8, result.err.message(), "align_kv") != null);
+}
+
+test "project: [package] metadata fields parse + default to null/empty" {
+    const src =
+        \\[package]
+        \\name = "p"
+        \\version = "0.0.1"
+        \\description = "demo cart"
+        \\license = "MIT"
+        \\repository = "https://github.com/me/p"
+        \\authors = ["Jane Doe <jane@example.com>", "John"]
+        \\keywords = ["vm", "demo"]
+        \\
+        \\[build]
+        \\entry = "main.gas"
+        \\
+    ;
+    var m = try parse(testing.allocator, src);
+    defer m.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("demo cart", m.package.description.?);
+    try testing.expectEqualStrings("MIT", m.package.license.?);
+    try testing.expectEqualStrings("https://github.com/me/p", m.package.repository.?);
+    try testing.expectEqual(@as(usize, 2), m.package.authors.len);
+    try testing.expectEqualStrings("Jane Doe <jane@example.com>", m.package.authors[0]);
+    try testing.expectEqual(@as(usize, 2), m.package.keywords.len);
+    try testing.expectEqualStrings("vm", m.package.keywords[0]);
+}
+
+test "project: [package] metadata is fully optional" {
+    const src =
+        \\[package]
+        \\name = "p"
+        \\version = "0.0.1"
+        \\
+        \\[build]
+        \\entry = "main.gas"
+        \\
+    ;
+    var m = try parse(testing.allocator, src);
+    defer m.deinit(testing.allocator);
+
+    try testing.expect(m.package.description == null);
+    try testing.expect(m.package.license == null);
+    try testing.expect(m.package.repository == null);
+    try testing.expectEqual(@as(usize, 0), m.package.authors.len);
+    try testing.expectEqual(@as(usize, 0), m.package.keywords.len);
+}
+
+test "project: [build].name + debug_symbols override" {
+    const src =
+        \\[package]
+        \\name = "p"
+        \\version = "0.0.1"
+        \\
+        \\[build]
+        \\entry = "main.gas"
+        \\name = "p-cli"
+        \\debug_symbols = false
+        \\
+    ;
+    var m = try parse(testing.allocator, src);
+    defer m.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("p-cli", m.build.name.?);
+    try testing.expectEqual(false, m.build.debug_symbols);
+}
+
+test "project: [build].name defaults to null, debug_symbols to true" {
+    const src =
+        \\[package]
+        \\name = "p"
+        \\version = "0.0.1"
+        \\
+        \\[build]
+        \\entry = "main.gas"
+        \\
+    ;
+    var m = try parse(testing.allocator, src);
+    defer m.deinit(testing.allocator);
+
+    try testing.expect(m.build.name == null);
+    try testing.expectEqual(true, m.build.debug_symbols);
+}
+
+test "project: [test] exclude + cycle_budget" {
+    const src =
+        \\[package]
+        \\name = "p"
+        \\version = "0.0.1"
+        \\
+        \\[build]
+        \\entry = "main.gas"
+        \\
+        \\[test]
+        \\include = ["tests/"]
+        \\exclude = ["tests/wip", "tests/skip.gas"]
+        \\cycle_budget = 5_000_000
+        \\
+    ;
+    var m = try parse(testing.allocator, src);
+    defer m.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), m.test_.exclude.len);
+    try testing.expectEqualStrings("tests/wip", m.test_.exclude[0]);
+    try testing.expectEqualStrings("tests/skip.gas", m.test_.exclude[1]);
+    try testing.expectEqual(@as(usize, 5_000_000), m.test_.cycle_budget);
+}
+
+test "project: [test] exclude / cycle_budget default to empty / 1M" {
+    const src =
+        \\[package]
+        \\name = "p"
+        \\version = "0.0.1"
+        \\
+        \\[build]
+        \\entry = "main.gas"
+        \\
+    ;
+    var m = try parse(testing.allocator, src);
+    defer m.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), m.test_.exclude.len);
+    try testing.expectEqual(defaults.test_cycle_budget, m.test_.cycle_budget);
+}
+
+test "project: [build].optimize validates against debug | release | size" {
+    const src =
+        \\[package]
+        \\name = "p"
+        \\version = "0.0.1"
+        \\
+        \\[build]
+        \\entry = "main.gas"
+        \\optimize = "fast"
+        \\
+    ;
+    const result = try parseWithDiagnostic(testing.allocator, src);
+    try testing.expect(result == .err);
+    try testing.expect(std.mem.indexOf(u8, result.err.message(), "optimize") != null);
+    try testing.expect(std.mem.indexOf(u8, result.err.message(), "debug") != null);
 }

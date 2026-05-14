@@ -14,10 +14,9 @@ const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
 const manifest_loader = @import("manifest_loader.zig");
 
-/// Hard cap on dispatched instructions per test, to prevent an
-/// infinite loop in a buggy program from hanging the runner. Each
-/// real test should bottom out in `hlt` well before this.
-const cycle_budget: u64 = 1_000_000;
+// Per-test cycle budget comes from the manifest's `[test].cycle_budget`
+// (default 1,000,000 per `project.defaults`). Threaded through
+// `runOne` / `runImage` so it can vary per-project without a recompile.
 
 /// Discovered test program — assembled lazily, paired with its
 /// golden `.expected` body.
@@ -102,6 +101,7 @@ pub fn execute(
         term,
         loaded.project_root,
         loaded.manifest.test_.include,
+        loaded.manifest.test_.exclude,
         pattern,
     ) catch |err| switch (err) {
         error.LoadFailed => return 1,
@@ -124,8 +124,9 @@ pub fn execute(
     const results = try arena.alloc(Result, programs.len);
     var pass: usize = 0;
     var fail: usize = 0;
+    const budget: u64 = @intCast(loaded.manifest.test_.cycle_budget);
     for (programs, 0..) |prog, i| {
-        results[i] = try runOne(io, arena, prog);
+        results[i] = try runOne(io, arena, prog, budget);
         if (results[i].outcome == .ok) pass += 1 else fail += 1;
         try writeStatusLine(stdout, style, results[i], opts.verbose);
     }
@@ -140,20 +141,35 @@ pub fn execute(
 
 /// Resolve every entry in `includes` (manifest-relative, file or
 /// directory) and collect `.gas` programs that have a sibling
-/// `.expected`. Optionally filtered by `pattern`.
+/// `.expected`. Optionally filtered by `pattern`. `excludes`
+/// subtracts manifest-relative paths from the discovered set —
+/// each exclude entry is either a `.gas` file or a directory
+/// prefix.
 fn collectPrograms(
     io: std.Io,
     arena: std.mem.Allocator,
     term: *term_mod.Term,
     project_root: []const u8,
     includes: []const []const u8,
+    excludes: []const []const u8,
     pattern: ?[]const u8,
 ) ![]Program {
     var gas_files: std.ArrayList([]const u8) = .empty;
     try manifest_loader.expandIncludes(io, arena, term, "gero test", project_root, includes, &gas_files);
 
+    // Pre-resolve excludes through the same root-joining so they
+    // line up with `gas_files` entries byte-for-byte. Each exclude
+    // is treated as a prefix: a directory excludes everything
+    // under it, a single `.gas` excludes itself.
+    var excluded: std.ArrayList([]const u8) = .empty;
+    for (excludes) |rel| {
+        const full = try manifest_loader.joinUnderRoot(arena, project_root, rel);
+        try excluded.append(arena, full);
+    }
+
     var list: std.ArrayList(Program) = .empty;
     for (gas_files.items) |gas_path| {
+        if (isExcluded(gas_path, excluded.items)) continue;
         const name_borrowed = stem(std.fs.path.basename(gas_path));
         if (pattern) |p| if (std.mem.indexOf(u8, name_borrowed, p) == null) continue;
 
@@ -184,6 +200,23 @@ fn lessByName(_: void, a: Program, b: Program) bool {
     return std.mem.lessThan(u8, a.name, b.name);
 }
 
+/// True when `gas_path` is covered by an exclude entry. Excludes
+/// match as a prefix — `tests/wip` excludes both `tests/wip/foo.gas`
+/// and `tests/wip` itself; an exact `.gas` match excludes only that
+/// file.
+fn isExcluded(gas_path: []const u8, excludes: []const []const u8) bool {
+    for (excludes) |ex| {
+        if (std.mem.eql(u8, gas_path, ex)) return true;
+        // Directory prefix: ensure the next char is a separator
+        // so `tests/wip` doesn't accidentally swallow `tests/wipe.gas`.
+        if (std.mem.startsWith(u8, gas_path, ex) and gas_path.len > ex.len) {
+            const next = gas_path[ex.len];
+            if (next == '/' or next == std.fs.path.sep) return true;
+        }
+    }
+    return false;
+}
+
 /// `foo.gas` → `foo`; `foo` → `foo`. Borrowed slice — caller dupes
 /// before storing past the source's lifetime.
 fn stem(file: []const u8) []const u8 {
@@ -194,7 +227,7 @@ fn stem(file: []const u8) []const u8 {
 /// Assemble + run a single program. Always returns a `Result` —
 /// errors land as failure outcomes rather than propagating, so the
 /// runner reports them per-test instead of bailing on first error.
-fn runOne(io: std.Io, arena: std.mem.Allocator, prog: Program) !Result {
+fn runOne(io: std.Io, arena: std.mem.Allocator, prog: Program, cycle_budget: u64) !Result {
     const t0 = std.Io.Timestamp.now(io, .awake);
 
     var fused = gero.asm_.resolveIncludes(io, arena, prog.gas_path) catch |err| {
@@ -215,7 +248,7 @@ fn runOne(io: std.Io, arena: std.mem.Allocator, prog: Program) !Result {
     }
 
     var captured: std.Io.Writer.Allocating = .init(arena);
-    const run_outcome = runImage(arena, cg.image, &captured.writer) catch |err| {
+    const run_outcome = runImage(arena, cg.image, &captured.writer, cycle_budget) catch |err| {
         return finalize(io, t0, prog, .runtime_failed, try std.fmt.allocPrint(arena, "vm error ({s})", .{@errorName(err)}));
     };
     switch (run_outcome) {
@@ -252,7 +285,7 @@ const RunOutcome = enum { halted, faulted, breakpoint, timeout };
 /// Boot a fresh VM on `image`, capture stdout-syscall output into
 /// `out`, ignore the SRAM save syscall, and step until halt or the
 /// cycle budget runs out.
-fn runImage(arena: std.mem.Allocator, image: []const u8, out: *std.Io.Writer) !RunOutcome {
+fn runImage(arena: std.mem.Allocator, image: []const u8, out: *std.Io.Writer, cycle_budget: u64) !RunOutcome {
     const loaded = try gero.vm.parseGx(image);
     var vm = gero.vm.VM.init(arena);
     defer vm.deinit();

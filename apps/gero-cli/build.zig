@@ -1,7 +1,8 @@
 /// `gero build` — project-aware compile. Walks the ancestor
 /// chain for `gero.toml`, reads `[build]` + `[package]`, runs the
 /// asm pipeline against `build.entry`, and writes the resulting
-/// `.gx` to `<project_root>/<build.out>/<package.name>.gx`.
+/// `.gx` to `<project_root>/<build.out>/<stem>.gx`, where `<stem>`
+/// is `[build].name` if set, else `[package].name`.
 ///
 /// `gero build` is essentially `gero asm` wrapped with manifest
 /// resolution + output-path discipline. Reuses every existing
@@ -70,13 +71,18 @@ pub fn execute(
         return 2;
     }
 
-    // 3. Resolve project-relative paths.
+    // 3. Resolve project-relative paths. Output lives under a
+    //    per-profile subdir (`out/<optimize>/`) so rebuilding in
+    //    release mode doesn't clobber the debug artifact, à la
+    //    Cargo's `target/{debug,release}/` layout.
     const project_root = std.fs.path.dirname(manifest_path) orelse "";
     const entry_path = try joinUnderRoot(arena, project_root, manifest.build.entry);
-    const out_dir = try joinUnderRoot(arena, project_root, manifest.build.out);
+    const out_root = try joinUnderRoot(arena, project_root, manifest.build.out);
+    const out_dir = try std.fs.path.join(arena, &.{ out_root, manifest.build.optimize });
 
     // 4. Ensure the output directory exists. `createDirPath` is
-    //    idempotent — no-op when `out/` already exists.
+    //    idempotent — creates `out/<optimize>/` plus any missing
+    //    parents in one shot.
     std.Io.Dir.cwd().createDirPath(io, out_dir) catch |err| {
         try term.err("gero build: cannot create {s} ({s})", .{ out_dir, @errorName(err) });
         return 1;
@@ -101,7 +107,9 @@ pub fn execute(
     defer pt.deinit();
     const t_after_parse = std.Io.Timestamp.now(io, .awake);
 
-    var cg = try gero.asm_.assemble(arena, fused.source, pt, .{});
+    var cg = try gero.asm_.assemble(arena, fused.source, pt, .{
+        .debug_symbols = manifest.build.debug_symbols,
+    });
     defer cg.deinit();
     const t_after_codegen = std.Io.Timestamp.now(io, .awake);
 
@@ -117,8 +125,11 @@ pub fn execute(
         return 3;
     }
 
-    // 6. Write `<out_dir>/<package.name>.gx`.
-    const gx_name = try std.fmt.allocPrint(arena, "{s}.gx", .{manifest.package.name});
+    // 6. Write `<out_dir>/<stem>.gx`. Stem is `[build].name` if
+    //    set, else `[package].name` — Cargo's `[[bin]].name`
+    //    convention so the binary can decouple from the crate.
+    const stem = manifest.build.name orelse manifest.package.name;
+    const gx_name = try std.fmt.allocPrint(arena, "{s}.gx", .{stem});
     const out_path = try std.fs.path.join(arena, &.{ out_dir, gx_name });
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = cg.image }) catch |err| {
         try term.err("gero build: cannot write {s} ({s})", .{ out_path, @errorName(err) });
