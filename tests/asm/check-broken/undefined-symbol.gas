@@ -1,0 +1,7 @@
+; undefined-symbol.gas — operand references a symbol with no
+; declaration. Expected: `gero check` exits 4 with an [E004]
+; "undefined symbol" diagnostic on `@nope`.
+
+main:
+  mov @nope, r1
+  hlt

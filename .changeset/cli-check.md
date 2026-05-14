@@ -17,5 +17,9 @@ host IO, `2` on usage. `.gr` sources route to a "not yet
 implemented" stub until v0.3 wires the gero-lang front-end.
 
 A `zig build check-examples` step drives every `examples/asm/*.gas`
-(recursive — banks/ included) through `gero check` and is wired
-into `zig build ci` alongside the existing `test-examples`.
+(recursive — banks/ included) through `gero check` and asserts
+clean exit; a sibling `zig build check-broken` step walks
+`tests/asm/check-broken/*.gas` (intentionally-bad fixtures
+covering parse / E001 / E004 / E005 categories) and asserts each
+one **fails**. Both wired into `zig build ci` alongside
+`test-examples`.
