@@ -332,19 +332,9 @@ the target's tokens, every time. If two files both `include
 matches the asm tradition and gives hand-writers a way to repeat
 parametric blocks before macros (are added.
 
-When you want a header to appear at most once, wrap it in an
-include guard at the top of the file — same pattern as NASM:
-
-```asm
-; ----- utils.gas -----
-;ifndef UTILS_GAS    ; (planned syntax — TBD)
-;  ... shared definitions here ...
-;endif
-```
-
-(Conditional assembly is isn't implemented; until then, hand-writers
-either control the include graph manually or accept the duplicate
-emission for repeated sections.)
+Conditional assembly (`;ifdef` / `;ifndef`) is not implemented.
+For now, control the include graph manually (don't `include` the
+same file from two ancestors) or accept the duplicate emission.
 
 ### 2.3 Instructions
 
@@ -604,27 +594,25 @@ mov $01, mb
 call <label_in_bank_1>
 ```
 
-A `bank_call` / `bank_jump` pseudo-instruction that desugars to
-this pair is a candidate for a future asm minor release (the parser
-would need to know which bank `<label>` lives in).
+There is no `bank_call` / `bank_jump` sugar — write the
+`mov mb` + `call` pair by hand.
 
 ---
 
-## 6. Roadmap (future asm versions)
+## 6. Limitations
 
-Note: gero **the high-level language is in development**. The
-assembler is versioned independently — these features land in future
-asm minor releases as the VM and lang compilers exercise the gaps.
+The assembler doesn't currently support:
 
-| Feature | Why |
-|---------|-----|
-| `bank_call` / `bank_jump` | Sugar for cross-bank calls. |
-| Macros | Parametric pseudo-instructions (`def macro NAME(args) { ... }`). |
-| Export / import markers | Only relevant if a linker model lands later. textual `include` with a single global namespace (6502 / z80 tradition). |
-
-Each addition bumps the assembler's minor version; the bytecode they
-emit follows the ISA spec — assembler evolution is independent of ISA
-evolution as long as no new opcode is generated.
+- **Macros** — no `def macro NAME(args) { ... }` form. Hand-write
+  repeated blocks or factor them through `include`.
+- **Conditional assembly** — no `;ifdef` / `;ifndef`. Control the
+  include graph manually (or accept duplicate emission from
+  re-included files).
+- **Export / import markers** — `include` splices tokens into a
+  single global namespace (6502 / z80 tradition). There is no
+  linker model.
+- **`bank_call` / `bank_jump` sugar** — see [§5 cross-bank
+  calls](#cross-bank-calls).
 
 ---
 
