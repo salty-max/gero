@@ -313,6 +313,24 @@ test "printProgram: ignore-next protects only the immediately-following statemen
     , p.text);
 }
 
+test "printProgram: ignore-next preserves leading indent" {
+    // The protected statement's source-slice must walk back to
+    // the start of its source line — otherwise an indented
+    // statement loses its 2-space gutter.
+    const src =
+        \\main:
+        \\  ; gero-fmt-ignore-next
+        \\  mov $0A, r1                ; n = 10
+        \\  hlt
+        \\
+    ;
+    var p = try parseAndPrint(src);
+    defer p.deinit();
+    // The mov line keeps its 2-space indent + trailing alignment.
+    // The hlt line canonicalizes (2-space indent, no trailing).
+    try std.testing.expect(std.mem.indexOf(u8, p.text, "  mov $0A, r1                ; n = 10") != null);
+}
+
 test "printProgram: trailing ignore protects its host statement" {
     const src =
         \\const PRINT   = $10  ; gero-fmt-ignore
