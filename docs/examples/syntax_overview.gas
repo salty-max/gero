@@ -1,0 +1,154 @@
+; ====================================================================
+; syntax_overview.gas
+;
+; A near-complete tour of gero's v0.1-final assembly syntax. Read this
+; top-to-bottom to see every construct from `docs/asm.md` at least
+; once. Companion to `docs/examples/syntax_overview.gr` (the
+; gero-lang side).
+;
+; This file is documentation, not a runnable example — it exercises
+; the syntax surface (directives, addressing modes, every mnemonic
+; group) without committing to a coherent program. The runnable
+; examples under `examples/asm/*.gas` cover end-to-end flows.
+;
+; Note: multi-line `struct` body is grammar-side TBD on the
+; tree-sitter parser (gero's own parser accepts it). For now the
+; single-line struct form is shown.
+; ====================================================================
+
+; -------------------- directives ----------------------------
+
+org $1000                    ; place next bytes at $1000
+bank $00                     ; sticky — every statement under bank 0
+sram_banks $02               ; reserve 2 sram-backed banks
+reserve $20                  ; pad 32 bytes of zeros
+include "shared.gas"         ; pull in another source file
+
+const PRINT   = $10
+const NEWLINE = $0A
++const EXPORTED = $42         ; leading + = export marker
+
+data8  STRING8  = "Hello", $00
+data16 STRING16 = $1234, $5678
+data8  CHAR_DATA = 'X', 'Y', 'Z', $00
+
+struct Sprite { pos: $00, size: $02, attr: $04 }
+
+; -------------------- global + local labels -----------------
+
+main:
+  mov $00, r3                ; index = 0
+.loop:                       ; local label definition
+  mov8 [@STRING8 + r3], r1
+  cmp r1, $00
+  jeq .done                  ; local-label-ref as operand
+  int PRINT
+  inc r3
+  jmp .loop
+.done:
+  hlt
+
+; -------------------- every mnemonic group ------------------
+
+mnemonic_kitchen_sink:
+  ; moves
+  mov  r1, r2
+  mov8 $FF, r3
+  movh r4, &2020
+  movl r5, &2022
+  push r1
+  pop  r2
+  swap r3, r4
+  bcpy
+
+  ; arithmetic
+  add  $0001, r1
+  adc  r2, r3
+  sub  r4, r5
+  sbc  $0010, r6
+  mul  r7, r8
+  div  r1, r2
+  divs r3, r4
+  neg  r5
+  inc  r6
+  dec  r7
+
+  ; bitwise + shift
+  and  $FFFF, r1
+  or   $0F0F, r2
+  xor  r3, r4
+  not  r5
+  shl  r6, $04
+  shr  r7, $02
+  rol  r8, $01
+  ror  r1, $08
+
+  ; compare / test / bit
+  cmp  r1, $42
+  tst  r2
+  bset r3, $07
+
+  ; control flow
+  jmp  $1234
+  jeq  $1235
+  jne  $1236
+  jlt  $1237
+  jgt  $1238
+  jle  $1239
+  jge  $123A
+  jz   $123B
+  jnz  $123C
+  jcc  $123D
+  jcs  $123E
+  jvc  $123F
+  jvs  $1240
+  jr   $0008
+  djnz r4, $1242
+  call routine
+  ret
+
+  ; flag control
+  clc
+  sec
+  cli
+  sei
+  clv
+
+  ; interrupts & misc
+  nop
+  int PRINT
+  rti
+  brk
+  hlt
+
+routine:
+  ret
+
+; -------------------- addressing modes ----------------------
+
+addressing_kitchen_sink:
+  mov  r1, r2                          ; reg, reg
+  mov  $00, r1                         ; imm16, reg
+  mov  r1, &2020                       ; reg, addr
+  mov  $00, &2020                      ; imm16, addr
+  mov  &r1, r2                         ; reg-ptr operand
+  mov  @SYMBOL, r1                     ; symbol-ref operand
+  mov  [r1], r2                        ; indirect via register
+  mov  [@SYMBOL], r1                   ; indirect via symbol-ref
+  mov  [@SYMBOL + r3], r1              ; indexed (no &)
+  mov  &[@SYMBOL + r3], r1             ; indexed (legacy &-prefix form)
+  mov  &[ (@SYMBOL) + ($0004 * $42) ], &3030  ; nested parens
+  mov  &[ <Sprite> obj.pos ], r1       ; cast inside bracket expr
+  mov  &[ <Word> mem.ptr ], r2
+
+; -------------------- literals ------------------------------
+
+literals_showcase:
+  mov $00,   r1      ; tiny hex
+  mov $FFFF, r1      ; full 16-bit hex
+  mov &1234, r1      ; address literal
+  mov 'A',   r1      ; char literal
+  mov '\n',  r1      ; escape char literal
+  data8 ESCAPED = "He said \"hi\"\n", $00   ; string with escapes
+
+; -------------------- nothing should be uncolored below -----

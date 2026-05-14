@@ -11,6 +11,10 @@ For semantics (what each mnemonic does at runtime), see `isa.md` §5.
 > [tree-sitter-gero-asm](https://github.com/salty-max/tree-sitter-gero-asm)
 > grammar. This document is the human-readable companion.
 
+> **All-in-one syntax tour:** [`docs/examples/syntax_overview.gas`](./examples/syntax_overview.gas)
+> exercises every construct in one file — useful when verifying
+> editor highlighting or skim-reading the surface.
+
 ---
 
 ## 1. Lexical structure
