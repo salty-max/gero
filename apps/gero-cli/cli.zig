@@ -56,6 +56,10 @@ pub const Options = struct {
     /// success aside from a one-line ok summary (suppressed by
     /// `--quiet`). Intended for CI use against shipped examples.
     check_roundtrip: bool = false,
+    /// `--check` for `gero fmt` — non-destructive mode. Reports
+    /// files that would be reformatted (exit 8) without writing.
+    /// Editor / CI use case.
+    check: bool = false,
     positional_buf: [max_positionals][]const u8 = undefined,
     positional_count: usize = 0,
 
@@ -144,8 +148,8 @@ fn commandSummary(cmd: Command) []const u8 {
 /// discoverable, but split into a separate "planned" section.
 fn commandIsImplemented(cmd: Command) bool {
     return switch (cmd) {
-        .asm_, .run, .info, .disasm, .test_, .check => true,
-        .compile, .bench, .fmt, .build => false,
+        .asm_, .run, .info, .disasm, .test_, .check, .fmt => true,
+        .compile, .bench, .build => false,
     };
 }
 
@@ -270,6 +274,13 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero check prog.gas --quiet{s}     {s}# suppress the ok summary (exit code only){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero check prog.gas -v{s}          {s}# per-phase timings (include / parse / codegen){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
+        .fmt => {
+            try out.print("  {s}gero fmt{s} <path...> [--check] [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero fmt prog.gas{s}               {s}# rewrite in place if not canonical{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero fmt src/{s}                   {s}# recurse + format every .gas{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero fmt --check src/{s}           {s}# CI mode — exit 8 if any file would change{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+        },
         else => unreachable, // allow-strict: commandIsImplemented() filtered above
     }
 
@@ -298,6 +309,7 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .show_bytes => .{ .sig = "--show-bytes", .desc = "(default) Show the hex-bytes column." },
         .no_show_bytes => .{ .sig = "--no-show-bytes", .desc = "Strip the hex-bytes column for a cleaner view." },
         .check_roundtrip => .{ .sig = "--check-roundtrip", .desc = "Verify asm → disasm → asm yields identical bytes (CI gate)." },
+        .check => .{ .sig = "--check", .desc = "Non-destructive — exit 8 if any file would be reformatted." },
     };
 }
 
@@ -312,7 +324,8 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .disasm => &.{ .help, .bank, .no_show_bytes, .check_roundtrip, .quiet, .color, .no_color },
         .test_ => &.{ .help, .verbose, .color, .no_color },
         .check => &.{ .help, .quiet, .verbose, .color, .no_color },
-        .compile, .bench, .fmt, .build => &.{.help},
+        .fmt => &.{ .help, .check, .quiet, .color, .no_color },
+        .compile, .bench, .build => &.{.help},
     };
 }
 
@@ -335,7 +348,7 @@ fn parseColor(s: []const u8) ParseError!ColorChoice {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip };
+const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
@@ -350,6 +363,7 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "show-bytes")) return .show_bytes;
     if (std.mem.eql(u8, s, "no-show-bytes")) return .no_show_bytes;
     if (std.mem.eql(u8, s, "check-roundtrip")) return .check_roundtrip;
+    if (std.mem.eql(u8, s, "check")) return .check;
     return null;
 }
 
@@ -378,6 +392,7 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .show_bytes => opts.show_bytes = true,
         .no_show_bytes => opts.show_bytes = false,
         .check_roundtrip => opts.check_roundtrip = true,
+        .check => opts.check = true,
     }
 }
 

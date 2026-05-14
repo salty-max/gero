@@ -244,26 +244,33 @@ debug:       yes (symbols: 142)
 
 ### 3.8 `gero fmt <files...>` — format source
 
-Canonical formatter for `.gas` and `.gr`. Style is fixed (no config
-file — like `gofmt` / `zig fmt`).
+Canonical formatter for `.gas` (and eventually `.gr`). Style is
+fixed — no config file, no flags (like `gofmt` / `zig fmt`).
 
 ```bash
-gero fmt main.gr                  # format in place
-gero fmt --check main.gr          # check only (exit 8 if changes needed)
-gero fmt --stdin < input.gr       # read stdin, write stdout
+gero fmt main.gas                 # format in place
+gero fmt --check main.gas         # check only (exit 8 if changes needed)
 gero fmt src/                     # recurse into directory
+gero fmt a.gas b.gas src/         # any mix of files and directories
 ```
 
 **Behavior:**
-- In-place edit by default; preserves file mode + timestamps where
-  possible.
-- `--check` exits 0 if file is already formatted, 8 if it would
-  change. CI use case.
-- Recurses into directories, formats every `.gas` and `.gr` it
-  finds.
+- In-place edit by default. Files already in canonical form are
+  left untouched.
+- `--check` is non-destructive: exits 0 if every file is canonical,
+  8 if any file would be reformatted, 3 on a genuine parse error.
+  CI use case.
+- Recurses into directories, formats every `.gas` found. `.gr`
+  sources route to "not yet implemented" until v0.3 wires the
+  gero-lang front-end.
+- `include "..."` directives round-trip verbatim — fmt doesn't
+  expand includes (that's `gero asm`'s job).
 
 **Exit:** 0 (clean / formatted); 8 (`--check` would-modify); 3 on
-parse error in source.
+parse error; 1 on host IO; 2 on usage.
+
+**Roadmap:** `--stdin` (read stdin, write stdout — editor format-
+on-save) lands alongside the LSP server (#122 / v0.3).
 
 ### 3.9 `gero check <file>` — validate without producing output
 
