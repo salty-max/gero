@@ -1,0 +1,38 @@
+# {name}
+
+A gero project. The asm-level entry point is `src/main.gas` —
+edit it, then build and run with:
+
+```bash
+gero build                        # → out/{name}.gx
+gero run out/{name}.gx
+```
+
+## Tests
+
+Asm-level golden-file tests live under `tests/`. Each `tests/<name>.gas`
+is paired with a `tests/<name>.expected` capturing the program's
+stdout. `gero test` walks them in one pass:
+
+```bash
+gero test
+gero test smoke                   # filter by name substring
+```
+
+## Format + check
+
+Keep sources canonical and validated as you go:
+
+```bash
+gero fmt src/ tests/              # rewrite in place
+gero fmt --check src/ tests/      # CI mode — exit 8 if anything would change
+gero check src/ tests/            # parse + codegen-validate, no .gx written
+```
+
+## CI + pre-commit hooks
+
+The scaffold ships no opinionated CI / hook config — that choice
+is yours. Copy-paste recipes for GitHub Actions, GitLab, lefthook,
+and plain git hooks live in the upstream
+[gero tooling guide](https://github.com/salty-max/gero/blob/main/docs/tooling.md);
+opt into the stack you prefer.

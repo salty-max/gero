@@ -1,0 +1,12 @@
+[package]
+name = "{name}"
+version = "0.1.0"
+target = "vm"
+
+[build]
+entry = "src/main.gas"
+out = "out/"
+optimize = "debug"
+
+[test]
+include = ["tests/"]

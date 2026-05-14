@@ -1,0 +1,16 @@
+; smoke.gas — minimal golden-file test paired with smoke.expected.
+;
+; Prints "ok\n" and halts; `gero test` diffs captured stdout
+; against smoke.expected. Treat this as a template — add real
+; tests under tests/ as your project grows.
+
+const PRINT = $10
+
+main:
+  mov $6F, r1                          ; 'o'
+  int PRINT
+  mov $6B, r1                          ; 'k'
+  int PRINT
+  mov $0A, r1                          ; '\n'
+  int PRINT
+  hlt
