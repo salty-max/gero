@@ -277,13 +277,17 @@ run round-trip.
 gero check main.gas               # one .gas file (v0.2 — current)
 gero check main.gr                # → "not yet implemented" until v0.3
 gero check main.gas --quiet       # suppress ok summary; exit code only
+gero check main.gas --verbose     # per-phase timings (include / parse / codegen)
 ```
 
 **Output (default):**
 
-- On success: one-line `✓ <path>` summary (`--quiet` suppresses it).
+- On success: `✓ <path>  (N bytes, M banks)` summary line followed
+  by a Cargo-style `Finished in X ms` footer. `--quiet` suppresses
+  both, `--verbose` adds per-phase timings between them.
 - On failure: a `<N> errors in <M> files` header, then per-file
-  caret-style diagnostics matching what `gero asm` would emit.
+  caret-style diagnostics matching what `gero asm` would emit, plus
+  a `Failed in X ms` footer.
 
 **Exit:** `0` if clean; `4` on any diagnostic; `1` on host IO
 problem; `2` on usage error.
