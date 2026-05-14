@@ -53,8 +53,9 @@ pub const PrintOptions = struct {
     /// Column (1-indexed) trailing comments are padded to. Set to
     /// `0` to disable alignment (single space between host and
     /// `;` — minimal canonical form). The default matches the
-    /// hand style across `examples/asm/`.
-    comment_column: usize = 32,
+    /// hand style across `examples/asm/` (col 30 for indented
+    /// instruction lines).
+    comment_column: usize = 30,
     /// When `true`, aligns the `=` of consecutive `const`-decls
     /// (and `data8`/`data16`-decls) by padding the name column to
     /// the block's widest name.
@@ -295,34 +296,17 @@ fn sameSourceLine(end_a: u32, start_b: u32, source: []const u8) bool {
 }
 
 /// True when the canonical layout puts a blank line between `prev`
-/// and `curr`. Rules:
-///
-/// - Instructions cling to the preceding label / directive.
-/// - After a label header, anything follows tightly.
-/// - Same-kind consecutive decls cluster (consts together, data
-///   blocks together, comments together).
-/// - Comments preserve the user's source blank-line intent: a
-///   comment that had a blank line before it in source gets one
-///   in the output too; a comment tight against its preceding
-///   statement stays tight. This makes trailing-comment demotion
-///   (`hlt ; halt` → `hlt\n; halt`) idempotent across re-formats.
-/// - A standalone comment leads into the following statement
-///   tightly (no blank between).
+/// and `curr`. The rule is **purely source-driven** — count the
+/// `\n` bytes in the gap; `≥ 2` (one ending prev's line + another
+/// for the blank) means the user separated them, so the canonical
+/// form does too. fmt asserts no opinionated layout beyond what
+/// the user wrote.
 fn needsBlankLineBefore(
     curr: ast.Statement,
     prev: ast.Statement,
     source: []const u8,
 ) bool {
-    if (curr == .instruction) return false;
-    if (prev == .label) return false;
-    if (std.meta.activeTag(curr) == std.meta.activeTag(prev)) return false;
-    if (curr == .comment) {
-        // Preserve "≥1 blank line in source" by counting newlines
-        // in the inter-statement gap.
-        return sourceNewlineCount(source, prev.span().end, curr.span().start) >= 2;
-    }
-    if (prev == .comment) return false;
-    return true;
+    return sourceNewlineCount(source, prev.span().end, curr.span().start) >= 2;
 }
 
 /// Number of `\n` bytes in `source[end_a..start_b)`. Caps inputs
@@ -363,8 +347,13 @@ fn writeStatementCanonical(
         .sram_banks_decl => |s| try writeSramBanks(writer, s.count orelse 0, opts),
         .instruction => |i| try writeInstruction(writer, i, source, opts),
         .comment => |c| blk: {
-            try writer.writeAll(slice(source, c.span));
-            break :blk c.span.end - c.span.start;
+            // Slice from the start of the line so leading indent is
+            // preserved — an indented comment-block inside a
+            // function body keeps its visual pairing with the
+            // surrounding code.
+            const start = lineStartBefore(source, c.span.start);
+            try writer.writeAll(source[start..c.span.end]);
+            break :blk c.span.end - start;
         },
         .unknown => |u| blk: {
             try writer.writeAll(slice(source, u.span));

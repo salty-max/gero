@@ -17,12 +17,12 @@
 
 main:
   ; Print 'H' from bank 0.
-  mov $00, mb            ; window now mirrors bank 0
-  call greet             ; bank 0 routine — prints 'H'
+  mov $00, mb                ; window now mirrors bank 0
+  call greet                 ; bank 0 routine — prints 'H'
 
   ; Print 'i' from bank 1.
-  mov $01, mb            ; window now mirrors bank 1
-  call excite            ; bank 1 routine — prints 'i'
+  mov $01, mb                ; window now mirrors bank 1
+  call excite                ; bank 1 routine — prints 'i'
 
   ; Back to base image — print '!' and newline.
   mov '!', r1

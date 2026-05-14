@@ -79,5 +79,11 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - name: check-examples (parse + codegen-validate each example)
+        run: zig build check-examples -freference-trace
+      - name: check-broken (assert intentionally-bad fixtures fail)
+        run: zig build check-broken -freference-trace
+      - name: fmt-check-examples (every example is canonical)
+        run: zig build fmt-check-examples -freference-trace
       - name: test-examples (assemble + run + diff + round-trip each example)
         run: zig build test-examples -freference-trace

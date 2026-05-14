@@ -28,6 +28,12 @@ pre-commit:
     strict:
       glob: "*.zig"
       run: bash scripts/check-strict.sh {staged_files}
+    gero-check:
+      glob: "*.gas"
+      run: ./zig-out/bin/gero check --quiet {staged_files}
+    gero-fmt:
+      glob: "*.gas"
+      run: ./zig-out/bin/gero fmt --check --quiet {staged_files}
 
 pre-push:
   parallel: true
