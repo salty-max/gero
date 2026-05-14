@@ -140,6 +140,16 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-diagnostics",
         .root_module = diagnostics_mod,
     });
+    const footer_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/footer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    footer_mod.addImport("gero", gero_mod);
+    const footer_test = b.addTest(.{
+        .name = "test-cli-footer",
+        .root_module = footer_mod,
+    });
 
     // ----- Format ----------------------------------------------------------
 
@@ -181,6 +191,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(test_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(check_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(diagnostics_test).step);
+    test_step.dependOn(&b.addRunArtifact(footer_test).step);
     for (test_files) |rel| {
         const t = makeTest(b, gero_mod, examples_opts, rel, target, optimize);
         test_step.dependOn(&b.addRunArtifact(t).step);
