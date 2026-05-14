@@ -35,6 +35,11 @@ from the repo root and prefix them with `./zig-out/bin/` — or run
 `zig build install --prefix ~/.local` to drop the binary into
 `~/.local/bin`.
 
+For editor setup (VS Code / Neovim / Helix), CI recipes
+(GitHub Actions / GitLab), and pre-commit hooks (lefthook /
+pre-commit framework / plain git), see
+[`docs/tooling.md`](./docs/tooling.md).
+
 ## What's here
 
 | Command | Purpose |
@@ -55,6 +60,8 @@ Run `gero <subcommand> --help` for per-command flags.
 - [docs/isa.md](./docs/isa.md) — ISA reference (opcodes, memory map,
   `.gx` format)
 - [docs/cli.md](./docs/cli.md) — full CLI reference
+- [docs/tooling.md](./docs/tooling.md) — editor setup, CI recipes,
+  pre-commit hooks
 - [docs/gero-lang.md](./docs/gero-lang.md) — high-level language spec
   (v0.2.0, not yet implemented)
 
