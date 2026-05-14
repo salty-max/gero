@@ -541,15 +541,15 @@ fn spanFrom(start: usize, end: usize) ast.Span {
     return .{ .start = @intCast(start), .end = @intCast(end) };
 }
 
-/// Skip ASCII whitespace + `;`-comments. Doesn't cross newlines
-/// (those terminate the expression).
+/// Skip ASCII whitespace. Stops at `;` so the caller's outer
+/// loop can capture trailing comments as first-class `Comment`
+/// statements (the parser surfaces them for the pretty-printer
+/// to round-trip).
 fn skipBlanks(state: *core.ParseState) void {
     while (state.index < state.input.len) {
         const b = state.input[state.index];
         if (b == ' ' or b == '\t') {
             state.advance(1);
-        } else if (b == ';') {
-            while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
         } else {
             break;
         }
