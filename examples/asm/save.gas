@@ -17,7 +17,7 @@
 sram_banks $01
 
 main:
-  mov $00, mb                 ; window mirrors bank 0 (the SRAM bank)
+  mov $00, mb                ; window mirrors bank 0 (the SRAM bank)
 
   ; Write the 3-byte tag into SRAM at &C000..&C002.
   mov 'S', r1

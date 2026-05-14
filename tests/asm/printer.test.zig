@@ -52,10 +52,16 @@ test "printProgram: consecutive consts stay clustered (no blank line)" {
     try std.testing.expectEqualStrings("const A = $01\nconst B = $02\n", p.text);
 }
 
-test "printProgram: blank line between kind transitions" {
-    var p = try parseAndPrint("const A = $01\nmain:\n  hlt\n");
+test "printProgram: preserves blank line between kind transitions" {
+    var p = try parseAndPrint("const A = $01\n\nmain:\n  hlt\n");
     defer p.deinit();
     try std.testing.expectEqualStrings("const A = $01\n\nmain:\n  hlt\n", p.text);
+}
+
+test "printProgram: drops blank line when source has none" {
+    var p = try parseAndPrint("const A = $01\nmain:\n  hlt\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings("const A = $01\nmain:\n  hlt\n", p.text);
 }
 
 test "printProgram: instructions indent under label" {
@@ -83,13 +89,13 @@ test "printProgram: data16 with single value" {
 }
 
 test "printProgram: org directive" {
-    var p = try parseAndPrint("org $1000\nmain:\n  hlt\n");
+    var p = try parseAndPrint("org $1000\n\nmain:\n  hlt\n");
     defer p.deinit();
     try std.testing.expectEqualStrings("org $1000\n\nmain:\n  hlt\n", p.text);
 }
 
 test "printProgram: bank directive" {
-    var p = try parseAndPrint("bank $01\nmain:\n  hlt\n");
+    var p = try parseAndPrint("bank $01\n\nmain:\n  hlt\n");
     defer p.deinit();
     try std.testing.expectEqualStrings("bank $01\n\nmain:\n  hlt\n", p.text);
 }
@@ -125,13 +131,13 @@ test "printProgram: address-literal operand" {
 }
 
 test "printProgram: label-ref operand (forward reference)" {
-    var p = try parseAndPrint("main:\n  jmp loop\nloop:\n  hlt\n");
+    var p = try parseAndPrint("main:\n  jmp loop\n\nloop:\n  hlt\n");
     defer p.deinit();
     try std.testing.expectEqualStrings("main:\n  jmp loop\n\nloop:\n  hlt\n", p.text);
 }
 
 test "printProgram: sym-ref operand" {
-    var p = try parseAndPrint("data8 GREETING = \"Hi\"\nmain:\n  mov @GREETING, r1\n");
+    var p = try parseAndPrint("data8 GREETING = \"Hi\"\n\nmain:\n  mov @GREETING, r1\n");
     defer p.deinit();
     try std.testing.expectEqualStrings(
         \\data8 GREETING = "Hi"
@@ -176,16 +182,15 @@ test "printProgram: blank line preserved before a standalone comment block" {
 
 test "printProgram: trailing comments stay inline (padded to comment_column)" {
     // The canonical form keeps trailing comments on the host's
-    // line, padded to the configured column (32 by default).
+    // line, padded to the configured column (30 by default).
     // Important for asm where trailing comments often carry the
     // line's semantic — demoting them to standalone would split
     // a logical unit.
     var p = try parseAndPrint("main:\n  hlt ; halt\n");
     defer p.deinit();
-    // host = "  hlt" (5 chars). Pad to col 32 = 26 spaces.
-    // Result: "  hlt" + 26 spaces + "; halt".
+    // host = "  hlt" (5 chars). Pad to col 30 = 24 spaces.
     try std.testing.expectEqualStrings(
-        "main:\n  hlt                          ; halt\n",
+        "main:\n  hlt                        ; halt\n",
         p.text,
     );
 }
@@ -298,13 +303,13 @@ test "printProgram: trailing comment falls back to single space on oversized hos
     try std.testing.expectEqualStrings(p.text, p2.text);
 }
 
-test "printProgram: trailing comment padded to column 32" {
+test "printProgram: trailing comment padded to default column" {
     var p = try parseAndPrint("const X = $10 ; doc\n");
     defer p.deinit();
-    // "const X = $10" is 13 chars; pad = 32 - 1 - 13 = 18 spaces;
-    // then "; doc" lands with `;` at column 32 (1-indexed).
+    // "const X = $10" is 13 chars; pad = 30 - 1 - 13 = 16 spaces;
+    // then "; doc" lands with `;` at column 30 (1-indexed).
     try std.testing.expectEqualStrings(
-        "const X = $10                  ; doc\n",
+        "const X = $10                ; doc\n",
         p.text,
     );
 }

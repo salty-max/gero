@@ -20,10 +20,14 @@ After cloning:
 
 ```bash
 lefthook install
-zig build ci    # full local pipeline: lint + 4 release modes + cross-target compile
+zig build       # builds zig-out/bin/gero — required for the .gas pre-commit hooks
+zig build ci    # full local pipeline: lint + 4 release modes + cross-target compile + examples
 ```
 
-If `zig build ci` is green, you're set up correctly.
+If `zig build ci` is green, you're set up correctly. The pre-commit
+hooks shell out to `./zig-out/bin/gero check / fmt --check` on
+staged `.gas` files; keep the binary built (`zig build`) before
+committing.
 
 ## Branching
 

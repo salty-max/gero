@@ -322,14 +322,23 @@ pub fn build(b: *std.Build) void {
     );
     check_broken_step.dependOn(&check_broken_cmd.step);
 
+    const fmt_check_examples_cmd = b.addSystemCommand(&.{ "bash", "scripts/fmt-check-examples.sh" });
+    fmt_check_examples_cmd.step.dependOn(b.getInstallStep());
+    const fmt_check_examples_step = b.step(
+        "fmt-check-examples",
+        "Verify every examples/asm/*.gas is canonical under `gero fmt --check`",
+    );
+    fmt_check_examples_step.dependOn(&fmt_check_examples_cmd.step);
+
     // ----- All-in-one CI ---------------------------------------------------
 
-    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + check-examples + check-broken + test-examples");
+    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + check-examples + check-broken + fmt-check-examples + test-examples");
     ci_step.dependOn(lint_step);
     ci_step.dependOn(test_modes_step);
     ci_step.dependOn(test_all);
     ci_step.dependOn(&check_examples_cmd.step);
     ci_step.dependOn(&check_broken_cmd.step);
+    ci_step.dependOn(&fmt_check_examples_cmd.step);
     ci_step.dependOn(&test_examples_cmd.step);
 
     // ----- Changesets ------------------------------------------------------
