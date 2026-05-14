@@ -13,6 +13,7 @@ pub const Command = enum {
     compile,
     run,
     test_,
+    new,
     bench,
     fmt,
     check,
@@ -104,6 +105,7 @@ fn commandFromStr(s: []const u8) ?Command {
     if (std.mem.eql(u8, s, "compile")) return .compile;
     if (std.mem.eql(u8, s, "run")) return .run;
     if (std.mem.eql(u8, s, "test")) return .test_;
+    if (std.mem.eql(u8, s, "new")) return .new;
     if (std.mem.eql(u8, s, "bench")) return .bench;
     if (std.mem.eql(u8, s, "fmt")) return .fmt;
     if (std.mem.eql(u8, s, "check")) return .check;
@@ -119,6 +121,7 @@ pub fn commandName(cmd: Command) []const u8 {
         .compile => "compile",
         .run => "run",
         .test_ => "test",
+        .new => "new",
         .bench => "bench",
         .fmt => "fmt",
         .check => "check",
@@ -134,6 +137,7 @@ fn commandSummary(cmd: Command) []const u8 {
         .compile => "Compile a gero-lang module into a .gx",
         .run => "Execute a .gx",
         .test_ => "Run asm-level tests",
+        .new => "Scaffold a new gero project",
         .bench => "Run benchmarks",
         .fmt => "Format .gas / .gr source",
         .check => "Type-check without producing output",
@@ -148,7 +152,7 @@ fn commandSummary(cmd: Command) []const u8 {
 /// discoverable, but split into a separate "planned" section.
 fn commandIsImplemented(cmd: Command) bool {
     return switch (cmd) {
-        .asm_, .run, .info, .disasm, .test_, .check, .fmt => true,
+        .asm_, .run, .info, .disasm, .test_, .check, .fmt, .new => true,
         .compile, .bench, .build => false,
     };
 }
@@ -281,6 +285,12 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero fmt src/{s}                   {s}# recurse + format every .gas{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero fmt --check src/{s}           {s}# CI mode — exit 8 if any file would change{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
+        .new => {
+            try out.print("  {s}gero new{s} <name> [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero new my-cart{s}                {s}# scaffold ./my-cart with src/, tests/, gero.toml{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero new my-cart --quiet{s}        {s}# suppress the next-steps banner{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+        },
         else => unreachable, // allow-strict: commandIsImplemented() filtered above
     }
 
@@ -325,6 +335,7 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .test_ => &.{ .help, .verbose, .color, .no_color },
         .check => &.{ .help, .quiet, .verbose, .color, .no_color },
         .fmt => &.{ .help, .check, .quiet, .color, .no_color },
+        .new => &.{ .help, .quiet, .color, .no_color },
         .compile, .bench, .build => &.{.help},
     };
 }

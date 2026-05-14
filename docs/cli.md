@@ -331,7 +331,46 @@ problem; `2` on usage error.
 **Roadmap:** `--format=json` for editor integration + `.gr` source
 support land alongside the lang front-end in v0.3 (#7).
 
-### 3.10 `gero build` — build project
+### 3.10 `gero new <name>` — scaffold a project
+
+Lay out a minimal v0.2 asm project. Templates are embedded in
+the binary — no network call, no external assets.
+
+```bash
+gero new my-cart                  # → ./my-cart/ scaffold
+gero new my-cart --quiet          # skip the next-steps banner
+```
+
+**Scaffold:**
+
+```
+my-cart/
+├── gero.toml              # name, version 0.1.0, vm target, entry src/main.gas
+├── src/
+│   └── main.gas           # hello-world entry, halts cleanly
+├── tests/
+│   ├── smoke.gas          # template golden-file test
+│   └── smoke.expected
+└── README.md              # build / test / run pointers + tooling.md link
+```
+
+**Behavior:**
+- The scaffold ships **no** `.github/workflows/`, **no**
+  `lefthook.yml`, **no** opinionated CI / hook config. The README
+  points at the upstream tooling guide where copy-paste recipes
+  live for GitHub Actions, GitLab, lefthook, and plain git hooks.
+- `<name>` must be 1-64 chars, start with a letter or `_`, and
+  contain only letters, digits, `_`, or `-`. Names with `/`, `.`,
+  spaces, or shell metacharacters are rejected.
+- Fails cleanly with exit 1 if `<name>` already exists.
+
+**Exit:** 0 on success; 1 on host IO / pre-existing dir;
+2 on usage / invalid name.
+
+**Roadmap:** `--kind=lang` lands in v0.3 once the gero-lang
+front-end ships; interactive picker when stdin is a TTY.
+
+### 3.11 `gero build` — build project
 
 Builds the project rooted at the current working directory using
 v0.1 conventions (no `gero.toml` yet).
