@@ -60,6 +60,8 @@ Run `gero <subcommand> --help` for per-command flags.
 - [docs/isa.md](./docs/isa.md) — ISA reference (opcodes, memory map,
   `.gx` format)
 - [docs/cli.md](./docs/cli.md) — full CLI reference
+- [docs/asm-cookbook.md](./docs/asm-cookbook.md) — recipes for
+  loops, banking, SRAM, IRQs, fixed-point, and more
 - [docs/tooling.md](./docs/tooling.md) — editor setup, CI recipes,
   pre-commit hooks
 - [docs/gero-lang.md](./docs/gero-lang.md) — high-level language spec
