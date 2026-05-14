@@ -174,14 +174,20 @@ test "printProgram: blank line preserved before a standalone comment block" {
     , p.text);
 }
 
-test "printProgram: trailing comment demotes to standalone (same line attachment preserved)" {
-    // Trailing comment was inline with `hlt`; printer recognizes
-    // the source-same-line proximity and skips the blank line,
-    // so the comment stays tight to the instruction on the next
-    // line.
+test "printProgram: trailing comments stay inline (padded to comment_column)" {
+    // The canonical form keeps trailing comments on the host's
+    // line, padded to the configured column (32 by default).
+    // Important for asm where trailing comments often carry the
+    // line's semantic — demoting them to standalone would split
+    // a logical unit.
     var p = try parseAndPrint("main:\n  hlt ; halt\n");
     defer p.deinit();
-    try std.testing.expectEqualStrings("main:\n  hlt\n; halt\n", p.text);
+    // host = "  hlt" (5 chars). Pad to col 32 = 26 spaces.
+    // Result: "  hlt" + 26 spaces + "; halt".
+    try std.testing.expectEqualStrings(
+        "main:\n  hlt                          ; halt\n",
+        p.text,
+    );
 }
 
 test "printProgram: idempotence — second pass matches first" {
@@ -241,6 +247,68 @@ test "printProgram: handles include resolution markers cleanly" {
     var p = try parseAndPrint("main:\n  hlt\n");
     defer p.deinit();
     try std.testing.expect(std.mem.indexOfScalar(u8, p.text, '\x0c') == null);
+}
+
+// ---------- richer canonical (#141) ----------
+
+test "printProgram: const block aligns = column to widest name" {
+    var p = try parseAndPrint("const A = $01\nconst BBBBB = $02\nconst C = $03\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings(
+        \\const A     = $01
+        \\const BBBBB = $02
+        \\const C     = $03
+        \\
+    , p.text);
+}
+
+test "printProgram: data8 block aligns the same way" {
+    var p = try parseAndPrint("data8 GREETING = \"Hi\"\ndata8 X = $00\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings(
+        \\data8 GREETING = "Hi"
+        \\data8 X        = $00
+        \\
+    , p.text);
+}
+
+test "printProgram: hex literal case → uppercase by default" {
+    var p = try parseAndPrint("const X = $abcd\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings("const X = $ABCD\n", p.text);
+}
+
+test "printProgram: addr literal & uses 4 digits + uppercase" {
+    var p = try parseAndPrint("main:\n  call &c000\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings("main:\n  call &C000\n", p.text);
+}
+
+test "printProgram: trailing comment padded to column 32" {
+    var p = try parseAndPrint("const X = $10 ; doc\n");
+    defer p.deinit();
+    // "const X = $10" is 13 chars; pad = 32 - 1 - 13 = 18 spaces;
+    // then "; doc" lands with `;` at column 32 (1-indexed).
+    try std.testing.expectEqualStrings(
+        "const X = $10                  ; doc\n",
+        p.text,
+    );
+}
+
+test "printProgram: trailing comment idempotent across re-formats" {
+    var p1 = try parseAndPrint("main:\n  hlt ; halt\n");
+    defer p1.deinit();
+    var p2 = try parseAndPrint(p1.text);
+    defer p2.deinit();
+    try std.testing.expectEqualStrings(p1.text, p2.text);
+}
+
+test "printProgram: const block alignment is idempotent" {
+    var p1 = try parseAndPrint("const A = $01\nconst BBBBB = $02\n");
+    defer p1.deinit();
+    var p2 = try parseAndPrint(p1.text);
+    defer p2.deinit();
+    try std.testing.expectEqualStrings(p1.text, p2.text);
 }
 
 // ---------- ignore directives ----------
