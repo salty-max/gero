@@ -81,21 +81,19 @@ pub fn print(
 
         const directive = directiveOf(stmt, source);
 
-        // Detect a trailing-ignore directive on the *next* statement.
-        // When present, the host statement's protection extends to
-        // cover the trailing comment too — we source-slice through
-        // its end and skip the comment on the next loop iteration,
-        // so the line stays glued together (and idempotent across
-        // re-formats — second pass sees the same shape).
-        const trailing_ignore_comment: ?ast.Statement = blk: {
+        // Any comment on the same source line as this statement —
+        // either the trailing-ignore directive itself, or a regular
+        // note that we want to glue to a separately-protected line.
+        const trailing_comment: ?ast.Statement = blk: {
             if (stmt == .comment) break :blk null;
             if (i + 1 >= program.statements.len) break :blk null;
             const next = program.statements[i + 1];
             if (next != .comment) break :blk null;
-            if (directiveOf(next, source) != .trailing) break :blk null;
             if (!sameSourceLine(stmt.span().end, next.span().start, source)) break :blk null;
             break :blk next;
         };
+        const trailing_is_directive = trailing_comment != null and
+            directiveOf(trailing_comment.?, source) == .trailing;
 
         // ---- decide whether this statement gets source-sliced ----
         const protected = blk: {
@@ -104,14 +102,22 @@ pub fn print(
                 break :blk true;
             }
             if (ignore_next_pending and stmt != .comment) break :blk true;
-            if (trailing_ignore_comment != null) break :blk true;
+            if (trailing_is_directive) break :blk true;
             break :blk false;
         };
 
         // ---- emit ----
         if (protected) {
-            const end = if (trailing_ignore_comment) |c| c.span().end else stmt.span().end;
-            try writer.writeAll(source[stmt.span().start..end]);
+            // Walk back to the start of the line so the user's
+            // leading indent (which lives outside `stmt.span()`)
+            // is preserved verbatim, and extend through any trailing
+            // comment on the same line so it stays glued to its host
+            // (alignment + comment both preserved). Without the
+            // trailing extension a non-directive comment would
+            // demote to its own line, breaking idempotence.
+            const start = lineStartBefore(source, stmt.span().start);
+            const end = if (trailing_comment) |c| c.span().end else stmt.span().end;
+            try writer.writeAll(source[start..end]);
         } else {
             try writeStatement(writer, stmt, source, opts);
         }
@@ -125,9 +131,11 @@ pub fn print(
             .trailing, .file, .none => {},
         }
         if (protected and stmt != .comment) ignore_next_pending = false;
-        if (trailing_ignore_comment != null) skip_next = true;
+        // Skip the trailing comment on the next iteration whenever
+        // we glued it to the protected host above.
+        if (protected and trailing_comment != null) skip_next = true;
 
-        prev = if (trailing_ignore_comment) |c| c else stmt;
+        prev = if (protected and trailing_comment != null) trailing_comment.? else stmt;
     }
 }
 
@@ -164,6 +172,15 @@ fn fileIgnoreActive(program: *const ast.Program, source: []const u8) bool {
         if (directiveOf(s, source) == .file) return true;
     }
     return false;
+}
+
+/// Walk backward from `pos` to the start of the containing line
+/// (one past the previous `\n`, or 0). Used by the ignore-region
+/// emitter so leading indent is preserved verbatim.
+fn lineStartBefore(source: []const u8, pos: u32) usize {
+    var i: usize = pos;
+    while (i > 0 and source[i - 1] != '\n') i -= 1;
+    return i;
 }
 
 /// True when `end_a..start_b` in `source` is free of `\n`.
