@@ -592,7 +592,7 @@ call <label_in_bank_1>
 
 ---
 
-## 7. Worked example
+## 6. Worked example
 
 A minimal program that counts up to 16, then halts:
 
@@ -666,7 +666,7 @@ end:
 
 ---
 
-## 8. Errors
+## 7. Errors
 
 The assembler emits structured `ParseError`s via `knit`:
 

@@ -127,7 +127,7 @@ pub const Located = struct {
 
 /// Diagnostic carrying a fused-buffer byte offset (inside
 /// `parse_error.index`). Use `SourceMap.lookup` to resolve.
-/// `code` is set for semantic errors that map to asm spec §8's
+/// `code` is set for semantic errors that map to asm spec §7's
 /// E001..E016 list; generic syntax errors leave it `null`.
 /// `note` is an optional borrowed hint (e.g. "did you mean `foo`?")
 /// that the formatter renders below the main diagnostic line.
@@ -177,7 +177,7 @@ pub const ErrorCode = enum(u8) {
     /// of the cart, so they need at least N total banks to occupy).
     sram_without_banks = 17,
 
-    /// Map a lexer-level `ParseError.message` to the asm spec §8
+    /// Map a lexer-level `ParseError.message` to the asm spec §7
     /// code, or `null` when the message isn't one of the four
     /// lex-level categories that map to E-codes (E006 / E010 /
     /// E011 / E016). Substring match — the lexer messages are
@@ -539,7 +539,7 @@ pub const Style = struct {
 /// Format one `Diagnostic` as
 /// `<path>:<line>:<col>: [<code>] <message>`. The `[Exxx]` prefix
 /// is included only when the diagnostic carries an `ErrorCode`
-/// (semantic errors per asm spec §8); plain syntax errors emit
+/// (semantic errors per asm spec §7); plain syntax errors emit
 /// no bracketed code.
 pub fn formatDiagnostic(
     writer: anytype,

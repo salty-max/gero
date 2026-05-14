@@ -30,7 +30,7 @@ pub const Codegen = struct {
     image: []u8,
     /// Populated symbol table.
     symbols: symtab.SymbolTable,
-    /// Errors raised during codegen (E001..E016 per asm spec §8).
+    /// Errors raised during codegen (E001..E016 per asm spec §7).
     errors: []include.Diagnostic,
     allocator: std.mem.Allocator,
 
