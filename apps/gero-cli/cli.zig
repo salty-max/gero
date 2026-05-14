@@ -286,9 +286,10 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero fmt --check src/{s}           {s}# CI mode — exit 8 if any file would change{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .new => {
-            try out.print("  {s}gero new{s} <name> [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("  {s}gero new{s} <name> | . [--quiet]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
             try out.print("  {s}gero new my-cart{s}                {s}# scaffold ./my-cart with src/, tests/, gero.toml{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero new .{s}                      {s}# scaffold into the current directory (name = its basename){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero new my-cart --quiet{s}        {s}# suppress the next-steps banner{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         else => unreachable, // allow-strict: commandIsImplemented() filtered above

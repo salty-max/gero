@@ -337,9 +337,16 @@ Lay out a minimal v0.2 asm project. Templates are embedded in
 the binary — no network call, no external assets.
 
 ```bash
-gero new my-cart                  # → ./my-cart/ scaffold
+gero new my-cart                  # → ./my-cart/ scaffold (fresh subdir)
+gero new .                        # scaffold into cwd; name = cwd basename
 gero new my-cart --quiet          # skip the next-steps banner
 ```
+
+Pass `.` to scaffold into the current directory (cargo / npm
+style) — the cwd's basename becomes the project name. The
+in-place form refuses to overwrite if `gero.toml`, `src/main.gas`,
+`tests/smoke.gas`, `tests/smoke.expected`, or `README.md` already
+exist in the cwd.
 
 **Scaffold:**
 
