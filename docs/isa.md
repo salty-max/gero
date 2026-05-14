@@ -219,20 +219,31 @@ themselves devices that the VM swaps in.
 
 Operand types:
 
-| Type   | Size | Range            | Notes |
-|--------|------|------------------|-------|
-| `Reg`  | 1    | `0x00..0x0E`     | Register index. |
-| `Imm8` | 1    | `0x00..0xFF`     | Unsigned 8-bit immediate. |
-| `Imm16`| 2    | `0x0000..0xFFFF` | Little-endian 16-bit immediate. |
-| `Addr` | 2    | `0x0000..0xFFFF` | Little-endian 16-bit address. |
-| `ZP`   | 1    | `0x00..0xFF`     | Zero-page address — shorter form of `Addr` for `0x0000..0x00FF`. |
-
-`ZP` is the new addressing mode added for v0.1 (not present in
-gero_2.0). It saves 1 byte per access for the most common globals.
+| Type       | Size | Range            | Notes |
+|------------|------|------------------|-------|
+| `Reg`      | 1    | `0x00..0x0E`     | Register index — see §2 for the full register file. |
+| `Imm8`     | 1    | `0x00..0xFF`     | Unsigned 8-bit immediate. |
+| `Imm16`    | 2    | `0x0000..0xFFFF` | Little-endian 16-bit immediate. |
+| `Addr`     | 2    | `0x0000..0xFFFF` | Little-endian 16-bit address — asm syntax `&XXXX` or `@SYM`. |
+| `RegIndirect` | 1 | `0x00..0x0E`     | Register index whose `u16` value is the effective address — asm syntax `[r1]`, `[r2]`, … |
+| `Indexed`  | 3    | (`Addr` + `Reg`) | 16-bit base address + 1-byte register index. Effective address = `base + reg.u16`. Asm syntax `[@SYM + r3]` or `[&XXXX + r1]`. |
+| `ZP`       | 1    | `0x00..0xFF`     | Zero-page address — 1-byte form of `Addr` for `0x0000..0x00FF`. **Reserved**: no shipped opcode emits `ZP` operands in v0.1. A future peephole pass will downgrade `Addr` operands that fit in the zero page; until then the opcode table reserves the slot for the downgraded forms. |
 
 ---
 
 ## 5. Instruction set
+
+The `Schema` column lists operand encoding using a mix of the
+type names from §4 (`Reg`, `Imm8`, `Imm16`, `Addr`) and the asm-
+syntax shorthand for indirect / indexed forms (`[Reg]` for
+`RegIndirect`, `[Addr + Reg]` for `Indexed`). Read left to right
+in asm-source order: `Schema: A, B` means the asm form is
+`mnemonic A, B` (e.g. `mov $00, r1`).
+
+Operand order convention:
+
+- **Stores and arithmetic** (`mov`, `add`, `sub`, `mul`, `div`, `adc`, `sbc`, bitwise `and`/`or`/`xor`) — `(src, dst)`. Reads naturally: "add X to r1".
+- **Tests** (`cmp`, `tst`) — `(subject, value)`. Reads naturally: "compare r1 to 42". No destination operand.
 
 ### 5.1 Data movement (`mov` family)
 
@@ -247,13 +258,13 @@ assembler picks the correct one from operand types.
 | `0x12` | `mov`    | `Reg, Addr`     | mem[addr] ← reg |
 | `0x13` | `mov`    | `Addr, Reg`     | reg ← mem[addr] |
 | `0x14` | `mov`    | `Imm16, Addr`   | mem[addr] ← imm |
-| `0x15` | `mov`    | `Reg, [Reg]`    | reg ← mem[ptr] (indirect load) |
-| `0x16` | `mov`    | `[Reg], Reg`    | mem[ptr] ← reg (indirect store) |
-| `0x17` | `mov`    | `Addr, Reg, Reg`| reg ← mem[addr + offset_reg] (indexed) |
+| `0x15` | `mov`    | `Reg, [Reg]`    | mem[ptr] ← reg (indirect store — `ptr` is the second `Reg` operand's `u16` value) |
+| `0x16` | `mov`    | `[Reg], Reg`    | reg ← mem[ptr] (indirect load) |
+| `0x17` | `mov`    | `[Addr + Reg], Reg` | reg ← mem[base + idx] (indexed load — asm form `[@SYM + r3]`) |
 | `0x18` | `mov`    | `Imm16, [Reg]`  | mem[ptr] ← imm |
-| `0x19` | `mov`    | `Reg, ZP`       | mem[zp] ← reg (zero-page store) |
-| `0x1A` | `mov`    | `ZP, Reg`       | reg ← mem[zp] (zero-page load) |
-| `0x1B` | `mov`    | `Imm16, ZP`     | mem[zp] ← imm |
+| `0x19` | `mov`    | `Reg, ZP`       | (reserved — see §4 note on `ZP`) |
+| `0x1A` | `mov`    | `ZP, Reg`       | (reserved — see §4 note on `ZP`) |
+| `0x1B` | `mov`    | `Imm16, ZP`     | (reserved — see §4 note on `ZP`) |
 
 ### 5.2 Byte-sized data movement (`mov8` family)
 
