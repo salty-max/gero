@@ -12,9 +12,12 @@
 /// parse + print of canonical text picks up the same spans and
 /// re-emits identical bytes).
 ///
-/// Known limitation: comments are stripped, because the lexer
-/// currently doesn't preserve them in the AST. Tracked as a
-/// follow-up; the printer itself stays comment-agnostic.
+/// Comments are preserved: the parser surfaces every `; ...` line
+/// as a `Statement.comment` node and the printer emits it span-
+/// sliced from source. Trailing comments (`hlt ; halt`) demote to
+/// standalone (`hlt\n; halt`) on the first format pass and then
+/// stay stable — the blank-line rule counts newlines in the
+/// source gap so the layout is idempotent.
 const std = @import("std");
 const ast = @import("ast.zig");
 
