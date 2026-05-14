@@ -284,6 +284,20 @@ test "printProgram: addr literal & uses 4 digits + uppercase" {
     try std.testing.expectEqualStrings("main:\n  call &C000\n", p.text);
 }
 
+test "printProgram: trailing comment falls back to single space on oversized host" {
+    // Host wider than `comment_column - 1` → single-space inline,
+    // no overflow / truncation. Idempotent.
+    var p = try parseAndPrint("data8 LONG_NAME_OVERFLOW = \"x\" ; doc\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings(
+        "data8 LONG_NAME_OVERFLOW = \"x\" ; doc\n",
+        p.text,
+    );
+    var p2 = try parseAndPrint(p.text);
+    defer p2.deinit();
+    try std.testing.expectEqualStrings(p.text, p2.text);
+}
+
 test "printProgram: trailing comment padded to column 32" {
     var p = try parseAndPrint("const X = $10 ; doc\n");
     defer p.deinit();
