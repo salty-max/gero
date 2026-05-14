@@ -274,20 +274,24 @@ gate that catches asm spec drift faster than the full assemble-and-
 run round-trip.
 
 ```bash
-gero check main.gas               # one .gas file (v0.2 — current)
+gero check main.gas               # one .gas file
+gero check src/                   # walk recursively for *.gas
+gero check a.gas b.gas src/       # any mix of files + dirs
 gero check main.gr                # → "not yet implemented" until v0.3
-gero check main.gas --quiet       # suppress ok summary; exit code only
-gero check main.gas --verbose     # per-phase timings (include / parse / codegen)
+gero check main.gas --quiet       # suppress per-file lines + summary
+gero check main.gas --verbose     # per-phase timings (single-file only)
 ```
 
 **Output (default):**
 
-- On success: `✓ <path>  (N bytes, M banks)` summary line followed
-  by a Cargo-style `Finished in X ms` footer. `--quiet` suppresses
-  both, `--verbose` adds per-phase timings between them.
-- On failure: a `<N> errors in <M> files` header, then per-file
-  caret-style diagnostics matching what `gero asm` would emit, plus
-  a `Failed in X ms` footer.
+- **Single-file pass:** `✓ <path>  (N bytes, M banks)` summary
+  followed by a Cargo-style `Finished in X ms` footer.
+  `--verbose` inserts per-phase timings between them.
+- **Multi-file:** one line per file (`✓ <path>` on success,
+  `✗ <path>` + caret-style diagnostic on failure), then a
+  `check: N files passed, M failures` line, then the footer.
+- `--quiet` suppresses per-file ok lines + the summary but keeps
+  failure diagnostics + the footer.
 
 **Exit:** `0` if clean; `4` on any diagnostic; `1` on host IO
 problem; `2` on usage error.
