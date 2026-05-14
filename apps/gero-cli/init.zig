@@ -73,7 +73,7 @@ pub fn execute(
 
     if (!opts.quiet) {
         try term.success("    Initialized `{s}` project in current directory", .{name});
-        try stdout.print("\n  gero build\n  gero run out/{s}.gx\n", .{name});
+        try stdout.print("\n  gero build\n  gero run out/debug/{s}.gx\n", .{name});
     }
     return 0;
 }

@@ -91,7 +91,7 @@ pub fn execute(
 
     if (!opts.quiet) {
         try term.success("    Created `{s}` project", .{name});
-        try stdout.print("\n  cd {s}\n  gero build\n  gero run out/{s}.gx\n", .{ name, name });
+        try stdout.print("\n  cd {s}\n  gero build\n  gero run out/debug/{s}.gx\n", .{ name, name });
     }
     return 0;
 }

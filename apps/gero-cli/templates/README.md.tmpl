@@ -4,9 +4,14 @@ A gero project. The asm-level entry point is `src/main.gas` —
 edit it, then build and run with:
 
 ```bash
-gero build                        # → out/{name}.gx
-gero run out/{name}.gx
+gero build                        # → out/debug/{name}.gx
+gero run out/debug/{name}.gx
 ```
+
+The `.gx` lands under a per-profile subdirectory
+(`out/debug/`, `out/release/`, `out/size/`) so swapping
+`[build].optimize` in `gero.toml` doesn't clobber the previous
+build.
 
 ## Tests
 
