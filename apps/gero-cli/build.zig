@@ -52,7 +52,7 @@ pub fn execute(
     var manifest = switch (try project.parseWithDiagnostic(arena, source)) {
         .ok => |m| m,
         .err => |diag| {
-            try term.err("gero build: {s}:{d}:{d}: {s}", .{ manifest_path, diag.line, diag.col, diag.message });
+            try term.err("gero build: {s}:{d}:{d}: {s}", .{ manifest_path, diag.line, diag.col, diag.message() });
             return 3;
         },
     };

@@ -73,7 +73,7 @@ pub fn load(
         .err => |diag| {
             try term.err(
                 "{s}: {s}:{d}:{d}: {s}",
-                .{ command_name, manifest_path, diag.line, diag.col, diag.message },
+                .{ command_name, manifest_path, diag.line, diag.col, diag.message() },
             );
             return .failed;
         },
