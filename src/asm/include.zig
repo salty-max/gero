@@ -137,7 +137,7 @@ pub const Diagnostic = struct {
     note: ?[]const u8 = null,
 };
 
-/// Asm spec §8 error codes. Numerical IDs match the spec's
+/// Asm spec §7 error codes. Numerical IDs match the spec's
 /// `E001..E016` table — `@intFromEnum(ErrorCode.unknown_mnemonic) == 1`.
 pub const ErrorCode = enum(u8) {
     /// E001: unknown mnemonic.
@@ -154,8 +154,11 @@ pub const ErrorCode = enum(u8) {
     hex_out_of_range = 6,
     /// E007: address out of range.
     addr_out_of_range = 7,
-    /// E008: reserved opcode used.
-    reserved_opcode = 8,
+    // E008 was "reserved opcode used" — never emitted; removed once
+    // the ZP pass filled the previously-reserved 0x19/0x1A/0x1B and
+    // 0x2A..0x2D slots. The numeric ID is kept dead (no reuse) to
+    // avoid breaking error-code stability for anyone who parsed the
+    // table in the asm spec.
     /// E009: division by zero in compile-time expression.
     div_by_zero = 9,
     /// E010: unknown escape sequence in string or char literal.
@@ -207,7 +210,7 @@ pub const ErrorCode = enum(u8) {
             .duplicate_label => "E005",
             .hex_out_of_range => "E006",
             .addr_out_of_range => "E007",
-            .reserved_opcode => "E008",
+            // E008 intentionally absent — see enum comment above.
             .div_by_zero => "E009",
             .unknown_escape => "E010",
             .unterminated_string => "E011",

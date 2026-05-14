@@ -687,7 +687,6 @@ Common errors:
 | `E005` | Duplicate label |
 | `E006` | Hex literal out of range |
 | `E007` | Address out of range (would emit > 0xFFFF) |
-| `E008` | Reserved opcode used (placeholder for future ISA additions; no opcode is currently reserved-but-unimplemented today) |
 | `E009` | Division by zero in a compile-time expression |
 | `E010` | Unknown escape sequence in string or char literal |
 | `E011` | Unterminated string literal (newline or EOF before closing `"`) |
