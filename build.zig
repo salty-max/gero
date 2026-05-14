@@ -119,6 +119,27 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-test",
         .root_module = test_cli_mod,
     });
+    const check_cli_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/check.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    check_cli_mod.addImport("gero", gero_mod);
+    check_cli_mod.addOptions("build_options", cli_options);
+    const check_cli_test = b.addTest(.{
+        .name = "test-cli-check",
+        .root_module = check_cli_mod,
+    });
+    const diagnostics_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/diagnostics.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    diagnostics_mod.addImport("gero", gero_mod);
+    const diagnostics_test = b.addTest(.{
+        .name = "test-cli-diagnostics",
+        .root_module = diagnostics_mod,
+    });
 
     // ----- Format ----------------------------------------------------------
 
@@ -158,6 +179,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(asm_test).step);
     test_step.dependOn(&b.addRunArtifact(disasm_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(test_cli_test).step);
+    test_step.dependOn(&b.addRunArtifact(check_cli_test).step);
+    test_step.dependOn(&b.addRunArtifact(diagnostics_test).step);
     for (test_files) |rel| {
         const t = makeTest(b, gero_mod, examples_opts, rel, target, optimize);
         test_step.dependOn(&b.addRunArtifact(t).step);
@@ -260,12 +283,21 @@ pub fn build(b: *std.Build) void {
     );
     test_examples_step.dependOn(&test_examples_cmd.step);
 
+    const check_examples_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-examples.sh" });
+    check_examples_cmd.step.dependOn(b.getInstallStep());
+    const check_examples_step = b.step(
+        "check-examples",
+        "Drive every examples/asm/*.gas through `gero check` (fails on any non-zero)",
+    );
+    check_examples_step.dependOn(&check_examples_cmd.step);
+
     // ----- All-in-one CI ---------------------------------------------------
 
-    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + test-examples");
+    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + check-examples + test-examples");
     ci_step.dependOn(lint_step);
     ci_step.dependOn(test_modes_step);
     ci_step.dependOn(test_all);
+    ci_step.dependOn(&check_examples_cmd.step);
     ci_step.dependOn(&test_examples_cmd.step);
 
     // ----- Changesets ------------------------------------------------------

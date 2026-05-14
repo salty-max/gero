@@ -144,8 +144,8 @@ fn commandSummary(cmd: Command) []const u8 {
 /// discoverable, but split into a separate "planned" section.
 fn commandIsImplemented(cmd: Command) bool {
     return switch (cmd) {
-        .asm_, .run, .info, .disasm, .test_ => true,
-        .compile, .bench, .fmt, .check, .build => false,
+        .asm_, .run, .info, .disasm, .test_, .check => true,
+        .compile, .bench, .fmt, .build => false,
     };
 }
 
@@ -261,6 +261,12 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero test loop{s}               {s}# only tests whose name contains 'loop'{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero test --verbose{s}          {s}# show per-test duration{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
+        .check => {
+            try out.print("  {s}gero check{s} <file.gas> [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero check prog.gas{s}             {s}# parse + codegen-validate, no .gx written{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero check prog.gas --quiet{s}     {s}# suppress the ok summary (exit code only){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+        },
         else => unreachable, // allow-strict: commandIsImplemented() filtered above
     }
 
@@ -302,7 +308,8 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .info => &.{ .help, .color, .no_color },
         .disasm => &.{ .help, .bank, .no_show_bytes, .check_roundtrip, .quiet, .color, .no_color },
         .test_ => &.{ .help, .verbose, .color, .no_color },
-        .compile, .bench, .fmt, .check, .build => &.{.help},
+        .check => &.{ .help, .quiet, .color, .no_color },
+        .compile, .bench, .fmt, .build => &.{.help},
     };
 }
 
