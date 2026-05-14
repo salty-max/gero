@@ -58,9 +58,11 @@ tests/
 
 apps/                      # CLIs land here when needed
 docs/                      # ISA spec + lang spec live here
+editors/                   # Editor tooling — tree-sitter grammar (submodule), VS Code ext
 scripts/                   # Bash helpers for build.zig + lefthook
 .changeset/                # *.md changeset files
 .github/                   # workflows + templates
+.gitmodules                # Submodule pinning (tree-sitter-gero-asm, vscode-gero in v0.2)
 ```
 
 The `src/gero.zig` barrel and any `src/<module>.zig` (top-level
@@ -209,6 +211,7 @@ asm/<sub>           → a specific sub-module under src/asm/<sub>/
 disasm/<sub>        → a specific sub-module under src/disasm/<sub>/
 lang/<sub>          → a specific sub-module under src/lang/<sub>/
 apps/<name>         → a specific binary under apps/<name>/
+editors/<name>      → an editor-tooling submodule under editors/<name>/
 ```
 
 ### Rules

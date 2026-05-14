@@ -1,4 +1,4 @@
 {
-  "scopeRegex": "^(vm|asm|disasm|lang|common|tooling|ci|docs|meta|vm/[a-z][a-z0-9-]*|asm/[a-z][a-z0-9-]*|disasm/[a-z][a-z0-9-]*|lang/[a-z][a-z0-9-]*|apps/[a-z][a-z0-9-]*)$",
+  "scopeRegex": "^(vm|asm|disasm|lang|common|tooling|ci|docs|meta|vm/[a-z][a-z0-9-]*|asm/[a-z][a-z0-9-]*|disasm/[a-z][a-z0-9-]*|lang/[a-z][a-z0-9-]*|apps/[a-z][a-z0-9-]*|editors/[a-z][a-z0-9-]*)$",
   "lineLength": 100
 }
