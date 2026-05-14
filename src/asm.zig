@@ -32,7 +32,7 @@ pub const SourceMap = include.SourceMap;
 pub const Located = include.Located;
 /// Re-export: diagnostic carrying a fused-buffer byte offset.
 pub const Diagnostic = include.Diagnostic;
-/// Re-export: asm spec §8 error codes (E001..E016) for semantic errors.
+/// Re-export: asm spec §7 error codes (E001..E016) for semantic errors.
 pub const ErrorCode = include.ErrorCode;
 /// Re-export: result of `resolveIncludes` — fused source + source map + errors.
 pub const FusedSource = include.FusedSource;

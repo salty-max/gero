@@ -300,7 +300,7 @@ fn parsePrimary(
         // The leading byte was `$` — anything past that is a
         // malformed hex literal, never "this isn't hex at all".
         // Surface the lexer's specific message + map it to an
-        // E-code per asm spec §8.
+        // E-code per asm spec §7.
         try errors.append(state.allocator, .{
             .code = include.ErrorCode.fromLexerMessage(r.err.message),
             .parse_error = r.err,
