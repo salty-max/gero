@@ -27,7 +27,7 @@ main:
   shr r1, $04                ; r1 = high nibble
   call print_nibble
   mov r2, r1                 ; r1 ← r2 (restore)
-  and r1, $0F                ; r1 = low nibble
+  and $0F, r1                ; r1 = low nibble
   call print_nibble
 
   mov NEWLINE, r1

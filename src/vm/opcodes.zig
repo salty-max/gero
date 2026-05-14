@@ -96,11 +96,11 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x67] = .{ .mnemonic = "sbc", .operands = &.{ .reg, .reg } };
 
     // logical
-    t[0x50] = .{ .mnemonic = "and", .operands = &.{ .reg, .imm16 } };
+    t[0x50] = .{ .mnemonic = "and", .operands = &.{ .imm16, .reg } };
     t[0x51] = .{ .mnemonic = "and", .operands = &.{ .reg, .reg } };
-    t[0x52] = .{ .mnemonic = "or", .operands = &.{ .reg, .imm16 } };
+    t[0x52] = .{ .mnemonic = "or", .operands = &.{ .imm16, .reg } };
     t[0x53] = .{ .mnemonic = "or", .operands = &.{ .reg, .reg } };
-    t[0x54] = .{ .mnemonic = "xor", .operands = &.{ .reg, .imm16 } };
+    t[0x54] = .{ .mnemonic = "xor", .operands = &.{ .imm16, .reg } };
     t[0x55] = .{ .mnemonic = "xor", .operands = &.{ .reg, .reg } };
     t[0x56] = .{ .mnemonic = "not", .operands = &.{.reg} };
 

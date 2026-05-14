@@ -377,11 +377,11 @@ Set `Z`, `N`. Clear `C`, `V`.
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
-| `0x50` | `and`    | `Reg, Imm16`  | reg ← reg & imm |
+| `0x50` | `and`    | `Imm16, Reg`  | reg ← reg & imm |
 | `0x51` | `and`    | `Reg, Reg`    | dst ← dst & src |
-| `0x52` | `or`     | `Reg, Imm16`  | reg ← reg \| imm |
+| `0x52` | `or`     | `Imm16, Reg`  | reg ← reg \| imm |
 | `0x53` | `or`     | `Reg, Reg`    | dst ← dst \| src |
-| `0x54` | `xor`    | `Reg, Imm16`  | reg ← reg ^ imm |
+| `0x54` | `xor`    | `Imm16, Reg`  | reg ← reg ^ imm |
 | `0x55` | `xor`    | `Reg, Reg`    | dst ← dst ^ src |
 | `0x56` | `not`    | `Reg`         | reg ← ~reg |
 

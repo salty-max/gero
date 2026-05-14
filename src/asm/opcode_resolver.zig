@@ -108,12 +108,16 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "sbc", .kinds = &.{ .imm16, .reg }, .opcode = 0x66 },
     .{ .mnemonic = "sbc", .kinds = &.{ .reg, .reg }, .opcode = 0x67 },
 
-    // logical
-    .{ .mnemonic = "and", .kinds = &.{ .reg, .imm16 }, .opcode = 0x50 },
+    // logical — operand order unified to (src, dst) like every other
+    // store / arith family. Previously the reg-imm variants had `(reg,
+    // imm16)` (dst-first) while the reg-reg variants used `(src, dst)` —
+    // a real internal inconsistency. Asm syntax for reg-imm is now
+    // `and $FF, r1` / `or $FF, r1` / `xor $FF, r1`.
+    .{ .mnemonic = "and", .kinds = &.{ .imm16, .reg }, .opcode = 0x50 },
     .{ .mnemonic = "and", .kinds = &.{ .reg, .reg }, .opcode = 0x51 },
-    .{ .mnemonic = "or", .kinds = &.{ .reg, .imm16 }, .opcode = 0x52 },
+    .{ .mnemonic = "or", .kinds = &.{ .imm16, .reg }, .opcode = 0x52 },
     .{ .mnemonic = "or", .kinds = &.{ .reg, .reg }, .opcode = 0x53 },
-    .{ .mnemonic = "xor", .kinds = &.{ .reg, .imm16 }, .opcode = 0x54 },
+    .{ .mnemonic = "xor", .kinds = &.{ .imm16, .reg }, .opcode = 0x54 },
     .{ .mnemonic = "xor", .kinds = &.{ .reg, .reg }, .opcode = 0x55 },
     .{ .mnemonic = "not", .kinds = &.{.reg}, .opcode = 0x56 },
 
