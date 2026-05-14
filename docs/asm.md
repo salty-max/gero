@@ -592,18 +592,6 @@ call <label_in_bank_1>
 
 ---
 
-## 6. Limitations
-
-The assembler doesn't currently support:
-
-- **Macros** — no `def macro NAME(args) { ... }` form. Hand-write
-  repeated blocks or factor them through `include`.
-- **Export / import markers** — `include` splices tokens into a
-  single global namespace (6502 / z80 tradition). There is no
-  linker model.
-
----
-
 ## 7. Worked example
 
 A minimal program that counts up to 16, then halts:
