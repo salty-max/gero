@@ -1,4 +1,4 @@
-# Gero Assembler — Language Spec v0.1
+# Gero Assembler — Language Spec
 
 The assembly language that targets the [Gero ISA](./isa.md). Source
 file extension `.gas`. Output is a `.gx` bytecode file ready for the
@@ -55,7 +55,7 @@ names `u8` / `u16`) are also lowercase-only.
 | Address  | `&FFFF` | 1..4 hex digits | Same shape as hex but typed as `Addr`. Distinguishes "this is a memory address" from "this is a literal value". |
 | Char     | `'A'`   | single byte     | Single-quoted ASCII byte. Same C-style escapes as string literals (§1.5). `'A'` = `$41`, `'\n'` = `$0A`. Always a `u8` value. |
 
-Decimal and binary literals are **not** in v0.1 — only hex. Old-school
+Decimal and binary literals aren't supported — only hex. Old-school
 asm convention; if you find yourself wanting decimal, use `$0064` for
 100 and move on.
 
@@ -180,7 +180,7 @@ loop:
 <directive_keyword> <args...>
 ```
 
-Six directives in v0.1:
+Six directives:
 
 | Keyword   | Form                                   | Effect |
 |-----------|----------------------------------------|--------|
@@ -324,13 +324,13 @@ Rules:
 - Include depth is capped at 32 to bound recursion (`E013`).
 - Paths are resolved relative to the directory of the `.gas` file
   doing the include. No search path / no system include directory
-  in v0.1.
+  .
 
 **Re-include semantics:** every `include` directive splices in
 the target's tokens, every time. If two files both `include
 "utils.gas"`, the bytes from `utils.gas` are emitted twice. This
 matches the asm tradition and gives hand-writers a way to repeat
-parametric blocks before macros (post-v0.1) land.
+parametric blocks before macros (are added.
 
 When you want a header to appear at most once, wrap it in an
 include guard at the top of the file — same pattern as NASM:
@@ -342,7 +342,7 @@ include guard at the top of the file — same pattern as NASM:
 ;endif
 ```
 
-(Conditional assembly is post-v0.1; until it lands, hand-writers
+(Conditional assembly is isn't implemented; until then, hand-writers
 either control the include graph manually or accept the duplicate
 emission for repeated sections.)
 
@@ -509,13 +509,18 @@ the outer `+`) is `E003`.
 
 ---
 
-## 4. Sections (TBD)
+## 4. Flat image model
 
-v0.1 emits a flat image — every directive and instruction goes into
-a single output stream. There are **no** explicit section directives
-(`.text`, `.data`, `.rodata`). Programs that need to control layout
-(IVT placement at `$1000`, SRAM region alignment) use the `org`
-directive (§2.2).
+Gero emits a single flat image — every directive and instruction
+goes into one output stream. There are **no** explicit section
+directives (`.text`, `.data`, `.rodata`). Programs that need to
+control layout (IVT placement at `$1000`, SRAM region alignment)
+use the `org` directive (§2.2).
+
+Banked carts use the `bank N` directive to route subsequent
+statements into a specific bank slot; everything else lands in
+the base image. This is a deliberate design choice (6502 / Z80
+style, where layout is the programmer's job), not a placeholder.
 
 ---
 
@@ -536,7 +541,7 @@ Banked programs use two directives:
   exists.
 
 Both directives accept a hex literal: `bank $01`, `sram_banks $02`.
-Decimal isn't part of v0.1 (asm spec §1.4).
+Decimal isn't part of the spec (§1.4).
 
 ### Layout
 
@@ -591,7 +596,7 @@ See `examples/asm/banks/` for a working three-file demo.
 ### Cross-bank calls
 
 A cross-bank call is two instructions: switch `mb`, then call /
-jmp. The asm has no sugar for this in v0.1 — write the pair
+jmp. The asm has no sugar for this — write the pair
 explicitly:
 
 ```asm
@@ -607,7 +612,7 @@ would need to know which bank `<label>` lives in).
 
 ## 6. Roadmap (future asm versions)
 
-Note: gero **v0.2 is the high-level language**, not an asm bump. The
+Note: gero **the high-level language is in development**. The
 assembler is versioned independently — these features land in future
 asm minor releases as the VM and lang compilers exercise the gaps.
 
@@ -615,10 +620,10 @@ asm minor releases as the VM and lang compilers exercise the gaps.
 |---------|-----|
 | `bank_call` / `bank_jump` | Sugar for cross-bank calls. |
 | Macros | Parametric pseudo-instructions (`def macro NAME(args) { ... }`). |
-| Export / import markers | Only relevant if a linker model lands later. v0.1 uses textual `include` with a single global namespace (6502 / z80 tradition). |
+| Export / import markers | Only relevant if a linker model lands later. textual `include` with a single global namespace (6502 / z80 tradition). |
 
 Each addition bumps the assembler's minor version; the bytecode they
-emit remains ISA v0.1 — assembler evolution is independent of ISA
+emit follows the ISA spec — assembler evolution is independent of ISA
 evolution as long as no new opcode is generated.
 
 ---
@@ -718,7 +723,7 @@ Common errors:
 | `E005` | Duplicate label |
 | `E006` | Hex literal out of range |
 | `E007` | Address out of range (would emit > 0xFFFF) |
-| `E008` | Reserved opcode used (placeholder for future ISA additions; no opcode is currently reserved-but-unimplemented in v0.1) |
+| `E008` | Reserved opcode used (placeholder for future ISA additions; no opcode is currently reserved-but-unimplemented today) |
 | `E009` | Division by zero in a compile-time expression |
 | `E010` | Unknown escape sequence in string or char literal |
 | `E011` | Unterminated string literal (newline or EOF before closing `"`) |

@@ -44,13 +44,18 @@ pre-commit framework / plain git), see
 
 | Command | Purpose |
 |---------|---------|
-| `gero asm` | `.gas` source → `.gx` bytecode image |
-| `gero run` | Execute a `.gx` |
-| `gero disasm` | `.gx` → asm (round-trip-safe; CI-gated) |
-| `gero info` | Pretty-print a `.gx` header |
-| `gero test` | Walk `tests/asm/programs/`, diff stdout vs `.expected` golden files |
+| `gero new <name>` / `gero init` | Scaffold a fresh project / initialize the cwd (cargo-style) |
+| `gero build` | Project-aware compile — reads `gero.toml`, writes `out/<optimize>/<name>.gx` |
+| `gero asm <file.gas>` | One-shot assemble — `.gas` source → `.gx` bytecode image |
+| `gero run <file.gx>` | Execute a `.gx` until `hlt` |
+| `gero check [paths…]` | Parse + codegen-validate without writing a `.gx` (LSP-style smoke) |
+| `gero fmt [paths…]` | Canonical formatter for `.gas` (`--check` for CI) |
+| `gero test [pattern]` | Walk `[test].include`, diff stdout vs `.expected` golden files |
+| `gero disasm <file.gx>` | `.gx` → asm (round-trip-safe; CI-gated) |
+| `gero info <file.gx>` | Pretty-print a `.gx` header |
 
-Run `gero <subcommand> --help` for per-command flags.
+Run `gero <subcommand> --help` for per-command flags, or
+[`docs/cli.md`](./docs/cli.md) for the full reference.
 
 ## Learn more
 
@@ -64,8 +69,9 @@ Run `gero <subcommand> --help` for per-command flags.
   loops, banking, SRAM, IRQs, fixed-point, and more
 - [docs/tooling.md](./docs/tooling.md) — editor setup, CI recipes,
   pre-commit hooks
-- [docs/gero-lang.md](./docs/gero-lang.md) — high-level language spec
-  (v0.2.0, not yet implemented)
+- [docs/gero-lang.md](./docs/gero-lang.md) — high-level language
+  spec (draft for the upcoming gero-lang compiler; not yet
+  implemented)
 
 ## Use as a library
 
@@ -83,14 +89,13 @@ const gero = b.dependency("gero", .{
 exe.root_module.addImport("gero", gero.module("gero"));
 ```
 
-## Roadmap
+## Status
 
-- ✅ VM kernel — 16-bit register machine, banked memory, IRQs
-- ✅ Assembler — built on [knit](https://github.com/salty-max/knit)
-- ✅ Disassembler — round-trip-safe
-- ✅ CLI — `asm` / `run` / `disasm` / `info` / `test`
-- ⏳ Gero language compiler — Lua-flavored, gradually typed (v0.2.0)
-- ⏳ Bytecode freeze + cross-target perf pass (v1.0.0)
+Shipped features land in [`CHANGELOG.md`](./CHANGELOG.md).
+Open work is tracked on the
+[project board](https://github.com/salty-max/gero/projects).
+Editor tooling (tree-sitter grammar, VS Code extension) lives in
+[`editors/`](./editors/).
 
 The gtx-16 fantasy console and the `gero-lab` web playground are out
 of scope for this repo — they consume gero as a library.
