@@ -727,5 +727,6 @@ Common errors:
 | `E014` | Backward `org` would overlap already-emitted bytes |
 | `E015` | `include` target file not found |
 | `E016` | Char literal must be exactly one byte (empty `''` or multi-char) |
+| `E017` | `sram_banks N` exceeds the declared `bank N` count (loader invariant — SRAM banks live in the trailing slots of the bank pool, so they need at least N total banks to occupy) |
 
 Errors print with caret-style snippets (knit's `formatParseErrorPretty`).

@@ -85,9 +85,11 @@ pub fn assemble(
         .bank_sizes = std.AutoHashMap(u8, u32).init(allocator),
         .max_bank = null,
         .sram_banks = 0,
+        .sram_banks_span = null,
     };
     defer layout.bank_sizes.deinit();
     try layoutPass(&symbols, &errors, source, tree, &layout);
+    try validateSramBanks(&errors, &layout, allocator);
 
     // Pass 2: emit. Per-bank buffers; the same `current_bank` state
     // walks alongside the layout state.
@@ -134,12 +136,15 @@ pub fn assemble(
 /// (0-based, accessed at runtime by `mb = N`). `max_bank == null`
 /// means no `bank N` directive was seen; otherwise it's the
 /// highest 0-based slot index declared. `sram_banks` is the
-/// latest `sram_banks N` value.
+/// latest `sram_banks N` value; `sram_banks_span` is the source
+/// span of the directive that set it (carried so the post-layout
+/// validator can caret-point at the offending line).
 const Layout = struct {
     base_size: u32,
     bank_sizes: std.AutoHashMap(u8, u32),
     max_bank: ?u8,
     sram_banks: u8,
+    sram_banks_span: ?ast.Span,
 };
 
 /// Per-bank emit buffers. Base image lives outside the banks
@@ -439,7 +444,10 @@ fn layoutPass(
                 }
             },
             .sram_banks_decl => |s| {
-                if (s.count) |n| layout.sram_banks = n;
+                if (s.count) |n| {
+                    layout.sram_banks = n;
+                    layout.sram_banks_span = s.span;
+                }
             },
             .instruction => |i| {
                 const mnem = source[i.mnemonic.start..i.mnemonic.end];
@@ -468,6 +476,38 @@ fn layoutPass(
             .comment, .unknown => {},
         }
     }
+}
+
+/// E017 — enforce the loader's invariant (`sram_bank_count <=
+/// bank_count`) at codegen time. Without this check, writing
+/// `sram_banks $01` without any `bank $XX` produces an image whose
+/// header fails `vm.parseGx` with `error.InvalidSramCount`, which
+/// the `gero asm`/`gero build` CLIs then trip over with a panic.
+/// Catching it here turns the failure into a normal caret-rendered
+/// diagnostic on the offending directive.
+fn validateSramBanks(
+    errors: *std.ArrayList(include.Diagnostic),
+    layout: *const Layout,
+    allocator: std.mem.Allocator,
+) !void {
+    if (layout.sram_banks == 0) return;
+    // @as: widen u8 → u16 so `m + 1` for a max-index of 255 fits without wrap.
+    const bank_count: u16 = if (layout.max_bank) |m| @as(u16, m) + 1 else 0;
+    if (layout.sram_banks <= bank_count) return;
+    // Span fallback: a stray `sram_banks` with no count (parse
+    // failure upstream) already raised a parser diagnostic and
+    // never updates the span — bail out so we don't double-report
+    // with a meaningless caret.
+    const span = layout.sram_banks_span orelse return;
+    try errors.append(allocator, .{
+        .code = .sram_without_banks,
+        .parse_error = core.parseError(
+            "sram_banks",
+            span.start,
+            "`sram_banks` count exceeds declared `bank` count — SRAM banks live in the trailing slots of the cart, so add at least one `bank $XX` directive per SRAM bank",
+            .{ .expected = "at least one `bank $XX` directive per SRAM bank", .kind = .semantic },
+        ),
+    });
 }
 
 fn sizeOfDataValues(

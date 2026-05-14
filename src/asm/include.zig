@@ -172,6 +172,10 @@ pub const ErrorCode = enum(u8) {
     include_not_found = 15,
     /// E016: char literal must be exactly one byte.
     char_literal_size = 16,
+    /// E017: `sram_banks N` exceeds the declared `bank N` count
+    /// (loader invariant — SRAM banks live in the trailing N slots
+    /// of the cart, so they need at least N total banks to occupy).
+    sram_without_banks = 17,
 
     /// Map a lexer-level `ParseError.message` to the asm spec §8
     /// code, or `null` when the message isn't one of the four
@@ -212,6 +216,7 @@ pub const ErrorCode = enum(u8) {
             .backward_org => "E014",
             .include_not_found => "E015",
             .char_literal_size => "E016",
+            .sram_without_banks => "E017",
         };
     }
 };

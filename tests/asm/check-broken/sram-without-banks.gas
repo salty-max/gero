@@ -1,0 +1,11 @@
+; sram-without-banks.gas — `sram_banks` declared without any
+; `bank` directive. Expected: `gero check` exits non-zero with
+; an [E017] "sram_banks count exceeds declared bank count"
+; diagnostic. Pre-fix this image-shape caused `gero asm` /
+; `gero build` to panic in `parseGx` because the loader rejects
+; `sram_bank_count > bank_count`.
+
+sram_banks $01
+
+main:
+  hlt

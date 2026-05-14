@@ -370,6 +370,53 @@ test "codegen: sram_banks N populates the header byte" {
     try std.testing.expectEqual(@as(u8, 2), out.cg.image[0x0C]); // bank_count
 }
 
+test "codegen: sram_banks without any bank declaration is E017" {
+    var out = try assemble(
+        \\sram_banks $01
+        \\main:
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(out.cg.hasErrors());
+    var found = false;
+    for (out.cg.errors) |e| if (e.code == .sram_without_banks) {
+        found = true;
+    };
+    try std.testing.expect(found);
+}
+
+test "codegen: sram_banks exceeding bank_count is E017" {
+    var out = try assemble(
+        \\sram_banks $03
+        \\bank $00
+        \\  hlt
+        \\bank $01
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(out.cg.hasErrors());
+    var found = false;
+    for (out.cg.errors) |e| if (e.code == .sram_without_banks) {
+        found = true;
+    };
+    try std.testing.expect(found);
+}
+
+test "codegen: sram_banks equal to bank_count passes" {
+    var out = try assemble(
+        \\sram_banks $02
+        \\bank $00
+        \\  hlt
+        \\bank $01
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+}
+
 test "codegen: org in base image targeting bank window is E007" {
     var out = try assemble(
         \\org $C100
