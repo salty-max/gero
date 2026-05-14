@@ -402,32 +402,41 @@ gero init --quiet                 # skip the next-steps banner
 
 ### 3.12 `gero build` — build project
 
-Builds the project rooted at the current working directory using
-v0.1 conventions (no `gero.toml` yet).
+Walks the ancestor chain for `gero.toml`, reads `[package]` +
+`[build]`, runs the asm pipeline against `build.entry`, and
+writes the resulting `.gx` to `<project_root>/<build.out>/<package.name>.gx`.
 
-**Project conventions (v0.1):**
-
-```
-<project>/
-├── main.gr   OR   main.gas       # entry point — exactly one required
-├── src/                          # additional .gr / .gas modules (optional)
-└── out/                          # output dir, created if missing
-```
+Essentially `gero asm` wrapped with manifest resolution +
+output-path discipline. Reuses every existing asm-pipeline piece.
 
 ```bash
-gero build                        # → out/<project-basename>.gx
-gero build --optimize=release
+gero build                        # → out/<package.name>.gx
+gero build -v                     # per-phase timings
+gero build --target=vm            # explicit target override
 ```
 
 **Behavior:**
-- Detects entry point: `main.gr` (compile) or `main.gas` (asm).
-  Errors if both present (ambiguous) or neither.
-- Resolves all imports / includes from `src/` + stdlib.
-- Outputs `out/<basename>.gx`. Creates `out/` if missing.
-- Caches per-module builds in `out/.cache/` for incremental builds.
+- Resolves `gero.toml` by ancestor walk — `gero build` works from
+  any subdirectory of the project.
+- Manifest-relative `[build].entry` and `[build].out` are joined
+  under the project root (`dirname(gero.toml)`). `out/` is
+  created if missing.
+- Output filename is `<package.name>.gx`, not the entry's
+  basename — the manifest is the single source of truth.
+- `--target=<vm|gtx-16>` overrides the manifest's `[package].target`.
+  Only `vm` ships in v0.2; `gtx-16` is reserved (errors with
+  "not yet implemented").
+- Takes no positional args — entry comes from the manifest.
+  Single-file use is what `gero asm` covers.
 
-**Exit:** 0 on success; 3 on parse error; 4 on type error; 5 on link
-error.
+**Exit:** 0 on success; 1 on host IO / missing manifest; 2 on
+usage (unknown target, positional); 3 on manifest parse error or
+asm pipeline error.
+
+**Roadmap:** `gero build --optimize=release` becomes meaningful
+once the lang back-end (v0.3) lands; today the asm pipeline has
+no optimizer to drive, so the `[build].optimize` key is read but
+its only consumer ships in v0.3+.
 
 ---
 
