@@ -250,7 +250,9 @@ debug:       yes (symbols: 142)
 ### 3.8 `gero fmt <files...>` — format source
 
 Canonical formatter for `.gas` (and eventually `.gr`). Style is
-fixed — no config file, no flags (like `gofmt` / `zig fmt`).
+fixed per-invocation — no `--option`s, no `.editorconfig` lookup.
+Inside a gero project, the manifest's `[fmt]` section overrides
+the compile-time defaults (see below).
 
 ```bash
 gero fmt main.gas                 # format in place
@@ -303,6 +305,31 @@ const FOO = $20  ; gero-fmt-ignore   ; this single line preserved (trailing)
 ```
 
 The directive comments themselves stay in the output.
+
+#### `[fmt]` section in `gero.toml`
+
+Override the printer's canonical defaults per-project. Same
+pattern as Rust's `rustfmt.toml` / Black's `pyproject.toml
+[tool.black]` — one canonical shape per project, no in-file
+overrides.
+
+```toml
+[fmt]
+indent = 2                   # default 2 — spaces of label-body indent
+comment_column = 30          # default 30 — 0 disables alignment
+align_kv = true              # default true — align `=` in const/data blocks
+hex_case = "upper"           # default "upper" — upper | lower | preserve
+```
+
+Inside a project, `gero fmt` (and `gero fmt --check`) reads the
+section and applies the overrides. Outside a project (or with no
+`[fmt]` section), compile-time defaults are used — preserves the
+single-file CLI behavior.
+
+Invalid `hex_case` values produce a clean diagnostic with line/col;
+the parser rejects any other shape (integer keys for
+`indent` / `comment_column`, boolean for `align_kv`, string for
+`hex_case`).
 
 ### 3.9 `gero check <file>` — validate without producing output
 

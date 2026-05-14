@@ -26,6 +26,7 @@ const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
 const footer = @import("footer.zig");
 const manifest_loader = @import("manifest_loader.zig");
+const project = @import("project.zig");
 
 /// Per-file outcome.
 const Outcome = enum {
@@ -49,28 +50,43 @@ pub fn execute(
     const positionals = opts.positional();
     const style: gero.asm_.Style = if (term.color) .ansi else .plain;
 
-    var files: std.ArrayList([]const u8) = .empty;
-    if (positionals.len == 0) {
-        // Project-aware fallback: load gero.toml from cwd or any
-        // ancestor and use [build].entry + [test].include as the
-        // implicit file list. No manifest → usage error.
+    // Always try to load gero.toml — both [fmt] overrides and the
+    // implicit file list (when no positionals are passed) come
+    // from the manifest. `not_found` is normal (single-file CLI
+    // use case); `failed` means a read/parse error was already
+    // printed.
+    var print_options: gero.asm_.PrintOptions = gero.asm_.default_print_options;
+    var manifest_files: ?[]const []const u8 = null;
+    {
         const outcome = try manifest_loader.load(io, arena, term, "gero fmt");
         switch (outcome) {
-            .not_found => {
-                try term.err("gero fmt: missing source file or directory path (or run inside a gero project)", .{});
-                return 2;
-            },
+            .not_found => {},
             .failed => return 1,
             .ok => |loaded| {
                 var loaded_mut = loaded;
                 defer loaded_mut.deinit(arena);
-                const entry_path = try manifest_loader.joinUnderRoot(arena, loaded.project_root, loaded.manifest.build.entry);
-                try files.append(arena, entry_path);
-                manifest_loader.expandIncludes(io, arena, term, "gero fmt", loaded.project_root, loaded.manifest.test_.include, &files) catch |err| switch (err) {
-                    error.LoadFailed => return 1,
-                    else => |e| return e,
-                };
+                print_options = printOptionsFromManifest(loaded.manifest.fmt);
+                if (positionals.len == 0) {
+                    var files_buf: std.ArrayList([]const u8) = .empty;
+                    const entry_path = try manifest_loader.joinUnderRoot(arena, loaded.project_root, loaded.manifest.build.entry);
+                    try files_buf.append(arena, entry_path);
+                    manifest_loader.expandIncludes(io, arena, term, "gero fmt", loaded.project_root, loaded.manifest.test_.include, &files_buf) catch |err| switch (err) {
+                        error.LoadFailed => return 1,
+                        else => |e| return e,
+                    };
+                    manifest_files = try files_buf.toOwnedSlice(arena);
+                }
             },
+        }
+    }
+
+    var files: std.ArrayList([]const u8) = .empty;
+    if (positionals.len == 0) {
+        if (manifest_files) |mf| {
+            try files.appendSlice(arena, mf);
+        } else {
+            try term.err("gero fmt: missing source file or directory path (or run inside a gero project)", .{});
+            return 2;
         }
     } else {
         for (positionals) |path| {
@@ -92,7 +108,7 @@ pub fn execute(
     var changed: usize = 0;
     var parse_failed: usize = 0;
     for (files.items) |path| {
-        const outcome = formatOne(io, arena, stdout, term, style, path, opts.check, single, opts.quiet) catch |err| {
+        const outcome = formatOne(io, arena, stdout, term, style, path, opts.check, single, opts.quiet, print_options) catch |err| {
             try term.err("gero fmt: cannot read/write {s} ({s})", .{ path, @errorName(err) });
             return 1;
         };
@@ -116,6 +132,22 @@ pub fn execute(
     return 0;
 }
 
+/// Translate the manifest's `[fmt]` shape into the printer's
+/// `PrintOptions`. Same fields one-to-one; `HexCase` is a
+/// disjoint enum so we map per-variant.
+pub fn printOptionsFromManifest(fmt: project.Manifest.Fmt) gero.asm_.PrintOptions {
+    return .{
+        .indent = fmt.indent,
+        .comment_column = fmt.comment_column,
+        .align_kv = fmt.align_kv,
+        .hex_case = switch (fmt.hex_case) {
+            .upper => .upper,
+            .lower => .lower,
+            .preserve => .preserve,
+        },
+    };
+}
+
 fn formatOne(
     io: std.Io,
     arena: std.mem.Allocator,
@@ -126,6 +158,7 @@ fn formatOne(
     check_mode: bool,
     single: bool,
     quiet: bool,
+    print_options: gero.asm_.PrintOptions,
 ) !Outcome {
     const src = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited);
 
@@ -150,7 +183,7 @@ fn formatOne(
     // Re-emit through the canonical printer, then compare bytes
     // against the source. Equal → already canonical.
     var allocating = std.Io.Writer.Allocating.init(arena);
-    try gero.asm_.printProgram(&allocating.writer, &pt.program, src, gero.asm_.default_print_options);
+    try gero.asm_.printProgram(&allocating.writer, &pt.program, src, print_options);
     const formatted = allocating.written();
 
     if (std.mem.eql(u8, src, formatted)) {
