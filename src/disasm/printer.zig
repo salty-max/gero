@@ -374,7 +374,11 @@ fn writeOperand(
         .imm8 => |v| try writer.print("{s}${X:0>2}{s}", .{ style.literal, v, style.reset }),
         .imm16 => |v| try writer.print("{s}${X:0>4}{s}", .{ style.literal, v, style.reset }),
         .addr => |v| try writeAddrOrSymbol(writer, v, style, symbols),
-        .zp => |v| try writer.print("{s}${X:0>2}{s}", .{ style.literal, v, style.reset }),
+        // ZP renders as a 1-digit-zero-padded `&XX` (Addr literal) so
+        // it round-trips: the assembler's resolver picks the ZP form
+        // again when the value fits in `0..0xFF`. Emitting as `$XX`
+        // would re-parse as imm8 and break round-trip.
+        .zp => |v| try writer.print("{s}&{X:0>2}{s}", .{ style.literal, v, style.reset }),
         .reg_indirect => |r| {
             try writer.writeByte('[');
             try writeReg(writer, r, style);

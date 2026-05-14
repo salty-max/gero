@@ -698,3 +698,141 @@ test "codegen: symbol table records const + data + struct entries" {
     try std.testing.expectEqual(@as(u16, 0x00), out.cg.symbols.get("Player.hp").?.value);
     try std.testing.expectEqual(@as(u16, 0x02), out.cg.symbols.get("Player.mp").?.value);
 }
+
+// ---------- Zero-page mov peephole ----------
+
+test "codegen: mov reg → &XX (value ≤ 0xFF) downgrades to ZP opcode 0x19" {
+    var out = try assemble(
+        \\main:
+        \\  mov r1, &0042
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    // entry point + program image: instruction at offset 0 should
+    // be `0x19 reg zp` (3 bytes), not `0x12 reg addr addr` (4 bytes).
+    try std.testing.expectEqual(@as(u8, 0x19), out.imageBody()[0]);
+}
+
+test "codegen: mov &XX → reg (value ≤ 0xFF) downgrades to ZP opcode 0x1A" {
+    var out = try assemble(
+        \\main:
+        \\  mov &0080, r1
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0x1A), out.imageBody()[0]);
+}
+
+test "codegen: mov imm16 → &XX (value ≤ 0xFF) downgrades to ZP opcode 0x1B" {
+    var out = try assemble(
+        \\main:
+        \\  mov $1234, &00FF
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0x1B), out.imageBody()[0]);
+}
+
+test "codegen: mov reg → &XXXX (value > 0xFF) keeps regular Addr opcode 0x12" {
+    var out = try assemble(
+        \\main:
+        \\  mov r1, &0100
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0x12), out.imageBody()[0]);
+}
+
+test "codegen: ZP downgrade is byte-for-byte smaller than Addr form" {
+    var with_zp = try assemble(
+        \\main:
+        \\  mov r1, &0042
+        \\  hlt
+        \\
+    , .{});
+    defer with_zp.deinit();
+    var with_addr = try assemble(
+        \\main:
+        \\  mov r1, &0142
+        \\  hlt
+        \\
+    , .{});
+    defer with_addr.deinit();
+    // ZP variant emits 3 bytes (opcode + reg + zp), Addr emits 4
+    // (opcode + reg + addr_lo + addr_hi). The hlt + entry-point
+    // overhead is identical, so the difference is 1 byte.
+    try std.testing.expectEqual(@as(usize, 1), with_addr.cg.image.len - with_zp.cg.image.len);
+}
+
+test "codegen: jmp &XX never downgrades (no ZP variant exists)" {
+    // Pass 3 resolver fallback widens `.zp` → `.addr` when no
+    // matching ZP shape exists. `jmp` has only an Addr form, so the
+    // emit stays at 3 bytes (opcode + addr_lo + addr_hi).
+    var out = try assemble(
+        \\main:
+        \\  jmp &0042
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    // jmp opcode 0x70 + 2-byte addr — 3 bytes total.
+    try std.testing.expectEqual(@as(u8, 0x70), out.imageBody()[0]);
+    try std.testing.expectEqual(@as(u8, 0x42), out.imageBody()[1]);
+    try std.testing.expectEqual(@as(u8, 0x00), out.imageBody()[2]);
+}
+
+test "codegen: mov8 imm8 → &XX downgrades to ZP opcode 0x2A" {
+    var out = try assemble(
+        \\main:
+        \\  mov8 $42, &0080
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0x2A), out.imageBody()[0]);
+}
+
+test "codegen: mov8 &XX → reg downgrades to ZP opcode 0x2B" {
+    var out = try assemble(
+        \\main:
+        \\  mov8 &0042, r1
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0x2B), out.imageBody()[0]);
+}
+
+test "codegen: movh reg → &XX downgrades to ZP opcode 0x2C" {
+    var out = try assemble(
+        \\main:
+        \\  movh r1, &0042
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0x2C), out.imageBody()[0]);
+}
+
+test "codegen: movl reg → &XX downgrades to ZP opcode 0x2D" {
+    var out = try assemble(
+        \\main:
+        \\  movl r1, &0042
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0x2D), out.imageBody()[0]);
+}

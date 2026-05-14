@@ -67,6 +67,14 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "mov", .kinds = &.{ .reg_indirect, .reg }, .opcode = 0x16 },
     .{ .mnemonic = "mov", .kinds = &.{ .indexed, .reg }, .opcode = 0x17 },
     .{ .mnemonic = "mov", .kinds = &.{ .imm16, .reg_indirect }, .opcode = 0x18 },
+    // Zero-page mov forms — picked when an `&XX` literal's value
+    // fits in `0x00..0xFF`. Saves 1 byte per access vs. the regular
+    // Addr forms. The peephole pass is implicit: `classify` returns
+    // `.zp` for small `addr_lit`, so the resolver matches the ZP
+    // shape automatically.
+    .{ .mnemonic = "mov", .kinds = &.{ .reg, .zp }, .opcode = 0x19 },
+    .{ .mnemonic = "mov", .kinds = &.{ .zp, .reg }, .opcode = 0x1A },
+    .{ .mnemonic = "mov", .kinds = &.{ .imm16, .zp }, .opcode = 0x1B },
 
     // mov8 / movh / movl
     .{ .mnemonic = "mov8", .kinds = &.{ .imm8, .addr }, .opcode = 0x20 },
@@ -75,8 +83,16 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "mov8", .kinds = &.{ .reg, .reg_indirect }, .opcode = 0x23 },
     .{ .mnemonic = "mov8", .kinds = &.{ .reg_indirect, .reg }, .opcode = 0x24 },
     .{ .mnemonic = "mov8", .kinds = &.{ .indexed, .reg }, .opcode = 0x29 },
+    // Zero-page byte-mov variants — picked when an `&XX` value
+    // fits in `0..0xFF`. Same peephole pattern as the word ZP
+    // forms above; saves 1 byte per access on hot byte globals
+    // (per-frame counters, palette indices, scroll positions).
+    .{ .mnemonic = "mov8", .kinds = &.{ .imm8, .zp }, .opcode = 0x2A },
+    .{ .mnemonic = "mov8", .kinds = &.{ .zp, .reg }, .opcode = 0x2B },
     .{ .mnemonic = "movh", .kinds = &.{ .reg, .addr }, .opcode = 0x25 },
+    .{ .mnemonic = "movh", .kinds = &.{ .reg, .zp }, .opcode = 0x2C },
     .{ .mnemonic = "movl", .kinds = &.{ .reg, .addr }, .opcode = 0x26 },
+    .{ .mnemonic = "movl", .kinds = &.{ .reg, .zp }, .opcode = 0x2D },
 
     // block memory ops
     .{ .mnemonic = "bcpy", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x27 },
@@ -196,11 +212,18 @@ pub const shape_by_opcode: [256]?Shape = blk: {
 /// isn't available yet (sizing pass with no label resolution)
 /// and `label_ref` falls back to `.addr` (size-equivalent to
 /// `.imm16`, so layout is correct either way).
+///
+/// `addr_lit` operands with `value ≤ 0xFF` classify as `.zp` so the
+/// resolver picks the 1-byte zero-page variants when they exist
+/// (peephole optimization — shipped from v0.2 onward). Other Addr
+/// shapes (sym_ref, addr_expr, cast) stay `.addr` because their
+/// values aren't always known at classify time.
 pub fn classify(op: ast.Operand, symbols: ?*const symtab.SymbolTable) Kind {
     return switch (op) {
         .register => .reg,
         .immediate => .imm16,
-        .addr_lit, .sym_ref, .addr_expr, .cast => .addr,
+        .addr_lit => |a| if (a.value <= 0xFF) .zp else .addr,
+        .sym_ref, .addr_expr, .cast => .addr,
         .indirect => .reg_indirect,
         .indexed => .indexed,
         .label_ref => |l| classifyLabelRef(l, symbols),
@@ -281,6 +304,23 @@ pub fn resolve(mnemonic: []const u8, kinds: []const Kind) ?Resolution {
         for (s.kinds, kinds) |a, b| {
             if (a == b) continue;
             if (a == .imm16 and b == .imm8) continue;
+            match = false;
+            break;
+        }
+        if (match) return resolutionFor(s);
+    }
+    // Pass 3: allow `.zp` → `.addr` widening. `classify` returns
+    // `.zp` for any `addr_lit` whose value fits in `0..0xFF`; if
+    // the mnemonic has no zero-page variant (`jeq`, `jmp`, `call`,
+    // etc.), fall back to the regular 2-byte address encoding so
+    // the bytecode still emits correctly.
+    for (shapes) |s| {
+        if (!std.mem.eql(u8, s.mnemonic, mnemonic)) continue;
+        if (s.kinds.len != kinds.len) continue;
+        var match = true;
+        for (s.kinds, kinds) |a, b| {
+            if (a == b) continue;
+            if (a == .addr and b == .zp) continue;
             match = false;
             break;
         }
