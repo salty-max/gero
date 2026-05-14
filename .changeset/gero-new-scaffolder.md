@@ -2,8 +2,10 @@
 bump: minor
 ---
 
-`gero new <name>` — scaffold a minimal v0.2 asm project from an
-in-binary template. Layout:
+`gero new <name>` + `gero init` — scaffold a minimal v0.2 asm
+project from an in-binary template. Two-verb split (cargo / zig /
+poetry convention): `new` creates a fresh sub-directory, `init`
+initializes the current one. Layout:
 
 ```
 <name>/
@@ -30,11 +32,15 @@ leading-dash, and shell-metacharacter names. Pre-existing target
 directory yields a clean "already exists" error (exit 1) rather
 than overwriting.
 
-`gero new .` (cargo / npm style) scaffolds into the current
-directory; the cwd's basename becomes the project name. In-place
-mode pre-flights every target path and refuses to overwrite if
-`gero.toml`, `src/main.gas`, `tests/smoke.gas`,
-`tests/smoke.expected`, or `README.md` already exist.
+`gero init` (no positional args) scaffolds into the cwd — the
+basename becomes the project name. Pre-flights every target path
+and refuses to overwrite if `gero.toml`, `src/main.gas`,
+`tests/smoke.gas`, `tests/smoke.expected`, or `README.md`
+already exist. `gero new .` is rejected with a redirect to
+`gero init` rather than silently doing in-place magic.
+
+Both subcommands share the embedded templates + `scaffold()`
+primitive in `new.zig`; `init.zig` is the thin in-place wrapper.
 
 Builds on top of the `gero.toml` parser from the previous patch
 (#133). `gero build` / project-aware `check`/`fmt`/`test` consume
