@@ -18,6 +18,21 @@
 /// standalone (`hlt\n; halt`) on the first format pass and then
 /// stay stable — the blank-line rule counts newlines in the
 /// source gap so the layout is idempotent.
+///
+/// Ignore directives let users opt regions out of canonicalization
+/// (same pattern as `// prettier-ignore` / `#[rustfmt::skip]`):
+///
+///   - `; gero-fmt-ignore-file`  in the leading comment block →
+///     emit `source` verbatim, skip all canonicalization
+///   - `; gero-fmt-ignore-start` … `; gero-fmt-ignore-end` →
+///     statements between the markers are source-sliced verbatim
+///   - `; gero-fmt-ignore-next` → the following non-comment
+///     statement is source-sliced
+///   - trailing `; gero-fmt-ignore` on the same source line as a
+///     statement → that statement is source-sliced
+///
+/// The directive comments themselves stay in the output (they're
+/// just regular comments to the printer).
 const std = @import("std");
 const ast = @import("ast.zig");
 
@@ -42,15 +57,125 @@ pub fn print(
     source: []const u8,
     opts: PrintOptions,
 ) std.Io.Writer.Error!void {
+    // File-level escape hatch: a `; gero-fmt-ignore-file` directive
+    // anywhere in the leading comment block disables canonicalization
+    // for the whole file. We dump `source` as-is and bail.
+    if (fileIgnoreActive(program, source)) {
+        try writer.writeAll(source);
+        return;
+    }
+
     var prev: ?ast.Statement = null;
-    for (program.statements) |stmt| {
+    var in_block_ignore = false;
+    var ignore_next_pending = false;
+    var skip_next = false; // set by trailing-ignore — consume the trailing comment as part of the host's slice
+    for (program.statements, 0..) |stmt, i| {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+
         if (prev) |p| {
             if (needsBlankLineBefore(stmt, p, source)) try writer.writeByte('\n');
         }
-        try writeStatement(writer, stmt, source, opts);
+
+        const directive = directiveOf(stmt, source);
+
+        // Detect a trailing-ignore directive on the *next* statement.
+        // When present, the host statement's protection extends to
+        // cover the trailing comment too — we source-slice through
+        // its end and skip the comment on the next loop iteration,
+        // so the line stays glued together (and idempotent across
+        // re-formats — second pass sees the same shape).
+        const trailing_ignore_comment: ?ast.Statement = blk: {
+            if (stmt == .comment) break :blk null;
+            if (i + 1 >= program.statements.len) break :blk null;
+            const next = program.statements[i + 1];
+            if (next != .comment) break :blk null;
+            if (directiveOf(next, source) != .trailing) break :blk null;
+            if (!sameSourceLine(stmt.span().end, next.span().start, source)) break :blk null;
+            break :blk next;
+        };
+
+        // ---- decide whether this statement gets source-sliced ----
+        const protected = blk: {
+            if (in_block_ignore) {
+                if (directive == .block_end) break :blk false;
+                break :blk true;
+            }
+            if (ignore_next_pending and stmt != .comment) break :blk true;
+            if (trailing_ignore_comment != null) break :blk true;
+            break :blk false;
+        };
+
+        // ---- emit ----
+        if (protected) {
+            const end = if (trailing_ignore_comment) |c| c.span().end else stmt.span().end;
+            try writer.writeAll(source[stmt.span().start..end]);
+        } else {
+            try writeStatement(writer, stmt, source, opts);
+        }
         try writer.writeByte('\n');
-        prev = stmt;
+
+        // ---- update state for next iteration ----
+        switch (directive) {
+            .block_start => in_block_ignore = true,
+            .block_end => in_block_ignore = false,
+            .next => ignore_next_pending = true,
+            .trailing, .file, .none => {},
+        }
+        if (protected and stmt != .comment) ignore_next_pending = false;
+        if (trailing_ignore_comment != null) skip_next = true;
+
+        prev = if (trailing_ignore_comment) |c| c else stmt;
     }
+}
+
+/// `; gero-fmt-...` directive flavors recognized by the printer.
+const Directive = enum { none, file, block_start, block_end, next, trailing };
+
+/// Identify the ignore-directive flavor (if any) of a statement.
+/// Non-comment statements always return `.none`.
+fn directiveOf(stmt: ast.Statement, source: []const u8) Directive {
+    if (stmt != .comment) return .none;
+    const body = commentBody(stmt.comment, source);
+    if (std.mem.eql(u8, body, "gero-fmt-ignore-file")) return .file;
+    if (std.mem.eql(u8, body, "gero-fmt-ignore-start")) return .block_start;
+    if (std.mem.eql(u8, body, "gero-fmt-ignore-end")) return .block_end;
+    if (std.mem.eql(u8, body, "gero-fmt-ignore-next")) return .next;
+    if (std.mem.eql(u8, body, "gero-fmt-ignore")) return .trailing;
+    return .none;
+}
+
+/// Trimmed body of a `;` comment — strips the leading `;` and any
+/// surrounding ASCII whitespace.
+fn commentBody(c: ast.Comment, source: []const u8) []const u8 {
+    var body = source[c.span.start..c.span.end];
+    if (body.len > 0 and body[0] == ';') body = body[1..];
+    return std.mem.trim(u8, body, " \t");
+}
+
+/// `true` when any statement in the leading **comment block** is
+/// the file-level ignore directive. A non-comment statement
+/// terminates the lookup.
+fn fileIgnoreActive(program: *const ast.Program, source: []const u8) bool {
+    for (program.statements) |s| {
+        if (s != .comment) return false;
+        if (directiveOf(s, source) == .file) return true;
+    }
+    return false;
+}
+
+/// True when `end_a..start_b` in `source` is free of `\n`.
+fn sameSourceLine(end_a: u32, start_b: u32, source: []const u8) bool {
+    if (start_b <= end_a) return true;
+    const lo: usize = end_a;
+    // @as: widen u32 → usize so the slice indexes line up.
+    const hi: usize = @min(@as(usize, start_b), source.len);
+    for (source[lo..hi]) |b| {
+        if (b == '\n') return false;
+    }
+    return true;
 }
 
 /// True when the canonical layout puts a blank line between `prev`

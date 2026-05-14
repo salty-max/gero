@@ -242,3 +242,119 @@ test "printProgram: handles include resolution markers cleanly" {
     defer p.deinit();
     try std.testing.expect(std.mem.indexOfScalar(u8, p.text, '\x0c') == null);
 }
+
+// ---------- ignore directives ----------
+
+test "printProgram: file-level ignore disables all canonicalization" {
+    const src =
+        \\; gero-fmt-ignore-file
+        \\const PRINT   = $10
+        \\const NEWLINE = $0A
+        \\main:
+        \\  mov  $00, r1
+        \\
+    ;
+    var p = try parseAndPrint(src);
+    defer p.deinit();
+    // No reformatting — output is byte-identical to input.
+    try std.testing.expectEqualStrings(src, p.text);
+}
+
+test "printProgram: file-level ignore tolerates a leading non-directive comment" {
+    const src =
+        \\; copyright 2026
+        \\; gero-fmt-ignore-file
+        \\const PRINT   = $10
+        \\
+    ;
+    var p = try parseAndPrint(src);
+    defer p.deinit();
+    try std.testing.expectEqualStrings(src, p.text);
+}
+
+test "printProgram: block ignore preserves contents verbatim" {
+    const src =
+        \\; gero-fmt-ignore-start
+        \\const PRINT   = $10
+        \\const NEWLINE = $0A
+        \\; gero-fmt-ignore-end
+        \\const TAIL = $FF
+        \\
+    ;
+    var p = try parseAndPrint(src);
+    defer p.deinit();
+    // The block contents keep their hand-alignment; TAIL after the
+    // block goes through canonicalization (single-space `= `).
+    try std.testing.expectEqualStrings(
+        \\; gero-fmt-ignore-start
+        \\const PRINT   = $10
+        \\const NEWLINE = $0A
+        \\; gero-fmt-ignore-end
+        \\const TAIL = $FF
+        \\
+    , p.text);
+}
+
+test "printProgram: ignore-next protects only the immediately-following statement" {
+    const src =
+        \\; gero-fmt-ignore-next
+        \\const PRINT   = $10
+        \\const NEWLINE = $0A
+        \\
+    ;
+    var p = try parseAndPrint(src);
+    defer p.deinit();
+    // PRINT keeps its alignment; NEWLINE canonicalizes.
+    try std.testing.expectEqualStrings(
+        \\; gero-fmt-ignore-next
+        \\const PRINT   = $10
+        \\const NEWLINE = $0A
+        \\
+    , p.text);
+}
+
+test "printProgram: trailing ignore protects its host statement" {
+    const src =
+        \\const PRINT   = $10  ; gero-fmt-ignore
+        \\const NEWLINE = $0A
+        \\
+    ;
+    var p = try parseAndPrint(src);
+    defer p.deinit();
+    // PRINT line stays as-written (alignment + trailing comment
+    // both preserved). NEWLINE canonicalizes (single space).
+    try std.testing.expectEqualStrings(
+        \\const PRINT   = $10  ; gero-fmt-ignore
+        \\const NEWLINE = $0A
+        \\
+    , p.text);
+}
+
+test "printProgram: ignore-next idempotent across re-formats" {
+    const src =
+        \\; gero-fmt-ignore-next
+        \\const PRINT   = $10
+        \\const X = $20
+        \\
+    ;
+    var p1 = try parseAndPrint(src);
+    defer p1.deinit();
+    var p2 = try parseAndPrint(p1.text);
+    defer p2.deinit();
+    try std.testing.expectEqualStrings(p1.text, p2.text);
+}
+
+test "printProgram: block ignore idempotent across re-formats" {
+    const src =
+        \\; gero-fmt-ignore-start
+        \\const A   = $01
+        \\const BBB = $02
+        \\; gero-fmt-ignore-end
+        \\
+    ;
+    var p1 = try parseAndPrint(src);
+    defer p1.deinit();
+    var p2 = try parseAndPrint(p1.text);
+    defer p2.deinit();
+    try std.testing.expectEqualStrings(p1.text, p2.text);
+}

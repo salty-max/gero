@@ -272,6 +272,28 @@ parse error; 1 on host IO; 2 on usage.
 **Roadmap:** `--stdin` (read stdin, write stdout — editor format-
 on-save) lands alongside the LSP server (#122 / v0.3).
 
+#### Ignore directives
+
+Drop these `;` comments to opt regions out of canonicalization
+(same pattern as `// prettier-ignore` / `#[rustfmt::skip]`):
+
+```asm
+; gero-fmt-ignore-file
+; (rest of file passed through verbatim)
+
+; gero-fmt-ignore-next
+const PRINT   = $10              ; only this line preserved
+
+; gero-fmt-ignore-start
+const PRINT   = $10
+const NEWLINE = $0A
+; gero-fmt-ignore-end             ; everything between markers preserved
+
+const FOO = $20  ; gero-fmt-ignore   ; this single line preserved (trailing)
+```
+
+The directive comments themselves stay in the output.
+
 ### 3.9 `gero check <file>` — validate without producing output
 
 Run a source file through the full assembler pipeline (resolve
