@@ -25,51 +25,59 @@ pub const Keyed = struct {
     path: []const u8,
 };
 
-/// Merge parse + codegen diagnostic lists, group by file, sort
-/// each group by fused-source offset, and emit a per-file
-/// section with a Cargo-style summary header on top:
-///
-/// ```text
-/// 2 errors in 1 file
-///
-/// /path/to/file
-///   <caret-style body for each diagnostic>
-/// ```
-///
-/// `arena` owns the keyed scratch buffer. `<unknown>` (rare —
-/// source-map miss) groups last.
-pub fn printMerged(
-    arena: std.mem.Allocator,
-    stdout: *std.Io.Writer,
+/// One failed file's worth of diagnostic context — a path + the
+/// `SourceMap` the parser produced + the parse/codegen error
+/// slices. Owned by the caller's arena.
+pub const FileFailure = struct {
     source_map: gero.asm_.SourceMap,
     parse_errors: []const gero.asm_.Diagnostic,
     codegen_errors: []const gero.asm_.Diagnostic,
+};
+
+/// Render every diagnostic across one or more failed files under
+/// **a single** Cargo-style summary header. Each file's parse +
+/// codegen errors are merged, grouped by the path the source-map
+/// resolves them to (handles included-file diagnostics), and
+/// sorted within each group by fused-source offset.
+///
+/// ```text
+/// 3 errors in 2 files
+///
+/// foo.gas
+///   <caret-style body for each diagnostic>
+///
+/// bar.gas
+///   <caret-style body for each diagnostic>
+/// ```
+///
+/// Use a one-element `failures` slice for the single-file case —
+/// the header still emits cleanly.
+pub fn printAllFailures(
+    arena: std.mem.Allocator,
+    stdout: *std.Io.Writer,
     style: gero.asm_.Style,
+    failures: []const FileFailure,
 ) !void {
-    const total = parse_errors.len + codegen_errors.len;
-    const keyed = try arena.alloc(Keyed, total);
-    for (parse_errors, 0..) |d, i| keyed[i] = .{ .diag = d, .path = pathOf(source_map, d) };
-    for (codegen_errors, 0..) |d, j| keyed[parse_errors.len + j] = .{ .diag = d, .path = pathOf(source_map, d) };
-    std.mem.sort(Keyed, keyed, {}, byPathThenIndex);
+    var total: usize = 0;
+    for (failures) |f| total += f.parse_errors.len + f.codegen_errors.len;
+    try writeSummaryHeader(stdout, style, total, failures.len);
 
-    var file_count: usize = 0;
-    var prev_path: []const u8 = "";
-    for (keyed) |k| {
-        if (!std.mem.eql(u8, k.path, prev_path)) {
-            file_count += 1;
-            prev_path = k.path;
-        }
-    }
-    try writeSummaryHeader(stdout, style, total, file_count);
+    for (failures) |f| {
+        const local = f.parse_errors.len + f.codegen_errors.len;
+        const keyed = try arena.alloc(Keyed, local);
+        for (f.parse_errors, 0..) |d, i| keyed[i] = .{ .diag = d, .path = pathOf(f.source_map, d) };
+        for (f.codegen_errors, 0..) |d, j| keyed[f.parse_errors.len + j] = .{ .diag = d, .path = pathOf(f.source_map, d) };
+        std.mem.sort(Keyed, keyed, {}, byPathThenIndex);
 
-    prev_path = "";
-    for (keyed) |k| {
-        if (!std.mem.eql(u8, k.path, prev_path)) {
-            try stdout.writeByte('\n');
-            try stdout.print("{s}{s}{s}\n", .{ style.location, k.path, style.reset });
-            prev_path = k.path;
+        var prev_path: []const u8 = "";
+        for (keyed) |k| {
+            if (!std.mem.eql(u8, k.path, prev_path)) {
+                try stdout.writeByte('\n');
+                try stdout.print("{s}{s}{s}\n", .{ style.location, k.path, style.reset });
+                prev_path = k.path;
+            }
+            try gero.asm_.formatPrettyBody(stdout, f.source_map, k.diag, style);
         }
-        try gero.asm_.formatPrettyBody(stdout, source_map, k.diag, style);
     }
 }
 

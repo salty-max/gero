@@ -38,9 +38,6 @@ pub fn execute(
 
     const style: gero.asm_.Style = if (term.color) .ansi else .plain;
 
-    // Resolve every positional into a flat list of `.gas` files.
-    // `.gr` positionals short-circuit with the v0.3 stub before
-    // any walking happens.
     var files: std.ArrayList([]const u8) = .empty;
     for (positionals) |path| {
         if (std.mem.endsWith(u8, path, ".gr")) {
@@ -57,15 +54,85 @@ pub fn execute(
 
     const single = files.items.len == 1;
 
+    // Pass 1: validate each file. Print per-file ✓ for successes
+    // as we go; accumulate failures with their diagnostic context
+    // so Pass 2 can render one merged report at the end.
+    //
+    // Resources allocated through `arena` (FusedSource buffers,
+    // ParseTree slices, Codegen image) stay live until the arena
+    // resets, so the failures collected here keep their source-map
+    // + diagnostic references valid across the loop.
     var pass: usize = 0;
-    var fail: usize = 0;
+    var failures: std.ArrayList(FileEntry) = .empty;
     for (files.items) |path| {
-        const ok = try checkOne(io, arena, opts, stdout, term, style, path, single);
-        if (ok) pass += 1 else fail += 1;
+        const t_phase_start_include = std.Io.Timestamp.now(io, .awake);
+        const fused = gero.asm_.resolveIncludes(io, arena, path) catch |err| {
+            try term.err("gero check: cannot read {s} ({s})", .{ path, @errorName(err) });
+            // Synthesize a single-diagnostic failure so the merged
+            // report has something to render. Skipping the failure
+            // would mis-count totals.
+            try failures.append(arena, .{ .path = path, .info = .read_error });
+            continue;
+        };
+        const t_after_include = std.Io.Timestamp.now(io, .awake);
+
+        if (fused.errors.len > 0) {
+            try failures.append(arena, .{
+                .path = path,
+                .info = .{ .from_pipeline = .{
+                    .source_map = fused.source_map,
+                    .parse_errors = fused.errors,
+                    .codegen_errors = &.{},
+                } },
+            });
+            continue;
+        }
+
+        var pt = try gero.asm_.parse(arena, fused.source);
+        const t_after_parse = std.Io.Timestamp.now(io, .awake);
+        var cg = try gero.asm_.assemble(arena, fused.source, pt, .{});
+        const t_after_codegen = std.Io.Timestamp.now(io, .awake);
+
+        if (pt.hasErrors() or cg.hasErrors()) {
+            try failures.append(arena, .{
+                .path = path,
+                .info = .{ .from_pipeline = .{
+                    .source_map = fused.source_map,
+                    .parse_errors = pt.errors,
+                    .codegen_errors = cg.errors,
+                } },
+            });
+            continue;
+        }
+
+        pass += 1;
+        if (!opts.quiet) {
+            try printPass(stdout, style, path, cg, single, opts.verbose, .{
+                .include = t_phase_start_include.durationTo(t_after_include).nanoseconds,
+                .parse = t_after_include.durationTo(t_after_parse).nanoseconds,
+                .codegen = t_after_parse.durationTo(t_after_codegen).nanoseconds,
+            });
+        }
     }
 
-    // Multi-file summary line — single-file mode already shows the
-    // rich `✓ <path> (N bytes, M banks)` line per file, no need.
+    // Pass 2: render the merged diagnostic report (if any failure).
+    if (failures.items.len > 0) {
+        // Read errors render as plain term.err lines (no source-
+        // map context to caret-format), so split them off first.
+        var pipeline_failures: std.ArrayList(diagnostics.FileFailure) = .empty;
+        for (failures.items) |f| switch (f.info) {
+            .read_error => {}, // already reported via term.err
+            .from_pipeline => |pf| try pipeline_failures.append(arena, pf),
+        };
+        if (pipeline_failures.items.len > 0) {
+            // Separator between the per-file ✓ section (if any
+            // success printed above) and the diagnostic block.
+            if (!single and !opts.quiet and pass > 0) try stdout.writeByte('\n');
+            try diagnostics.printAllFailures(arena, stdout, style, pipeline_failures.items);
+        }
+    }
+
+    const fail = failures.items.len;
     if (!single and !opts.quiet) {
         const pass_noun: []const u8 = if (pass == 1) "file" else "files";
         const fail_noun: []const u8 = if (fail == 1) "failure" else "failures";
@@ -78,6 +145,53 @@ pub fn execute(
         try footer.writeFooter(stdout, io, style, t_start, if (fail > 0) .failed else .ok);
     }
     return if (fail > 0) 4 else 0;
+}
+
+/// A per-file failure entry: either a host-IO problem (already
+/// surfaced via `term.err`) or a pipeline-level diagnostic set
+/// with its source-map context.
+const FileEntry = struct {
+    path: []const u8,
+    info: union(enum) {
+        read_error,
+        from_pipeline: diagnostics.FileFailure,
+    },
+};
+
+const PhaseTimings = struct {
+    include: i96,
+    parse: i96,
+    codegen: i96,
+};
+
+/// `✓ <path>` line on success. Single-file mode adds the `gero asm`-
+/// style stats (`(N bytes, M banks)`) and optional verbose phase
+/// timings; multi-file mode keeps it brief so the per-file output
+/// stays scannable.
+fn printPass(
+    stdout: *std.Io.Writer,
+    style: gero.asm_.Style,
+    src_path: []const u8,
+    cg: gero.asm_.Codegen,
+    single_mode: bool,
+    verbose: bool,
+    t: PhaseTimings,
+) std.Io.Writer.Error!void {
+    if (single_mode) {
+        const loaded = gero.vm.parseGx(cg.image) catch unreachable; // allow-strict: codegen just produced these bytes
+        try stdout.print("{s}✓ {s}{s}  ({d} bytes, {d} banks)\n", .{
+            style.location,
+            src_path,
+            style.reset,
+            cg.image.len,
+            loaded.header.bank_count,
+        });
+        if (verbose) {
+            try writePhaseTimings(stdout, style, t);
+        }
+    } else {
+        try stdout.print("{s}✓{s} {s}\n", .{ style.location, style.reset, src_path });
+    }
 }
 
 /// Resolve `path` into 0+ `.gas` entries appended to `out`. A
@@ -93,7 +207,7 @@ fn collectGasFiles(
 ) !void {
     const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| {
         try term.err("gero check: cannot stat {s} ({s})", .{ path, @errorName(err) });
-        return error.OutOfMemory; // funnel to the only allocator error caller handles
+        return error.OutOfMemory;
     };
     if (stat.kind == .directory) {
         var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
@@ -116,79 +230,6 @@ fn collectGasFiles(
         return error.OutOfMemory;
     }
 }
-
-/// Validate one `.gas` file. Returns `true` on clean check,
-/// `false` if any diagnostic was emitted. `single_mode` controls
-/// the per-file output verbosity: rich `(N bytes, M banks)` +
-/// optional per-phase timings when `true`, brief `✓ <path>` /
-/// diagnostic when `false`.
-fn checkOne(
-    io: std.Io,
-    arena: std.mem.Allocator,
-    opts: cli.Options,
-    stdout: *std.Io.Writer,
-    term: *term_mod.Term,
-    style: gero.asm_.Style,
-    src_path: []const u8,
-    single_mode: bool,
-) !bool {
-    const t_phase_start_include = std.Io.Timestamp.now(io, .awake);
-    var fused = gero.asm_.resolveIncludes(io, arena, src_path) catch |err| {
-        try term.err("gero check: cannot read {s} ({s})", .{ src_path, @errorName(err) });
-        return false;
-    };
-    defer fused.deinit();
-    const t_after_include = std.Io.Timestamp.now(io, .awake);
-
-    if (fused.errors.len > 0) {
-        try stdout.print("{s}✗{s} {s}\n", .{ style.code, style.reset, src_path });
-        try diagnostics.printSingle(stdout, fused.source_map, fused.errors, style);
-        return false;
-    }
-
-    var pt = try gero.asm_.parse(arena, fused.source);
-    defer pt.deinit();
-    const t_after_parse = std.Io.Timestamp.now(io, .awake);
-
-    var cg = try gero.asm_.assemble(arena, fused.source, pt, .{});
-    defer cg.deinit();
-    const t_after_codegen = std.Io.Timestamp.now(io, .awake);
-
-    if (pt.hasErrors() or cg.hasErrors()) {
-        try stdout.print("{s}✗{s} {s}\n", .{ style.code, style.reset, src_path });
-        try diagnostics.printMerged(arena, stdout, fused.source_map, pt.errors, cg.errors, style);
-        return false;
-    }
-
-    if (!opts.quiet) {
-        if (single_mode) {
-            const loaded = gero.vm.parseGx(cg.image) catch unreachable; // allow-strict: codegen just produced these bytes
-            try stdout.print("{s}✓ {s}{s}  ({d} bytes, {d} banks)\n", .{
-                style.location,
-                src_path,
-                style.reset,
-                cg.image.len,
-                loaded.header.bank_count,
-            });
-            if (opts.verbose) {
-                try writePhaseTimings(stdout, style, .{
-                    .include = t_phase_start_include.durationTo(t_after_include).nanoseconds,
-                    .parse = t_after_include.durationTo(t_after_parse).nanoseconds,
-                    .codegen = t_after_parse.durationTo(t_after_codegen).nanoseconds,
-                });
-            }
-        } else {
-            try stdout.print("{s}✓{s} {s}\n", .{ style.location, style.reset, src_path });
-        }
-    }
-    return true;
-}
-
-const PhaseTimings = struct {
-    include: i96,
-    parse: i96,
-    codegen: i96,
-};
 
 fn writePhaseTimings(
     stdout: *std.Io.Writer,
