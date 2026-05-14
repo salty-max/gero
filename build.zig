@@ -141,6 +141,15 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-fmt",
         .root_module = fmt_cli_mod,
     });
+    const project_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/project.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const project_test = b.addTest(.{
+        .name = "test-cli-project",
+        .root_module = project_mod,
+    });
     const diagnostics_mod = b.createModule(.{
         .root_source_file = b.path("apps/gero-cli/diagnostics.zig"),
         .target = target,
@@ -202,6 +211,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(test_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(check_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(fmt_cli_test).step);
+    test_step.dependOn(&b.addRunArtifact(project_test).step);
     test_step.dependOn(&b.addRunArtifact(diagnostics_test).step);
     test_step.dependOn(&b.addRunArtifact(footer_test).step);
     for (test_files) |rel| {
