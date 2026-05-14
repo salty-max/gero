@@ -20,11 +20,11 @@ fn flags(vm: *VM) struct { z: bool, n: bool, c: bool, v: bool } {
 
 // ---------- and ----------
 
-test "and 0x50 reg,imm16" {
+test "and 0x50 imm16,reg" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0xFF0F);
-    loadProgram(&vm, &.{ 0x50, 0x02, 0xF0, 0x00 }); // and r1, 0x00F0
+    loadProgram(&vm, &.{ 0x50, 0xF0, 0x00, 0x02 }); // and 0x00F0, r1
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x0000), vm.regs.read(.r1));
     const f = flags(&vm);
@@ -35,7 +35,7 @@ test "and 0x50: high bit set marks N" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0xFFFF);
-    loadProgram(&vm, &.{ 0x50, 0x02, 0x00, 0x80 }); // and r1, 0x8000
+    loadProgram(&vm, &.{ 0x50, 0x00, 0x80, 0x02 }); // and 0x8000, r1
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x8000), vm.regs.read(.r1));
     try std.testing.expect(flags(&vm).n);
@@ -57,11 +57,11 @@ test "and 0x51 reg,reg clears C+V even if preset" {
 
 // ---------- or ----------
 
-test "or 0x52 reg,imm16" {
+test "or 0x52 imm16,reg" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x000F);
-    loadProgram(&vm, &.{ 0x52, 0x02, 0xF0, 0x00 }); // or r1, 0x00F0
+    loadProgram(&vm, &.{ 0x52, 0xF0, 0x00, 0x02 }); // or 0x00F0, r1
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x00FF), vm.regs.read(.r1));
 }
@@ -78,11 +78,11 @@ test "or 0x53 reg,reg" {
 
 // ---------- xor ----------
 
-test "xor 0x54 reg,imm16" {
+test "xor 0x54 imm16,reg" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0xAAAA);
-    loadProgram(&vm, &.{ 0x54, 0x02, 0xFF, 0xFF }); // xor r1, 0xFFFF (= not)
+    loadProgram(&vm, &.{ 0x54, 0xFF, 0xFF, 0x02 }); // xor 0xFFFF, r1 (= not)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x5555), vm.regs.read(.r1));
 }

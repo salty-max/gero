@@ -394,6 +394,9 @@ add $10, r1            ; r1 ← r1 + $10        (src=$10, dst=r1)
 add r2, r1             ; r1 ← r1 + r2         (src=r2, dst=r1)
 sub r2, r1             ; r1 ← r1 - r2         (src=r2, dst=r1)
 and r2, r1             ; r1 ← r1 & r2         (src=r2, dst=r1)
+and $0F, r1            ; r1 ← r1 & $0F        (src=$0F, dst=r1 — bitwise mask)
+or  $80, r1            ; r1 ← r1 | $80        (src=$80, dst=r1 — bit-set)
+xor $FF, r1            ; r1 ← r1 ^ $FF        (src=$FF, dst=r1 — bitwise NOT byte)
 ```
 
 Two families are intentionally different:
