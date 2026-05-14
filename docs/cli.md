@@ -331,22 +331,17 @@ problem; `2` on usage error.
 **Roadmap:** `--format=json` for editor integration + `.gr` source
 support land alongside the lang front-end in v0.3 (#7).
 
-### 3.10 `gero new <name>` — scaffold a project
+### 3.10 `gero new <name>` — scaffold a fresh project
 
-Lay out a minimal v0.2 asm project. Templates are embedded in
-the binary — no network call, no external assets.
+Lay out a minimal v0.2 asm project in a new `./<name>/`
+sub-directory. Templates are embedded in the binary — no network
+call, no external assets. For an in-place scaffold (cwd as the
+project root) see [§3.11 `gero init`](#311-gero-init--initialize-the-current-directory).
 
 ```bash
-gero new my-cart                  # → ./my-cart/ scaffold (fresh subdir)
-gero new .                        # scaffold into cwd; name = cwd basename
+gero new my-cart                  # → ./my-cart/ scaffold
 gero new my-cart --quiet          # skip the next-steps banner
 ```
-
-Pass `.` to scaffold into the current directory (cargo / npm
-style) — the cwd's basename becomes the project name. The
-in-place form refuses to overwrite if `gero.toml`, `src/main.gas`,
-`tests/smoke.gas`, `tests/smoke.expected`, or `README.md` already
-exist in the cwd.
 
 **Scaffold:**
 
@@ -369,6 +364,7 @@ my-cart/
 - `<name>` must be 1-64 chars, start with a letter or `_`, and
   contain only letters, digits, `_`, or `-`. Names with `/`, `.`,
   spaces, or shell metacharacters are rejected.
+- `gero new .` is rejected with a redirect to `gero init`.
 - Fails cleanly with exit 1 if `<name>` already exists.
 
 **Exit:** 0 on success; 1 on host IO / pre-existing dir;
@@ -377,7 +373,34 @@ my-cart/
 **Roadmap:** `--kind=lang` lands in v0.3 once the gero-lang
 front-end ships; interactive picker when stdin is a TTY.
 
-### 3.11 `gero build` — build project
+### 3.11 `gero init` — initialize the current directory
+
+Same scaffold as `gero new`, but laid down **in place**: the cwd
+becomes the project root, and its basename becomes the project
+name. Cargo / poetry / yarn / zig convention — `new` for a fresh
+sub-directory, `init` for the current one.
+
+```bash
+gero init                         # scaffold into ./, name = cwd basename
+gero init --quiet                 # skip the next-steps banner
+```
+
+**Behavior:**
+- Pre-flights every target path; refuses to overwrite if
+  `gero.toml`, `src/main.gas`, `tests/smoke.gas`,
+  `tests/smoke.expected`, or `README.md` already exist (exit 1
+  with the list).
+- Cwd basename must satisfy the same validation as `gero new`
+  (1-64 chars, leading letter / `_`, body of letters / digits /
+  `_` / `-`). Rename the directory or `cd` into a parent + run
+  `gero new` if it doesn't.
+- Takes no positional args — accepting one would defeat the
+  in-place intent.
+
+**Exit:** 0 on success; 1 on host IO / pre-existing files;
+2 on usage / invalid basename.
+
+### 3.12 `gero build` — build project
 
 Builds the project rooted at the current working directory using
 v0.1 conventions (no `gero.toml` yet).

@@ -14,6 +14,7 @@ pub const Command = enum {
     run,
     test_,
     new,
+    init,
     bench,
     fmt,
     check,
@@ -106,6 +107,7 @@ fn commandFromStr(s: []const u8) ?Command {
     if (std.mem.eql(u8, s, "run")) return .run;
     if (std.mem.eql(u8, s, "test")) return .test_;
     if (std.mem.eql(u8, s, "new")) return .new;
+    if (std.mem.eql(u8, s, "init")) return .init;
     if (std.mem.eql(u8, s, "bench")) return .bench;
     if (std.mem.eql(u8, s, "fmt")) return .fmt;
     if (std.mem.eql(u8, s, "check")) return .check;
@@ -122,6 +124,7 @@ pub fn commandName(cmd: Command) []const u8 {
         .run => "run",
         .test_ => "test",
         .new => "new",
+        .init => "init",
         .bench => "bench",
         .fmt => "fmt",
         .check => "check",
@@ -138,6 +141,7 @@ fn commandSummary(cmd: Command) []const u8 {
         .run => "Execute a .gx",
         .test_ => "Run asm-level tests",
         .new => "Scaffold a new gero project",
+        .init => "Initialize a gero project in the current directory",
         .bench => "Run benchmarks",
         .fmt => "Format .gas / .gr source",
         .check => "Type-check without producing output",
@@ -152,7 +156,7 @@ fn commandSummary(cmd: Command) []const u8 {
 /// discoverable, but split into a separate "planned" section.
 fn commandIsImplemented(cmd: Command) bool {
     return switch (cmd) {
-        .asm_, .run, .info, .disasm, .test_, .check, .fmt, .new => true,
+        .asm_, .run, .info, .disasm, .test_, .check, .fmt, .new, .init => true,
         .compile, .bench, .build => false,
     };
 }
@@ -286,11 +290,18 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero fmt --check src/{s}           {s}# CI mode — exit 8 if any file would change{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .new => {
-            try out.print("  {s}gero new{s} <name> | . [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("  {s}gero new{s} <name> [--quiet]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
             try out.print("  {s}gero new my-cart{s}                {s}# scaffold ./my-cart with src/, tests/, gero.toml{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
-            try out.print("  {s}gero new .{s}                      {s}# scaffold into the current directory (name = its basename){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero new my-cart --quiet{s}        {s}# suppress the next-steps banner{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("\nFor an in-place scaffold (cwd as the project root), see {s}gero init{s}.\n", .{ a.cyan, a.reset });
+        },
+        .init => {
+            try out.print("  {s}gero init{s} [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero init{s}                       {s}# scaffold into the current directory (name = its basename){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero init --quiet{s}               {s}# suppress the next-steps banner{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("\nRefuses to overwrite any pre-existing gero.toml / src/ / tests/ files.\n", .{});
         },
         else => unreachable, // allow-strict: commandIsImplemented() filtered above
     }
@@ -337,6 +348,7 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .check => &.{ .help, .quiet, .verbose, .color, .no_color },
         .fmt => &.{ .help, .check, .quiet, .color, .no_color },
         .new => &.{ .help, .quiet, .color, .no_color },
+        .init => &.{ .help, .quiet, .color, .no_color },
         .compile, .bench, .build => &.{.help},
     };
 }
