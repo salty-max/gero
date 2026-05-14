@@ -62,6 +62,10 @@ pub const Options = struct {
     /// files that would be reformatted (exit 8) without writing.
     /// Editor / CI use case.
     check: bool = false,
+    /// `--target=<vm|gtx-16>` for `gero build` — overrides the
+    /// manifest's `package.target`. `null` = inherit from manifest;
+    /// `gtx-16` is reserved (errors with "not yet implemented").
+    target: ?[]const u8 = null,
     positional_buf: [max_positionals][]const u8 = undefined,
     positional_count: usize = 0,
 
@@ -156,8 +160,8 @@ fn commandSummary(cmd: Command) []const u8 {
 /// discoverable, but split into a separate "planned" section.
 fn commandIsImplemented(cmd: Command) bool {
     return switch (cmd) {
-        .asm_, .run, .info, .disasm, .test_, .check, .fmt, .new, .init => true,
-        .compile, .bench, .build => false,
+        .asm_, .run, .info, .disasm, .test_, .check, .fmt, .new, .init, .build => true,
+        .compile, .bench => false,
     };
 }
 
@@ -303,6 +307,14 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero init --quiet{s}               {s}# suppress the next-steps banner{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("\nRefuses to overwrite any pre-existing gero.toml / src/ / tests/ files.\n", .{});
         },
+        .build => {
+            try out.print("  {s}gero build{s} [--target=<vm|gtx-16>] [--quiet] [-v]\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero build{s}                      {s}# project build → out/<name>.gx{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero build -v{s}                   {s}# per-phase timings (include / parse / codegen / write){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero build --target=vm{s}          {s}# explicit target override (default is the manifest's){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("\nResolves gero.toml via ancestor walk. Run `gero new <name>` to scaffold.\n", .{});
+        },
         else => unreachable, // allow-strict: commandIsImplemented() filtered above
     }
 
@@ -332,6 +344,7 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .no_show_bytes => .{ .sig = "--no-show-bytes", .desc = "Strip the hex-bytes column for a cleaner view." },
         .check_roundtrip => .{ .sig = "--check-roundtrip", .desc = "Verify asm → disasm → asm yields identical bytes (CI gate)." },
         .check => .{ .sig = "--check", .desc = "Non-destructive — exit 8 if any file would be reformatted." },
+        .target => .{ .sig = "--target=<m>", .desc = "vm (default) / gtx-16. Overrides manifest's [package].target." },
     };
 }
 
@@ -349,7 +362,8 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .fmt => &.{ .help, .check, .quiet, .color, .no_color },
         .new => &.{ .help, .quiet, .color, .no_color },
         .init => &.{ .help, .quiet, .color, .no_color },
-        .compile, .bench, .build => &.{.help},
+        .build => &.{ .help, .target, .quiet, .verbose, .color, .no_color },
+        .compile, .bench => &.{.help},
     };
 }
 
@@ -372,7 +386,7 @@ fn parseColor(s: []const u8) ParseError!ColorChoice {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check };
+const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, target };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
@@ -388,6 +402,7 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "no-show-bytes")) return .no_show_bytes;
     if (std.mem.eql(u8, s, "check-roundtrip")) return .check_roundtrip;
     if (std.mem.eql(u8, s, "check")) return .check;
+    if (std.mem.eql(u8, s, "target")) return .target;
     return null;
 }
 
@@ -417,6 +432,7 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .no_show_bytes => opts.show_bytes = false,
         .check_roundtrip => opts.check_roundtrip = true,
         .check => opts.check = true,
+        .target => opts.target = value orelse return error.MissingFlagValue,
     }
 }
 
@@ -426,7 +442,7 @@ fn parseBank(s: []const u8) ParseError!u8 {
 
 fn needsValue(kind: FlagKind) bool {
     return switch (kind) {
-        .optimize, .out, .color, .bank => true,
+        .optimize, .out, .color, .bank, .target => true,
         else => false,
     };
 }
