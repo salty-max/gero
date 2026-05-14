@@ -109,19 +109,24 @@ mismatch).
 
 ### 3.4 `gero test [pattern]` — run tests
 
-> **v0.1 shape (shipped):** asm-level golden-stdout harness. The
-> runner walks `tests/asm/` for `.gas` programs paired with a
-> sibling `<name>.expected` file, assembles each, boots a fresh VM,
+> **v0.2 shape (shipped):** asm-level golden-stdout harness. The
+> runner reads `[test].include` from `gero.toml`, walks each
+> declared path for `.gas` programs paired with a sibling
+> `<name>.expected` file, assembles each, boots a fresh VM,
 > captures stdout (via the host `int $10` print syscall), and diffs
 > against the golden. The lang-level form described below (`@test`
 > functions, structured assertion diagnostics) lands with the
-> language compiler in v0.2.
+> language compiler in v0.3.
 
 ```bash
-gero test                         # all .gas tests under tests/asm/
+gero test                         # all .gas tests under [test].include
 gero test loop                    # only tests with "loop" in the name
 gero test --verbose               # show per-test duration
 ```
+
+`gero test` is project-aware: it requires a `gero.toml` in the
+cwd or an ancestor (run `gero new` to scaffold one). No fall-back
+to a hardcoded root.
 
 **Output format (v0.1, asm-level):**
 
@@ -252,11 +257,16 @@ gero fmt main.gas                 # format in place
 gero fmt --check main.gas         # check only (exit 8 if changes needed)
 gero fmt src/                     # recurse into directory
 gero fmt a.gas b.gas src/         # any mix of files and directories
+gero fmt                          # project-aware: [build].entry + [test].include
 ```
 
 **Behavior:**
 - In-place edit by default. Files already in canonical form are
   left untouched.
+- **Project-aware fallback**: invoked with no positional args
+  inside a gero project (cwd or any ancestor has `gero.toml`),
+  walks `[build].entry` + every entry in `[test].include`. No
+  manifest + no positional args → exit 2 with a usage hint.
 - `--check` is non-destructive: exits 0 if every file is canonical,
   8 if any file would be reformatted, 3 on a genuine parse error.
   CI use case.
@@ -306,10 +316,16 @@ run round-trip.
 gero check main.gas               # one .gas file
 gero check src/                   # walk recursively for *.gas
 gero check a.gas b.gas src/       # any mix of files + dirs
+gero check                        # project-aware: [build].entry + [test].include
 gero check main.gr                # → "not yet implemented" until v0.3
 gero check main.gas --quiet       # suppress per-file lines + summary
 gero check main.gas --verbose     # per-phase timings (single-file only)
 ```
+
+**Project-aware fallback**: invoked with no positional args
+inside a gero project (cwd or any ancestor has `gero.toml`),
+walks `[build].entry` + every entry in `[test].include`. No
+manifest + no positional args → exit 2 with a usage hint.
 
 **Output (default):**
 
