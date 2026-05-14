@@ -44,7 +44,8 @@ under [Releases](https://github.com/salty-max/gero/releases).
 Extract anywhere on your `$PATH`:
 
 ```bash
-curl -L https://github.com/salty-max/gero/releases/download/v0.2.0/gero-aarch64-macos.tar.gz | tar xz
+# Replace <version> + <platform> with the values from the release page.
+curl -L https://github.com/salty-max/gero/releases/download/<version>/gero-<platform>.tar.gz | tar xz
 sudo mv gero/bin/gero /usr/local/bin/gero
 ```
 
@@ -79,7 +80,7 @@ syntax-only).
 The extension ships a TextMate grammar + language config (file
 association, comment toggle, bracket pairs).
 
-**Until the v1.0 marketplace publish lands**: install from a
+**Until the marketplace publish lands**: install from a
 local `.vsix`.
 
 ```bash
@@ -99,7 +100,7 @@ ln -s "$(pwd)" ~/.vscode/extensions/salty-max.gero-asm-dev
 Then reload VS Code (`Cmd+Shift+P` → "Reload Window") and open
 any `.gas` file — you should see syntax coloring out of the box.
 
-**Marketplace install (post-v1.0)**:
+**Marketplace install** (once the extension is published):
 
 ```bash
 code --install-extension salty-max.gero-asm
@@ -164,7 +165,7 @@ Then in any `.gas` buffer:
 :Inspect           " (Neovim 0.10+) shows the tree-sitter scope under the cursor
 ```
 
-**Once shipped to the registry (v1.0)**, the whole snippet
+**Once shipped to the registry**, the whole snippet
 collapses to:
 
 ```lua
@@ -187,7 +188,7 @@ indent = { tab-width = 2, unit = "  " }
 
 [[grammar]]
 name = "gero-asm"
-source = { git = "https://github.com/salty-max/tree-sitter-gero-asm", rev = "v0.1.2" }
+source = { git = "https://github.com/salty-max/tree-sitter-gero-asm", rev = "<tag>" }   # pin to a tagged release
 ```
 
 Then build the grammar + queries:
@@ -207,7 +208,7 @@ grammar — drop it into Sublime Text's
 `Packages/User/` or any TextMate-derived editor's bundle
 directory.
 
-### 2.5 LSP (deferred to v1.0)
+### 2.5 LSP (not yet shipped)
 
 `gero lsp` will offer in-editor diagnostics (from `gero check`)
 + format-on-save (from `gero fmt`) for both `.gas` and `.gr`
@@ -409,7 +410,7 @@ loaded the spec. Then `:Inspect` over a known token to confirm
 tree-sitter is active.
 
 **`gero fmt --check` flags freshly-scaffolded files**: shouldn't
-happen post-v0.2 (templates are canonical-form). If you hit this,
+happen (templates are canonical-form). If you hit this,
 file a bug.
 
 **VS Code shows `.gas` as plain text**: verify the extension

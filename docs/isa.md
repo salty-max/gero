@@ -1,12 +1,9 @@
-# Gero ISA — Bytecode Specification v0.1
+# Gero ISA — Bytecode Specification
 
 The contract between the VM, the assembler, and the disassembler.
 This document is **the** source of truth — once a bytecode is in the
 wild, breaking changes bump the version field in the file header
 and require a documented migration.
-
-> **Status: draft.** Subject to change until the first VM
-> implementation lands and exercises every opcode.
 
 ---
 
@@ -372,7 +369,7 @@ the verbose form. Saturating clamps are a stdlib `math.clamp`
 call. No friction at the source level.
 
 If profiling later shows fixed-point or saturating math is a real
-hot path, native ops can be added in v0.2 with an additive minor
+hot path, native ops can be added later as an additive minor
 version bump (existing code keeps working).
 
 ### 5.5 Logical / bitwise
@@ -676,7 +673,7 @@ incompatible versions.
 
 ## 11. Open questions
 
-None outstanding for v0.1. The previously-deferred questions are now
+None outstanding. The previously-deferred questions are now
 locked above:
 
 - `mul` produces 32-bit `acu:dst` (8086 / 68000 lineage). §5.4.
@@ -685,7 +682,7 @@ locked above:
 - Interrupt re-entry control is `flg.I` plus the `im` per-vector
   mask (6502 / 8086 split). The standalone "in-ISR" bit is dropped.
   §2.1, §6.4.
-- `div` / `divs` are spec'd and implemented in v0.1. §5.4. Faults at
+- `div` / `divs` are spec'd and implemented . §5.4. Faults at
   vectors `0x03` (/0) and `0x05` (overflow). §6.1, §9.
 - `image_size: u16le` ranges `0..65535` — no overload, no flag bit.
   Programs needing more than 65535 bytes of base image use banks.
@@ -696,5 +693,5 @@ Future-version considerations (track outside this doc):
 - Vector `0x04` is reserved but unassigned. Likely candidate: page
   fault for a future MMU.
 - Saturating-arithmetic variants (`adds`, `subs`) for fixed-point
-  math in gero-lang. Not in v0.1; would land in v0.2 with a minor
+  math in gero-lang. Not implemented yet; would be an additive minor
   bump.

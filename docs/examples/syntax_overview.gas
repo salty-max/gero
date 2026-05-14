@@ -1,18 +1,14 @@
 ; ====================================================================
 ; syntax_overview.gas
 ;
-; A near-complete tour of gero's v0.1-final assembly syntax. Read this
-; top-to-bottom to see every construct from `docs/asm.md` at least
-; once. Companion to `docs/examples/syntax_overview.gr` (the
-; gero-lang side).
+; A near-complete tour of gero's assembly syntax. Read top-to-bottom
+; to see every construct from `docs/asm.md` at least once. Companion
+; to `docs/examples/syntax_overview.gr` (the gero-lang side).
 ;
 ; This file is documentation, not a runnable example — it exercises
 ; the syntax surface (directives, addressing modes, every mnemonic
 ; group) without committing to a coherent program. The runnable
 ; examples under `examples/asm/*.gas` cover end-to-end flows.
-;
-; Tracks tree-sitter-gero-asm@v0.1.2+ which supports the full
-; multi-line struct form (matching gero's parser).
 ; ====================================================================
 
 ; -------------------- directives ----------------------------
