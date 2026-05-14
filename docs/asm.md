@@ -328,13 +328,9 @@ Rules:
 
 **Re-include semantics:** every `include` directive splices in
 the target's tokens, every time. If two files both `include
-"utils.gas"`, the bytes from `utils.gas` are emitted twice. This
-matches the asm tradition and gives hand-writers a way to repeat
-parametric blocks before macros (are added.
-
-Conditional assembly (`;ifdef` / `;ifndef`) is not implemented.
-For now, control the include graph manually (don't `include` the
-same file from two ancestors) or accept the duplicate emission.
+"utils.gas"`, the bytes from `utils.gas` are emitted twice.
+Control the include graph manually (don't `include` the same
+file from two ancestors) or accept the duplicate emission.
 
 ### 2.3 Instructions
 
@@ -594,9 +590,6 @@ mov $01, mb
 call <label_in_bank_1>
 ```
 
-There is no `bank_call` / `bank_jump` sugar — write the
-`mov mb` + `call` pair by hand.
-
 ---
 
 ## 6. Limitations
@@ -605,14 +598,9 @@ The assembler doesn't currently support:
 
 - **Macros** — no `def macro NAME(args) { ... }` form. Hand-write
   repeated blocks or factor them through `include`.
-- **Conditional assembly** — no `;ifdef` / `;ifndef`. Control the
-  include graph manually (or accept duplicate emission from
-  re-included files).
 - **Export / import markers** — `include` splices tokens into a
   single global namespace (6502 / z80 tradition). There is no
   linker model.
-- **`bank_call` / `bank_jump` sugar** — see [§5 cross-bank
-  calls](#cross-bank-calls).
 
 ---
 
