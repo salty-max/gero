@@ -35,7 +35,7 @@ pub const ColorChoice = enum { auto, always, never };
 /// consume.
 pub const Format = enum { human, json };
 
-/// Maximum positional args a single invocation can hold. v0.1
+/// Maximum positional args a single invocation can hold. Today's
 /// commands top out at 1-2; keep it generous to absorb future
 /// `gero build` multi-source forms without re-architecting.
 pub const max_positionals: usize = 16;

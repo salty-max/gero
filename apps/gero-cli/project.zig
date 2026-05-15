@@ -2,7 +2,7 @@
 /// project-aware subcommands (`gero new`, `gero build`, and the
 /// project-mode of `gero check` / `fmt` / `test`).
 ///
-/// Scope: a TOML subset sufficient for the v0.2 manifest shape —
+/// Scope: a TOML subset sufficient for today's manifest shape —
 /// section headers, key=value with string literals, string arrays,
 /// `#`-comments. **Not** full TOML: no integers, booleans, inline
 /// tables, dotted keys, multi-line strings/arrays, dates. Those
@@ -103,8 +103,8 @@ pub const Manifest = struct {
     }
 };
 
-/// Default values populated when a section / key is absent. The
-/// canonical layout per v0.2 conventions.
+/// Default values populated when a section / key is absent —
+/// the canonical layout.
 pub const defaults = struct {
     pub const package_target: []const u8 = "vm";
     pub const build_out: []const u8 = "out/";
@@ -363,7 +363,7 @@ const Parser = struct {
         self.skipHorizontalBlanks();
 
         // Dispatch on value shape: `"..."` for strings, `[...]`
-        // for arrays. No other forms supported in v0.2.
+        // for arrays. No other forms supported.
         if (self.index >= self.source.len) {
             self.reportf("expected value after '='", .{});
             return error.ParseFailed;
@@ -401,8 +401,8 @@ const Parser = struct {
         }
     }
 
-    /// `"..."` — basic string, no escapes for v0.2 (filenames
-    /// don't need them). Returns a slice into `source`.
+    /// `"..."` — basic string, no escapes (filenames don't need
+    /// them). Returns a slice into `source`.
     fn parseString(self: *Parser) ParseError![]const u8 {
         // Consume `"`
         self.advance(1);
@@ -470,8 +470,8 @@ const Parser = struct {
         }
         const text = self.source[start..self.index];
         // Strip underscores into a stack-local buffer before
-        // handing the digits to `parseInt`. v0.2 manifest values
-        // are short (cycle budgets, columns) — 32 bytes is plenty.
+        // handing the digits to `parseInt`. Manifest values are
+        // short (cycle budgets, columns) — 32 bytes is plenty.
         var scratch: [32]u8 = undefined;
         var n: usize = 0;
         for (text) |c| {
@@ -514,7 +514,7 @@ const Parser = struct {
         comptime fmt: []const u8,
         args: anytype,
     ) void {
-        // Format into the diagnostic's inline storage. v0.2
+        // Format into the diagnostic's inline storage. The parser
         // surfaces only the first error per parse, so the buffer
         // is single-shot. `bufPrint` truncation on a >256-byte
         // message degrades to whatever fit — acceptable for the
@@ -747,7 +747,7 @@ const Pending = struct {
 
 const testing = std.testing;
 
-test "project: parses the canonical v0.2 manifest shape" {
+test "project: parses the canonical manifest shape" {
     const src =
         \\[package]
         \\name = "my-cart"

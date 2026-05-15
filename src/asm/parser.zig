@@ -839,7 +839,7 @@ fn parseStructField(
             .parse_error = core.parseError(
                 "struct",
                 type_token.start,
-                "unknown field type (v0.1 supports `u8` and `u16` only)",
+                "unknown field type (only `u8` and `u16` are supported)",
                 .{ .expected = "u8 | u16", .actual = type_lex, .kind = .semantic },
             ),
         });

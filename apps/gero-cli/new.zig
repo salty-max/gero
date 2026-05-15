@@ -1,4 +1,4 @@
-/// `gero new <name>` — scaffold a fresh v0.2 asm project in a new
+/// `gero new <name>` — scaffold a fresh asm project in a new
 /// sub-directory. The in-place form (cwd as the project root) is
 /// `gero init` — see `init.zig`. Both subcommands consume the
 /// shared scaffolding primitives exported below.

@@ -6,8 +6,8 @@
 ///
 /// Programs that mix code + data are NOT round-trippable without
 /// debug symbols (the disasm can't tell where code ends and data
-/// begins by inspecting bytes alone). Those land when debug
-/// symbols ship — for v0.1 we test the pure-code case only.
+/// begins by inspecting bytes alone). Until debug-symbol-aware
+/// disassembly ships, we test the pure-code case only.
 const std = @import("std");
 const gero = @import("gero");
 const examples = @import("examples");

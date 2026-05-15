@@ -1,6 +1,6 @@
 /// Asm codegen — takes a parsed `ParseTree` and produces a
-/// complete `.gx` byte image (header + image bytes). Single-file,
-/// single-bank for the v0.1 first cut; banked emission lands later.
+/// complete `.gx` byte image (header + image bytes). Banked
+/// emission is supported via the `bank N` directive.
 ///
 /// Two-pass model:
 ///   Pass 1 (layout): walk statements, compute each statement's
@@ -47,8 +47,7 @@ pub const Codegen = struct {
     }
 };
 
-/// Configuration knobs for `assemble`. v0.1 just exposes the
-/// entry point; banking + SRAM land later.
+/// Configuration knobs for `assemble`.
 pub const Options = struct {
     /// `ip` value at boot per ISA §7.1. `null` (default) triggers
     /// auto-detection: if the program defines a `main:` label, its

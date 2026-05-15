@@ -116,7 +116,7 @@ test "opcodes: unused byte values are null" {
 }
 
 test "opcodes: schema sizes never overflow a u8 instruction" {
-    // No instruction in v0.1 is wider than 5 bytes.
+    // No instruction in the ISA is wider than 5 bytes.
     for (table) |entry| {
         if (entry) |info| try std.testing.expect(info.size() <= 5);
     }

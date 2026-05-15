@@ -1,4 +1,4 @@
-/// `gero init` — scaffold a v0.2 asm project **into the current
+/// `gero init` — scaffold an asm project **into the current
 /// directory**. Mirror of `gero new <name>` (see `new.zig`) but
 /// in-place: the cwd's basename becomes the project name. Match
 /// to cargo / poetry / yarn / zig: `new` creates a fresh

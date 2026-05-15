@@ -54,7 +54,7 @@ test "decoder: int (imm8) decodes 2 bytes" {
 }
 
 test "decoder: unknown opcode returns error.UnknownOpcode" {
-    const bytes = [_]u8{0x00}; // 0x00 is not in the v0.1 ISA
+    const bytes = [_]u8{0x00}; // 0x00 isn't a defined opcode
     try std.testing.expectError(error.UnknownOpcode, gero.disasm.decodeOne(alloc, &bytes, 0));
 }
 

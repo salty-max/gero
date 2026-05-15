@@ -50,7 +50,7 @@ pub const Instruction = struct {
 
 /// Failure modes when decoding a single instruction.
 pub const DecodeError = error{
-    /// Opcode byte isn't in the v0.1 ISA's reverse table.
+    /// Opcode byte isn't in the ISA's reverse table.
     UnknownOpcode,
     /// Bytes ran out before the operands could be fully read.
     Truncated,
