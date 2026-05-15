@@ -423,6 +423,8 @@ must be open-coded as `shl` + `shr` + `or` (3 ops vs 1 native rotate).
 | `0x68` | `bset`   | `Reg, Imm8`  | reg ← reg \| (1 << (imm & 0x0F)). Sets a single bit; imm masked to 0..15. Doesn't touch flags. |
 | `0x69` | `bclr`   | `Reg, Imm8`  | reg ← reg & ~(1 << (imm & 0x0F)). Clears a single bit; imm masked to 0..15. Doesn't touch flags. |
 | `0x6A` | `btest`  | `Reg, Imm8`  | flags ← bit-test: Z = !(reg & (1 << imm)), N = bit value, C/V cleared. Register untouched. |
+| `0x6B` | `asr`    | `Reg, Imm8`  | arithmetic shift right — same as `shr` but the sign bit (high bit) is replicated on each step. Equivalent to signed integer / 2. Sets Z/N/C; clears V. |
+| `0x6C` | `asr`    | `Reg, Reg`   | arithmetic shift right with shift count in second reg. |
 
 ### 5.8 Control flow
 

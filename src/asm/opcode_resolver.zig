@@ -156,6 +156,8 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "bset", .kinds = &.{ .reg, .imm8 }, .opcode = 0x68 },
     .{ .mnemonic = "bclr", .kinds = &.{ .reg, .imm8 }, .opcode = 0x69 },
     .{ .mnemonic = "btest", .kinds = &.{ .reg, .imm8 }, .opcode = 0x6A },
+    .{ .mnemonic = "asr", .kinds = &.{ .reg, .imm8 }, .opcode = 0x6B },
+    .{ .mnemonic = "asr", .kinds = &.{ .reg, .reg }, .opcode = 0x6C },
 
     // control flow
     .{ .mnemonic = "jmp", .kinds = &.{.addr}, .opcode = 0x70 },

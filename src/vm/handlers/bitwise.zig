@@ -175,6 +175,47 @@ pub fn shrRegReg(vm: *VM) StepResult {
     return writeShift(vm, dst, count, doShr(a, count));
 }
 
+/// Arithmetic shift right — same as `doShr` but preserves the
+/// sign bit (high bit) on every iteration. Equivalent to signed
+/// integer division by 2 on each step.
+fn doAsr(initial: u16, count: u16) ShiftEffect {
+    var v = initial;
+    var c: bool = false;
+    var i: u16 = 0;
+    const sign_mask: u16 = v & 0x8000;
+    while (i < count) : (i += 1) {
+        c = (v & 1) != 0;
+        v = (v >> 1) | sign_mask;
+        // Saturated: positive numbers shifted past their last 1
+        // converge to 0; negative numbers converge to 0xFFFF.
+        // Either is a fixed point — further shifts are no-ops.
+        if (sign_mask == 0 and v == 0) break;
+        if (sign_mask != 0 and v == 0xFFFF) break;
+    }
+    return .{ .result = v, .last_out = c };
+}
+
+/// `0x6B` — `asr Reg, Imm8` → arithmetic shift right (preserves
+/// sign bit). Unlike `shr` (logical, zero-fill), `asr` replicates
+/// the high bit on every step so signed-integer / 2 stays signed.
+pub fn asrRegImm8(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const reg = vm.readByte(ip +% 1);
+    const count = vm.readByte(ip +% 2);
+    const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
+    return writeShift(vm, reg, count, doAsr(a, count));
+}
+
+/// `0x6C` — `asr Reg, Reg`.
+pub fn asrRegReg(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const dst = vm.readByte(ip +% 1);
+    const src = vm.readByte(ip +% 2);
+    const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
+    const count = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
+    return writeShift(vm, dst, count, doAsr(a, count));
+}
+
 // ---------- rotates ----------
 
 fn doRol(initial: u16, count_in: u16, carry_in: bool) ShiftEffect {

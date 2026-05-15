@@ -157,6 +157,8 @@ pub const handler_table: [256]Handler = blk: {
     t[0x68] = cmp_handlers.bsetRegImm8;
     t[0x69] = cmp_handlers.bclrRegImm8;
     t[0x6A] = cmp_handlers.btestRegImm8;
+    t[0x6B] = bitwise.asrRegImm8;
+    t[0x6C] = bitwise.asrRegReg;
 
     // control flow
     t[0x70] = jumps.jmpAddr;

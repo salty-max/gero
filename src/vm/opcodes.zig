@@ -129,6 +129,8 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x68] = .{ .mnemonic = "bset", .operands = &.{ .reg, .imm8 } };
     t[0x69] = .{ .mnemonic = "bclr", .operands = &.{ .reg, .imm8 } };
     t[0x6A] = .{ .mnemonic = "btest", .operands = &.{ .reg, .imm8 } };
+    t[0x6B] = .{ .mnemonic = "asr", .operands = &.{ .reg, .imm8 } };
+    t[0x6C] = .{ .mnemonic = "asr", .operands = &.{ .reg, .reg } };
 
     // control flow
     t[0x70] = .{ .mnemonic = "jmp", .operands = &.{.addr} };
