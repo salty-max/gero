@@ -273,3 +273,60 @@ test "logical: invalid register raises invalid-register fault" {
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }
+
+// ---------- asr (0x6B / 0x6C) — arithmetic shift right ----------
+
+test "asr 0x6B: negative number preserves sign bit on shift" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0xFF00); // = -256 signed
+    loadProgram(&vm, &.{ 0x6B, 0x02, 0x01 }); // asr r1, $01
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0xFF80), vm.regs.read(.r1)); // -128 signed
+}
+
+test "asr 0x6B: positive number behaves like shr" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x0080);
+    loadProgram(&vm, &.{ 0x6B, 0x02, 0x01 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x0040), vm.regs.read(.r1));
+}
+
+test "asr 0x6B: shift by large count saturates to sign extension" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x8000); // = -32768 signed, MSB set
+    loadProgram(&vm, &.{ 0x6B, 0x02, 0xFF }); // asr r1, 255 — way past 16
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0xFFFF), vm.regs.read(.r1)); // all sign-extended
+}
+
+test "asr 0x6C reg,reg: shift count from second register" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0xFFFC); // = -4 signed
+    vm.regs.write(.r2, 0x0001);
+    loadProgram(&vm, &.{ 0x6C, 0x02, 0x03 }); // asr r1, r2
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.r1)); // -2 signed
+}
+
+test "asr: shift by zero is a no-op (no C update, value untouched)" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0xC0DE);
+    loadProgram(&vm, &.{ 0x6B, 0x02, 0x00 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0xC0DE), vm.regs.read(.r1));
+}
+
+test "asr: invalid register raises invalid-register fault" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
+    loadProgram(&vm, &.{ 0x6B, 0xFF, 0x01 });
+    try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+}
