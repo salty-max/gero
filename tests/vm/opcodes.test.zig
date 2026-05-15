@@ -29,15 +29,14 @@ test "opcodes: OpcodeInfo.size sums opcode + operands" {
     try std.testing.expectEqual(@as(u8, 5), movix.size());
 }
 
-test "opcodes: table holds exactly 97 named entries" {
+test "opcodes: table holds exactly 100 named entries" {
     var count: usize = 0;
     for (table) |entry| if (entry != null) {
         count += 1;
     };
-    // 93 base opcodes + 4 byte-mov ZP variants (0x2A-0x2D) added
-    // alongside the mov word ZP variants (0x19/0x1A/0x1B were
-    // already pre-counted in the 93).
-    try std.testing.expectEqual(@as(usize, 97), count);
+    // 97 = 93 base + 4 byte-mov ZP variants (0x2A-0x2D), then 3
+    // single-bit ops added at 0x68/0x69/0x6A (bset / bclr / btest).
+    try std.testing.expectEqual(@as(usize, 100), count);
 }
 
 test "opcodes: every named entry has a non-empty mnemonic" {
@@ -110,7 +109,7 @@ test "opcodes: unused byte values are null" {
     try std.testing.expect(table[0x0F] == null);
     try std.testing.expect(table[0x33] == null);
     try std.testing.expect(table[0x57] == null);
-    try std.testing.expect(table[0x68] == null);
+    try std.testing.expect(table[0x6F] == null);
     try std.testing.expect(table[0xB0] == null);
     try std.testing.expect(table[0xFB] == null);
 }

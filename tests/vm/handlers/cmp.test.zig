@@ -146,3 +146,54 @@ test "cmp/tst: invalid register raises invalid-register fault" {
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }
+
+// ---------- single-bit ops ----------
+
+test "bset 0x68 reg,imm8 — sets the target bit, preserves others" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x0001);
+    loadProgram(&vm, &.{ 0x68, 0x02, 0x07 }); // bset r1, $07
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x0081), vm.regs.read(.r1));
+}
+
+test "bset 0x68 — imm wraps to 0..15 via low-nibble mask" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x0000);
+    loadProgram(&vm, &.{ 0x68, 0x02, 0x1F }); // imm = 0x1F → masked to 0x0F → bit 15
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x8000), vm.regs.read(.r1));
+}
+
+test "bclr 0x69 reg,imm8 — clears the target bit" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0xFFFF);
+    loadProgram(&vm, &.{ 0x69, 0x02, 0x08 }); // bclr r1, $08
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0xFEFF), vm.regs.read(.r1));
+}
+
+test "btest 0x6A reg,imm8 — bit set → Z=0, N=1" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x0080);
+    loadProgram(&vm, &.{ 0x6A, 0x02, 0x07 }); // btest r1, $07
+    _ = gero.vm.step(&vm);
+    try std.testing.expect(!flags(&vm).z);
+    try std.testing.expect(flags(&vm).n);
+    // Register untouched.
+    try std.testing.expectEqual(@as(u16, 0x0080), vm.regs.read(.r1));
+}
+
+test "btest 0x6A reg,imm8 — bit clear → Z=1, N=0" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x0080);
+    loadProgram(&vm, &.{ 0x6A, 0x02, 0x06 }); // btest r1, $06 (bit clear)
+    _ = gero.vm.step(&vm);
+    try std.testing.expect(flags(&vm).z);
+    try std.testing.expect(!flags(&vm).n);
+}

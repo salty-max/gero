@@ -461,7 +461,7 @@ Two families are intentionally different:
   second is the shift count. `shl r1, $03` shifts r1 by 3.
   Modify-in-place shape, no separate source register.
 
-The 3-operand block ops (`bcpy`, `bset`) keep `(dst, src, len)` /
+The 3-operand block ops (`bcpy`, `bfill`) keep `(dst, src, len)` /
 `(dst, len, val)` — they mirror the C standard library shape.
 
 ---

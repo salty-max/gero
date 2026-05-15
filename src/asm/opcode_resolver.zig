@@ -96,7 +96,7 @@ const shapes: []const Shape = &.{
 
     // block memory ops
     .{ .mnemonic = "bcpy", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x27 },
-    .{ .mnemonic = "bset", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x28 },
+    .{ .mnemonic = "bfill", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x28 },
 
     // stack
     .{ .mnemonic = "push", .kinds = &.{.imm16}, .opcode = 0x30 },
@@ -152,6 +152,9 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "cmp", .kinds = &.{ .reg, .reg }, .opcode = 0x61 },
     .{ .mnemonic = "tst", .kinds = &.{ .reg, .imm16 }, .opcode = 0x62 },
     .{ .mnemonic = "tst", .kinds = &.{ .reg, .reg }, .opcode = 0x63 },
+    .{ .mnemonic = "bset", .kinds = &.{ .reg, .imm8 }, .opcode = 0x68 },
+    .{ .mnemonic = "bclr", .kinds = &.{ .reg, .imm8 }, .opcode = 0x69 },
+    .{ .mnemonic = "btest", .kinds = &.{ .reg, .imm8 }, .opcode = 0x6A },
 
     // control flow
     .{ .mnemonic = "jmp", .kinds = &.{.addr}, .opcode = 0x70 },
