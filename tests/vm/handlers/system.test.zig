@@ -11,34 +11,34 @@ fn loadProgram(vm: *VM, bytes: []const u8) void {
 
 // ---------- misc ----------
 
-test "swap 0x90: registers exchanged, ip advances 3 bytes" {
+test "swap 0xC0: registers exchanged, ip advances 3 bytes" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x1111);
     vm.regs.write(.r2, 0x2222);
-    loadProgram(&vm, &.{ 0x90, 0x02, 0x03 }); // swap r1, r2
+    loadProgram(&vm, &.{ 0xC0, 0x02, 0x03 }); // swap r1, r2
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x2222), vm.regs.read(.r1));
     try std.testing.expectEqual(@as(u16, 0x1111), vm.regs.read(.r2));
     try std.testing.expectEqual(@as(u16, 0x1103), vm.regs.read(.ip));
 }
 
-test "swap 0x90: invalid register raises fault" {
+test "swap 0xC0: invalid register raises fault" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
-    loadProgram(&vm, &.{ 0x90, 0x02, 0xFF });
+    loadProgram(&vm, &.{ 0xC0, 0x02, 0xFF });
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }
 
-test "nop 0x91: nothing changes except ip" {
+test "nop 0xC1: nothing changes except ip" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0xCAFE);
     vm.regs.write(.flg, 0xFFFF);
     const flg_before = vm.regs.read(.flg);
-    loadProgram(&vm, &.{0x91});
+    loadProgram(&vm, &.{0xC1});
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0xCAFE), vm.regs.read(.r1));
     try std.testing.expectEqual(flg_before, vm.regs.read(.flg));
@@ -47,11 +47,11 @@ test "nop 0x91: nothing changes except ip" {
 
 // ---------- flag manipulation ----------
 
-test "clc 0xA0: clears C, leaves other flags intact" {
+test "clc 0xB0: clears C, leaves other flags intact" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.flg, 0xFFFF);
-    loadProgram(&vm, &.{0xA0});
+    loadProgram(&vm, &.{0xB0});
     _ = gero.vm.step(&vm);
     try std.testing.expect(!vm.regs.flagSet(.carry));
     // Other flags untouched.
@@ -61,11 +61,11 @@ test "clc 0xA0: clears C, leaves other flags intact" {
     try std.testing.expect(vm.regs.flagSet(.interrupt_disable));
 }
 
-test "sec 0xA1: sets C only" {
+test "sec 0xB1: sets C only" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.flg, 0);
-    loadProgram(&vm, &.{0xA1});
+    loadProgram(&vm, &.{0xB1});
     _ = gero.vm.step(&vm);
     try std.testing.expect(vm.regs.flagSet(.carry));
     try std.testing.expect(!vm.regs.flagSet(.zero));
@@ -74,24 +74,24 @@ test "sec 0xA1: sets C only" {
     try std.testing.expect(!vm.regs.flagSet(.interrupt_disable));
 }
 
-test "cli 0xA2 / sei 0xA3: toggle interrupt-disable bit" {
+test "cli 0xB2 / sei 0xB3: toggle interrupt-disable bit" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.setFlag(.interrupt_disable, true);
-    loadProgram(&vm, &.{0xA2}); // cli
+    loadProgram(&vm, &.{0xB2}); // cli
     _ = gero.vm.step(&vm);
     try std.testing.expect(!vm.regs.flagSet(.interrupt_disable));
 
-    loadProgram(&vm, &.{0xA3}); // sei
+    loadProgram(&vm, &.{0xB3}); // sei
     _ = gero.vm.step(&vm);
     try std.testing.expect(vm.regs.flagSet(.interrupt_disable));
 }
 
-test "clv 0xA4: clears V only" {
+test "clv 0xB4: clears V only" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.flg, 0xFFFF);
-    loadProgram(&vm, &.{0xA4});
+    loadProgram(&vm, &.{0xB4});
     _ = gero.vm.step(&vm);
     try std.testing.expect(!vm.regs.flagSet(.overflow));
     try std.testing.expect(vm.regs.flagSet(.carry));
@@ -190,7 +190,7 @@ test "hlt 0xFF: returns halted, ip stays on hlt instruction" {
 test "run: exits on hlt" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
-    loadProgram(&vm, &.{ 0x91, 0x91, 0xFF }); // nop, nop, hlt
+    loadProgram(&vm, &.{ 0xC1, 0xC1, 0xFF }); // nop, nop, hlt
     try std.testing.expectEqual(gero.vm.StepResult.halted, gero.vm.run(&vm));
     try std.testing.expectEqual(@as(u16, 0x1102), vm.regs.read(.ip));
 }
@@ -198,7 +198,7 @@ test "run: exits on hlt" {
 test "run: exits on brk, but resuming continues to hlt" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
-    loadProgram(&vm, &.{ 0x91, 0xFE, 0xFF }); // nop, brk, hlt
+    loadProgram(&vm, &.{ 0xC1, 0xFE, 0xFF }); // nop, brk, hlt
     try std.testing.expectEqual(gero.vm.StepResult.breakpoint, gero.vm.run(&vm));
     // ip is past the brk.
     try std.testing.expectEqual(@as(u16, 0x1102), vm.regs.read(.ip));

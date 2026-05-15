@@ -73,7 +73,7 @@ fn unimplemented(vm: *VM) StepResult {
 pub const handler_table: [256]Handler = blk: {
     var t = [_]Handler{unimplemented} ** 256;
 
-    // mov family
+    // 0x1X — mov word
     t[0x10] = mov.movImm16Reg;
     t[0x11] = mov.movRegReg;
     t[0x12] = mov.movRegAddr;
@@ -89,29 +89,28 @@ pub const handler_table: [256]Handler = blk: {
     t[0x1C] = mov.movRegOffsetReg;
     t[0x1D] = mov.movRegRegOffset;
 
-    // mov8 / movh / movl
+    // 0x2X — mov byte (mov8 / movh / movl + block memory)
     t[0x20] = mov.mov8Imm8Addr;
     t[0x21] = mov.mov8Imm8Reg;
     t[0x22] = mov.mov8AddrReg;
     t[0x23] = mov.mov8RegPtr;
     t[0x24] = mov.mov8PtrReg;
-    t[0x29] = mov.mov8Indexed;
-    t[0x25] = mov.movhRegAddr;
-    t[0x26] = mov.movlRegAddr;
-    t[0x27] = mov.bcpyRegRegReg;
-    t[0x28] = mov.bfillRegRegReg;
-    t[0x2E] = mov.sextReg;
-    t[0x2A] = mov.mov8Imm8Zp;
-    t[0x2B] = mov.mov8ZpReg;
-    t[0x2C] = mov.movhRegZp;
-    t[0x2D] = mov.movlRegZp;
+    t[0x25] = mov.mov8Indexed;
+    t[0x26] = mov.movhRegAddr;
+    t[0x27] = mov.movlRegAddr;
+    t[0x28] = mov.mov8Imm8Zp;
+    t[0x29] = mov.mov8ZpReg;
+    t[0x2A] = mov.movhRegZp;
+    t[0x2B] = mov.movlRegZp;
+    t[0x2C] = mov.bcpyRegRegReg;
+    t[0x2D] = mov.bfillRegRegReg;
 
-    // stack
+    // 0x3X — stack
     t[0x30] = stack_handlers.pushImm16;
     t[0x31] = stack_handlers.pushReg;
     t[0x32] = stack_handlers.popReg;
 
-    // arithmetic
+    // 0x4X — arithmetic primary
     t[0x40] = arith.addImm16Reg;
     t[0x41] = arith.addRegReg;
     t[0x42] = arith.addRegAcu;
@@ -127,76 +126,79 @@ pub const handler_table: [256]Handler = blk: {
     t[0x4C] = arith.divRegReg;
     t[0x4D] = arith.divsImm16Reg;
     t[0x4E] = arith.divsRegReg;
-    t[0x64] = arith.adcImm16Reg;
-    t[0x65] = arith.adcRegReg;
-    t[0x66] = arith.sbcImm16Reg;
-    t[0x67] = arith.sbcRegReg;
+    t[0x4F] = mov.sextReg;
 
-    // logical
-    t[0x50] = bitwise.andRegImm16;
-    t[0x51] = bitwise.andRegReg;
-    t[0x52] = bitwise.orRegImm16;
-    t[0x53] = bitwise.orRegReg;
-    t[0x54] = bitwise.xorRegImm16;
-    t[0x55] = bitwise.xorRegReg;
-    t[0x56] = bitwise.notReg;
+    // 0x5X — arithmetic carry-propagating
+    t[0x50] = arith.adcImm16Reg;
+    t[0x51] = arith.adcRegReg;
+    t[0x52] = arith.sbcImm16Reg;
+    t[0x53] = arith.sbcRegReg;
 
-    // shifts and rotates
-    t[0x58] = bitwise.shlRegImm8;
-    t[0x59] = bitwise.shlRegReg;
-    t[0x5A] = bitwise.shrRegImm8;
-    t[0x5B] = bitwise.shrRegReg;
-    t[0x5C] = bitwise.rolRegImm8;
-    t[0x5D] = bitwise.rolRegReg;
-    t[0x5E] = bitwise.rorRegImm8;
-    t[0x5F] = bitwise.rorRegReg;
-
-    // cmp / tst
-    t[0x60] = cmp_handlers.cmpRegImm16;
-    t[0x61] = cmp_handlers.cmpRegReg;
-    t[0x62] = cmp_handlers.tstRegImm16;
-    t[0x63] = cmp_handlers.tstRegReg;
+    // 0x6X — bitwise (logical word ops + single-bit ops)
+    t[0x60] = bitwise.andRegImm16;
+    t[0x61] = bitwise.andRegReg;
+    t[0x62] = bitwise.orRegImm16;
+    t[0x63] = bitwise.orRegReg;
+    t[0x64] = bitwise.xorRegImm16;
+    t[0x65] = bitwise.xorRegReg;
+    t[0x66] = bitwise.notReg;
+    t[0x67] = cmp_handlers.btestRegImm8;
     t[0x68] = cmp_handlers.bsetRegImm8;
     t[0x69] = cmp_handlers.bclrRegImm8;
-    t[0x6A] = cmp_handlers.btestRegImm8;
-    t[0x6B] = bitwise.asrRegImm8;
-    t[0x6C] = bitwise.asrRegReg;
 
-    // control flow
-    t[0x70] = jumps.jmpAddr;
-    t[0x71] = jumps.jmpReg;
-    t[0x72] = jumps.jeqAddr;
-    t[0x73] = jumps.jneAddr;
-    t[0x74] = jumps.jltAddr;
-    t[0x75] = jumps.jleAddr;
-    t[0x76] = jumps.jgtAddr;
-    t[0x77] = jumps.jgeAddr;
-    t[0x78] = jumps.jccAddr;
-    t[0x79] = jumps.jcsAddr;
-    t[0x7A] = jumps.jvcAddr;
-    t[0x7B] = jumps.jvsAddr;
-    t[0x7C] = jumps.jzAddr;
-    t[0x7D] = jumps.jnzAddr;
-    t[0x7E] = jumps.djnzRegAddr;
-    t[0x7F] = jumps.jrImm8;
+    // 0x7X — shifts / rotates
+    t[0x70] = bitwise.shlRegImm8;
+    t[0x71] = bitwise.shlRegReg;
+    t[0x72] = bitwise.shrRegImm8;
+    t[0x73] = bitwise.shrRegReg;
+    t[0x74] = bitwise.asrRegImm8;
+    t[0x75] = bitwise.asrRegReg;
+    t[0x76] = bitwise.rolRegImm8;
+    t[0x77] = bitwise.rolRegReg;
+    t[0x78] = bitwise.rorRegImm8;
+    t[0x79] = bitwise.rorRegReg;
 
-    // subroutines
-    t[0x80] = subroutine.callAddr;
-    t[0x81] = subroutine.callReg;
-    t[0x82] = subroutine.ret;
+    // 0x8X — comparison
+    t[0x80] = cmp_handlers.cmpRegImm16;
+    t[0x81] = cmp_handlers.cmpRegReg;
+    t[0x82] = cmp_handlers.tstRegImm16;
+    t[0x83] = cmp_handlers.tstRegReg;
 
-    // misc
-    t[0x90] = system_handlers.swap;
-    t[0x91] = system_handlers.nop;
+    // 0x9X — branches
+    t[0x90] = jumps.jmpAddr;
+    t[0x91] = jumps.jmpReg;
+    t[0x92] = jumps.jeqAddr;
+    t[0x93] = jumps.jneAddr;
+    t[0x94] = jumps.jltAddr;
+    t[0x95] = jumps.jleAddr;
+    t[0x96] = jumps.jgtAddr;
+    t[0x97] = jumps.jgeAddr;
+    t[0x98] = jumps.jccAddr;
+    t[0x99] = jumps.jcsAddr;
+    t[0x9A] = jumps.jvcAddr;
+    t[0x9B] = jumps.jvsAddr;
+    t[0x9C] = jumps.jzAddr;
+    t[0x9D] = jumps.jnzAddr;
+    t[0x9E] = jumps.djnzRegAddr;
+    t[0x9F] = jumps.jrImm8;
 
-    // flag manipulation
-    t[0xA0] = system_handlers.clc;
-    t[0xA1] = system_handlers.sec;
-    t[0xA2] = system_handlers.cli;
-    t[0xA3] = system_handlers.sei;
-    t[0xA4] = system_handlers.clv;
+    // 0xAX — subroutines
+    t[0xA0] = subroutine.callAddr;
+    t[0xA1] = subroutine.callReg;
+    t[0xA2] = subroutine.ret;
 
-    // system
+    // 0xBX — flag manipulation
+    t[0xB0] = system_handlers.clc;
+    t[0xB1] = system_handlers.sec;
+    t[0xB2] = system_handlers.cli;
+    t[0xB3] = system_handlers.sei;
+    t[0xB4] = system_handlers.clv;
+
+    // 0xCX — misc
+    t[0xC0] = system_handlers.swap;
+    t[0xC1] = system_handlers.nop;
+
+    // 0xFX — system
     t[0xFC] = system_handlers.intImm8;
     t[0xFD] = system_handlers.rti;
     t[0xFE] = system_handlers.brk;

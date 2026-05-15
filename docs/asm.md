@@ -541,7 +541,7 @@ time, producing an `Addr` operand the regular mov-with-Addr opcodes
 
 Form **(b)** keeps the register addend at runtime — the assembler
 checks that the rest is a compile-time-resolvable `Addr` and emits
-opcode `0x17` (`mov Addr, Reg, Reg`) with the runtime addend wired
+opcode `0x17` (`mov [Addr + Reg], Reg`) with the runtime addend wired
 to the register index.
 
 #### Casts
@@ -710,8 +710,8 @@ Assembled output (annotated; addresses assume image starts at `0x0000`):
 ```
 0x0000  10 00 00 02      mov $0000, r1     ; r1 = 0  (Imm16 -> Reg)
 0x0004  48 02            inc r1             ; loop:
-0x0006  60 02 10 00      cmp r1, $0010
-0x000A  73 04 00         jne &0004
+0x0006  80 02 10 00      cmp r1, $0010
+0x000A  93 04 00         jne &0004
 0x000D  FF               hlt
 ```
 

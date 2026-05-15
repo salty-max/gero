@@ -9,11 +9,11 @@ fn loadProgram(vm: *VM, bytes: []const u8) void {
     }
 }
 
-test "call 0x80 addr: pushes fp + ret-ip, sets fp = sp, jumps" {
+test "call 0xa0 addr: pushes fp + ret-ip, sets fp = sp, jumps" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.fp, 0xDEAD);
-    loadProgram(&vm, &.{ 0x80, 0x00, 0x20 }); // call 0x2000
+    loadProgram(&vm, &.{ 0xa0, 0x00, 0x20 }); // call 0x2000
     _ = gero.vm.step(&vm);
 
     // After call: ip = target.
@@ -28,11 +28,11 @@ test "call 0x80 addr: pushes fp + ret-ip, sets fp = sp, jumps" {
     try std.testing.expectEqual(@as(u16, 0xFFFA), vm.regs.read(.fp));
 }
 
-test "call 0x81 reg: target from register, ret-ip is post-instruction (+2)" {
+test "call 0xa1 reg: target from register, ret-ip is post-instruction (+2)" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x3000);
-    loadProgram(&vm, &.{ 0x81, 0x02 }); // call r1
+    loadProgram(&vm, &.{ 0xa1, 0x02 }); // call r1
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x3000), vm.regs.read(.ip));
     // Ret-ip pushed = ip_before + 2 = 0x1102.
@@ -44,9 +44,9 @@ test "call/ret round-trip: control returns to the instruction after call" {
     defer vm.deinit();
 
     // Caller at 0x1100: `call 0x2000` (3 bytes).
-    loadProgram(&vm, &.{ 0x80, 0x00, 0x20 });
+    loadProgram(&vm, &.{ 0xa0, 0x00, 0x20 });
     // Subroutine at 0x2000: a bare `ret`.
-    vm.mmap.writeByte(0x2000, 0x82);
+    vm.mmap.writeByte(0x2000, 0xa2);
 
     _ = gero.vm.step(&vm); // call
     try std.testing.expectEqual(@as(u16, 0x2000), vm.regs.read(.ip));
@@ -64,14 +64,14 @@ test "call/ret nested two levels: outer ret reaches the original caller" {
 
     // 0x1100: call 0x2000
     // 0x1103: hlt-marker (we won't execute it)
-    loadProgram(&vm, &.{ 0x80, 0x00, 0x20 });
+    loadProgram(&vm, &.{ 0xa0, 0x00, 0x20 });
     // 0x2000: call 0x2100
     // 0x2003: ret
-    vm.mmap.writeByte(0x2000, 0x80);
+    vm.mmap.writeByte(0x2000, 0xa0);
     vm.mmap.writeWord(0x2001, 0x2100);
-    vm.mmap.writeByte(0x2003, 0x82);
+    vm.mmap.writeByte(0x2003, 0xa2);
     // 0x2100: ret
-    vm.mmap.writeByte(0x2100, 0x82);
+    vm.mmap.writeByte(0x2100, 0xa2);
 
     _ = gero.vm.step(&vm); // outer call → ip=0x2000
     _ = gero.vm.step(&vm); // inner call → ip=0x2100
@@ -85,17 +85,17 @@ test "call/ret nested two levels: outer ret reaches the original caller" {
     try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.fp));
 }
 
-test "ret 0x82: unwinds locals that the callee pushed below fp" {
+test "ret 0xa2: unwinds locals that the callee pushed below fp" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
     // 0x1100: call 0x2000
-    loadProgram(&vm, &.{ 0x80, 0x00, 0x20 });
+    loadProgram(&vm, &.{ 0xa0, 0x00, 0x20 });
     // 0x2000: push 0xCAFE (3 bytes) — a local on the stack.
     // 0x2003: ret.
     vm.mmap.writeByte(0x2000, 0x30); // push imm16
     vm.mmap.writeWord(0x2001, 0xCAFE);
-    vm.mmap.writeByte(0x2003, 0x82);
+    vm.mmap.writeByte(0x2003, 0xa2);
 
     _ = gero.vm.step(&vm); // call → ip=0x2000, sp moved 4 bytes (fp+ret-ip).
     _ = gero.vm.step(&vm); // push imm16 → sp moves another 2 bytes.
@@ -108,11 +108,11 @@ test "ret 0x82: unwinds locals that the callee pushed below fp" {
     try std.testing.expectEqual(@as(u16, 0x1103), vm.regs.read(.ip));
 }
 
-test "call 0x81: invalid register raises invalid-register fault" {
+test "call 0xa1: invalid register raises invalid-register fault" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
-    loadProgram(&vm, &.{ 0x81, 0xFF });
+    loadProgram(&vm, &.{ 0xa1, 0xFF });
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }

@@ -233,16 +233,39 @@ Operand types:
 The `Schema` column lists operand encoding using a mix of the
 type names from §4 (`Reg`, `Imm8`, `Imm16`, `Addr`) and the asm-
 syntax shorthand for indirect / indexed forms (`[Reg]` for
-`RegIndirect`, `[Addr + Reg]` for `Indexed`). Read left to right
-in asm-source order: `Schema: A, B` means the asm form is
-`mnemonic A, B` (e.g. `mov $00, r1`).
+`RegIndirect`, `[Addr + Reg]` for `Indexed`, `[Reg + Imm8]` for
+`RegOffset`). Read left to right in asm-source order: `Schema:
+A, B` means the asm form is `mnemonic A, B` (e.g. `mov $00, r1`).
 
 Operand order convention:
 
 - **Stores and arithmetic** (`mov`, `add`, `sub`, `mul`, `div`, `adc`, `sbc`, bitwise `and`/`or`/`xor`) — `(src, dst)`. Reads naturally: "add X to r1".
 - **Tests** (`cmp`, `tst`) — `(subject, value)`. Reads naturally: "compare r1 to 42". No destination operand.
 
-### 5.1 Data movement (`mov` family)
+### Pagination — one page, one role
+
+Opcode bytes are organized by 16-slot pages. Each page hosts a
+single role; reading the high nibble of a byte tells you what
+family of instruction you're looking at.
+
+| Page         | Role                                  | §    |
+|--------------|---------------------------------------|------|
+| `0x10-0x1F`  | Mouvement mot (`mov`)                 | 5.1  |
+| `0x20-0x2F`  | Mouvement octet (`mov8`/`movh`/`movl` + block) | 5.2  |
+| `0x30-0x3F`  | Pile (`push` / `pop`)                 | 5.3  |
+| `0x40-0x4F`  | Arithmétique principale               | 5.4  |
+| `0x50-0x5F`  | Arithmétique avec retenue (`adc` / `sbc`) | 5.5 |
+| `0x60-0x6F`  | Bitwise (logique mot + bit ops)       | 5.6  |
+| `0x70-0x7F`  | Décalages / rotations                 | 5.7  |
+| `0x80-0x8F`  | Comparaison (`cmp` / `tst`)           | 5.8  |
+| `0x90-0x9F`  | Branchements (sauts)                  | 5.9  |
+| `0xA0-0xAF`  | Sous-routines (`call` / `ret`)        | 5.10 |
+| `0xB0-0xBF`  | Manipulation de flags                 | 5.11 |
+| `0xC0-0xCF`  | Divers (`swap` / `nop`)               | 5.12 |
+| `0xD0-0xEF`  | **Réservées** pour extensions futures | —    |
+| `0xF0-0xFF`  | Système (`int` / `rti` / `brk` / `hlt`) | 5.13 |
+
+### 5.1 Data movement (`mov` family) — `0x1X`
 
 Every `mov` variant writes the source to the destination without
 affecting flags. Multiple opcodes share the `mov` mnemonic — the
@@ -262,11 +285,14 @@ assembler picks the correct one from operand types.
 | `0x19` | `mov`    | `Reg, ZP`       | mem[zp] ← reg (zero-page store, 1-byte addr) |
 | `0x1A` | `mov`    | `ZP, Reg`       | reg ← mem[zp] (zero-page load) |
 | `0x1B` | `mov`    | `Imm16, ZP`     | mem[zp] ← imm (zero-page immediate store) |
+| `0x1C` | `mov`    | `[Reg + Imm8], Reg` | load via register-relative offset: `dst ← mem[base + sign_extend(imm)]`. Offset range −128..+127. Typical use: stack-frame locals (`mov [fp - $04], r1`). |
+| `0x1D` | `mov`    | `Reg, [Reg + Imm8]` | store via register-relative offset: `mem[base + sign_extend(imm)] ← src`. Offset range −128..+127. |
 
-### 5.2 Byte-sized data movement (`mov8` family)
+### 5.2 Byte-sized data movement (`mov8` family) — `0x2X`
 
 Reads and writes a single byte (low half) instead of the full word.
-Useful for character buffers and packed data.
+Useful for character buffers, packed data, and bulk memory transfers
+(`bcpy` / `bfill`).
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
@@ -275,20 +301,17 @@ Useful for character buffers and packed data.
 | `0x22` | `mov8`   | `Addr, Reg`     | reg.lo ← mem[addr]; reg.hi ← 0 |
 | `0x23` | `mov8`   | `Reg, [Reg]`    | mem[ptr] ← reg.lo |
 | `0x24` | `mov8`   | `[Reg], Reg`    | reg.lo ← mem[ptr]; reg.hi ← 0 |
-| `0x29` | `mov8`   | `[Addr + Reg], Reg` | reg.lo ← mem[addr + idx]; reg.hi ← 0 (byte-level indexed load — useful for stepping through `data8` arrays) |
-| `0x25` | `movh`   | `Reg, Addr`     | mem[addr] ← reg.hi |
-| `0x26` | `movl`   | `Reg, Addr`     | mem[addr] ← reg.lo |
-| `0x2A` | `mov8`   | `Imm8, ZP`      | mem[zp] ← imm (1 byte, zero-page store) |
-| `0x2B` | `mov8`   | `ZP, Reg`       | reg.lo ← mem[zp]; reg.hi ← 0 (zero-page byte load) |
-| `0x2C` | `movh`   | `Reg, ZP`       | mem[zp] ← reg.hi (zero-page hi-byte store) |
-| `0x2D` | `movl`   | `Reg, ZP`       | mem[zp] ← reg.lo (zero-page lo-byte store) |
-| `0x27` | `bcpy`   | `Reg, Reg, Reg` | block copy: mem[dst..dst+len] ← mem[src..src+len]. Operand order: `dst, src, len` (Intel-style dst first). Length is the third register's `u16` value (0..65535 bytes). Copies low-to-high; overlapping ranges with `dst > src` produce corruption — split or use disjoint regions. Address arithmetic wraps. Doesn't touch flags. |
-| `0x28` | `bfill`  | `Reg, Reg, Reg` | block byte-fill: mem[addr..addr+len] ← val.lo for each byte. Operand order: `addr, len, val`. Length is the second register's `u16` value; `val.lo` is the low byte of the third register. Address arithmetic wraps. Doesn't touch flags. **Renamed from `bset` — that mnemonic now means single-bit set, see 0x68.** |
-| `0x1C` | `mov`    | `[Reg + Imm8], Reg` | load via register-relative offset: `dst ← mem[base + sign_extend(imm)]`. Offset range −128..+127. Typical use: stack-frame locals (`mov [fp - $04], r1`). |
-| `0x1D` | `mov`    | `Reg, [Reg + Imm8]` | store via register-relative offset: `mem[base + sign_extend(imm)] ← src`. Offset range −128..+127. |
-| `0x2E` | `sext`   | `Reg`           | sign-extend `reg.lo` into `reg.hi`. If `reg.lo & 0x80`, `reg.hi ← 0xFF`; else `reg.hi ← 0x00`. Companion to the `mov8` family (which always zero-extends). Doesn't touch flags. |
+| `0x25` | `mov8`   | `[Addr + Reg], Reg` | reg.lo ← mem[addr + idx]; reg.hi ← 0 (byte-level indexed load — useful for stepping through `data8` arrays) |
+| `0x26` | `movh`   | `Reg, Addr`     | mem[addr] ← reg.hi |
+| `0x27` | `movl`   | `Reg, Addr`     | mem[addr] ← reg.lo |
+| `0x28` | `mov8`   | `Imm8, ZP`      | mem[zp] ← imm (1 byte, zero-page store) |
+| `0x29` | `mov8`   | `ZP, Reg`       | reg.lo ← mem[zp]; reg.hi ← 0 (zero-page byte load) |
+| `0x2A` | `movh`   | `Reg, ZP`       | mem[zp] ← reg.hi (zero-page hi-byte store) |
+| `0x2B` | `movl`   | `Reg, ZP`       | mem[zp] ← reg.lo (zero-page lo-byte store) |
+| `0x2C` | `bcpy`   | `Reg, Reg, Reg` | block copy: mem[dst..dst+len] ← mem[src..src+len]. Operand order: `dst, src, len` (Intel-style dst first). Length is the third register's `u16` value (0..65535 bytes). Copies low-to-high; overlapping ranges with `dst > src` produce corruption — split or use disjoint regions. Address arithmetic wraps. Doesn't touch flags. |
+| `0x2D` | `bfill`  | `Reg, Reg, Reg` | block byte-fill: mem[addr..addr+len] ← val.lo for each byte. Operand order: `addr, len, val`. Length is the second register's `u16` value; `val.lo` is the low byte of the third register. Address arithmetic wraps. Doesn't touch flags. **Renamed from `bset` — that mnemonic now means single-bit set, see `0x68`.** |
 
-### 5.3 Stack (`push`, `pop`)
+### 5.3 Stack (`push`, `pop`) — `0x3X`
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
@@ -296,11 +319,12 @@ Useful for character buffers and packed data.
 | `0x31` | `push`   | `Reg`   | sp ← sp - 2; mem[sp] ← reg |
 | `0x32` | `pop`    | `Reg`   | reg ← mem[sp]; sp ← sp + 2 |
 
-### 5.4 Arithmetic
+### 5.4 Arithmetic — `0x4X`
 
 All arithmetic ops set `Z`, `N`, `C`, `V` flags (with the documented
 exceptions for `inc` / `dec`). Implicit-`acu` short forms save 1 byte
-over the `Reg, Reg` form.
+over the `Reg, Reg` form. `sext` is the only single-operand op
+beyond `inc` / `dec` / `neg` — sign-extends `reg.lo` into `reg.hi`.
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
@@ -319,23 +343,7 @@ over the `Reg, Reg` form.
 | `0x4C` | `div`    | `Reg, Reg`    | unsigned 32÷16: acu:dst ÷ src → quotient in dst, remainder in acu |
 | `0x4D` | `divs`   | `Imm16, Reg`  | signed 32÷16, same shape as `div` |
 | `0x4E` | `divs`   | `Reg, Reg`    | signed 32÷16, same shape as `div` |
-| `0x64` | `adc`    | `Imm16, Reg`  | reg ← reg + imm + C (add with carry — multi-precision arithmetic) |
-| `0x65` | `adc`    | `Reg, Reg`    | dst ← dst + src + C |
-| `0x66` | `sbc`    | `Imm16, Reg`  | reg ← reg - imm - C (sub with borrow — multi-precision arithmetic) |
-| `0x67` | `sbc`    | `Reg, Reg`    | dst ← dst - src - C |
-
-`adc` / `sbc` are the canonical 6502 / Z80 / 8086 primitive for
-arithmetic wider than the native register width. A 32-bit add via
-two 16-bit registers:
-
-```asm
-add  r1, r3      ; low half ; sets C if overflow
-adc  r2, r4      ; high half + carry-from-low ✨
-```
-
-Same for 32-bit subtraction with `sub` + `sbc`. Without these,
-multi-precision math requires explicit branch-on-carry sequences
-(slower, larger code).
+| `0x4F` | `sext`   | `Reg`         | sign-extend `reg.lo` into `reg.hi`. If `reg.lo & 0x80`, `reg.hi ← 0xFF`; else `reg.hi ← 0x00`. Companion to the `mov8` family (which always zero-extends). Doesn't touch flags. |
 
 `div` / `divs` faults:
 - Divisor is 0 → vector `0x03` (division by zero).
@@ -375,116 +383,144 @@ If profiling later shows fixed-point or saturating math is a real
 hot path, native ops can be added later as an additive minor
 version bump (existing code keeps working).
 
-### 5.5 Logical / bitwise
+### 5.5 Arithmetic carry-propagating (`adc`, `sbc`) — `0x5X`
 
-Set `Z`, `N`. Clear `C`, `V`.
+Add/subtract with carry — the canonical 6502 / Z80 / 8086 primitive
+for arithmetic wider than the native register width.
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
-| `0x50` | `and`    | `Imm16, Reg`  | reg ← reg & imm |
-| `0x51` | `and`    | `Reg, Reg`    | dst ← dst & src |
-| `0x52` | `or`     | `Imm16, Reg`  | reg ← reg \| imm |
-| `0x53` | `or`     | `Reg, Reg`    | dst ← dst \| src |
-| `0x54` | `xor`    | `Imm16, Reg`  | reg ← reg ^ imm |
-| `0x55` | `xor`    | `Reg, Reg`    | dst ← dst ^ src |
-| `0x56` | `not`    | `Reg`         | reg ← ~reg |
+| `0x50` | `adc`    | `Imm16, Reg`  | reg ← reg + imm + C (add with carry — multi-precision arithmetic) |
+| `0x51` | `adc`    | `Reg, Reg`    | dst ← dst + src + C |
+| `0x52` | `sbc`    | `Imm16, Reg`  | reg ← reg - imm - C (sub with borrow — multi-precision arithmetic) |
+| `0x53` | `sbc`    | `Reg, Reg`    | dst ← dst - src - C |
 
-### 5.6 Shifts and rotates
+A 32-bit add via two 16-bit registers:
 
-Shifts: `C` receives the last bit shifted out; `Z`, `N` set on result.
-Rotates: bits cycle **through `C`** (the standard 6502 / Z80 / 8086
+```asm
+add  r1, r3      ; low half ; sets C if overflow
+adc  r2, r4      ; high half + carry-from-low ✨
+```
+
+Same for 32-bit subtraction with `sub` + `sbc`. Without these,
+multi-precision math requires explicit branch-on-carry sequences
+(slower, larger code).
+
+### 5.6 Bitwise — `0x6X`
+
+Word-level logical ops set `Z` and `N`, clear `C` and `V`. Single-bit
+ops (`btest` / `bset` / `bclr`) operate on bit positions 0..15 (`imm`
+is masked to 4 bits) — `bset` / `bclr` don't touch flags, `btest`
+sets `Z` / `N` and clears `C` / `V`.
+
+| Opcode | Mnemonic | Schema | Effect |
+|--------|----------|--------|--------|
+| `0x60` | `and`    | `Imm16, Reg`  | reg ← reg & imm |
+| `0x61` | `and`    | `Reg, Reg`    | dst ← dst & src |
+| `0x62` | `or`     | `Imm16, Reg`  | reg ← reg \| imm |
+| `0x63` | `or`     | `Reg, Reg`    | dst ← dst \| src |
+| `0x64` | `xor`    | `Imm16, Reg`  | reg ← reg ^ imm |
+| `0x65` | `xor`    | `Reg, Reg`    | dst ← dst ^ src |
+| `0x66` | `not`    | `Reg`         | reg ← ~reg |
+| `0x67` | `btest`  | `Reg, Imm8`   | flags ← bit-test: Z = !(reg & (1 << imm)), N = bit value, C/V cleared. Register untouched. |
+| `0x68` | `bset`   | `Reg, Imm8`   | reg ← reg \| (1 << (imm & 0x0F)). Sets a single bit; imm masked to 0..15. Doesn't touch flags. |
+| `0x69` | `bclr`   | `Reg, Imm8`   | reg ← reg & ~(1 << (imm & 0x0F)). Clears a single bit; imm masked to 0..15. Doesn't touch flags. |
+
+### 5.7 Shifts and rotates — `0x7X`
+
+Logical shifts: `C` receives the last bit shifted out; `Z`, `N` set
+on result. Arithmetic shift right (`asr`) replicates the sign bit
+into the high bit on each step — equivalent to signed integer / 2.
+Rotates cycle bits **through `C`** (the standard 6502 / Z80 / 8086
 behavior — `C` is both source for the bit shifted in and destination
 for the bit shifted out, so a 17-bit chain).
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
-| `0x58` | `shl`    | `Reg, Imm8` | reg ← reg << imm (shift left) |
-| `0x59` | `shl`    | `Reg, Reg`  | dst ← dst << src |
-| `0x5A` | `shr`    | `Reg, Imm8` | reg ← reg >> imm (logical shift right; high bit zero-filled) |
-| `0x5B` | `shr`    | `Reg, Reg`  | dst ← dst >> src |
-| `0x5C` | `rol`    | `Reg, Imm8` | rotate left through C (bit_out → C → bit_in) |
-| `0x5D` | `rol`    | `Reg, Reg`  | same with src as count |
-| `0x5E` | `ror`    | `Reg, Imm8` | rotate right through C (bit_out → C → bit_in) |
-| `0x5F` | `ror`    | `Reg, Reg`  | same with src as count |
+| `0x70` | `shl`    | `Reg, Imm8` | reg ← reg << imm (shift left) |
+| `0x71` | `shl`    | `Reg, Reg`  | dst ← dst << src |
+| `0x72` | `shr`    | `Reg, Imm8` | reg ← reg >> imm (logical shift right; high bit zero-filled) |
+| `0x73` | `shr`    | `Reg, Reg`  | dst ← dst >> src |
+| `0x74` | `asr`    | `Reg, Imm8` | arithmetic shift right — sign bit replicated on each step. Sets Z/N/C; clears V. |
+| `0x75` | `asr`    | `Reg, Reg`  | arithmetic shift right with shift count in second reg. |
+| `0x76` | `rol`    | `Reg, Imm8` | rotate left through C (bit_out → C → bit_in) |
+| `0x77` | `rol`    | `Reg, Reg`  | same with src as count |
+| `0x78` | `ror`    | `Reg, Imm8` | rotate right through C (bit_out → C → bit_in) |
+| `0x79` | `ror`    | `Reg, Reg`  | same with src as count |
 
 Rotates are the natural primitive for bit-twiddling (sprite flag
 packing, hash steps, simple permutations). Without them, equivalent
 must be open-coded as `shl` + `shr` + `or` (3 ops vs 1 native rotate).
 
-### 5.7 Compare and test
+### 5.8 Compare and test — `0x8X`
 
 `cmp` computes `dst - src`, sets flags, **discards the result**.
 `tst` computes `dst & src`, sets `Z` and `N`, **discards the result**.
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
-| `0x60` | `cmp`    | `Reg, Imm16` | flags ← (reg - imm) |
-| `0x61` | `cmp`    | `Reg, Reg`   | flags ← (dst - src) |
-| `0x62` | `tst`    | `Reg, Imm16` | flags ← (reg & imm) |
-| `0x63` | `tst`    | `Reg, Reg`   | flags ← (dst & src) |
-| `0x68` | `bset`   | `Reg, Imm8`  | reg ← reg \| (1 << (imm & 0x0F)). Sets a single bit; imm masked to 0..15. Doesn't touch flags. |
-| `0x69` | `bclr`   | `Reg, Imm8`  | reg ← reg & ~(1 << (imm & 0x0F)). Clears a single bit; imm masked to 0..15. Doesn't touch flags. |
-| `0x6A` | `btest`  | `Reg, Imm8`  | flags ← bit-test: Z = !(reg & (1 << imm)), N = bit value, C/V cleared. Register untouched. |
-| `0x6B` | `asr`    | `Reg, Imm8`  | arithmetic shift right — same as `shr` but the sign bit (high bit) is replicated on each step. Equivalent to signed integer / 2. Sets Z/N/C; clears V. |
-| `0x6C` | `asr`    | `Reg, Reg`   | arithmetic shift right with shift count in second reg. |
+| `0x80` | `cmp`    | `Reg, Imm16` | flags ← (reg - imm) |
+| `0x81` | `cmp`    | `Reg, Reg`   | flags ← (dst - src) |
+| `0x82` | `tst`    | `Reg, Imm16` | flags ← (reg & imm) |
+| `0x83` | `tst`    | `Reg, Reg`   | flags ← (dst & src) |
 
-### 5.8 Control flow
+### 5.9 Branches — `0x9X`
 
 Jumps and branches read flags (set by the most recent `cmp` / `tst`
-or any flag-affecting ALU op).
+or any flag-affecting ALU op). The 16 slots are exactly filled.
 
 | Opcode | Mnemonic | Schema | Branch when |
 |--------|----------|--------|-------------|
-| `0x70` | `jmp`    | `Addr` | always |
-| `0x71` | `jmp`    | `Reg`  | always — `ip ← reg` |
-| `0x72` | `jeq`    | `Addr` | `Z = 1` (equal) |
-| `0x73` | `jne`    | `Addr` | `Z = 0` (not equal) |
-| `0x74` | `jlt`    | `Addr` | `N ≠ V` (signed less-than) |
-| `0x75` | `jle`    | `Addr` | `Z = 1 ∨ N ≠ V` (signed less-or-equal) |
-| `0x76` | `jgt`    | `Addr` | `Z = 0 ∧ N = V` (signed greater) |
-| `0x77` | `jge`    | `Addr` | `N = V` (signed greater-or-equal) |
-| `0x78` | `jcc`    | `Addr` | `C = 0` (unsigned less / no carry) |
-| `0x79` | `jcs`    | `Addr` | `C = 1` (unsigned greater-or-equal / carry set) |
-| `0x7A` | `jvc`    | `Addr` | `V = 0` |
-| `0x7B` | `jvs`    | `Addr` | `V = 1` |
-| `0x7C` | `jz`     | `Addr` | `Z = 1` (alias for `jeq`) |
-| `0x7D` | `jnz`    | `Addr` | `Z = 0` (alias for `jne`) |
-| `0x7E` | `djnz`   | `Reg, Addr` | `reg ← reg - 1`; if `reg ≠ 0` then `ip ← addr`. Z80 classic loop primitive. |
-| `0x7F` | `jr`     | `Imm8`      | relative jump: `ip ← ip + signed(imm)` (range −128..+127 from current `ip`). Saves 1 byte vs `jmp Addr` for tight branches. |
+| `0x90` | `jmp`    | `Addr` | always |
+| `0x91` | `jmp`    | `Reg`  | always — `ip ← reg` |
+| `0x92` | `jeq`    | `Addr` | `Z = 1` (equal) |
+| `0x93` | `jne`    | `Addr` | `Z = 0` (not equal) |
+| `0x94` | `jlt`    | `Addr` | `N ≠ V` (signed less-than) |
+| `0x95` | `jle`    | `Addr` | `Z = 1 ∨ N ≠ V` (signed less-or-equal) |
+| `0x96` | `jgt`    | `Addr` | `Z = 0 ∧ N = V` (signed greater) |
+| `0x97` | `jge`    | `Addr` | `N = V` (signed greater-or-equal) |
+| `0x98` | `jcc`    | `Addr` | `C = 0` (unsigned less / no carry) |
+| `0x99` | `jcs`    | `Addr` | `C = 1` (unsigned greater-or-equal / carry set) |
+| `0x9A` | `jvc`    | `Addr` | `V = 0` |
+| `0x9B` | `jvs`    | `Addr` | `V = 1` |
+| `0x9C` | `jz`     | `Addr` | `Z = 1` (alias for `jeq`) |
+| `0x9D` | `jnz`    | `Addr` | `Z = 0` (alias for `jne`) |
+| `0x9E` | `djnz`   | `Reg, Addr` | `reg ← reg - 1`; if `reg ≠ 0` then `ip ← addr`. Z80 classic loop primitive. |
+| `0x9F` | `jr`     | `Imm8`      | relative jump: `ip ← ip + signed(imm)` (range −128..+127 from current `ip`). Saves 1 byte vs `jmp Addr` for tight branches. |
 
-### 5.9 Subroutines
-
-| Opcode | Mnemonic | Schema | Effect |
-|--------|----------|--------|--------|
-| `0x80` | `call`   | `Addr` | push fp; push (ip after-instruction); fp ← sp; ip ← addr |
-| `0x81` | `call`   | `Reg`  | same as above with `ip ← reg` |
-| `0x82` | `ret`    | (none) | sp ← fp; pop ip; pop fp |
-
-### 5.10 Misc
+### 5.10 Subroutines — `0xAX`
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
-| `0x90` | `swap`   | `Reg, Reg` | atomic swap of two registers |
-| `0x91` | `nop`    | (none)     | no operation; advance `ip` by 1 |
+| `0xA0` | `call`   | `Addr` | push fp; push (ip after-instruction); fp ← sp; ip ← addr |
+| `0xA1` | `call`   | `Reg`  | same as above with `ip ← reg` |
+| `0xA2` | `ret`    | (none) | sp ← fp; pop ip; pop fp |
 
-### 5.11 Flag manipulation
+### 5.11 Flag manipulation — `0xBX`
 
 Single-byte ops to toggle individual flag bits — saves the
 `mov flg, r1` + `or r1, mask` + `mov r1, flg` dance (5 bytes → 1).
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
-| `0xA0` | `clc`    | (none) | clear carry: `flg.C ← 0` |
-| `0xA1` | `sec`    | (none) | set carry: `flg.C ← 1` |
-| `0xA2` | `cli`    | (none) | clear interrupt-disable: `flg.I ← 0` (enables IRQs globally) |
-| `0xA3` | `sei`    | (none) | set interrupt-disable: `flg.I ← 1` (blocks IRQs globally) |
-| `0xA4` | `clv`    | (none) | clear overflow: `flg.V ← 0` |
+| `0xB0` | `clc`    | (none) | clear carry: `flg.C ← 0` |
+| `0xB1` | `sec`    | (none) | set carry: `flg.C ← 1` |
+| `0xB2` | `cli`    | (none) | clear interrupt-disable: `flg.I ← 0` (enables IRQs globally) |
+| `0xB3` | `sei`    | (none) | set interrupt-disable: `flg.I ← 1` (blocks IRQs globally) |
+| `0xB4` | `clv`    | (none) | clear overflow: `flg.V ← 0` |
 
 Direct 6502 / 8086 lineage. `cli` / `sei` are essential for ISR
 critical sections; `clc` / `sec` for setting up `adc` / `sbc`
 sequences.
 
-### 5.12 System
+### 5.12 Misc — `0xCX`
+
+| Opcode | Mnemonic | Schema | Effect |
+|--------|----------|--------|--------|
+| `0xC0` | `swap`   | `Reg, Reg` | atomic swap of two registers |
+| `0xC1` | `nop`    | (none)     | no operation; advance `ip` by 1 |
+
+### 5.13 System — `0xFX`
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|

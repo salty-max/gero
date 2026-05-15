@@ -8,8 +8,11 @@ test "opcodes: operandSize matches encoding widths" {
     try std.testing.expectEqual(@as(u8, 1), gero.vm.operandSize(.reg));
     try std.testing.expectEqual(@as(u8, 1), gero.vm.operandSize(.imm8));
     try std.testing.expectEqual(@as(u8, 1), gero.vm.operandSize(.zp));
+    try std.testing.expectEqual(@as(u8, 1), gero.vm.operandSize(.reg_indirect));
     try std.testing.expectEqual(@as(u8, 2), gero.vm.operandSize(.imm16));
     try std.testing.expectEqual(@as(u8, 2), gero.vm.operandSize(.addr));
+    try std.testing.expectEqual(@as(u8, 2), gero.vm.operandSize(.reg_offset));
+    try std.testing.expectEqual(@as(u8, 3), gero.vm.operandSize(.indexed));
 }
 
 test "opcodes: OpcodeInfo.size sums opcode + operands" {
@@ -25,7 +28,7 @@ test "opcodes: OpcodeInfo.size sums opcode + operands" {
     const movx = OpcodeInfo{ .mnemonic = "mov", .operands = &.{ .imm16, .reg } };
     try std.testing.expectEqual(@as(u8, 4), movx.size());
 
-    const movix = OpcodeInfo{ .mnemonic = "mov", .operands = &.{ .addr, .reg, .reg } };
+    const movix = OpcodeInfo{ .mnemonic = "mov", .operands = &.{ .indexed, .reg } };
     try std.testing.expectEqual(@as(u8, 5), movix.size());
 }
 
@@ -34,11 +37,6 @@ test "opcodes: table holds exactly 105 named entries" {
     for (table) |entry| if (entry != null) {
         count += 1;
     };
-    // 97 = 93 base + 4 byte-mov ZP variants (0x2A-0x2D), then 3
-    // single-bit ops at 0x68/0x69/0x6A (bset / bclr / btest),
-    // sext at 0x2E (sign-extension), 2 asr variants at
-    // 0x6B/0x6C (arithmetic shift right), then 2 reg-offset mov
-    // variants at 0x1C/0x1D (frame-relative load + store).
     try std.testing.expectEqual(@as(usize, 105), count);
 }
 
@@ -57,18 +55,20 @@ test "opcodes: table sample — mov family" {
     try std.testing.expectEqualStrings("mov", table[0x10].?.mnemonic);
     try std.testing.expectEqualSlices(Operand, &.{ .imm16, .reg }, table[0x10].?.operands);
     try std.testing.expectEqualStrings("mov", table[0x17].?.mnemonic);
-    try std.testing.expectEqualSlices(Operand, &.{ .addr, .reg, .reg }, table[0x17].?.operands);
+    try std.testing.expectEqualSlices(Operand, &.{ .indexed, .reg }, table[0x17].?.operands);
     try std.testing.expectEqualStrings("mov", table[0x1B].?.mnemonic);
     try std.testing.expectEqualSlices(Operand, &.{ .imm16, .zp }, table[0x1B].?.operands);
+    try std.testing.expectEqualStrings("mov", table[0x1C].?.mnemonic);
+    try std.testing.expectEqualSlices(Operand, &.{ .reg_offset, .reg }, table[0x1C].?.operands);
 }
 
-test "opcodes: table sample — control flow" {
-    try std.testing.expectEqualStrings("jmp", table[0x70].?.mnemonic);
-    try std.testing.expectEqualSlices(Operand, &.{.addr}, table[0x70].?.operands);
-    try std.testing.expectEqualStrings("djnz", table[0x7E].?.mnemonic);
-    try std.testing.expectEqualSlices(Operand, &.{ .reg, .addr }, table[0x7E].?.operands);
-    try std.testing.expectEqualStrings("jr", table[0x7F].?.mnemonic);
-    try std.testing.expectEqualSlices(Operand, &.{.imm8}, table[0x7F].?.operands);
+test "opcodes: table sample — branches" {
+    try std.testing.expectEqualStrings("jmp", table[0x90].?.mnemonic);
+    try std.testing.expectEqualSlices(Operand, &.{.addr}, table[0x90].?.operands);
+    try std.testing.expectEqualStrings("djnz", table[0x9E].?.mnemonic);
+    try std.testing.expectEqualSlices(Operand, &.{ .reg, .addr }, table[0x9E].?.operands);
+    try std.testing.expectEqualStrings("jr", table[0x9F].?.mnemonic);
+    try std.testing.expectEqualSlices(Operand, &.{.imm8}, table[0x9F].?.operands);
 }
 
 test "opcodes: table sample — system" {
@@ -83,27 +83,27 @@ test "opcodes: table sample — system" {
 test "opcodes: instruction sizes span the full 1-5 byte range" {
     // 1 byte — no operands.
     try std.testing.expectEqual(@as(u8, 1), table[0xFF].?.size()); // hlt
-    try std.testing.expectEqual(@as(u8, 1), table[0x91].?.size()); // nop
-    try std.testing.expectEqual(@as(u8, 1), table[0xA0].?.size()); // clc
+    try std.testing.expectEqual(@as(u8, 1), table[0xC1].?.size()); // nop
+    try std.testing.expectEqual(@as(u8, 1), table[0xB0].?.size()); // clc
 
     // 2 bytes — 1 single-byte operand.
     try std.testing.expectEqual(@as(u8, 2), table[0x31].?.size()); // push reg
-    try std.testing.expectEqual(@as(u8, 2), table[0x7F].?.size()); // jr imm8
+    try std.testing.expectEqual(@as(u8, 2), table[0x9F].?.size()); // jr imm8
     try std.testing.expectEqual(@as(u8, 2), table[0xFC].?.size()); // int imm8
 
     // 3 bytes — combinations summing to 2 operand bytes.
-    try std.testing.expectEqual(@as(u8, 3), table[0x70].?.size()); // jmp addr
+    try std.testing.expectEqual(@as(u8, 3), table[0x90].?.size()); // jmp addr
     try std.testing.expectEqual(@as(u8, 3), table[0x11].?.size()); // mov reg,reg
     try std.testing.expectEqual(@as(u8, 3), table[0x30].?.size()); // push imm16
 
     // 4 bytes — most binary ops.
     try std.testing.expectEqual(@as(u8, 4), table[0x10].?.size()); // mov imm16,reg
     try std.testing.expectEqual(@as(u8, 4), table[0x40].?.size()); // add imm16,reg
-    try std.testing.expectEqual(@as(u8, 4), table[0x7E].?.size()); // djnz reg,addr
+    try std.testing.expectEqual(@as(u8, 4), table[0x9E].?.size()); // djnz reg,addr
 
     // 5 bytes — indexed mov (word) + indexed mov8 (byte).
-    try std.testing.expectEqual(@as(u8, 5), table[0x17].?.size()); // mov addr,reg,reg
-    try std.testing.expectEqual(@as(u8, 5), table[0x29].?.size()); // mov8 addr,reg,reg
+    try std.testing.expectEqual(@as(u8, 5), table[0x17].?.size()); // mov indexed,reg
+    try std.testing.expectEqual(@as(u8, 5), table[0x25].?.size()); // mov8 indexed,reg
 }
 
 test "opcodes: unused byte values are null" {
@@ -111,10 +111,11 @@ test "opcodes: unused byte values are null" {
     try std.testing.expect(table[0x00] == null);
     try std.testing.expect(table[0x0F] == null);
     try std.testing.expect(table[0x33] == null);
-    try std.testing.expect(table[0x57] == null);
-    try std.testing.expect(table[0x6F] == null);
-    try std.testing.expect(table[0xB0] == null);
-    try std.testing.expect(table[0xFB] == null);
+    try std.testing.expect(table[0x54] == null); // 0x5X arith-carry gap
+    try std.testing.expect(table[0x6A] == null); // 0x6X bitwise gap
+    try std.testing.expect(table[0x7A] == null); // 0x7X shifts gap
+    try std.testing.expect(table[0xD0] == null); // reserved page
+    try std.testing.expect(table[0xFB] == null); // pre-system gap
 }
 
 test "opcodes: schema sizes never overflow a u8 instruction" {

@@ -1,26 +1,49 @@
 /// Opcode table — the canonical mapping from byte → mnemonic +
 /// operand schema. Dispatch consults this for instruction sizing;
 /// the disassembler can re-use it for textual rendering.
+///
+/// Bytes are organized by 16-slot pages, one page per role:
+///   0x1X  mov word        | 0x8X  cmp/tst
+///   0x2X  mov byte        | 0x9X  branches
+///   0x3X  stack           | 0xAX  subroutines
+///   0x4X  arith primary   | 0xBX  flag manipulation
+///   0x5X  arith carry     | 0xCX  misc
+///   0x6X  bitwise         | 0xD-EX reserved
+///   0x7X  shifts/rotates  | 0xFX  system
 const std = @import("std");
 
 /// Operand kinds. Encoding sizes:
-/// `reg`/`imm8`/`zp` = 1 byte, `imm16`/`addr`/`reg_offset` = 2 bytes.
+///   `reg`/`imm8`/`zp`/`reg_indirect`   = 1 byte
+///   `imm16`/`addr`/`reg_offset`        = 2 bytes
+///   `indexed`                          = 3 bytes
 pub const Operand = enum {
+    /// 1-byte register index.
     reg,
+    /// 1-byte immediate.
     imm8,
+    /// 2-byte little-endian immediate.
     imm16,
+    /// 2-byte little-endian address.
     addr,
+    /// 1-byte zero-page address.
     zp,
+    /// `[reg]` indirect — encodes as 1 register-index byte
+    /// treated as effective address.
+    reg_indirect,
     /// `[reg + imm8]` register-relative — encodes as base-reg
     /// byte + signed imm8 byte.
     reg_offset,
+    /// `[addr + reg]` indexed — encodes as 2 addr bytes + 1
+    /// reg byte.
+    indexed,
 };
 
 /// Encoded byte size of one operand.
 pub fn operandSize(op: Operand) u8 {
     return switch (op) {
-        .reg, .imm8, .zp => 1,
+        .reg, .imm8, .zp, .reg_indirect => 1,
         .imm16, .addr, .reg_offset => 2,
+        .indexed => 3,
     };
 }
 
@@ -44,49 +67,44 @@ pub const OpcodeInfo = struct {
 pub const table: [256]?OpcodeInfo = blk: {
     var t = [_]?OpcodeInfo{null} ** 256;
 
-    // mov family
+    // 0x1X — mov word
     t[0x10] = .{ .mnemonic = "mov", .operands = &.{ .imm16, .reg } };
     t[0x11] = .{ .mnemonic = "mov", .operands = &.{ .reg, .reg } };
     t[0x12] = .{ .mnemonic = "mov", .operands = &.{ .reg, .addr } };
     t[0x13] = .{ .mnemonic = "mov", .operands = &.{ .addr, .reg } };
     t[0x14] = .{ .mnemonic = "mov", .operands = &.{ .imm16, .addr } };
-    t[0x15] = .{ .mnemonic = "mov", .operands = &.{ .reg, .reg } };
-    t[0x16] = .{ .mnemonic = "mov", .operands = &.{ .reg, .reg } };
-    t[0x17] = .{ .mnemonic = "mov", .operands = &.{ .addr, .reg, .reg } };
-    t[0x18] = .{ .mnemonic = "mov", .operands = &.{ .imm16, .reg } };
+    t[0x15] = .{ .mnemonic = "mov", .operands = &.{ .reg, .reg_indirect } };
+    t[0x16] = .{ .mnemonic = "mov", .operands = &.{ .reg_indirect, .reg } };
+    t[0x17] = .{ .mnemonic = "mov", .operands = &.{ .indexed, .reg } };
+    t[0x18] = .{ .mnemonic = "mov", .operands = &.{ .imm16, .reg_indirect } };
     t[0x19] = .{ .mnemonic = "mov", .operands = &.{ .reg, .zp } };
     t[0x1A] = .{ .mnemonic = "mov", .operands = &.{ .zp, .reg } };
     t[0x1B] = .{ .mnemonic = "mov", .operands = &.{ .imm16, .zp } };
     t[0x1C] = .{ .mnemonic = "mov", .operands = &.{ .reg_offset, .reg } };
     t[0x1D] = .{ .mnemonic = "mov", .operands = &.{ .reg, .reg_offset } };
 
-    // mov8 / movh / movl
+    // 0x2X — mov byte (mov8 / movh / movl + block memory)
     t[0x20] = .{ .mnemonic = "mov8", .operands = &.{ .imm8, .addr } };
     t[0x21] = .{ .mnemonic = "mov8", .operands = &.{ .imm8, .reg } };
     t[0x22] = .{ .mnemonic = "mov8", .operands = &.{ .addr, .reg } };
-    t[0x23] = .{ .mnemonic = "mov8", .operands = &.{ .reg, .reg } };
-    t[0x24] = .{ .mnemonic = "mov8", .operands = &.{ .reg, .reg } };
-    t[0x29] = .{ .mnemonic = "mov8", .operands = &.{ .addr, .reg, .reg } };
-    t[0x25] = .{ .mnemonic = "movh", .operands = &.{ .reg, .addr } };
-    t[0x26] = .{ .mnemonic = "movl", .operands = &.{ .reg, .addr } };
+    t[0x23] = .{ .mnemonic = "mov8", .operands = &.{ .reg, .reg_indirect } };
+    t[0x24] = .{ .mnemonic = "mov8", .operands = &.{ .reg_indirect, .reg } };
+    t[0x25] = .{ .mnemonic = "mov8", .operands = &.{ .indexed, .reg } };
+    t[0x26] = .{ .mnemonic = "movh", .operands = &.{ .reg, .addr } };
+    t[0x27] = .{ .mnemonic = "movl", .operands = &.{ .reg, .addr } };
+    t[0x28] = .{ .mnemonic = "mov8", .operands = &.{ .imm8, .zp } };
+    t[0x29] = .{ .mnemonic = "mov8", .operands = &.{ .zp, .reg } };
+    t[0x2A] = .{ .mnemonic = "movh", .operands = &.{ .reg, .zp } };
+    t[0x2B] = .{ .mnemonic = "movl", .operands = &.{ .reg, .zp } };
+    t[0x2C] = .{ .mnemonic = "bcpy", .operands = &.{ .reg, .reg, .reg } };
+    t[0x2D] = .{ .mnemonic = "bfill", .operands = &.{ .reg, .reg, .reg } };
 
-    // mov8 / movh / movl — zero-page variants
-    t[0x2A] = .{ .mnemonic = "mov8", .operands = &.{ .imm8, .zp } };
-    t[0x2B] = .{ .mnemonic = "mov8", .operands = &.{ .zp, .reg } };
-    t[0x2C] = .{ .mnemonic = "movh", .operands = &.{ .reg, .zp } };
-    t[0x2D] = .{ .mnemonic = "movl", .operands = &.{ .reg, .zp } };
-
-    // block memory ops
-    t[0x27] = .{ .mnemonic = "bcpy", .operands = &.{ .reg, .reg, .reg } };
-    t[0x28] = .{ .mnemonic = "bfill", .operands = &.{ .reg, .reg, .reg } };
-    t[0x2E] = .{ .mnemonic = "sext", .operands = &.{.reg} };
-
-    // stack
+    // 0x3X — stack
     t[0x30] = .{ .mnemonic = "push", .operands = &.{.imm16} };
     t[0x31] = .{ .mnemonic = "push", .operands = &.{.reg} };
     t[0x32] = .{ .mnemonic = "pop", .operands = &.{.reg} };
 
-    // arithmetic
+    // 0x4X — arithmetic primary
     t[0x40] = .{ .mnemonic = "add", .operands = &.{ .imm16, .reg } };
     t[0x41] = .{ .mnemonic = "add", .operands = &.{ .reg, .reg } };
     t[0x42] = .{ .mnemonic = "add", .operands = &.{.reg} };
@@ -102,76 +120,79 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x4C] = .{ .mnemonic = "div", .operands = &.{ .reg, .reg } };
     t[0x4D] = .{ .mnemonic = "divs", .operands = &.{ .imm16, .reg } };
     t[0x4E] = .{ .mnemonic = "divs", .operands = &.{ .reg, .reg } };
-    t[0x64] = .{ .mnemonic = "adc", .operands = &.{ .imm16, .reg } };
-    t[0x65] = .{ .mnemonic = "adc", .operands = &.{ .reg, .reg } };
-    t[0x66] = .{ .mnemonic = "sbc", .operands = &.{ .imm16, .reg } };
-    t[0x67] = .{ .mnemonic = "sbc", .operands = &.{ .reg, .reg } };
+    t[0x4F] = .{ .mnemonic = "sext", .operands = &.{.reg} };
 
-    // logical
-    t[0x50] = .{ .mnemonic = "and", .operands = &.{ .imm16, .reg } };
-    t[0x51] = .{ .mnemonic = "and", .operands = &.{ .reg, .reg } };
-    t[0x52] = .{ .mnemonic = "or", .operands = &.{ .imm16, .reg } };
-    t[0x53] = .{ .mnemonic = "or", .operands = &.{ .reg, .reg } };
-    t[0x54] = .{ .mnemonic = "xor", .operands = &.{ .imm16, .reg } };
-    t[0x55] = .{ .mnemonic = "xor", .operands = &.{ .reg, .reg } };
-    t[0x56] = .{ .mnemonic = "not", .operands = &.{.reg} };
+    // 0x5X — arithmetic carry-propagating
+    t[0x50] = .{ .mnemonic = "adc", .operands = &.{ .imm16, .reg } };
+    t[0x51] = .{ .mnemonic = "adc", .operands = &.{ .reg, .reg } };
+    t[0x52] = .{ .mnemonic = "sbc", .operands = &.{ .imm16, .reg } };
+    t[0x53] = .{ .mnemonic = "sbc", .operands = &.{ .reg, .reg } };
 
-    // shifts and rotates
-    t[0x58] = .{ .mnemonic = "shl", .operands = &.{ .reg, .imm8 } };
-    t[0x59] = .{ .mnemonic = "shl", .operands = &.{ .reg, .reg } };
-    t[0x5A] = .{ .mnemonic = "shr", .operands = &.{ .reg, .imm8 } };
-    t[0x5B] = .{ .mnemonic = "shr", .operands = &.{ .reg, .reg } };
-    t[0x5C] = .{ .mnemonic = "rol", .operands = &.{ .reg, .imm8 } };
-    t[0x5D] = .{ .mnemonic = "rol", .operands = &.{ .reg, .reg } };
-    t[0x5E] = .{ .mnemonic = "ror", .operands = &.{ .reg, .imm8 } };
-    t[0x5F] = .{ .mnemonic = "ror", .operands = &.{ .reg, .reg } };
-
-    // cmp / tst
-    t[0x60] = .{ .mnemonic = "cmp", .operands = &.{ .reg, .imm16 } };
-    t[0x61] = .{ .mnemonic = "cmp", .operands = &.{ .reg, .reg } };
-    t[0x62] = .{ .mnemonic = "tst", .operands = &.{ .reg, .imm16 } };
-    t[0x63] = .{ .mnemonic = "tst", .operands = &.{ .reg, .reg } };
+    // 0x6X — bitwise (logical word ops + single-bit ops)
+    t[0x60] = .{ .mnemonic = "and", .operands = &.{ .imm16, .reg } };
+    t[0x61] = .{ .mnemonic = "and", .operands = &.{ .reg, .reg } };
+    t[0x62] = .{ .mnemonic = "or", .operands = &.{ .imm16, .reg } };
+    t[0x63] = .{ .mnemonic = "or", .operands = &.{ .reg, .reg } };
+    t[0x64] = .{ .mnemonic = "xor", .operands = &.{ .imm16, .reg } };
+    t[0x65] = .{ .mnemonic = "xor", .operands = &.{ .reg, .reg } };
+    t[0x66] = .{ .mnemonic = "not", .operands = &.{.reg} };
+    t[0x67] = .{ .mnemonic = "btest", .operands = &.{ .reg, .imm8 } };
     t[0x68] = .{ .mnemonic = "bset", .operands = &.{ .reg, .imm8 } };
     t[0x69] = .{ .mnemonic = "bclr", .operands = &.{ .reg, .imm8 } };
-    t[0x6A] = .{ .mnemonic = "btest", .operands = &.{ .reg, .imm8 } };
-    t[0x6B] = .{ .mnemonic = "asr", .operands = &.{ .reg, .imm8 } };
-    t[0x6C] = .{ .mnemonic = "asr", .operands = &.{ .reg, .reg } };
 
-    // control flow
-    t[0x70] = .{ .mnemonic = "jmp", .operands = &.{.addr} };
-    t[0x71] = .{ .mnemonic = "jmp", .operands = &.{.reg} };
-    t[0x72] = .{ .mnemonic = "jeq", .operands = &.{.addr} };
-    t[0x73] = .{ .mnemonic = "jne", .operands = &.{.addr} };
-    t[0x74] = .{ .mnemonic = "jlt", .operands = &.{.addr} };
-    t[0x75] = .{ .mnemonic = "jle", .operands = &.{.addr} };
-    t[0x76] = .{ .mnemonic = "jgt", .operands = &.{.addr} };
-    t[0x77] = .{ .mnemonic = "jge", .operands = &.{.addr} };
-    t[0x78] = .{ .mnemonic = "jcc", .operands = &.{.addr} };
-    t[0x79] = .{ .mnemonic = "jcs", .operands = &.{.addr} };
-    t[0x7A] = .{ .mnemonic = "jvc", .operands = &.{.addr} };
-    t[0x7B] = .{ .mnemonic = "jvs", .operands = &.{.addr} };
-    t[0x7C] = .{ .mnemonic = "jz", .operands = &.{.addr} };
-    t[0x7D] = .{ .mnemonic = "jnz", .operands = &.{.addr} };
-    t[0x7E] = .{ .mnemonic = "djnz", .operands = &.{ .reg, .addr } };
-    t[0x7F] = .{ .mnemonic = "jr", .operands = &.{.imm8} };
+    // 0x7X — shifts / rotates
+    t[0x70] = .{ .mnemonic = "shl", .operands = &.{ .reg, .imm8 } };
+    t[0x71] = .{ .mnemonic = "shl", .operands = &.{ .reg, .reg } };
+    t[0x72] = .{ .mnemonic = "shr", .operands = &.{ .reg, .imm8 } };
+    t[0x73] = .{ .mnemonic = "shr", .operands = &.{ .reg, .reg } };
+    t[0x74] = .{ .mnemonic = "asr", .operands = &.{ .reg, .imm8 } };
+    t[0x75] = .{ .mnemonic = "asr", .operands = &.{ .reg, .reg } };
+    t[0x76] = .{ .mnemonic = "rol", .operands = &.{ .reg, .imm8 } };
+    t[0x77] = .{ .mnemonic = "rol", .operands = &.{ .reg, .reg } };
+    t[0x78] = .{ .mnemonic = "ror", .operands = &.{ .reg, .imm8 } };
+    t[0x79] = .{ .mnemonic = "ror", .operands = &.{ .reg, .reg } };
 
-    // subroutines
-    t[0x80] = .{ .mnemonic = "call", .operands = &.{.addr} };
-    t[0x81] = .{ .mnemonic = "call", .operands = &.{.reg} };
-    t[0x82] = .{ .mnemonic = "ret", .operands = &.{} };
+    // 0x8X — comparison
+    t[0x80] = .{ .mnemonic = "cmp", .operands = &.{ .reg, .imm16 } };
+    t[0x81] = .{ .mnemonic = "cmp", .operands = &.{ .reg, .reg } };
+    t[0x82] = .{ .mnemonic = "tst", .operands = &.{ .reg, .imm16 } };
+    t[0x83] = .{ .mnemonic = "tst", .operands = &.{ .reg, .reg } };
 
-    // misc
-    t[0x90] = .{ .mnemonic = "swap", .operands = &.{ .reg, .reg } };
-    t[0x91] = .{ .mnemonic = "nop", .operands = &.{} };
+    // 0x9X — branches
+    t[0x90] = .{ .mnemonic = "jmp", .operands = &.{.addr} };
+    t[0x91] = .{ .mnemonic = "jmp", .operands = &.{.reg} };
+    t[0x92] = .{ .mnemonic = "jeq", .operands = &.{.addr} };
+    t[0x93] = .{ .mnemonic = "jne", .operands = &.{.addr} };
+    t[0x94] = .{ .mnemonic = "jlt", .operands = &.{.addr} };
+    t[0x95] = .{ .mnemonic = "jle", .operands = &.{.addr} };
+    t[0x96] = .{ .mnemonic = "jgt", .operands = &.{.addr} };
+    t[0x97] = .{ .mnemonic = "jge", .operands = &.{.addr} };
+    t[0x98] = .{ .mnemonic = "jcc", .operands = &.{.addr} };
+    t[0x99] = .{ .mnemonic = "jcs", .operands = &.{.addr} };
+    t[0x9A] = .{ .mnemonic = "jvc", .operands = &.{.addr} };
+    t[0x9B] = .{ .mnemonic = "jvs", .operands = &.{.addr} };
+    t[0x9C] = .{ .mnemonic = "jz", .operands = &.{.addr} };
+    t[0x9D] = .{ .mnemonic = "jnz", .operands = &.{.addr} };
+    t[0x9E] = .{ .mnemonic = "djnz", .operands = &.{ .reg, .addr } };
+    t[0x9F] = .{ .mnemonic = "jr", .operands = &.{.imm8} };
 
-    // flag manipulation
-    t[0xA0] = .{ .mnemonic = "clc", .operands = &.{} };
-    t[0xA1] = .{ .mnemonic = "sec", .operands = &.{} };
-    t[0xA2] = .{ .mnemonic = "cli", .operands = &.{} };
-    t[0xA3] = .{ .mnemonic = "sei", .operands = &.{} };
-    t[0xA4] = .{ .mnemonic = "clv", .operands = &.{} };
+    // 0xAX — subroutines
+    t[0xA0] = .{ .mnemonic = "call", .operands = &.{.addr} };
+    t[0xA1] = .{ .mnemonic = "call", .operands = &.{.reg} };
+    t[0xA2] = .{ .mnemonic = "ret", .operands = &.{} };
 
-    // system
+    // 0xBX — flag manipulation
+    t[0xB0] = .{ .mnemonic = "clc", .operands = &.{} };
+    t[0xB1] = .{ .mnemonic = "sec", .operands = &.{} };
+    t[0xB2] = .{ .mnemonic = "cli", .operands = &.{} };
+    t[0xB3] = .{ .mnemonic = "sei", .operands = &.{} };
+    t[0xB4] = .{ .mnemonic = "clv", .operands = &.{} };
+
+    // 0xCX — misc
+    t[0xC0] = .{ .mnemonic = "swap", .operands = &.{ .reg, .reg } };
+    t[0xC1] = .{ .mnemonic = "nop", .operands = &.{} };
+
+    // 0xFX — system
     t[0xFC] = .{ .mnemonic = "int", .operands = &.{.imm8} };
     t[0xFD] = .{ .mnemonic = "rti", .operands = &.{} };
     t[0xFE] = .{ .mnemonic = "brk", .operands = &.{} };
