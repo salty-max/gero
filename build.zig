@@ -24,6 +24,17 @@ pub fn build(b: *std.Build) void {
     });
     gero_mod.addImport("knit", knit_mod);
 
+    // The library carries its own build_options so consumers picking up
+    // `gero` as a dependency see VERSION without needing to wire options
+    // themselves. The extra `is_lib` marker forces `addOptions` to emit a
+    // distinct content-addressed file from `cli_options` — without it,
+    // both objects hash to the same path and the CLI binary fails to
+    // build with a "file in two modules" error.
+    const lib_options = b.addOptions();
+    lib_options.addOption([]const u8, "version", package_version);
+    lib_options.addOption(bool, "is_lib", true);
+    gero_mod.addOptions("build_options", lib_options);
+
     const lib = b.addLibrary(.{
         .name = "gero",
         .root_module = gero_mod,
