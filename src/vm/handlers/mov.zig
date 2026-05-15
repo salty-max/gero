@@ -317,3 +317,22 @@ pub fn bfillRegRegReg(vm: *VM) StepResult {
     }
     return ok;
 }
+
+/// `0x2E` — `sext Reg` → sign-extend `reg.lo` into `reg.hi`.
+/// If the low byte's bit 7 is set, `reg.hi` becomes `0xFF`;
+/// otherwise `reg.hi` becomes `0x00`. The companion to the
+/// `mov8` family (which always zero-extends) for signed-integer
+/// codegen. Doesn't touch flags.
+pub fn sextReg(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const reg = vm.readByte(ip +% 1);
+    const cur = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
+    // safety: truncating to the low byte is the operation's defining step.
+    const low: u8 = @truncate(cur);
+    const sign_bit = (low & 0x80) != 0;
+    // @as: widen the low byte to u16; high byte filled per sign bit.
+    const widened: u16 = @as(u16, low);
+    const sign_extended: u16 = if (sign_bit) (widened | 0xFF00) else widened;
+    _ = vm.regs.writeByIndex(reg, sign_extended);
+    return ok;
+}

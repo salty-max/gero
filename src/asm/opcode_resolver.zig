@@ -97,6 +97,7 @@ const shapes: []const Shape = &.{
     // block memory ops
     .{ .mnemonic = "bcpy", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x27 },
     .{ .mnemonic = "bfill", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x28 },
+    .{ .mnemonic = "sext", .kinds = &.{.reg}, .opcode = 0x2E },
 
     // stack
     .{ .mnemonic = "push", .kinds = &.{.imm16}, .opcode = 0x30 },

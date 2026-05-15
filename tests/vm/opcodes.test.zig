@@ -29,14 +29,15 @@ test "opcodes: OpcodeInfo.size sums opcode + operands" {
     try std.testing.expectEqual(@as(u8, 5), movix.size());
 }
 
-test "opcodes: table holds exactly 100 named entries" {
+test "opcodes: table holds exactly 101 named entries" {
     var count: usize = 0;
     for (table) |entry| if (entry != null) {
         count += 1;
     };
     // 97 = 93 base + 4 byte-mov ZP variants (0x2A-0x2D), then 3
-    // single-bit ops added at 0x68/0x69/0x6A (bset / bclr / btest).
-    try std.testing.expectEqual(@as(usize, 100), count);
+    // single-bit ops at 0x68/0x69/0x6A (bset / bclr / btest), then
+    // sext at 0x2E (sign-extension for signed-integer codegen).
+    try std.testing.expectEqual(@as(usize, 101), count);
 }
 
 test "opcodes: every named entry has a non-empty mnemonic" {
