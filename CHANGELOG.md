@@ -5,6 +5,36 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.2.0 - 2026-05-15
+
+### Breaking
+
+- ISA repagination — every non-`mov` / non-stack / non-primary-arithmetic opcode is renumbered onto a dedicated 16-slot page so the high nibble names the family at a glance: `0x6X` bitwise, `0x7X` shifts, `0x8X` `cmp`/`tst`, `0x9X` branches, `0xAX` subroutines, `0xBX` flag control, `0xCX` misc, `0xFX` system. `Operand` gains `reg_indirect` and `indexed` so the VM schema matches the resolver's kind enum — disassembly stops special-casing by opcode byte. Every embedded `.gx` blob needs re-encoding; mnemonic + operand-grammar surface unchanged.
+- ISA completion sprint — `bset memset` renamed to `bfill` (block byte-fill); the new `bset` is single-bit set. 8 new opcodes (`sext`; `asr` reg/reg + reg/imm; `btest` / `bset` / `bclr`; `mov [reg+imm], reg` + `mov reg, [reg+imm]`) for clean signed-integer + bitfield + frame-local codegen from gero-lang.
+- `asm.ErrorCode.reserved_opcode` (E008) removed — never emitted by any code path, lingering placeholder for ISA additions that never materialized. ID `8` left dead so any tool that parsed the error-code table by number stays stable.
+
+### Added
+
+- `gero check` — validates `.gas` (files or directories, walked recursively) without writing `.gx`. Caret-style diagnostics, per-file summary, `--quiet`, `--verbose`, `--format=json`. Foundation for editor integration.
+- `gero fmt` — canonical formatter for `.gas` source. In-place rewrite or `--check` diff mode; `--stdin` for editor integration; respects `; gero-fmt-ignore-*` opt-out directives for hand-formatted regions.
+- `gero build` — project-aware compile. Walks ancestors for `gero.toml`, reads `[package]` + `[build]`, runs the asm pipeline, writes `<out>/<name>.gx`.
+- `gero new <name>` + `gero init` — scaffold a v0.2 asm project from an in-binary template. Two-verb split (cargo / zig / poetry convention) plus optional CI + lefthook templates that invoke the gero CLI.
+- `gero check` / `gero fmt` / `gero test` graduate to project-aware fallback — invoke with no positional arg inside a `gero.toml`-rooted tree and the command resolves the project automatically.
+- `gero.toml` — TOML subset parser + manifest schema (`[package]`, `[build]`, `[fmt]`, `[test]`) + `findManifest` ancestor walk. Foundation for every project-aware subcommand.
+- `bank_call <label>` / `bank_jump <label>` — cross-bank pseudo-instructions; the assembler looks up which bank the target lives in and emits the equivalent `mov $bank, mb` + `call`/`jmp <addr>` pair automatically.
+- `ifdef` / `ifndef` / `endif` — NASM/ca65-style conditional assembly with include-guard semantics.
+- Zero-page mov forms — `mov` against an `$XX`-sized address downgrades to a 1-byte ZP variant automatically (no source change needed).
+- `and` / `or` / `xor` reg-imm variants now follow the project's canonical `(src, dst)` operand order, aligning with every other ALU op.
+
+### Changed
+
+- Canonical printer richer — trailing comments stay inline with their host (padded to column 32 by default for vertical alignment across a block) instead of demoting to standalone lines. Three new `PrintOptions` knobs for column, alignment, and hex-case control.
+- `gero check` + `gero fmt --check` are wired into `zig build ci` and the lefthook pre-commit hook over the example corpus.
+
+### Fixed
+
+- `gero asm` / `gero build` / `gero check` now report a clean diagnostic (`[E017] sram_banks count exceeds declared bank count`) when a `.gas` file declares `sram_banks N` without enough matching `bank` directives, instead of panicking in `vm.parseGx` on the just-emitted image. Codegen catches the loader invariant at layout time and points the caret at the offending `sram_banks` directive.
+
 ## v0.1.2 - 2026-05-13
 
 ### Fixed
