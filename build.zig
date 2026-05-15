@@ -395,6 +395,21 @@ pub fn build(b: *std.Build) void {
     );
     fmt_check_examples_step.dependOn(&fmt_check_examples_cmd.step);
 
+    // ----- Inner-loop gate (fast, no shell scripts) -----------------------
+
+    const quick_step = b.step("quick", "Inner-loop gate (~1s warm cache, ~30s cold): fmt-check + test (Debug only). Skips every bash-driven static check — use this between edits while iterating.");
+    quick_step.dependOn(&fmt_check.step);
+    quick_step.dependOn(test_step);
+
+    // ----- Pre-push gate ---------------------------------------------------
+
+    const verify_step = b.step("verify", "Pre-push gate (~3-5 min): lint + test + check-examples + check-broken + fmt-check-examples. The bash-driven static checks (strict, naming, unused, etc.) walk every .zig file via grep — that's most of the time. Skips test-modes / test-all / test-examples vs the full `ci` step — those run on GitHub Actions on push.");
+    verify_step.dependOn(lint_step);
+    verify_step.dependOn(test_step);
+    verify_step.dependOn(&check_examples_cmd.step);
+    verify_step.dependOn(&check_broken_cmd.step);
+    verify_step.dependOn(&fmt_check_examples_cmd.step);
+
     // ----- All-in-one CI ---------------------------------------------------
 
     const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + check-examples + check-broken + fmt-check-examples + test-examples");
