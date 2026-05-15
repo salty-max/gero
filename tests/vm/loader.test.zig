@@ -169,8 +169,8 @@ test "boot: banked program installs the bank pool" {
 test "boot + run: nop nop hlt program executes and halts" {
     var buf: [16 + 3]u8 = undefined;
     _ = buildGx(buf[0..16], 0x0001, 0, 0x0000, 3, 0, 0);
-    buf[16] = 0x91; // nop
-    buf[17] = 0x91; // nop
+    buf[16] = 0xC1; // nop
+    buf[17] = 0xC1; // nop
     buf[18] = 0xFF; // hlt
     const loaded = try gero.vm.parseGx(&buf);
 
@@ -190,9 +190,9 @@ test "cycles: init starts at 0 and step increments by 1 each call" {
     try std.testing.expectEqual(@as(u64, 0), vm.cycles);
 
     vm.regs.write(.ip, 0x1100);
-    vm.mmap.writeByte(0x1100, 0x91); // nop
-    vm.mmap.writeByte(0x1101, 0x91);
-    vm.mmap.writeByte(0x1102, 0x91);
+    vm.mmap.writeByte(0x1100, 0xC1); // nop
+    vm.mmap.writeByte(0x1101, 0xC1);
+    vm.mmap.writeByte(0x1102, 0xC1);
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u64, 1), vm.cycles);
     _ = gero.vm.step(&vm);
@@ -214,7 +214,7 @@ test "cycles: run accumulates one per step including the terminating hlt" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.ip, 0x1100);
-    vm.mmap.writeByte(0x1100, 0x91); // nop
+    vm.mmap.writeByte(0x1100, 0xC1); // nop
     vm.mmap.writeByte(0x1101, 0xFF); // hlt
     _ = gero.vm.run(&vm);
     try std.testing.expectEqual(@as(u64, 2), vm.cycles);

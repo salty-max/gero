@@ -75,7 +75,7 @@ test "printer: truncated tail comments instead of crashing" {
 test "printer: symbols substitute matching addresses" {
     // jmp &0021 — with a symbol for $0021 named "fib", renders
     // as `jmp fib`.
-    const bytes = [_]u8{ 0x70, 0x21, 0x00 };
+    const bytes = [_]u8{ 0x90, 0x21, 0x00 };
     const entries = [_]gero.disasm.Symbol{.{ .address = 0x0021, .kind = .label, .name = "fib" }};
     const symbols: gero.disasm.Symbols = .{ .entries = &entries };
 
@@ -109,7 +109,7 @@ test "printer: data symbol switches to data-mode rendering" {
 }
 
 test "printer: unmatched address stays as &XXXX" {
-    const bytes = [_]u8{ 0x70, 0x22, 0x00 }; // jmp &0022
+    const bytes = [_]u8{ 0x90, 0x22, 0x00 }; // jmp &0022
     const entries = [_]gero.disasm.Symbol{.{ .address = 0x0021, .kind = .label, .name = "fib" }};
     const symbols: gero.disasm.Symbols = .{ .entries = &entries };
 

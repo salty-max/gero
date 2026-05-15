@@ -52,10 +52,10 @@ test "codegen: bare hlt emits one 0xFF byte" {
     try std.testing.expectEqualSlices(u8, &.{0xFF}, out.imageBody());
 }
 
-test "codegen: nop emits 0x91" {
+test "codegen: nop emits 0xC1" {
     var out = try assemble("nop\n", .{});
     defer out.deinit();
-    try std.testing.expectEqualSlices(u8, &.{0x91}, out.imageBody());
+    try std.testing.expectEqualSlices(u8, &.{0xC1}, out.imageBody());
 }
 
 test "codegen: mov imm16, reg → 0x10 LE imm reg" {
@@ -78,10 +78,10 @@ test "codegen: inc reg → 0x48 reg" {
     try std.testing.expectEqualSlices(u8, &.{ 0x48, 0x02 }, out.imageBody());
 }
 
-test "codegen: cmp reg, imm16 → 0x60 reg imm_lo imm_hi" {
+test "codegen: cmp reg, imm16 → 0x80 reg imm_lo imm_hi" {
     var out = try assemble("cmp r1, $0010\n", .{});
     defer out.deinit();
-    try std.testing.expectEqualSlices(u8, &.{ 0x60, 0x02, 0x10, 0x00 }, out.imageBody());
+    try std.testing.expectEqualSlices(u8, &.{ 0x80, 0x02, 0x10, 0x00 }, out.imageBody());
 }
 
 test "codegen: int $10 narrows to 1-byte imm8 operand (0xFC 0x10)" {
@@ -114,10 +114,10 @@ test "codegen: local labels resolve against the enclosing global" {
     , .{});
     defer out.deinit();
     try std.testing.expect(!out.cg.hasErrors());
-    // image: jmp(0x70) + addr LE(0x0000) — local label resolves to
+    // image: jmp(0x90) + addr LE(0x0000) — local label resolves to
     // offset 0, the address of `main:` / `.loop:` (they share the
     // same byte address since neither emits code before .loop).
-    try std.testing.expectEqualSlices(u8, &.{ 0x70, 0x00, 0x00 }, out.imageBody());
+    try std.testing.expectEqualSlices(u8, &.{ 0x90, 0x00, 0x00 }, out.imageBody());
 }
 
 test "codegen: same local-label name reuses across global scopes" {
@@ -177,11 +177,11 @@ test "codegen: int CONST errors when const value > u8" {
     try std.testing.expect(out.cg.hasErrors());
 }
 
-test "codegen: shl r1, $03 uses imm8 shape (0x58 reg imm8)" {
+test "codegen: shl r1, $03 uses imm8 shape (0x70 reg imm8)" {
     var out = try assemble("shl r1, $03\n", .{});
     defer out.deinit();
     try std.testing.expect(!out.cg.hasErrors());
-    try std.testing.expectEqualSlices(u8, &.{ 0x58, 0x02, 0x03 }, out.imageBody());
+    try std.testing.expectEqualSlices(u8, &.{ 0x70, 0x02, 0x03 }, out.imageBody());
 }
 
 test "codegen: mov $00, r1 widens imm8 → imm16 (4 bytes, not 3)" {
@@ -227,13 +227,13 @@ test "codegen: §7 worked example assembles to the spec'd 14 bytes" {
     // Documented bytecode at 0x0000:
     //   10 00 00 02            mov $0000, r1
     //   48 02                  inc r1                (loop: at 0x0004)
-    //   60 02 10 00            cmp r1, $0010
-    //   73 04 00               jne &0004
+    //   80 02 10 00            cmp r1, $0010
+    //   93 04 00               jne &0004
     //   FF                     hlt
     const expected = [_]u8{
         0x10, 0x00, 0x00, 0x02,
-        0x48, 0x02, 0x60, 0x02,
-        0x10, 0x00, 0x73, 0x04,
+        0x48, 0x02, 0x80, 0x02,
+        0x10, 0x00, 0x93, 0x04,
         0x00, 0xFF,
     };
     try std.testing.expectEqualSlices(u8, &expected, out.imageBody());
@@ -251,9 +251,9 @@ test "codegen: forward label reference resolves" {
     , .{});
     defer out.deinit();
     try std.testing.expect(!out.cg.hasErrors());
-    // jmp Addr = opcode 0x70 + addr LE. `end` is at offset 4
+    // jmp Addr = opcode 0x90 + addr LE. `end` is at offset 4
     // (jmp = 3 bytes, hlt = 1 byte). Encoding: 70 04 00.
-    try std.testing.expectEqualSlices(u8, &.{ 0x70, 0x04, 0x00, 0xFF, 0xFF }, out.imageBody());
+    try std.testing.expectEqualSlices(u8, &.{ 0x90, 0x04, 0x00, 0xFF, 0xFF }, out.imageBody());
 }
 
 // ---------- data directives ----------
@@ -472,8 +472,8 @@ test "codegen: labels inside `bank N` resolve to bank-window addresses" {
         \\
     , .{});
     defer out.deinit();
-    // image[0..3] = call $C000 → 0x80 LE($C000)
-    try std.testing.expectEqual(@as(u8, 0x80), out.cg.image[16]);
+    // image[0..3] = call $C000 → 0xA0 LE($C000)
+    try std.testing.expectEqual(@as(u8, 0xA0), out.cg.image[16]);
     try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[17]);
     try std.testing.expectEqual(@as(u8, 0xC0), out.cg.image[18]);
 }
@@ -783,13 +783,13 @@ test "codegen: jmp &XX never downgrades (no ZP variant exists)" {
     , .{});
     defer out.deinit();
     try std.testing.expect(!out.cg.hasErrors());
-    // jmp opcode 0x70 + 2-byte addr — 3 bytes total.
-    try std.testing.expectEqual(@as(u8, 0x70), out.imageBody()[0]);
+    // jmp opcode 0x90 + 2-byte addr — 3 bytes total.
+    try std.testing.expectEqual(@as(u8, 0x90), out.imageBody()[0]);
     try std.testing.expectEqual(@as(u8, 0x42), out.imageBody()[1]);
     try std.testing.expectEqual(@as(u8, 0x00), out.imageBody()[2]);
 }
 
-test "codegen: mov8 imm8 → &XX downgrades to ZP opcode 0x2A" {
+test "codegen: mov8 imm8 → &XX downgrades to ZP opcode 0x28" {
     var out = try assemble(
         \\main:
         \\  mov8 $42, &0080
@@ -798,10 +798,10 @@ test "codegen: mov8 imm8 → &XX downgrades to ZP opcode 0x2A" {
     , .{});
     defer out.deinit();
     try std.testing.expect(!out.cg.hasErrors());
-    try std.testing.expectEqual(@as(u8, 0x2A), out.imageBody()[0]);
+    try std.testing.expectEqual(@as(u8, 0x28), out.imageBody()[0]);
 }
 
-test "codegen: mov8 &XX → reg downgrades to ZP opcode 0x2B" {
+test "codegen: mov8 &XX → reg downgrades to ZP opcode 0x29" {
     var out = try assemble(
         \\main:
         \\  mov8 &0042, r1
@@ -810,10 +810,10 @@ test "codegen: mov8 &XX → reg downgrades to ZP opcode 0x2B" {
     , .{});
     defer out.deinit();
     try std.testing.expect(!out.cg.hasErrors());
-    try std.testing.expectEqual(@as(u8, 0x2B), out.imageBody()[0]);
+    try std.testing.expectEqual(@as(u8, 0x29), out.imageBody()[0]);
 }
 
-test "codegen: movh reg → &XX downgrades to ZP opcode 0x2C" {
+test "codegen: movh reg → &XX downgrades to ZP opcode 0x2A" {
     var out = try assemble(
         \\main:
         \\  movh r1, &0042
@@ -822,10 +822,10 @@ test "codegen: movh reg → &XX downgrades to ZP opcode 0x2C" {
     , .{});
     defer out.deinit();
     try std.testing.expect(!out.cg.hasErrors());
-    try std.testing.expectEqual(@as(u8, 0x2C), out.imageBody()[0]);
+    try std.testing.expectEqual(@as(u8, 0x2A), out.imageBody()[0]);
 }
 
-test "codegen: movl reg → &XX downgrades to ZP opcode 0x2D" {
+test "codegen: movl reg → &XX downgrades to ZP opcode 0x2B" {
     var out = try assemble(
         \\main:
         \\  movl r1, &0042
@@ -834,7 +834,7 @@ test "codegen: movl reg → &XX downgrades to ZP opcode 0x2D" {
     , .{});
     defer out.deinit();
     try std.testing.expect(!out.cg.hasErrors());
-    try std.testing.expectEqual(@as(u8, 0x2D), out.imageBody()[0]);
+    try std.testing.expectEqual(@as(u8, 0x2B), out.imageBody()[0]);
 }
 
 // ---------- bank_call / bank_jump pseudo-instructions ----------
@@ -853,17 +853,17 @@ test "codegen: bank_call <label-in-bank> emits mov $bank, mb + call <addr>" {
     defer out.deinit();
     try std.testing.expect(!out.cg.hasErrors());
     // 7-byte expansion: 0x10 (movImm16Reg) + imm16($0000) + 0x0C (mb)
-    //                 + 0x80 (call) + addr16
+    //                 + 0xA0 (call) + addr16
     const body = out.imageBody();
     try std.testing.expectEqual(@as(u8, 0x10), body[0]);
     try std.testing.expectEqual(@as(u8, 0x00), body[1]); // bank low
     try std.testing.expectEqual(@as(u8, 0x00), body[2]); // bank high
     try std.testing.expectEqual(@as(u8, 0x0C), body[3]); // mb register
-    try std.testing.expectEqual(@as(u8, 0x80), body[4]); // call opcode
+    try std.testing.expectEqual(@as(u8, 0xA0), body[4]); // call opcode
     // Bytes 5-6 = call target address (bank-window-relative).
 }
 
-test "codegen: bank_jump emits jmp opcode (0x70) instead of call (0x80)" {
+test "codegen: bank_jump emits jmp opcode (0x90) instead of call (0xA0)" {
     var out = try assemble(
         \\main:
         \\  bank_jump greet
@@ -875,7 +875,7 @@ test "codegen: bank_jump emits jmp opcode (0x70) instead of call (0x80)" {
     , .{});
     defer out.deinit();
     try std.testing.expect(!out.cg.hasErrors());
-    try std.testing.expectEqual(@as(u8, 0x70), out.imageBody()[4]);
+    try std.testing.expectEqual(@as(u8, 0x90), out.imageBody()[4]);
 }
 
 test "codegen: bank_call into a higher-numbered bank emits the bank index" {

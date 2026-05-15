@@ -156,7 +156,7 @@ test "mul 0x46 imm16,reg: result fits in 16 bits clears C+V" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x10);
-    loadProgram(&vm, &.{ 0x46, 0x05, 0x00, 0x02 }); // 0x10 * 5 = 0x50
+    loadProgram(&vm, &.{ 0x46, 0x05, 0x00, 0x02 }); // 0x10 * 5 = 0x60
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x50), vm.regs.read(.r1));
     try std.testing.expectEqual(@as(u16, 0x00), vm.regs.read(.acu));
@@ -339,7 +339,7 @@ test "divs 0x4D imm16,reg: quotient outside i16 range faults via vector 0x05" {
 
 // ---------- adc / sbc ----------
 
-test "adc 0x64 imm16,reg: 32-bit add via low + adc high" {
+test "adc 0x50 imm16,reg: 32-bit add via low + adc high" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     // Add 0x0001FFFF + 0x00010002 = 0x00030001. Low halves: 0xFFFF +
@@ -354,23 +354,23 @@ test "adc 0x64 imm16,reg: 32-bit add via low + adc high" {
     try std.testing.expectEqual(@as(u16, 0x0001), vm.regs.read(.r1));
 
     // adc r2, 0x0001 — uses C from above.
-    loadProgram(&vm, &.{ 0x64, 0x01, 0x00, 0x03 });
+    loadProgram(&vm, &.{ 0x50, 0x01, 0x00, 0x03 });
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x0003), vm.regs.read(.r2));
 }
 
-test "adc 0x65 reg,reg with carry-in" {
+test "adc 0x51 reg,reg with carry-in" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x10);
     vm.regs.write(.r2, 0x05);
     vm.regs.setFlag(.carry, true);
-    loadProgram(&vm, &.{ 0x65, 0x03, 0x02 }); // adc r2, r1 (src, dst — with C=1)
+    loadProgram(&vm, &.{ 0x51, 0x03, 0x02 }); // adc r2, r1 (src, dst — with C=1)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x16), vm.regs.read(.r1));
 }
 
-test "sbc 0x66 imm16,reg: 32-bit sub via sub low + sbc high" {
+test "sbc 0x52 imm16,reg: 32-bit sub via sub low + sbc high" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     // 0x00030000 - 0x00010001 = 0x0001FFFF. Low: 0x0000 - 0x0001 =
@@ -382,18 +382,18 @@ test "sbc 0x66 imm16,reg: 32-bit sub via sub low + sbc high" {
     try std.testing.expect(flags(&vm).c);
     try std.testing.expectEqual(@as(u16, 0xFFFF), vm.regs.read(.r1));
 
-    loadProgram(&vm, &.{ 0x66, 0x01, 0x00, 0x03 }); // sbc r2, 0x0001 (uses C)
+    loadProgram(&vm, &.{ 0x52, 0x01, 0x00, 0x03 }); // sbc r2, 0x0001 (uses C)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x0001), vm.regs.read(.r2));
 }
 
-test "sbc 0x67 reg,reg with borrow-in" {
+test "sbc 0x53 reg,reg with borrow-in" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x10);
     vm.regs.write(.r2, 0x05);
     vm.regs.setFlag(.carry, true);
-    loadProgram(&vm, &.{ 0x67, 0x03, 0x02 }); // sbc r2, r1 (src, dst — with C=1)
+    loadProgram(&vm, &.{ 0x53, 0x03, 0x02 }); // sbc r2, r1 (src, dst — with C=1)
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x0A), vm.regs.read(.r1));
 }

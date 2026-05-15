@@ -92,7 +92,7 @@ test "dispatch: bytes without a handler raise invalid-opcode" {
 
     // Pick bytes that have no handler yet: the invalid-opcode
     // fault should fire on each.
-    inline for ([_]u8{ 0x00, 0x6F, 0x83, 0xA5 }) |op| {
+    inline for ([_]u8{ 0x00, 0x6F, 0xA5, 0xD0 }) |op| {
         vm.regs.write(.ip, 0x1100);
         vm.mmap.writeByte(0x1100, op);
         vm.regs.write(.sp, 0xFFFE);
@@ -170,7 +170,7 @@ test "nested interrupts: cli inside ISR1 lets a second int fire and rti unwinds 
     vm.mmap.writeByte(0x1100, 0xFC);
     vm.mmap.writeByte(0x1101, 0x20);
     // ISR1 at 0x4000: cli; int 0x21; rti.
-    vm.mmap.writeByte(0x4000, 0xA2); // cli
+    vm.mmap.writeByte(0x4000, 0xB2); // cli
     vm.mmap.writeByte(0x4001, 0xFC); // int
     vm.mmap.writeByte(0x4002, 0x21);
     vm.mmap.writeByte(0x4003, 0xFD); // rti
@@ -204,8 +204,8 @@ test "dispatch: step auto-advances ip by instruction size" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
-    // 0x91 nop is 1 byte and has no handler yet → faults. Use a
-    // mov instead: 0x11 mov reg, reg is 3 bytes total.
+    // Use mov reg,reg (0x11, 3 bytes total) so we observe ip
+    // advancing by more than 1 byte after one step.
     vm.regs.write(.ip, 0x1100);
     vm.mmap.writeByte(0x1100, 0x11);
     vm.mmap.writeByte(0x1101, 0x03); // src = r2

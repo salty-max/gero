@@ -984,8 +984,8 @@ fn emitBankPseudo(
     try emitValue(allocator, image, bank_value, 2);
     try image.append(allocator, 0x0C);
 
-    // 2. call/jmp <addr> — opcode 0x80 / 0x70, addr LE.
-    const jump_opcode: u8 = if (std.mem.eql(u8, mnem, "bank_call")) 0x80 else 0x70;
+    // 2. call/jmp <addr> — opcode 0xA0 / 0x90, addr LE.
+    const jump_opcode: u8 = if (std.mem.eql(u8, mnem, "bank_call")) 0xA0 else 0x90;
     try image.append(allocator, jump_opcode);
     try emitValue(allocator, image, sym.value, 2);
 }

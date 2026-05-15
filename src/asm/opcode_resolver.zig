@@ -60,7 +60,7 @@ const max_operands: usize = 3;
 /// first when shapes share a prefix. Mnemonics use lowercase,
 /// matching the lexer.
 const shapes: []const Shape = &.{
-    // mov family
+    // 0x1X — mov word
     .{ .mnemonic = "mov", .kinds = &.{ .imm16, .reg }, .opcode = 0x10 },
     .{ .mnemonic = "mov", .kinds = &.{ .reg, .reg }, .opcode = 0x11 },
     .{ .mnemonic = "mov", .kinds = &.{ .reg, .addr }, .opcode = 0x12 },
@@ -78,38 +78,35 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "mov", .kinds = &.{ .reg, .zp }, .opcode = 0x19 },
     .{ .mnemonic = "mov", .kinds = &.{ .zp, .reg }, .opcode = 0x1A },
     .{ .mnemonic = "mov", .kinds = &.{ .imm16, .zp }, .opcode = 0x1B },
+    .{ .mnemonic = "mov", .kinds = &.{ .reg_offset, .reg }, .opcode = 0x1C },
+    .{ .mnemonic = "mov", .kinds = &.{ .reg, .reg_offset }, .opcode = 0x1D },
 
-    // mov8 / movh / movl
+    // 0x2X — mov byte (mov8 / movh / movl + block memory)
     .{ .mnemonic = "mov8", .kinds = &.{ .imm8, .addr }, .opcode = 0x20 },
     .{ .mnemonic = "mov8", .kinds = &.{ .imm8, .reg }, .opcode = 0x21 },
     .{ .mnemonic = "mov8", .kinds = &.{ .addr, .reg }, .opcode = 0x22 },
     .{ .mnemonic = "mov8", .kinds = &.{ .reg, .reg_indirect }, .opcode = 0x23 },
     .{ .mnemonic = "mov8", .kinds = &.{ .reg_indirect, .reg }, .opcode = 0x24 },
-    .{ .mnemonic = "mov8", .kinds = &.{ .indexed, .reg }, .opcode = 0x29 },
+    .{ .mnemonic = "mov8", .kinds = &.{ .indexed, .reg }, .opcode = 0x25 },
+    .{ .mnemonic = "movh", .kinds = &.{ .reg, .addr }, .opcode = 0x26 },
+    .{ .mnemonic = "movl", .kinds = &.{ .reg, .addr }, .opcode = 0x27 },
     // Zero-page byte-mov variants — picked when an `&XX` value
     // fits in `0..0xFF`. Same peephole pattern as the word ZP
     // forms above; saves 1 byte per access on hot byte globals
     // (per-frame counters, palette indices, scroll positions).
-    .{ .mnemonic = "mov8", .kinds = &.{ .imm8, .zp }, .opcode = 0x2A },
-    .{ .mnemonic = "mov8", .kinds = &.{ .zp, .reg }, .opcode = 0x2B },
-    .{ .mnemonic = "movh", .kinds = &.{ .reg, .addr }, .opcode = 0x25 },
-    .{ .mnemonic = "movh", .kinds = &.{ .reg, .zp }, .opcode = 0x2C },
-    .{ .mnemonic = "movl", .kinds = &.{ .reg, .addr }, .opcode = 0x26 },
-    .{ .mnemonic = "movl", .kinds = &.{ .reg, .zp }, .opcode = 0x2D },
+    .{ .mnemonic = "mov8", .kinds = &.{ .imm8, .zp }, .opcode = 0x28 },
+    .{ .mnemonic = "mov8", .kinds = &.{ .zp, .reg }, .opcode = 0x29 },
+    .{ .mnemonic = "movh", .kinds = &.{ .reg, .zp }, .opcode = 0x2A },
+    .{ .mnemonic = "movl", .kinds = &.{ .reg, .zp }, .opcode = 0x2B },
+    .{ .mnemonic = "bcpy", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x2C },
+    .{ .mnemonic = "bfill", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x2D },
 
-    // block memory ops
-    .{ .mnemonic = "bcpy", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x27 },
-    .{ .mnemonic = "bfill", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x28 },
-    .{ .mnemonic = "sext", .kinds = &.{.reg}, .opcode = 0x2E },
-    .{ .mnemonic = "mov", .kinds = &.{ .reg_offset, .reg }, .opcode = 0x1C },
-    .{ .mnemonic = "mov", .kinds = &.{ .reg, .reg_offset }, .opcode = 0x1D },
-
-    // stack
+    // 0x3X — stack
     .{ .mnemonic = "push", .kinds = &.{.imm16}, .opcode = 0x30 },
     .{ .mnemonic = "push", .kinds = &.{.reg}, .opcode = 0x31 },
     .{ .mnemonic = "pop", .kinds = &.{.reg}, .opcode = 0x32 },
 
-    // arithmetic
+    // 0x4X — arithmetic primary
     .{ .mnemonic = "add", .kinds = &.{ .imm16, .reg }, .opcode = 0x40 },
     .{ .mnemonic = "add", .kinds = &.{ .reg, .reg }, .opcode = 0x41 },
     .{ .mnemonic = "add", .kinds = &.{.reg}, .opcode = 0x42 },
@@ -125,80 +122,82 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "div", .kinds = &.{ .reg, .reg }, .opcode = 0x4C },
     .{ .mnemonic = "divs", .kinds = &.{ .imm16, .reg }, .opcode = 0x4D },
     .{ .mnemonic = "divs", .kinds = &.{ .reg, .reg }, .opcode = 0x4E },
-    .{ .mnemonic = "adc", .kinds = &.{ .imm16, .reg }, .opcode = 0x64 },
-    .{ .mnemonic = "adc", .kinds = &.{ .reg, .reg }, .opcode = 0x65 },
-    .{ .mnemonic = "sbc", .kinds = &.{ .imm16, .reg }, .opcode = 0x66 },
-    .{ .mnemonic = "sbc", .kinds = &.{ .reg, .reg }, .opcode = 0x67 },
+    .{ .mnemonic = "sext", .kinds = &.{.reg}, .opcode = 0x4F },
 
-    // logical — operand order unified to (src, dst) like every other
-    // store / arith family. Previously the reg-imm variants had `(reg,
-    // imm16)` (dst-first) while the reg-reg variants used `(src, dst)` —
-    // a real internal inconsistency. Asm syntax for reg-imm is now
-    // `and $FF, r1` / `or $FF, r1` / `xor $FF, r1`.
-    .{ .mnemonic = "and", .kinds = &.{ .imm16, .reg }, .opcode = 0x50 },
-    .{ .mnemonic = "and", .kinds = &.{ .reg, .reg }, .opcode = 0x51 },
-    .{ .mnemonic = "or", .kinds = &.{ .imm16, .reg }, .opcode = 0x52 },
-    .{ .mnemonic = "or", .kinds = &.{ .reg, .reg }, .opcode = 0x53 },
-    .{ .mnemonic = "xor", .kinds = &.{ .imm16, .reg }, .opcode = 0x54 },
-    .{ .mnemonic = "xor", .kinds = &.{ .reg, .reg }, .opcode = 0x55 },
-    .{ .mnemonic = "not", .kinds = &.{.reg}, .opcode = 0x56 },
+    // 0x5X — arithmetic carry-propagating
+    .{ .mnemonic = "adc", .kinds = &.{ .imm16, .reg }, .opcode = 0x50 },
+    .{ .mnemonic = "adc", .kinds = &.{ .reg, .reg }, .opcode = 0x51 },
+    .{ .mnemonic = "sbc", .kinds = &.{ .imm16, .reg }, .opcode = 0x52 },
+    .{ .mnemonic = "sbc", .kinds = &.{ .reg, .reg }, .opcode = 0x53 },
 
-    // shifts + rotates
-    .{ .mnemonic = "shl", .kinds = &.{ .reg, .imm8 }, .opcode = 0x58 },
-    .{ .mnemonic = "shl", .kinds = &.{ .reg, .reg }, .opcode = 0x59 },
-    .{ .mnemonic = "shr", .kinds = &.{ .reg, .imm8 }, .opcode = 0x5A },
-    .{ .mnemonic = "shr", .kinds = &.{ .reg, .reg }, .opcode = 0x5B },
-    .{ .mnemonic = "rol", .kinds = &.{ .reg, .imm8 }, .opcode = 0x5C },
-    .{ .mnemonic = "rol", .kinds = &.{ .reg, .reg }, .opcode = 0x5D },
-    .{ .mnemonic = "ror", .kinds = &.{ .reg, .imm8 }, .opcode = 0x5E },
-    .{ .mnemonic = "ror", .kinds = &.{ .reg, .reg }, .opcode = 0x5F },
-
-    // compare / test
-    .{ .mnemonic = "cmp", .kinds = &.{ .reg, .imm16 }, .opcode = 0x60 },
-    .{ .mnemonic = "cmp", .kinds = &.{ .reg, .reg }, .opcode = 0x61 },
-    .{ .mnemonic = "tst", .kinds = &.{ .reg, .imm16 }, .opcode = 0x62 },
-    .{ .mnemonic = "tst", .kinds = &.{ .reg, .reg }, .opcode = 0x63 },
+    // 0x6X — bitwise (logical word ops + single-bit ops).
+    // Operand order unified to (src, dst) like every other store /
+    // arith family — asm syntax for reg-imm is `and $FF, r1` /
+    // `or $FF, r1` / `xor $FF, r1`.
+    .{ .mnemonic = "and", .kinds = &.{ .imm16, .reg }, .opcode = 0x60 },
+    .{ .mnemonic = "and", .kinds = &.{ .reg, .reg }, .opcode = 0x61 },
+    .{ .mnemonic = "or", .kinds = &.{ .imm16, .reg }, .opcode = 0x62 },
+    .{ .mnemonic = "or", .kinds = &.{ .reg, .reg }, .opcode = 0x63 },
+    .{ .mnemonic = "xor", .kinds = &.{ .imm16, .reg }, .opcode = 0x64 },
+    .{ .mnemonic = "xor", .kinds = &.{ .reg, .reg }, .opcode = 0x65 },
+    .{ .mnemonic = "not", .kinds = &.{.reg}, .opcode = 0x66 },
+    .{ .mnemonic = "btest", .kinds = &.{ .reg, .imm8 }, .opcode = 0x67 },
     .{ .mnemonic = "bset", .kinds = &.{ .reg, .imm8 }, .opcode = 0x68 },
     .{ .mnemonic = "bclr", .kinds = &.{ .reg, .imm8 }, .opcode = 0x69 },
-    .{ .mnemonic = "btest", .kinds = &.{ .reg, .imm8 }, .opcode = 0x6A },
-    .{ .mnemonic = "asr", .kinds = &.{ .reg, .imm8 }, .opcode = 0x6B },
-    .{ .mnemonic = "asr", .kinds = &.{ .reg, .reg }, .opcode = 0x6C },
 
-    // control flow
-    .{ .mnemonic = "jmp", .kinds = &.{.addr}, .opcode = 0x70 },
-    .{ .mnemonic = "jmp", .kinds = &.{.reg}, .opcode = 0x71 },
-    .{ .mnemonic = "jeq", .kinds = &.{.addr}, .opcode = 0x72 },
-    .{ .mnemonic = "jne", .kinds = &.{.addr}, .opcode = 0x73 },
-    .{ .mnemonic = "jlt", .kinds = &.{.addr}, .opcode = 0x74 },
-    .{ .mnemonic = "jle", .kinds = &.{.addr}, .opcode = 0x75 },
-    .{ .mnemonic = "jgt", .kinds = &.{.addr}, .opcode = 0x76 },
-    .{ .mnemonic = "jge", .kinds = &.{.addr}, .opcode = 0x77 },
-    .{ .mnemonic = "jcc", .kinds = &.{.addr}, .opcode = 0x78 },
-    .{ .mnemonic = "jcs", .kinds = &.{.addr}, .opcode = 0x79 },
-    .{ .mnemonic = "jvc", .kinds = &.{.addr}, .opcode = 0x7A },
-    .{ .mnemonic = "jvs", .kinds = &.{.addr}, .opcode = 0x7B },
-    .{ .mnemonic = "jz", .kinds = &.{.addr}, .opcode = 0x7C },
-    .{ .mnemonic = "jnz", .kinds = &.{.addr}, .opcode = 0x7D },
-    .{ .mnemonic = "djnz", .kinds = &.{ .reg, .addr }, .opcode = 0x7E },
-    .{ .mnemonic = "jr", .kinds = &.{.imm8}, .opcode = 0x7F },
+    // 0x7X — shifts / rotates
+    .{ .mnemonic = "shl", .kinds = &.{ .reg, .imm8 }, .opcode = 0x70 },
+    .{ .mnemonic = "shl", .kinds = &.{ .reg, .reg }, .opcode = 0x71 },
+    .{ .mnemonic = "shr", .kinds = &.{ .reg, .imm8 }, .opcode = 0x72 },
+    .{ .mnemonic = "shr", .kinds = &.{ .reg, .reg }, .opcode = 0x73 },
+    .{ .mnemonic = "asr", .kinds = &.{ .reg, .imm8 }, .opcode = 0x74 },
+    .{ .mnemonic = "asr", .kinds = &.{ .reg, .reg }, .opcode = 0x75 },
+    .{ .mnemonic = "rol", .kinds = &.{ .reg, .imm8 }, .opcode = 0x76 },
+    .{ .mnemonic = "rol", .kinds = &.{ .reg, .reg }, .opcode = 0x77 },
+    .{ .mnemonic = "ror", .kinds = &.{ .reg, .imm8 }, .opcode = 0x78 },
+    .{ .mnemonic = "ror", .kinds = &.{ .reg, .reg }, .opcode = 0x79 },
 
-    // subroutines
-    .{ .mnemonic = "call", .kinds = &.{.addr}, .opcode = 0x80 },
-    .{ .mnemonic = "call", .kinds = &.{.reg}, .opcode = 0x81 },
-    .{ .mnemonic = "ret", .kinds = &.{}, .opcode = 0x82 },
+    // 0x8X — comparison
+    .{ .mnemonic = "cmp", .kinds = &.{ .reg, .imm16 }, .opcode = 0x80 },
+    .{ .mnemonic = "cmp", .kinds = &.{ .reg, .reg }, .opcode = 0x81 },
+    .{ .mnemonic = "tst", .kinds = &.{ .reg, .imm16 }, .opcode = 0x82 },
+    .{ .mnemonic = "tst", .kinds = &.{ .reg, .reg }, .opcode = 0x83 },
 
-    // misc
-    .{ .mnemonic = "swap", .kinds = &.{ .reg, .reg }, .opcode = 0x90 },
-    .{ .mnemonic = "nop", .kinds = &.{}, .opcode = 0x91 },
+    // 0x9X — branches
+    .{ .mnemonic = "jmp", .kinds = &.{.addr}, .opcode = 0x90 },
+    .{ .mnemonic = "jmp", .kinds = &.{.reg}, .opcode = 0x91 },
+    .{ .mnemonic = "jeq", .kinds = &.{.addr}, .opcode = 0x92 },
+    .{ .mnemonic = "jne", .kinds = &.{.addr}, .opcode = 0x93 },
+    .{ .mnemonic = "jlt", .kinds = &.{.addr}, .opcode = 0x94 },
+    .{ .mnemonic = "jle", .kinds = &.{.addr}, .opcode = 0x95 },
+    .{ .mnemonic = "jgt", .kinds = &.{.addr}, .opcode = 0x96 },
+    .{ .mnemonic = "jge", .kinds = &.{.addr}, .opcode = 0x97 },
+    .{ .mnemonic = "jcc", .kinds = &.{.addr}, .opcode = 0x98 },
+    .{ .mnemonic = "jcs", .kinds = &.{.addr}, .opcode = 0x99 },
+    .{ .mnemonic = "jvc", .kinds = &.{.addr}, .opcode = 0x9A },
+    .{ .mnemonic = "jvs", .kinds = &.{.addr}, .opcode = 0x9B },
+    .{ .mnemonic = "jz", .kinds = &.{.addr}, .opcode = 0x9C },
+    .{ .mnemonic = "jnz", .kinds = &.{.addr}, .opcode = 0x9D },
+    .{ .mnemonic = "djnz", .kinds = &.{ .reg, .addr }, .opcode = 0x9E },
+    .{ .mnemonic = "jr", .kinds = &.{.imm8}, .opcode = 0x9F },
 
-    // flag manipulation
-    .{ .mnemonic = "clc", .kinds = &.{}, .opcode = 0xA0 },
-    .{ .mnemonic = "sec", .kinds = &.{}, .opcode = 0xA1 },
-    .{ .mnemonic = "cli", .kinds = &.{}, .opcode = 0xA2 },
-    .{ .mnemonic = "sei", .kinds = &.{}, .opcode = 0xA3 },
-    .{ .mnemonic = "clv", .kinds = &.{}, .opcode = 0xA4 },
+    // 0xAX — subroutines
+    .{ .mnemonic = "call", .kinds = &.{.addr}, .opcode = 0xA0 },
+    .{ .mnemonic = "call", .kinds = &.{.reg}, .opcode = 0xA1 },
+    .{ .mnemonic = "ret", .kinds = &.{}, .opcode = 0xA2 },
 
-    // system
+    // 0xBX — flag manipulation
+    .{ .mnemonic = "clc", .kinds = &.{}, .opcode = 0xB0 },
+    .{ .mnemonic = "sec", .kinds = &.{}, .opcode = 0xB1 },
+    .{ .mnemonic = "cli", .kinds = &.{}, .opcode = 0xB2 },
+    .{ .mnemonic = "sei", .kinds = &.{}, .opcode = 0xB3 },
+    .{ .mnemonic = "clv", .kinds = &.{}, .opcode = 0xB4 },
+
+    // 0xCX — misc
+    .{ .mnemonic = "swap", .kinds = &.{ .reg, .reg }, .opcode = 0xC0 },
+    .{ .mnemonic = "nop", .kinds = &.{}, .opcode = 0xC1 },
+
+    // 0xFX — system
     .{ .mnemonic = "int", .kinds = &.{.imm8}, .opcode = 0xFC },
     .{ .mnemonic = "rti", .kinds = &.{}, .opcode = 0xFD },
     .{ .mnemonic = "brk", .kinds = &.{}, .opcode = 0xFE },

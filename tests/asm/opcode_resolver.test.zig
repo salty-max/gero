@@ -28,9 +28,9 @@ test "opres: hlt resolves to 0xFF (zero-operand sentinel)" {
     try std.testing.expectEqual(@as(u8, 0xFF), cg.image[16]);
 }
 
-test "opres: cmp reg, label_ref(const) uses imm16 form (0x60)" {
+test "opres: cmp reg, label_ref(const) uses imm16 form (0x80)" {
     // `TARGET` is a const → label_ref resolves to imm16, picking
-    // 0x60 (cmp Reg, Imm16) over a hypothetical addr form.
+    // 0x80 (cmp Reg, Imm16) over a hypothetical addr form.
     const src =
         \\const TARGET = $10
         \\cmp r1, TARGET
@@ -41,10 +41,10 @@ test "opres: cmp reg, label_ref(const) uses imm16 form (0x60)" {
     var cg = try gero.asm_.assemble(alloc, src, pt, .{ .debug_symbols = false });
     defer cg.deinit();
     try std.testing.expect(!cg.hasErrors());
-    try std.testing.expectEqual(@as(u8, 0x60), cg.image[16]);
+    try std.testing.expectEqual(@as(u8, 0x80), cg.image[16]);
 }
 
-test "opres: jmp label_ref(label) uses addr form (0x70)" {
+test "opres: jmp label_ref(label) uses addr form (0x90)" {
     const src =
         \\target:
         \\  hlt
@@ -56,9 +56,9 @@ test "opres: jmp label_ref(label) uses addr form (0x70)" {
     var cg = try gero.asm_.assemble(alloc, src, pt, .{ .debug_symbols = false });
     defer cg.deinit();
     try std.testing.expect(!cg.hasErrors());
-    // image: hlt(0xFF) then jmp(0x70) + addr LE(00 00)
+    // image: hlt(0xFF) then jmp(0x90) + addr LE(00 00)
     try std.testing.expectEqual(@as(u8, 0xFF), cg.image[16]);
-    try std.testing.expectEqual(@as(u8, 0x70), cg.image[17]);
+    try std.testing.expectEqual(@as(u8, 0x90), cg.image[17]);
 }
 
 test "opres: indexed addressing emits 3-byte operand (addr + reg)" {
@@ -79,8 +79,8 @@ test "opres: mov8 indexed emits 5-byte operand (opcode + addr + 2 regs)" {
     var cg = try gero.asm_.assemble(alloc, src, pt, .{ .debug_symbols = false });
     defer cg.deinit();
     try std.testing.expect(!cg.hasErrors());
-    // 0x29 + addr LE (00 30) + idx_reg (r1 = 0x02) + dst_reg (r2 = 0x03)
-    try std.testing.expectEqualSlices(u8, &.{ 0x29, 0x00, 0x30, 0x02, 0x03 }, cg.image[16..]);
+    // 0x25 + addr LE (00 30) + idx_reg (r1 = 0x02) + dst_reg (r2 = 0x03)
+    try std.testing.expectEqualSlices(u8, &.{ 0x25, 0x00, 0x30, 0x02, 0x03 }, cg.image[16..]);
 }
 
 test "opres: imm8 narrowing — mov8 picks Imm8 shape over widening" {

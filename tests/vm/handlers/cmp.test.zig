@@ -20,11 +20,11 @@ fn flags(vm: *VM) struct { z: bool, n: bool, c: bool, v: bool } {
 
 // ---------- cmp ----------
 
-test "cmp 0x60 reg,imm16: equal → Z=1" {
+test "cmp 0x80 reg,imm16: equal → Z=1" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x1234);
-    loadProgram(&vm, &.{ 0x60, 0x02, 0x34, 0x12 }); // cmp r1, 0x1234
+    loadProgram(&vm, &.{ 0x80, 0x02, 0x34, 0x12 }); // cmp r1, 0x1234
     _ = gero.vm.step(&vm);
     const f = flags(&vm);
     try std.testing.expect(f.z and !f.n and !f.c and !f.v);
@@ -32,31 +32,31 @@ test "cmp 0x60 reg,imm16: equal → Z=1" {
     try std.testing.expectEqual(@as(u16, 0x1234), vm.regs.read(.r1));
 }
 
-test "cmp 0x60 reg,imm16: a < b unsigned sets C" {
+test "cmp 0x80 reg,imm16: a < b unsigned sets C" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x0001);
-    loadProgram(&vm, &.{ 0x60, 0x02, 0x02, 0x00 }); // cmp r1, 2
+    loadProgram(&vm, &.{ 0x80, 0x02, 0x02, 0x00 }); // cmp r1, 2
     _ = gero.vm.step(&vm);
     try std.testing.expect(flags(&vm).c); // 1 - 2 borrows
     try std.testing.expect(flags(&vm).n);
 }
 
-test "cmp 0x60 reg,imm16: a > b clears C and Z" {
+test "cmp 0x80 reg,imm16: a > b clears C and Z" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x0010);
-    loadProgram(&vm, &.{ 0x60, 0x02, 0x05, 0x00 }); // cmp r1, 5
+    loadProgram(&vm, &.{ 0x80, 0x02, 0x05, 0x00 }); // cmp r1, 5
     _ = gero.vm.step(&vm);
     const f = flags(&vm);
     try std.testing.expect(!f.c and !f.z and !f.n);
 }
 
-test "cmp 0x60: signed comparison via N ≠ V flags i16 max vs -1" {
+test "cmp 0x80: signed comparison via N ≠ V flags i16 max vs -1" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x7FFF); // i16 max
-    loadProgram(&vm, &.{ 0x60, 0x02, 0xFF, 0xFF }); // cmp r1, 0xFFFF (= -1)
+    loadProgram(&vm, &.{ 0x80, 0x02, 0xFF, 0xFF }); // cmp r1, 0xFFFF (= -1)
     _ = gero.vm.step(&vm);
     // 0x7FFF - 0xFFFF = 0x8000 (truncated). Signed: 32767 - (-1) = 32768
     // which overflows i16 → V=1. Result high bit set → N=1.
@@ -65,22 +65,22 @@ test "cmp 0x60: signed comparison via N ≠ V flags i16 max vs -1" {
     // jge takes branch when N == V → 32767 >= -1 is true. ✓
 }
 
-test "cmp 0x61 reg,reg: same registers Z=1" {
+test "cmp 0x81 reg,reg: same registers Z=1" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0xABCD);
-    loadProgram(&vm, &.{ 0x61, 0x02, 0x02 }); // cmp r1, r1
+    loadProgram(&vm, &.{ 0x81, 0x02, 0x02 }); // cmp r1, r1
     _ = gero.vm.step(&vm);
     try std.testing.expect(flags(&vm).z);
     try std.testing.expectEqual(@as(u16, 0xABCD), vm.regs.read(.r1));
 }
 
-test "cmp 0x61: different values, signed comparison" {
+test "cmp 0x81: different values, signed comparison" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0xFFFE); // -2
     vm.regs.write(.r2, 0x0005); // 5
-    loadProgram(&vm, &.{ 0x61, 0x02, 0x03 }); // cmp r1, r2
+    loadProgram(&vm, &.{ 0x81, 0x02, 0x03 }); // cmp r1, r2
     _ = gero.vm.step(&vm);
     // -2 - 5 = -7 (0xFFF9). Negative result → N=1. No signed overflow.
     try std.testing.expect(flags(&vm).n);
@@ -89,45 +89,45 @@ test "cmp 0x61: different values, signed comparison" {
 
 // ---------- tst ----------
 
-test "tst 0x62 reg,imm16: zero mask sets Z" {
+test "tst 0x82 reg,imm16: zero mask sets Z" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0xCAFE);
-    loadProgram(&vm, &.{ 0x62, 0x02, 0x00, 0x00 }); // tst r1, 0
+    loadProgram(&vm, &.{ 0x82, 0x02, 0x00, 0x00 }); // tst r1, 0
     _ = gero.vm.step(&vm);
     try std.testing.expect(flags(&vm).z);
     // r1 untouched.
     try std.testing.expectEqual(@as(u16, 0xCAFE), vm.regs.read(.r1));
 }
 
-test "tst 0x62: bit set in both → Z=0" {
+test "tst 0x82: bit set in both → Z=0" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x8001);
-    loadProgram(&vm, &.{ 0x62, 0x02, 0x00, 0x80 }); // tst r1, 0x8000
+    loadProgram(&vm, &.{ 0x82, 0x02, 0x00, 0x80 }); // tst r1, 0x8000
     _ = gero.vm.step(&vm);
     try std.testing.expect(!flags(&vm).z);
     try std.testing.expect(flags(&vm).n); // high bit set in AND result
 }
 
-test "tst 0x62: clears C and V even if preset" {
+test "tst 0x82: clears C and V even if preset" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x00FF);
     vm.regs.setFlag(.carry, true);
     vm.regs.setFlag(.overflow, true);
-    loadProgram(&vm, &.{ 0x62, 0x02, 0x0F, 0x00 });
+    loadProgram(&vm, &.{ 0x82, 0x02, 0x0F, 0x00 });
     _ = gero.vm.step(&vm);
     try std.testing.expect(!flags(&vm).c);
     try std.testing.expect(!flags(&vm).v);
 }
 
-test "tst 0x63 reg,reg" {
+test "tst 0x83 reg,reg" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0xFF00);
     vm.regs.write(.r2, 0x00FF);
-    loadProgram(&vm, &.{ 0x63, 0x02, 0x03 });
+    loadProgram(&vm, &.{ 0x83, 0x02, 0x03 });
     _ = gero.vm.step(&vm);
     try std.testing.expect(flags(&vm).z); // no overlapping bits
     // Neither register changed.
@@ -142,7 +142,7 @@ test "cmp/tst: invalid register raises invalid-register fault" {
     defer vm.deinit();
     vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
 
-    loadProgram(&vm, &.{ 0x61, 0x02, 0xFF }); // cmp r1, <out-of-range>
+    loadProgram(&vm, &.{ 0x81, 0x02, 0xFF }); // cmp r1, <out-of-range>
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }
@@ -176,11 +176,11 @@ test "bclr 0x69 reg,imm8 — clears the target bit" {
     try std.testing.expectEqual(@as(u16, 0xFEFF), vm.regs.read(.r1));
 }
 
-test "btest 0x6A reg,imm8 — bit set → Z=0, N=1" {
+test "btest 0x67 reg,imm8 — bit set → Z=0, N=1" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x0080);
-    loadProgram(&vm, &.{ 0x6A, 0x02, 0x07 }); // btest r1, $07
+    loadProgram(&vm, &.{ 0x67, 0x02, 0x07 }); // btest r1, $07
     _ = gero.vm.step(&vm);
     try std.testing.expect(!flags(&vm).z);
     try std.testing.expect(flags(&vm).n);
@@ -188,11 +188,11 @@ test "btest 0x6A reg,imm8 — bit set → Z=0, N=1" {
     try std.testing.expectEqual(@as(u16, 0x0080), vm.regs.read(.r1));
 }
 
-test "btest 0x6A reg,imm8 — bit clear → Z=1, N=0" {
+test "btest 0x67 reg,imm8 — bit clear → Z=1, N=0" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.regs.write(.r1, 0x0080);
-    loadProgram(&vm, &.{ 0x6A, 0x02, 0x06 }); // btest r1, $06 (bit clear)
+    loadProgram(&vm, &.{ 0x67, 0x02, 0x06 }); // btest r1, $06 (bit clear)
     _ = gero.vm.step(&vm);
     try std.testing.expect(flags(&vm).z);
     try std.testing.expect(!flags(&vm).n);
