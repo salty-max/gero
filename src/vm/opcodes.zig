@@ -4,20 +4,23 @@
 const std = @import("std");
 
 /// Operand kinds. Encoding sizes:
-/// `reg`/`imm8`/`zp` = 1 byte, `imm16`/`addr` = 2 bytes.
+/// `reg`/`imm8`/`zp` = 1 byte, `imm16`/`addr`/`reg_offset` = 2 bytes.
 pub const Operand = enum {
     reg,
     imm8,
     imm16,
     addr,
     zp,
+    /// `[reg + imm8]` register-relative — encodes as base-reg
+    /// byte + signed imm8 byte.
+    reg_offset,
 };
 
 /// Encoded byte size of one operand.
 pub fn operandSize(op: Operand) u8 {
     return switch (op) {
         .reg, .imm8, .zp => 1,
-        .imm16, .addr => 2,
+        .imm16, .addr, .reg_offset => 2,
     };
 }
 
@@ -54,6 +57,8 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x19] = .{ .mnemonic = "mov", .operands = &.{ .reg, .zp } };
     t[0x1A] = .{ .mnemonic = "mov", .operands = &.{ .zp, .reg } };
     t[0x1B] = .{ .mnemonic = "mov", .operands = &.{ .imm16, .zp } };
+    t[0x1C] = .{ .mnemonic = "mov", .operands = &.{ .reg_offset, .reg } };
+    t[0x1D] = .{ .mnemonic = "mov", .operands = &.{ .reg, .reg_offset } };
 
     // mov8 / movh / movl
     t[0x20] = .{ .mnemonic = "mov8", .operands = &.{ .imm8, .addr } };

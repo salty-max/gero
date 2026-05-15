@@ -318,6 +318,48 @@ pub fn bfillRegRegReg(vm: *VM) StepResult {
     return ok;
 }
 
+/// Sign-extend a u8 representing an i8 offset, widen to u16, and
+/// add to `base` with 16-bit wraparound. Shared helper between the
+/// load + store forms of `[reg + imm]` addressing.
+fn applyRegOffset(base: u16, offset_raw: u8) u16 {
+    // safety: bitcast u8 → i8 to recover the signed offset.
+    const offset_signed: i8 = @bitCast(offset_raw);
+    // @as: widen i8 → i16 preserves the sign.
+    const offset_wide_signed: i16 = @as(i16, offset_signed);
+    // safety: bitcast i16 → u16 to wrap into the 16-bit address space.
+    const offset_wide_unsigned: u16 = @bitCast(offset_wide_signed);
+    return base +% offset_wide_unsigned;
+}
+
+/// `0x1C` — `mov [Reg + Imm8], Reg` → load via register-relative
+/// offset (`dst ← mem[base + sign_extend(imm)]`). Stack-frame
+/// locals: `mov [fp - $04], r1`. Operand encoding: base_reg byte,
+/// signed imm8 byte, dst_reg byte.
+pub fn movRegOffsetReg(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const base_reg = vm.readByte(ip +% 1);
+    const offset_raw = vm.readByte(ip +% 2);
+    const dst = vm.readByte(ip +% 3);
+    const base = vm.regs.readByIndex(base_reg) orelse return fault(vm, .invalid_register);
+    const value = vm.readWord(applyRegOffset(base, offset_raw));
+    if (!vm.regs.writeByIndex(dst, value)) return fault(vm, .invalid_register);
+    return ok;
+}
+
+/// `0x1D` — `mov Reg, [Reg + Imm8]` → store via register-relative
+/// offset (`mem[base + sign_extend(imm)] ← src`). Operand
+/// encoding: src_reg byte, base_reg byte, signed imm8 byte.
+pub fn movRegRegOffset(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const src = vm.readByte(ip +% 1);
+    const base_reg = vm.readByte(ip +% 2);
+    const offset_raw = vm.readByte(ip +% 3);
+    const base = vm.regs.readByIndex(base_reg) orelse return fault(vm, .invalid_register);
+    const value = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
+    vm.writeWord(applyRegOffset(base, offset_raw), value);
+    return ok;
+}
+
 /// `0x2E` — `sext Reg` → sign-extend `reg.lo` into `reg.hi`.
 /// If the low byte's bit 7 is set, `reg.hi` becomes `0xFF`;
 /// otherwise `reg.hi` becomes `0x00`. The companion to the

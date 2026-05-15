@@ -25,12 +25,22 @@ pub const Operand = union(enum) {
     reg_indirect: u8,
     /// `[addr + reg]` — indexed addressing (3 bytes: addr LE + reg).
     indexed: Indexed,
+    /// `[reg + imm8]` / `[reg - imm8]` — register-relative
+    /// addressing (2 bytes: base-reg + signed imm8 offset).
+    reg_offset: RegOffset,
 
     /// `[addr + reg]` payload — the addr word + the index reg
     /// index. Lives inside `Operand.indexed`.
     pub const Indexed = struct {
         addr: u16,
         reg: u8,
+    };
+
+    /// `[reg + imm]` payload — the base reg index + the raw signed
+    /// imm8 (caller sign-extends + renders sign in the asm output).
+    pub const RegOffset = struct {
+        reg: u8,
+        offset: i8,
     };
 };
 
@@ -121,6 +131,13 @@ fn readOperand(bytes: []const u8, cursor: usize, kind: opres.Kind) DecodeError!s
             const addr = try readWord(bytes, cursor);
             const reg = try readByte(bytes, cursor + 2);
             break :blk .{ .{ .indexed = .{ .addr = addr, .reg = reg } }, 3 };
+        },
+        .reg_offset => blk: {
+            const reg = try readByte(bytes, cursor);
+            const raw = try readByte(bytes, cursor + 1);
+            // safety: bitcast u8 → i8 to recover the signed offset.
+            const offset: i8 = @bitCast(raw);
+            break :blk .{ .{ .reg_offset = .{ .reg = reg, .offset = offset } }, 2 };
         },
     };
 }

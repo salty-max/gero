@@ -284,6 +284,8 @@ Useful for character buffers and packed data.
 | `0x2D` | `movl`   | `Reg, ZP`       | mem[zp] ← reg.lo (zero-page lo-byte store) |
 | `0x27` | `bcpy`   | `Reg, Reg, Reg` | block copy: mem[dst..dst+len] ← mem[src..src+len]. Operand order: `dst, src, len` (Intel-style dst first). Length is the third register's `u16` value (0..65535 bytes). Copies low-to-high; overlapping ranges with `dst > src` produce corruption — split or use disjoint regions. Address arithmetic wraps. Doesn't touch flags. |
 | `0x28` | `bfill`  | `Reg, Reg, Reg` | block byte-fill: mem[addr..addr+len] ← val.lo for each byte. Operand order: `addr, len, val`. Length is the second register's `u16` value; `val.lo` is the low byte of the third register. Address arithmetic wraps. Doesn't touch flags. **Renamed from `bset` — that mnemonic now means single-bit set, see 0x68.** |
+| `0x1C` | `mov`    | `[Reg + Imm8], Reg` | load via register-relative offset: `dst ← mem[base + sign_extend(imm)]`. Offset range −128..+127. Typical use: stack-frame locals (`mov [fp - $04], r1`). |
+| `0x1D` | `mov`    | `Reg, [Reg + Imm8]` | store via register-relative offset: `mem[base + sign_extend(imm)] ← src`. Offset range −128..+127. |
 | `0x2E` | `sext`   | `Reg`           | sign-extend `reg.lo` into `reg.hi`. If `reg.lo & 0x80`, `reg.hi ← 0xFF`; else `reg.hi ← 0x00`. Companion to the `mov8` family (which always zero-extends). Doesn't touch flags. |
 
 ### 5.3 Stack (`push`, `pop`)

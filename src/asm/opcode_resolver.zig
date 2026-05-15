@@ -29,12 +29,15 @@ pub const Kind = enum {
     reg_indirect,
     /// `[addr + reg]` — indexed. Encodes as 2 addr bytes + 1 reg byte.
     indexed,
+    /// `[reg + imm]` / `[reg - imm]` — register-relative indirect.
+    /// Encodes as 1 reg byte + 1 signed imm8 byte.
+    reg_offset,
 
     /// Byte width when encoded.
     pub fn width(self: Kind) u8 {
         return switch (self) {
             .reg, .imm8, .zp, .reg_indirect => 1,
-            .imm16, .addr => 2,
+            .imm16, .addr, .reg_offset => 2,
             .indexed => 3,
         };
     }
@@ -98,6 +101,8 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "bcpy", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x27 },
     .{ .mnemonic = "bfill", .kinds = &.{ .reg, .reg, .reg }, .opcode = 0x28 },
     .{ .mnemonic = "sext", .kinds = &.{.reg}, .opcode = 0x2E },
+    .{ .mnemonic = "mov", .kinds = &.{ .reg_offset, .reg }, .opcode = 0x1C },
+    .{ .mnemonic = "mov", .kinds = &.{ .reg, .reg_offset }, .opcode = 0x1D },
 
     // stack
     .{ .mnemonic = "push", .kinds = &.{.imm16}, .opcode = 0x30 },
@@ -232,6 +237,7 @@ pub fn classify(op: ast.Operand, symbols: ?*const symtab.SymbolTable) Kind {
         .sym_ref, .addr_expr, .cast => .addr,
         .indirect => .reg_indirect,
         .indexed => .indexed,
+        .reg_offset => .reg_offset,
         .label_ref => |l| classifyLabelRef(l, symbols),
     };
 }

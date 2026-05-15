@@ -158,6 +158,7 @@ fn cleanupStatements(allocator: std.mem.Allocator, statements: *std.ArrayList(as
                 .immediate => |e| ast.freeExpr(allocator, e),
                 .addr_expr => |a| ast.freeExpr(allocator, a.expr),
                 .indexed => |idx| ast.freeExpr(allocator, idx.addr),
+                .reg_offset => |r| ast.freeExpr(allocator, r.offset),
                 .register, .indirect, .addr_lit, .sym_ref, .label_ref, .cast => {},
             };
             allocator.free(i.operands);
@@ -1242,6 +1243,40 @@ fn parseBracketOperand(
         }
     }
 
+    // Register-relative offset: `binary(+|-, reg_lhs, offset_rhs)`.
+    // The lhs is a register identifier, the rhs is a compile-time
+    // offset expression. Stored as `RegOffset` so codegen emits
+    // the 0x1C / 0x1D opcodes with a signed byte. Distinguishes
+    // from `indexed` by which side of the `+` holds the register.
+    if (inner.* == .binary and (inner.binary.op == .add or inner.binary.op == .sub)) {
+        const lhs = inner.binary.lhs;
+        if (lhs.* == .ident) {
+            const lex = state.input[lhs.ident.span.start..lhs.ident.span.end];
+            if (parseRegister(lex)) |id| {
+                const rhs_owned = inner.binary.rhs;
+                const reg = ast.RegisterRef{ .id = id, .span = lhs.ident.span };
+                // For `[reg - expr]` wrap the RHS in unary negate so
+                // codegen folds the right signed value naturally.
+                const offset_expr: *ast.Expr = if (inner.binary.op == .sub) blk: {
+                    const negated = try allocator.create(ast.Expr);
+                    negated.* = .{ .unary = .{
+                        .op = .neg,
+                        .operand = rhs_owned,
+                        .span = rhs_owned.span(),
+                    } };
+                    break :blk negated;
+                } else rhs_owned;
+                ast.freeExpr(allocator, lhs);
+                allocator.destroy(inner); // drop the outer binary; rhs / negated survives
+                return .{ .reg_offset = .{
+                    .reg = reg,
+                    .offset = offset_expr,
+                    .span = spanFrom(start, state.index),
+                } };
+            }
+        }
+    }
+
     // Indexed: top-level node is `binary(+, lhs, rhs)` where rhs
     // is a register ident.
     if (inner.* == .binary and inner.binary.op == .add) {
@@ -1434,6 +1469,7 @@ fn cleanupOperands(allocator: std.mem.Allocator, operands: *std.ArrayList(ast.Op
         .immediate => |e| ast.freeExpr(allocator, e),
         .addr_expr => |a| ast.freeExpr(allocator, a.expr),
         .indexed => |idx| ast.freeExpr(allocator, idx.addr),
+        .reg_offset => |r| ast.freeExpr(allocator, r.offset),
         .register, .indirect, .addr_lit, .sym_ref, .label_ref, .cast => {},
     };
     operands.deinit(allocator);
