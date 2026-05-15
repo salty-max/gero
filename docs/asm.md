@@ -646,13 +646,32 @@ See `examples/asm/banks/` for a working three-file demo.
 ### Cross-bank calls
 
 A cross-bank call is two instructions: switch `mb`, then call /
-jmp. The asm has no sugar for this — write the pair
-explicitly:
+jmp. Either write the pair by hand or use the `bank_call` /
+`bank_jump` pseudo-instructions, which look up the target label's
+bank automatically:
 
 ```asm
+; By hand — bank must match the target's actual location.
 mov $01, mb
-call <label_in_bank_1>
+call render_sprite
+
+; Sugar — assembler looks up render_sprite's bank, emits
+; `mov $01, mb` + `call render_sprite` for you. Saves a manual
+; bank-tracking step and removes a class of wrong-bank-call bugs.
+bank_call render_sprite
+bank_jump cleanup_path
 ```
+
+`bank_call <label>` and `bank_jump <label>` both desugar to 7
+bytes (4 for `mov imm16, mb` + 3 for `call`/`jmp <addr>`). The
+sugar emits the redundant `mov` even when the target lives in the
+same bank as the call site — consistent behavior, no surprise
+omission. Round-trip-wise the sugar is one-way: `gero disasm`
+recovers the two real instructions, not the `bank_call` form.
+
+The target must be a label or `data8`/`data16` symbol (those
+carry bank-of-definition); pointing at a `const` is rejected with
+`E003` since constants have no bank.
 
 ---
 

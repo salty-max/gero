@@ -195,6 +195,14 @@ fn emitBuffer(allocator: std.mem.Allocator, emit: *Emit, bank: ?u8) !*std.ArrayL
     return &emit.base;
 }
 
+/// True for the two cross-bank pseudo-instructions. Both desugar
+/// to `mov $bank, mb` + `call`/`jmp <addr>` — 7 bytes total. The
+/// caller is responsible for the actual emit; this helper just
+/// gates the special-case path in layout + emit.
+fn isBankPseudo(mnem: []const u8) bool {
+    return std.mem.eql(u8, mnem, "bank_call") or std.mem.eql(u8, mnem, "bank_jump");
+}
+
 // ---------- operand classification ----------
 
 /// Classify an operand for layout / opcode selection, consulting
@@ -298,7 +306,7 @@ fn layoutPass(
                     // Local label: register as `parent.name`.
                     if (parent_label) |p| {
                         const qualified = try std.fmt.allocPrint(symbols.allocator, "{s}{s}", .{ p, name });
-                        symbols.putOwned(qualified, .{ .kind = .label, .value = addr }) catch |err| switch (err) {
+                        symbols.putOwned(qualified, .{ .kind = .label, .value = addr, .bank = current_bank }) catch |err| switch (err) {
                             error.OutOfMemory => return error.OutOfMemory,
                             error.Duplicate => {
                                 symbols.allocator.free(qualified);
@@ -325,7 +333,7 @@ fn layoutPass(
                         });
                     }
                 } else {
-                    symbols.putBorrowed(name, .{ .kind = .label, .value = addr }) catch |err| switch (err) {
+                    symbols.putBorrowed(name, .{ .kind = .label, .value = addr, .bank = current_bank }) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.Duplicate => try errors.append(symbols.allocator, .{
                             .code = .duplicate_label,
@@ -364,7 +372,7 @@ fn layoutPass(
             .data8, .data16 => |d| {
                 const name = source[d.name.start..d.name.end];
                 const addr: u16 = bankAddr(current_bank, cursor_ptr.*);
-                symbols.putBorrowed(name, .{ .kind = .data, .value = addr }) catch |err| switch (err) {
+                symbols.putBorrowed(name, .{ .kind = .data, .value = addr, .bank = current_bank }) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.Duplicate => try errors.append(symbols.allocator, .{
                         .code = .duplicate_label,
@@ -451,26 +459,35 @@ fn layoutPass(
             },
             .instruction => |i| {
                 const mnem = source[i.mnemonic.start..i.mnemonic.end];
-                var kinds: [3]opres.Kind = undefined;
-                for (i.operands, 0..) |op, idx| kinds[idx] = classifyForLayout(op, source, symbols.*, parent_label, symbols.allocator);
-                if (opres.resolve(mnem, kinds[0..i.operands.len])) |res| {
-                    cursor_ptr.* += res.size;
+                // Pseudo-instructions desugar to a 2-instruction
+                // sequence (4-byte `mov` + 3-byte `call`/`jmp`).
+                // Layout cost is fixed at 7 bytes regardless of
+                // which bank the target lives in; the actual bank
+                // lookup happens in the emit pass.
+                if (isBankPseudo(mnem)) {
+                    cursor_ptr.* += 7;
                 } else {
-                    // Unknown mnemonic OR operand-shape mismatch.
-                    const known = opres.isKnownMnemonic(mnem);
-                    const kind: []const u8 = if (known) "operand type mismatch" else "unknown mnemonic";
-                    try errors.append(symbols.allocator, .{
-                        .code = if (known) .operand_type_mismatch else .unknown_mnemonic,
-                        .parse_error = core.parseError(
-                            "codegen",
-                            i.mnemonic.start,
-                            kind,
-                            .{ .expected = "valid instruction shape", .actual = mnem, .kind = .semantic },
-                        ),
-                    });
-                    // Best-effort cursor advance to keep subsequent
-                    // statements roughly aligned for layout.
-                    cursor_ptr.* += 1;
+                    var kinds: [3]opres.Kind = undefined;
+                    for (i.operands, 0..) |op, idx| kinds[idx] = classifyForLayout(op, source, symbols.*, parent_label, symbols.allocator);
+                    if (opres.resolve(mnem, kinds[0..i.operands.len])) |res| {
+                        cursor_ptr.* += res.size;
+                    } else {
+                        // Unknown mnemonic OR operand-shape mismatch.
+                        const known = opres.isKnownMnemonic(mnem);
+                        const kind: []const u8 = if (known) "operand type mismatch" else "unknown mnemonic";
+                        try errors.append(symbols.allocator, .{
+                            .code = if (known) .operand_type_mismatch else .unknown_mnemonic,
+                            .parse_error = core.parseError(
+                                "codegen",
+                                i.mnemonic.start,
+                                kind,
+                                .{ .expected = "valid instruction shape", .actual = mnem, .kind = .semantic },
+                            ),
+                        });
+                        // Best-effort cursor advance to keep subsequent
+                        // statements roughly aligned for layout.
+                        cursor_ptr.* += 1;
+                    }
                 }
             },
             .cond_directive, .comment, .unknown => {},
@@ -742,6 +759,17 @@ fn emitInstruction(
     parent_label: ?[]const u8,
 ) !void {
     const mnem = source[inst.mnemonic.start..inst.mnemonic.end];
+
+    // `bank_call <label>` / `bank_jump <label>` — pseudo-instructions
+    // that desugar to `mov $bank, mb` + `call`/`jmp <addr>` (7 bytes
+    // total). The assembler looks up which bank `<label>` was
+    // defined in (via Symbol.bank) so the user doesn't have to
+    // hand-track bank-of-target across the codebase.
+    if (isBankPseudo(mnem)) {
+        try emitBankPseudo(allocator, image, errors, source, inst, mnem, consts, symbols, parent_label);
+        return;
+    }
+
     var kinds: [3]opres.Kind = undefined;
     for (inst.operands, 0..) |op, idx| kinds[idx] = classifyForEmit(op, source, symbols.*, parent_label, allocator);
     const res = opres.resolve(mnem, kinds[0..inst.operands.len]) orelse {
@@ -809,6 +837,128 @@ fn emitInstruction(
             try image.append(allocator, @intFromEnum(idx.reg.id));
         },
     };
+}
+
+/// Emit a `bank_call` / `bank_jump` pseudo-instruction as a
+/// `mov $bank, mb` + `call`/`jmp <addr>` pair. The target label
+/// must be a defined label (the symbol table carries the bank
+/// the label lives in). Always emits 7 bytes — even when the
+/// target is in the same bank as the call site, the `mov` runs
+/// (no surprise omission). A later optimization could elide the
+/// redundant `mov` for same-bank targets.
+fn emitBankPseudo(
+    allocator: std.mem.Allocator,
+    image: *std.ArrayList(u8),
+    errors: *std.ArrayList(include.Diagnostic),
+    source: []const u8,
+    inst: ast.Instruction,
+    mnem: []const u8,
+    consts: expr.ConstantTable,
+    symbols: *const symtab.SymbolTable,
+    parent_label: ?[]const u8,
+) !void {
+    _ = consts;
+
+    // Operand shape: exactly one .label_ref or .sym_ref. Anything
+    // else → E003. Emit 7 bytes of `hlt` so the cursor stays
+    // aligned with the layout pass's assumption.
+    if (inst.operands.len != 1) {
+        try errors.append(allocator, .{
+            .code = .operand_type_mismatch,
+            .parse_error = core.parseError(
+                "codegen",
+                inst.mnemonic.start,
+                "operand type mismatch",
+                .{ .expected = "exactly one label operand", .actual = mnem, .kind = .semantic },
+            ),
+        });
+        try image.appendNTimes(allocator, 0xFF, 7);
+        return;
+    }
+
+    const op_span: ast.Span = switch (inst.operands[0]) {
+        .label_ref => |l| l.span,
+        .sym_ref => |s| s.span,
+        else => {
+            try errors.append(allocator, .{
+                .code = .operand_type_mismatch,
+                .parse_error = core.parseError(
+                    "codegen",
+                    inst.mnemonic.start,
+                    "bank_call / bank_jump operand must be a label reference",
+                    .{ .expected = "label or @symbol", .actual = mnem, .kind = .semantic },
+                ),
+            });
+            try image.appendNTimes(allocator, 0xFF, 7);
+            return;
+        },
+    };
+
+    var raw_lex = source[op_span.start..op_span.end];
+    if (raw_lex.len > 0 and raw_lex[0] == '@') raw_lex = raw_lex[1..];
+    const resolved = resolveLabelKey(raw_lex, parent_label, allocator) catch {
+        try errors.append(allocator, .{
+            .code = .undefined_symbol,
+            .parse_error = core.parseError(
+                "codegen",
+                op_span.start,
+                "local label reference has no enclosing global label",
+                .{ .expected = "preceding global label", .actual = raw_lex, .kind = .semantic },
+            ),
+        });
+        try image.appendNTimes(allocator, 0xFF, 7);
+        return;
+    };
+    defer if (resolved.owned) allocator.free(resolved.key);
+
+    const sym = symbols.get(resolved.key) orelse {
+        try errors.append(allocator, .{
+            .code = .undefined_symbol,
+            .note = symbols.suggestSimilar(resolved.key),
+            .parse_error = core.parseError(
+                "codegen",
+                op_span.start,
+                "undefined symbol",
+                .{ .expected = "defined label", .actual = resolved.key, .kind = .semantic },
+            ),
+        });
+        try image.appendNTimes(allocator, 0xFF, 7);
+        return;
+    };
+
+    // bank_call / bank_jump want a label (or data) — they're
+    // bank-positioned. Compile-time const_value and struct_field
+    // entries have no bank, so reject them.
+    if (sym.kind != .label and sym.kind != .data) {
+        try errors.append(allocator, .{
+            .code = .operand_type_mismatch,
+            .parse_error = core.parseError(
+                "codegen",
+                op_span.start,
+                "bank_call / bank_jump target must be a label or data symbol (not a const)",
+                .{ .expected = "label or data symbol", .actual = resolved.key, .kind = .semantic },
+            ),
+        });
+        try image.appendNTimes(allocator, 0xFF, 7);
+        return;
+    }
+
+    // Bank value for the `mov $bank, mb` step. A symbol in the
+    // base image (bank = null) gets `$00` — explicit reset rather
+    // than skip.
+    // @as: widen Symbol.bank (u8) into the u16 we need for `mov imm16`.
+    const bank_value: u16 = if (sym.bank) |b| @as(u16, b) else 0;
+
+    // 1. mov $bank, mb — opcode 0x10 (movImm16Reg), imm16 LE,
+    //    register 0x0C (mb).
+    try image.append(allocator, 0x10);
+    try emitValue(allocator, image, bank_value, 2);
+    try image.append(allocator, 0x0C);
+
+    // 2. call/jmp <addr> — opcode 0x80 / 0x70, addr LE.
+    const jump_opcode: u8 = if (std.mem.eql(u8, mnem, "bank_call")) 0x80 else 0x70;
+    try image.append(allocator, jump_opcode);
+    try emitValue(allocator, image, sym.value, 2);
 }
 
 fn emitSymRef(

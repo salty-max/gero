@@ -836,3 +836,88 @@ test "codegen: movl reg → &XX downgrades to ZP opcode 0x2D" {
     try std.testing.expect(!out.cg.hasErrors());
     try std.testing.expectEqual(@as(u8, 0x2D), out.imageBody()[0]);
 }
+
+// ---------- bank_call / bank_jump pseudo-instructions ----------
+
+test "codegen: bank_call <label-in-bank> emits mov $bank, mb + call <addr>" {
+    var out = try assemble(
+        \\main:
+        \\  bank_call greet
+        \\  hlt
+        \\
+        \\bank $00
+        \\greet:
+        \\  ret
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    // 7-byte expansion: 0x10 (movImm16Reg) + imm16($0000) + 0x0C (mb)
+    //                 + 0x80 (call) + addr16
+    const body = out.imageBody();
+    try std.testing.expectEqual(@as(u8, 0x10), body[0]);
+    try std.testing.expectEqual(@as(u8, 0x00), body[1]); // bank low
+    try std.testing.expectEqual(@as(u8, 0x00), body[2]); // bank high
+    try std.testing.expectEqual(@as(u8, 0x0C), body[3]); // mb register
+    try std.testing.expectEqual(@as(u8, 0x80), body[4]); // call opcode
+    // Bytes 5-6 = call target address (bank-window-relative).
+}
+
+test "codegen: bank_jump emits jmp opcode (0x70) instead of call (0x80)" {
+    var out = try assemble(
+        \\main:
+        \\  bank_jump greet
+        \\
+        \\bank $00
+        \\greet:
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0x70), out.imageBody()[4]);
+}
+
+test "codegen: bank_call into a higher-numbered bank emits the bank index" {
+    var out = try assemble(
+        \\main:
+        \\  bank_call deep
+        \\  hlt
+        \\
+        \\bank $02
+        \\deep:
+        \\  ret
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    const body = out.imageBody();
+    try std.testing.expectEqual(@as(u8, 0x10), body[0]);
+    try std.testing.expectEqual(@as(u8, 0x02), body[1]); // bank = 2
+    try std.testing.expectEqual(@as(u8, 0x0C), body[3]);
+}
+
+test "codegen: bank_call on a const rejects with E003" {
+    var out = try assemble(
+        \\const FOO = $42
+        \\main:
+        \\  bank_call FOO
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(out.cg.hasErrors());
+    try std.testing.expectEqual(gero.asm_.ErrorCode.operand_type_mismatch, out.cg.errors[0].code.?);
+}
+
+test "codegen: bank_call on undefined symbol rejects with E004" {
+    var out = try assemble(
+        \\main:
+        \\  bank_call missing
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(out.cg.hasErrors());
+    try std.testing.expectEqual(gero.asm_.ErrorCode.undefined_symbol, out.cg.errors[0].code.?);
+}
