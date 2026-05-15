@@ -104,6 +104,152 @@ pub fn pathOf(source_map: gero.asm_.SourceMap, d: gero.asm_.Diagnostic) []const 
     return "<unknown>";
 }
 
+/// Resolve a diagnostic's fused-source offset back to its
+/// `(file_path, line, column)` triple. Falls back to
+/// `(<unknown>, 0, 0)` when the source-map misses.
+pub fn locationOf(source_map: gero.asm_.SourceMap, d: gero.asm_.Diagnostic) Location {
+    // @as: ParseError indexes fit in u32 — bounded by max_file_size (16 MiB) per include.zig.
+    const offset: u32 = @as(u32, @intCast(d.parse_error.index));
+    if (source_map.lookup(offset)) |loc| {
+        const lc = lineColIn(loc.file.content, loc.file_offset);
+        return .{ .path = loc.file.path, .line = lc.line, .column = lc.col };
+    }
+    return .{ .path = "<unknown>", .line = 0, .column = 0 };
+}
+
+/// `(line, column)` 1-based pair for a byte offset inside `content`.
+/// Linear scan — fine while individual files stay under the
+/// 16 MiB cap, which they always do.
+pub fn lineColIn(content: []const u8, file_offset: u32) struct { line: usize, col: usize } {
+    var line: usize = 1;
+    var col: usize = 1;
+    const target: usize = @as(usize, file_offset);
+    var i: usize = 0;
+    while (i < content.len and i < target) : (i += 1) {
+        if (content[i] == '\n') {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    return .{ .line = line, .col = col };
+}
+
+/// Resolved diagnostic location used by the JSON renderer + any
+/// future structured-output consumer.
+pub const Location = struct {
+    path: []const u8,
+    line: usize,
+    column: usize,
+};
+
+/// Emit a single JSON object summarizing the run — stable contract
+/// for editor integration (`gero check --format=json`). Schema:
+///
+/// ```json
+/// {
+///   "version": 1,
+///   "diagnostics": [
+///     {
+///       "file": "<path>",
+///       "line": <1-based>,
+///       "column": <1-based>,
+///       "severity": "error",
+///       "code": "E004",          // omitted when the diagnostic has no E-code
+///       "message": "<text>",
+///       "note": "<hint>"          // omitted when absent
+///     }
+///   ],
+///   "files_checked": <N>,
+///   "files_failed": <M>
+/// }
+/// ```
+///
+/// Stdout is reserved for this object — no human-readable output is
+/// emitted in JSON mode. Stderr stays free for host I/O failures.
+pub fn printJsonReport(
+    stdout: *std.Io.Writer,
+    failures: []const FileFailure,
+    read_errors: []const ReadErrorEntry,
+    files_checked: usize,
+    files_failed: usize,
+) !void {
+    var jw = std.json.Stringify{ .writer = stdout, .options = .{ .whitespace = .minified } };
+    try jw.beginObject();
+
+    try jw.objectField("version");
+    try jw.write(@as(u32, 1));
+
+    try jw.objectField("diagnostics");
+    try jw.beginArray();
+    for (failures) |f| {
+        for (f.parse_errors) |d| try writeDiagnosticJson(&jw, f.source_map, d);
+        for (f.codegen_errors) |d| try writeDiagnosticJson(&jw, f.source_map, d);
+    }
+    for (read_errors) |re| {
+        try jw.beginObject();
+        try jw.objectField("file");
+        try jw.write(re.path);
+        try jw.objectField("line");
+        try jw.write(@as(u32, 1));
+        try jw.objectField("column");
+        try jw.write(@as(u32, 1));
+        try jw.objectField("severity");
+        try jw.write("error");
+        try jw.objectField("message");
+        try jw.write(re.message);
+        try jw.endObject();
+    }
+    try jw.endArray();
+
+    try jw.objectField("files_checked");
+    try jw.write(files_checked);
+    try jw.objectField("files_failed");
+    try jw.write(files_failed);
+
+    try jw.endObject();
+    try stdout.writeByte('\n');
+}
+
+/// A file that couldn't be read at all (host-IO failure). Carries
+/// the synthetic message the JSON renderer emits in place of a
+/// pipeline diagnostic.
+pub const ReadErrorEntry = struct {
+    path: []const u8,
+    message: []const u8,
+};
+
+fn writeDiagnosticJson(
+    jw: *std.json.Stringify,
+    source_map: gero.asm_.SourceMap,
+    d: gero.asm_.Diagnostic,
+) !void {
+    const loc = locationOf(source_map, d);
+    try jw.beginObject();
+
+    try jw.objectField("file");
+    try jw.write(loc.path);
+    try jw.objectField("line");
+    try jw.write(loc.line);
+    try jw.objectField("column");
+    try jw.write(loc.column);
+    try jw.objectField("severity");
+    try jw.write("error");
+    if (d.code) |c| {
+        try jw.objectField("code");
+        try jw.write(c.shortLabel());
+    }
+    try jw.objectField("message");
+    try jw.write(d.parse_error.message);
+    if (d.note) |n| {
+        try jw.objectField("note");
+        try jw.write(n);
+    }
+
+    try jw.endObject();
+}
+
 /// Sort comparator: by path lex order, then by fused-source
 /// offset within the same path. Used by `printMerged`.
 pub fn byPathThenIndex(_: void, a: Keyed, b: Keyed) bool {
@@ -128,6 +274,87 @@ test "diagnostics: byPathThenIndex breaks ties on parse_error.index" {
     const b: Keyed = .{ .diag = mkDiag(10), .path = "same.gas" };
     try testing.expect(byPathThenIndex({}, a, b));
     try testing.expect(!byPathThenIndex({}, b, a));
+}
+
+test "diagnostics: lineColIn 1-indexes lines and columns" {
+    const content = "abc\ndef\nghi";
+    const r1 = lineColIn(content, 0);
+    try testing.expectEqual(@as(usize, 1), r1.line);
+    try testing.expectEqual(@as(usize, 1), r1.col);
+
+    const r2 = lineColIn(content, 4); // first char of "def"
+    try testing.expectEqual(@as(usize, 2), r2.line);
+    try testing.expectEqual(@as(usize, 1), r2.col);
+
+    const r3 = lineColIn(content, 10); // 'i' in "ghi"
+    try testing.expectEqual(@as(usize, 3), r3.line);
+    try testing.expectEqual(@as(usize, 3), r3.col);
+}
+
+test "diagnostics: printJsonReport — empty run" {
+    var out = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out.deinit();
+    try printJsonReport(&out.writer, &.{}, &.{}, 3, 0);
+    try testing.expectEqualStrings(
+        "{\"version\":1,\"diagnostics\":[],\"files_checked\":3,\"files_failed\":0}\n",
+        out.written(),
+    );
+}
+
+test "diagnostics: printJsonReport — read-error-only run" {
+    var out = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out.deinit();
+    const errs = [_]ReadErrorEntry{.{ .path = "missing.gas", .message = "cannot read (FileNotFound)" }};
+    try printJsonReport(&out.writer, &.{}, &errs, 1, 1);
+    const expected =
+        "{\"version\":1,\"diagnostics\":[{\"file\":\"missing.gas\",\"line\":1,\"column\":1,\"severity\":\"error\"," ++
+        "\"message\":\"cannot read (FileNotFound)\"}],\"files_checked\":1,\"files_failed\":1}\n";
+    try testing.expectEqualStrings(expected, out.written());
+}
+
+test "diagnostics: writeDiagnosticJson — code + note both serialized when present" {
+    // Build a synthetic SourceMap covering one file so locationOf
+    // resolves cleanly.
+    var sm: gero.asm_.SourceMap = .{
+        .files = .empty,
+        .regions = .empty,
+        .allocator = testing.allocator,
+    };
+    defer sm.deinit();
+    const path = try testing.allocator.dupeZ(u8, "foo.gas");
+    const content = try testing.allocator.dupe(u8, "mov $00, r1\n");
+    try sm.files.append(testing.allocator, .{ .path = path, .content = content });
+    try sm.regions.append(testing.allocator, .{
+        .fused_start = 0,
+        .fused_end = @as(u32, @intCast(content.len)),
+        .file_id = 0,
+        .file_offset = 0,
+    });
+
+    const d: gero.asm_.Diagnostic = .{
+        .code = .duplicate_label,
+        .note = "did you mean `bar`?",
+        .parse_error = .{
+            .parser = "test",
+            .index = 4, // points at `$`
+            .message = "undefined symbol",
+            .expected = "",
+            .actual = "",
+            .kind = .semantic,
+        },
+    };
+
+    var out = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out.deinit();
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.beginArray();
+    try writeDiagnosticJson(&jw, sm, d);
+    try jw.endArray();
+
+    const expected =
+        "[{\"file\":\"foo.gas\",\"line\":1,\"column\":5,\"severity\":\"error\"," ++
+        "\"code\":\"E005\",\"message\":\"undefined symbol\",\"note\":\"did you mean `bar`?\"}]";
+    try testing.expectEqualStrings(expected, out.written());
 }
 
 fn mkDiag(index: u32) gero.asm_.Diagnostic {

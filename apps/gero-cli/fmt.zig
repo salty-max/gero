@@ -50,6 +50,20 @@ pub fn execute(
     const positionals = opts.positional();
     const style: gero.asm_.Style = if (term.color) .ansi else .plain;
 
+    // `--stdin` is mutually exclusive with positional paths AND with
+    // the project-aware manifest fallback. Routes to a separate
+    // formatter that reads stdin, writes stdout, never touches the
+    // disk, and never consults `gero.toml`. Exit codes per cli.md
+    // §3.8: 0 (formatted / canonical), 8 (--check would-modify),
+    // 3 (parse error), 2 (usage).
+    if (opts.stdin) {
+        if (positionals.len > 0) {
+            try term.err("gero fmt: --stdin is mutually exclusive with positional paths", .{});
+            return 2;
+        }
+        return try formatStdin(io, arena, stdout, term, style, opts.check);
+    }
+
     // Always try to load gero.toml — both [fmt] overrides and the
     // implicit file list (when no positionals are passed) come
     // from the manifest. `not_found` is normal (single-file CLI
@@ -146,6 +160,65 @@ pub fn printOptionsFromManifest(fmt: project.Manifest.Fmt) gero.asm_.PrintOption
             .preserve => .preserve,
         },
     };
+}
+
+/// `--stdin` mode: read source from stdin, run the canonical
+/// printer, write the result to stdout. `check_mode` flips behavior
+/// to exit 8 (no stdout) when the input would reformat.
+///
+/// The manifest's `[fmt]` overrides are **not** consulted — stdin
+/// mode has no project root context. Always uses compile-time
+/// defaults.
+///
+/// Diagnostics on stderr in plain `<line>:<col>: <message>` form
+/// (no file path — there is no file). Stdout stays reserved for
+/// formatted bytes so editors can pipe it directly.
+fn formatStdin(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    stdout: *std.Io.Writer,
+    term: *term_mod.Term,
+    style: gero.asm_.Style,
+    check_mode: bool,
+) !u8 {
+    _ = style;
+
+    // 16 MiB ceiling matches src/asm/include.zig::max_file_size.
+    const max_stdin_bytes: usize = 16 * 1024 * 1024;
+    var read_buf: [4096]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().reader(io, &read_buf);
+    const src = stdin_reader.interface.allocRemaining(arena, .limited(max_stdin_bytes)) catch |err| {
+        try term.err("gero fmt: cannot read stdin ({s})", .{@errorName(err)});
+        return 1;
+    };
+
+    var pt = try gero.asm_.parse(arena, src);
+
+    var real_errors: std.ArrayList(gero.asm_.Diagnostic) = .empty;
+    for (pt.errors) |d| {
+        if (!errorIsFromIncludeLine(src, d)) try real_errors.append(arena, d);
+    }
+    if (real_errors.items.len > 0) {
+        // No file path → plain `<line>:<col>: <message>` on stderr.
+        for (real_errors.items) |d| {
+            // @as: ParseError.index fits in u32 — bounded by max_stdin_bytes.
+            const lc = lineColAt(src, @as(u32, @intCast(d.parse_error.index)));
+            try term.err("{d}:{d}: {s}", .{ lc.line, lc.col, d.parse_error.message });
+        }
+        return 3;
+    }
+
+    var allocating = std.Io.Writer.Allocating.init(arena);
+    try gero.asm_.printProgram(&allocating.writer, &pt.program, src, gero.asm_.default_print_options);
+    const formatted = allocating.written();
+
+    if (check_mode) {
+        // Canonical → exit 0 silent; otherwise exit 8, also silent.
+        return if (std.mem.eql(u8, src, formatted)) 0 else 8;
+    }
+
+    try stdout.writeAll(formatted);
+    return 0;
 }
 
 fn formatOne(
