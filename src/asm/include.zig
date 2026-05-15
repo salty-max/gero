@@ -179,6 +179,10 @@ pub const ErrorCode = enum(u8) {
     /// (loader invariant — SRAM banks live in the trailing N slots
     /// of the cart, so they need at least N total banks to occupy).
     sram_without_banks = 17,
+    /// E018: `endif` without a matching `ifdef` / `ifndef`.
+    unmatched_endif = 18,
+    /// E019: `ifdef` / `ifndef` block left open at EOF.
+    unclosed_conditional = 19,
 
     /// Map a lexer-level `ParseError.message` to the asm spec §7
     /// code, or `null` when the message isn't one of the four
@@ -220,6 +224,8 @@ pub const ErrorCode = enum(u8) {
             .include_not_found => "E015",
             .char_literal_size => "E016",
             .sram_without_banks => "E017",
+            .unmatched_endif => "E018",
+            .unclosed_conditional => "E019",
         };
     }
 };

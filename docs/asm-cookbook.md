@@ -25,6 +25,7 @@ bottom of the section.
 5. [SRAM persistence](#5-sram-persistence)
 6. [IRQ handler skeleton](#6-irq-handler-skeleton)
 7. [Fixed-point arithmetic (Q8.8)](#7-fixed-point-arithmetic-q88)
+8. [Include guards](#8-include-guards)
 
 ---
 
@@ -282,6 +283,62 @@ selected bytes of `r2`.
 The same trick works for division (Q8.8 quotient = `(num << 8) / den`),
 addition / subtraction (no scaling needed), and angle math via a
 Q1.15 sin/cos lookup table in `data16`.
+
+---
+
+## 8. Include guards
+
+Multi-file projects share headers — register definitions, struct
+layouts, software-interrupt vector numbers — that risk being
+`include`'d from several ancestors. Without protection, the second
+include re-emits every `const` and `data8` inside, producing a
+duplicate-define cascade.
+
+`ifndef` / `endif` wraps the body so the second include becomes a
+no-op:
+
+```asm
+; hardware.gas — included from main.gas, sprite.gas, audio.gas, ...
+ifndef HARDWARE_INCLUDED
+const HARDWARE_INCLUDED = $01
+
+; MMIO map
+const PPU_CTRL = &2000
+const PPU_MASK = &2001
+const APU_STATUS = &4015
+
+; Shared data layouts
+struct Sprite { x: u8, y: u8, tile: u8, attr: u8 }
+struct Tile   { id: u8, attr: u8 }
+
+endif
+```
+
+Every other source file just includes it:
+
+```asm
+; sprite.gas
+include "hardware.gas"
+
+draw_sprite:
+  mov &Sprite, r1    ; uses Sprite from hardware.gas — guard
+  ; ...              ; ensures one definition even if main.gas
+  ret                ; already pulled hardware.gas in.
+```
+
+Notes:
+
+- The check only inspects `const` names, not labels or `data8`.
+  The `const HARDWARE_INCLUDED = $01` line right after the
+  `ifndef` is what flips the condition for subsequent re-includes.
+- Order matters — `ifndef X` placed **before** `const X` is true;
+  placed **after**, false. Same rule as NASM `%ifdef`.
+- Nested `ifdef` / `ifndef` inside a true outer branch evaluates
+  its own condition normally. Nested inside a false outer branch,
+  the body is suppressed regardless (and `endif` still pops the
+  right frame).
+
+**See also**: [`asm.md` §2.2 `ifdef` / `ifndef` / `endif`](./asm.md).
 
 ---
 

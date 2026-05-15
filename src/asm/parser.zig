@@ -54,12 +54,33 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !ParseTree {
     var consts = expr.ConstantTable.init(allocator);
     defer consts.deinit();
 
+    var cond_stack = ConditionalStack.init(allocator);
+    defer cond_stack.deinit();
+
     var state = core.ParseState.init(source, allocator);
 
     while (state.index < source.len) {
         try skipSeparatorsCapturingComments(&state, &statements, allocator);
         if (state.index >= source.len) break;
-        try parseStatement(&state, allocator, &statements, &errors, &consts);
+        try parseStatement(&state, allocator, &statements, &errors, &consts, &cond_stack);
+    }
+
+    // E019: every `ifdef` / `ifndef` must close before EOF. Flag
+    // the **innermost** unclosed frame — that's the one whose
+    // missing `endif` is the proximate cause.
+    if (cond_stack.frames.items.len > 0) {
+        const top = cond_stack.frames.items[cond_stack.frames.items.len - 1];
+        try errors.append(allocator, .{
+            .code = .unclosed_conditional,
+            .parse_error = .{
+                .parser = "asm",
+                .index = top.open_span.start,
+                .message = "`ifdef` / `ifndef` block left open at EOF (missing `endif`)",
+                .expected = "endif",
+                .actual = "",
+                .kind = .semantic,
+            },
+        });
     }
 
     return .{
@@ -71,6 +92,53 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !ParseTree {
         .allocator = allocator,
     };
 }
+
+/// Per-parse conditional-assembly state. One frame is pushed per
+/// open `ifdef` / `ifndef` block, popped by the matching `endif`.
+/// `skipping` is true when the block's content should be discarded
+/// (false condition, or inherited from an outer skipping frame).
+pub const ConditionalStack = struct {
+    frames: std.ArrayList(Frame),
+    allocator: std.mem.Allocator,
+
+    /// One open `ifdef` / `ifndef` block. `skipping` reflects the
+    /// combined condition (its own predicate **or** an outer
+    /// frame's suppression). `open_span` points at the opening
+    /// directive so an unclosed-at-EOF diagnostic can locate it.
+    pub const Frame = struct {
+        skipping: bool,
+        open_span: ast.Span,
+    };
+
+    /// Build an empty stack — caller owns the backing allocator.
+    pub fn init(allocator: std.mem.Allocator) ConditionalStack {
+        return .{ .frames = .empty, .allocator = allocator };
+    }
+
+    /// Release the backing list. Frames themselves carry no
+    /// allocated state, so no per-frame cleanup is needed.
+    pub fn deinit(self: *ConditionalStack) void {
+        self.frames.deinit(self.allocator);
+    }
+
+    /// True when any frame on the stack is suppressing emission.
+    pub fn isSkipping(self: ConditionalStack) bool {
+        for (self.frames.items) |f| if (f.skipping) return true;
+        return false;
+    }
+
+    /// Push a new frame on top of the stack.
+    pub fn push(self: *ConditionalStack, frame: Frame) !void {
+        try self.frames.append(self.allocator, frame);
+    }
+
+    /// Pop the topmost frame. Returns `null` when the stack is
+    /// empty (caller surfaces an E018 unmatched-`endif` then).
+    pub fn pop(self: *ConditionalStack) ?Frame {
+        if (self.frames.items.len == 0) return null;
+        return self.frames.pop();
+    }
+};
 
 fn cleanupStatements(allocator: std.mem.Allocator, statements: *std.ArrayList(ast.Statement)) void {
     for (statements.items) |s| switch (s) {
@@ -107,8 +175,32 @@ fn parseStatement(
     statements: *std.ArrayList(ast.Statement),
     errors: *std.ArrayList(include.Diagnostic),
     consts: *expr.ConstantTable,
+    cond_stack: *ConditionalStack,
 ) !void {
     const stmt_start = state.index;
+
+    // Conditional-assembly directives are always processed, even
+    // while in skip-mode — nested `ifdef` inside a false outer
+    // branch must still track its own open/close so the right
+    // `endif` pops the right frame.
+    if (consumeKeyword(state, "ifndef")) {
+        return parseIfDirective(state, allocator, stmt_start, statements, errors, consts, cond_stack, .ifndef);
+    }
+    if (consumeKeyword(state, "ifdef")) {
+        return parseIfDirective(state, allocator, stmt_start, statements, errors, consts, cond_stack, .ifdef);
+    }
+    if (consumeKeyword(state, "endif")) {
+        return parseEndifDirective(state, allocator, stmt_start, statements, errors, cond_stack);
+    }
+
+    // Skip-mode: everything inside a false `ifdef` / `ifndef`
+    // branch is consumed without emitting AST or diagnostics. The
+    // parser still advances past it so token-level position
+    // tracking stays consistent.
+    if (cond_stack.isSkipping()) {
+        try recoverToNewline(state);
+        return;
+    }
 
     // Directive keywords must be checked before generic labels,
     // since the bare keyword lexeme would otherwise be taken as a
@@ -146,6 +238,105 @@ fn parseStatement(
     // Anything else: record the line as an `unknown` statement,
     // emit a diagnostic, and recover to the next newline.
     try recordUnknown(state, allocator, stmt_start, statements, errors);
+}
+
+// ---------- conditional assembly: ifdef / ifndef / endif ----------
+
+/// Parse `ifdef NAME` or `ifndef NAME`. Side effect: pushes a frame
+/// onto `cond_stack` whose `skipping` reflects the current ConstantTable
+/// lookup result. Nested under an already-skipping outer frame, the
+/// new frame is also `skipping` (so we don't accidentally re-enable
+/// emission inside a dead block).
+fn parseIfDirective(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+    cond_stack: *ConditionalStack,
+    kind: ast.CondDirective.Kind,
+) !void {
+    skipBlanksInLine(state);
+    const name_start: u32 = u32At(state.index);
+    const ident_result = lexer.identP.parseFn(state);
+    if (ident_result != .ok) {
+        try errors.append(allocator, .{
+            .parse_error = .{
+                .parser = "asm",
+                .index = name_start,
+                .message = "expected identifier after `ifdef` / `ifndef`",
+                .expected = "identifier",
+                .actual = "",
+                .kind = .syntactic,
+            },
+        });
+        try recoverToNewline(state);
+        // Push a frame anyway so the matching `endif` doesn't
+        // surface a spurious E018.
+        try cond_stack.push(.{
+            .skipping = true,
+            .open_span = spanFrom(stmt_start, state.index),
+        });
+        return;
+    }
+    const ident_token = ident_result.ok.value;
+    const name_span: ast.Span = .{ .start = name_start, .end = ident_token.end };
+    const name_lex = state.input[name_start..ident_token.end];
+
+    const outer_skipping = cond_stack.isSkipping();
+    const is_defined = consts.get(name_lex) != null;
+    const this_skipping = switch (kind) {
+        .ifndef => is_defined,
+        .ifdef => !is_defined,
+        // safety: caller passes ifdef/ifndef only — endif goes through
+        //         parseEndifDirective, never reaches this switch.
+        .endif => unreachable,
+    };
+
+    try cond_stack.push(.{
+        .skipping = outer_skipping or this_skipping,
+        .open_span = spanFrom(stmt_start, state.index),
+    });
+
+    try statements.append(allocator, .{ .cond_directive = .{
+        .kind = kind,
+        .name = name_span,
+        .span = spanFrom(stmt_start, state.index),
+    } });
+
+    try recoverToNewline(state);
+}
+
+/// Parse `endif`. Pops the conditional stack; emits E018 if the
+/// stack was empty (no matching open).
+fn parseEndifDirective(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+    cond_stack: *ConditionalStack,
+) !void {
+    if (cond_stack.pop() == null) {
+        try errors.append(allocator, .{
+            .code = .unmatched_endif,
+            .parse_error = .{
+                .parser = "asm",
+                .index = u32At(stmt_start),
+                .message = "`endif` without a matching `ifdef` / `ifndef`",
+                .expected = "ifdef or ifndef",
+                .actual = "endif",
+                .kind = .semantic,
+            },
+        });
+    }
+    try statements.append(allocator, .{ .cond_directive = .{
+        .kind = .endif,
+        .name = .{ .start = u32At(state.index), .end = u32At(state.index) },
+        .span = spanFrom(stmt_start, state.index),
+    } });
+    try recoverToNewline(state);
 }
 
 // ---------- label ----------

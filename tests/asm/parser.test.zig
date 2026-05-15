@@ -1098,3 +1098,120 @@ test "parser: addr_expr missing closing ']'" {
     defer pt.deinit();
     try std.testing.expect(pt.hasErrors());
 }
+
+// ---------- conditional assembly (ifdef / ifndef / endif) ----------
+
+test "parser: ifndef on an undefined name parses through body" {
+    var pt = try parseSource(
+        \\ifndef MISSING
+        \\const X = $42
+        \\endif
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    // ifndef + const + endif → 3 statements emitted
+    try std.testing.expectEqual(@as(usize, 3), pt.program.statements.len);
+    try std.testing.expect(pt.program.statements[0] == .cond_directive);
+    try std.testing.expect(pt.program.statements[1] == .const_decl);
+    try std.testing.expect(pt.program.statements[2] == .cond_directive);
+}
+
+test "parser: ifndef on a defined name skips body" {
+    var pt = try parseSource(
+        \\const GUARD = $01
+        \\ifndef GUARD
+        \\const DEAD = $42
+        \\endif
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    // const GUARD + ifndef + endif → 3 (DEAD is skipped)
+    try std.testing.expectEqual(@as(usize, 3), pt.program.statements.len);
+    try std.testing.expect(pt.program.statements[0] == .const_decl);
+    try std.testing.expect(pt.program.statements[1] == .cond_directive);
+    try std.testing.expect(pt.program.statements[2] == .cond_directive);
+}
+
+test "parser: ifdef on a defined name keeps body" {
+    var pt = try parseSource(
+        \\const GUARD = $01
+        \\ifdef GUARD
+        \\const ALIVE = $42
+        \\endif
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 4), pt.program.statements.len);
+    try std.testing.expect(pt.program.statements[2] == .const_decl);
+}
+
+test "parser: skip-mode swallows bogus content" {
+    var pt = try parseSource(
+        \\ifdef MISSING
+        \\!@#$ this would otherwise be E001
+        \\endif
+        \\
+    );
+    defer pt.deinit();
+    // No errors despite the garbage on line 2 — skip-mode ate it.
+    try std.testing.expect(!pt.hasErrors());
+}
+
+test "parser: unmatched endif → E018" {
+    var pt = try parseSource("endif\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), pt.errors.len);
+    try std.testing.expect(pt.errors[0].code != null);
+    try std.testing.expectEqual(gero.asm_.ErrorCode.unmatched_endif, pt.errors[0].code.?);
+}
+
+test "parser: unclosed conditional at EOF → E019" {
+    var pt = try parseSource(
+        \\ifndef X
+        \\const Y = $42
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+    try std.testing.expect(pt.errors[0].code != null);
+    try std.testing.expectEqual(gero.asm_.ErrorCode.unclosed_conditional, pt.errors[0].code.?);
+}
+
+test "parser: nested ifndef inside ifdef true-branch" {
+    var pt = try parseSource(
+        \\const OUTER = $01
+        \\ifdef OUTER
+        \\const A = $11
+        \\ifndef INNER
+        \\const B = $22
+        \\endif
+        \\endif
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    // OUTER + ifdef + A + ifndef + B + endif + endif → 7
+    try std.testing.expectEqual(@as(usize, 7), pt.program.statements.len);
+}
+
+test "parser: nested ifdef inside skipping outer stays skipping" {
+    var pt = try parseSource(
+        \\ifndef MISSING
+        \\const ALWAYS_DEFINED = $01
+        \\ifdef ALWAYS_DEFINED
+        \\const SHOULD_NOT_LEAK = $99
+        \\endif
+        \\endif
+        \\
+    );
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    // Outer ifndef MISSING is true → first const + nested ifdef
+    // (true since ALWAYS_DEFINED gets defined) + nested const +
+    // both endifs → 6.
+    try std.testing.expectEqual(@as(usize, 6), pt.program.statements.len);
+}

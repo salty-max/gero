@@ -45,6 +45,12 @@ pub const Statement = union(enum) {
     /// body emitted.
     sram_banks_decl: SramBanksDecl,
     instruction: Instruction,
+    /// `ifdef NAME` / `ifndef NAME` / `endif` — NASM-style
+    /// conditional assembly. Skip-mode behavior lives in the
+    /// parser; codegen treats these statements as semantic
+    /// no-ops (like `comment`). The printer round-trips them
+    /// verbatim so `gero fmt` preserves include-guard layout.
+    cond_directive: CondDirective,
     /// A `; ...` comment line. The parser surfaces these as
     /// first-class statements so the pretty-printer (`gero fmt`)
     /// can preserve them; codegen / symtab skip them as semantic
@@ -69,10 +75,26 @@ pub const Statement = union(enum) {
             .bank_switch => |b| b.span,
             .sram_banks_decl => |s| s.span,
             .instruction => |i| i.span,
+            .cond_directive => |c| c.span,
             .comment => |c| c.span,
             .unknown => |u| u.span,
         };
     }
+};
+
+/// `ifdef NAME` / `ifndef NAME` / `endif` — conditional assembly.
+/// Three flavors carried by the same struct (cheaper than three
+/// `Statement` variants); the parser fills `name` only for the
+/// `ifdef` / `ifndef` shapes (zero-width span for `endif`).
+pub const CondDirective = struct {
+    kind: Kind,
+    /// Span of the NAME identifier; zero-width for `endif`.
+    name: Span,
+    /// Span covering `<keyword> [NAME]` end-to-end.
+    span: Span,
+
+    /// Which conditional directive this is.
+    pub const Kind = enum { ifdef, ifndef, endif };
 };
 
 /// `; ...` — comment line. Span covers the leading `;` and the
