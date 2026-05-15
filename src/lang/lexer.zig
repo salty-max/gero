@@ -125,6 +125,10 @@ pub const Token = struct {
         star,
         slash,
         percent,
+        /// `++` — statement-only increment, sugar for `x += 1`.
+        plus_plus,
+        /// `--` — statement-only decrement, sugar for `x -= 1`.
+        minus_minus,
 
         // -- comparisons --------------------------------------
         eq_eq,
@@ -443,6 +447,78 @@ fn lexInteger(state: *State, negative: bool) !void {
     try pushToken(state, .int_lit, start, state.index, value);
 }
 
+/// Decode a single byte from inside a char or string literal,
+/// stepping `state.index` past whatever bytes the escape consumes.
+/// Returns the resolved byte value, or `null` on a malformed
+/// escape (caller pushes the error).
+fn decodeOneByte(state: *State) ?u8 {
+    const b = state.source[state.index];
+    if (b != '\\') {
+        state.index += 1;
+        return b;
+    }
+    // Escape sequence — at least one more byte required.
+    if (state.index + 1 >= state.source.len) return null;
+    const esc = state.source[state.index + 1];
+    state.index += 2;
+    return switch (esc) {
+        'n' => 0x0A,
+        't' => 0x09,
+        'r' => 0x0D,
+        '0' => 0x00,
+        '\\' => 0x5C,
+        '\'' => 0x27,
+        '"' => 0x22,
+        'x' => blk: {
+            // `\xHH` — exactly two hex digits.
+            if (state.index + 1 >= state.source.len) break :blk null;
+            const h1 = state.source[state.index];
+            const h2 = state.source[state.index + 1];
+            if (!isHexDigit(h1) or !isHexDigit(h2)) break :blk null;
+            state.index += 2;
+            // @as: hexValue returns 0..15 — narrows cleanly to u8.
+            const hi = @as(u8, @intCast(hexValue(h1)));
+            // @as: hexValue returns 0..15 — narrows cleanly to u8.
+            const lo = @as(u8, @intCast(hexValue(h2)));
+            break :blk hi * 16 + lo;
+        },
+        else => null,
+    };
+}
+
+/// Lex a `'A'` single-byte char literal. Emits as `int_lit` (the
+/// byte's u8 value, widened to i32). Mirrors the asm spec's
+/// `'A'` semantics so byte literals look the same across both
+/// languages.
+fn lexCharLit(state: *State) !void {
+    const start = state.index;
+    state.index += 1; // consume opening `'`
+    if (state.index >= state.source.len) {
+        try pushError(state, start, "unterminated char literal", "'");
+        try pushToken(state, .int_lit, start, state.index, 0);
+        return;
+    }
+    const byte_opt = decodeOneByte(state);
+    if (byte_opt == null) {
+        try pushError(state, start, "malformed escape in char literal", "");
+        // Recover by skipping to the next `'` or newline.
+        while (state.index < state.source.len and state.source[state.index] != '\'' and
+            state.source[state.index] != '\n') : (state.index += 1)
+        {}
+        if (state.index < state.source.len and state.source[state.index] == '\'') state.index += 1;
+        try pushToken(state, .int_lit, start, state.index, 0);
+        return;
+    }
+    if (state.index >= state.source.len or state.source[state.index] != '\'') {
+        try pushError(state, start, "unterminated char literal — expected closing `'`", "");
+        try pushToken(state, .int_lit, start, state.index, byte_opt.?);
+        return;
+    }
+    state.index += 1; // consume closing `'`
+    // @as: widen u8 byte → i32 so it shares the int_lit value slot.
+    try pushToken(state, .int_lit, start, state.index, @as(i32, byte_opt.?));
+}
+
 /// Lex a chunk of string-body bytes up to (but not including) the
 /// next `$(`, `"`, or end-of-source. Always emits a `.str_part`
 /// even if empty so the parser sees a uniform shape.
@@ -567,10 +643,26 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
             continue;
         }
 
-        // Comments: `--` to end-of-line. Don't consume the
-        // newline — that emits its own token.
+        // Comment vs `--` decrement disambiguation:
+        //   - At start-of-line (or preceded by whitespace), `--`
+        //     opens a line comment (Lua-style).
+        //   - Directly attached to an operand-end token (e.g.
+        //     `x--`), `--` is the decrement statement operator.
+        // Two-byte windows only — `---` is just "comment, starts
+        // with -" since once we know it's a comment we eat to EOL.
         if (b == '-' and state.index + 1 < source.len and source[state.index + 1] == '-') {
-            while (state.index < source.len and source[state.index] != '\n') : (state.index += 1) {}
+            const preceded_by_ws = state.index == 0 or blk: {
+                const prev = source[state.index - 1];
+                break :blk prev == ' ' or prev == '\t' or prev == '\n' or prev == '\r';
+            };
+            if (preceded_by_ws) {
+                while (state.index < source.len and source[state.index] != '\n') : (state.index += 1) {}
+                continue;
+            }
+            // Directly attached → decrement.
+            const start = state.index;
+            state.index += 2;
+            try pushToken(&state, .minus_minus, start, state.index, 0);
             continue;
         }
 
@@ -596,6 +688,14 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
         // String literal.
         if (b == '"') {
             try lexString(&state);
+            continue;
+        }
+
+        // Char literal — `'A'`, `'\n'`, `'\x41'`. Resolves to a
+        // `u8` value packaged as `int_lit`, same as a numeric
+        // literal of the same byte. Matches the asm spec.
+        if (b == '\'') {
+            try lexCharLit(&state);
             continue;
         }
 
@@ -663,6 +763,12 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
             const start = state.index;
             state.index += 2;
             try pushToken(&state, .shr, start, state.index, 0);
+            continue;
+        }
+        if (b == '+' and state.index + 1 < source.len and source[state.index + 1] == '+') {
+            const start = state.index;
+            state.index += 2;
+            try pushToken(&state, .plus_plus, start, state.index, 0);
             continue;
         }
 
