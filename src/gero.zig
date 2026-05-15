@@ -15,3 +15,9 @@ pub const asm_ = @import("asm.zig");
 /// Disassembler — `.gx` bytecode → `.gas` source. Inverse of
 /// `asm_`; consumes the same `.gx` shape the VM loads.
 pub const disasm = @import("disasm.zig");
+
+/// Gero-lang — text `.gr` source → `.gx` bytecode. Re-exports
+/// the lexer's `Token` / `TokenStream` / `tokenize` today;
+/// parser + codegen land in subsequent issues per the
+/// `feat(lang)` series.
+pub const lang = @import("lang.zig");
