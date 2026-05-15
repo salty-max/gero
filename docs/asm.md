@@ -239,9 +239,9 @@ below). Single-line value lists never use them.
 ##### `reserve N`
 
 ```asm
-data8  scratch  = reserve 256                  ; 256 zero bytes
-data16 ringbuf  = reserve 16                   ; 16 zero words (32 bytes)
-data8  packet   = $AA, $55, reserve 14, $FF    ; framed header + body + tail
+data8  scratch  = reserve $100                 ; 256 zero bytes
+data16 ringbuf  = reserve $10                  ; 16 zero words (32 bytes)
+data8  packet   = $AA, $55, reserve $0E, $FF   ; framed header + body + tail
 ```
 
 `reserve N` emits **N zero-initialized units** at this position

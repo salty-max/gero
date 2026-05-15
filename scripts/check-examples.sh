@@ -18,6 +18,10 @@ set -euo pipefail
 
 GERO_BIN="${GERO_BIN:-./zig-out/bin/gero}"
 EXAMPLES_DIR="${EXAMPLES_DIR:-examples/asm}"
+# `docs/examples/` carries the syntax-overview showcase + its include
+# stub. Gated alongside the runnable examples so any drift between
+# tree-sitter grammar / docs and the actual assembler surfaces here.
+DOC_EXAMPLES_DIR="${DOC_EXAMPLES_DIR:-docs/examples}"
 
 if [[ ! -x "$GERO_BIN" ]]; then
     printf 'check-examples: %s not found — run `zig build install` first\n' "$GERO_BIN" >&2
@@ -35,7 +39,17 @@ else
     GREEN=''; RED=''; BOLD=''; RESET=''
 fi
 
-mapfile -t -d '' gas_files < <(find "$EXAMPLES_DIR" -type f -name '*.gas' -print0 | sort -z)
+mapfile -t -d '' gas_files < <(
+    {
+        find "$EXAMPLES_DIR" -type f -name '*.gas' -print0
+        if [[ -d "$DOC_EXAMPLES_DIR" ]]; then
+            # docs/examples/shared.gas is an include-only stub — exclude
+            # it from the standalone-check walk; it's exercised via
+            # syntax_overview.gas's include directive.
+            find "$DOC_EXAMPLES_DIR" -type f -name '*.gas' ! -name 'shared.gas' -print0
+        fi
+    } | sort -z
+)
 
 if [[ ${#gas_files[@]} -eq 0 ]]; then
     printf 'check-examples: no .gas files under %s\n' "$EXAMPLES_DIR" >&2
@@ -44,8 +58,8 @@ fi
 
 pass=0; fail=0
 for gas in "${gas_files[@]}"; do
-    rel="${gas#$EXAMPLES_DIR/}"
-    printf '  %-24s ... ' "$rel"
+    rel="${gas#${PWD}/}"
+    printf '  %-40s ... ' "$rel"
 
     rc=0
     out="$("$GERO_BIN" check --quiet "$gas" 2>&1)" || rc=$?
