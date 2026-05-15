@@ -25,6 +25,15 @@ pub const SymbolKind = enum {
 pub const Symbol = struct {
     kind: SymbolKind,
     value: u16,
+    /// Bank slot the symbol was defined in. `null` = base image
+    /// (the implicit no-bank section before any `bank N` directive).
+    /// `Some(N)` = bank slot N (0-based, the value `mb` should hold
+    /// for accesses into that bank).
+    ///
+    /// Populated for `.label` and `.data` kinds only; `.const_value`
+    /// and `.struct_field` are compile-time constants with no
+    /// bank-positioned address, so they leave this `null`.
+    bank: ?u8 = null,
 };
 
 /// Name → Symbol lookup. Built incrementally by the codegen

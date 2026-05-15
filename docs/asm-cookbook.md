@@ -166,6 +166,27 @@ linker resolves `greet`'s address to `$C000` (the bank-window
 base), and the assembler emits the bank's bytes into the
 appropriate slot of the `.gx` file.
 
+**Sugar**: `bank_call <label>` and `bank_jump <label>` desugar to
+`mov $bank, mb` + `call`/`jmp <addr>`. The assembler looks up
+which bank the target lives in, so callers don't have to
+hand-track bank IDs across the codebase:
+
+```asm
+main:
+  bank_call greet              ; assembler emits: mov $00, mb + call greet
+  hlt
+
+bank $00
+greet:
+  mov 'B', r1
+  int PRINT
+  ret
+```
+
+Same bytecode as the manual version — just less error-prone. If
+the target moves to another bank (`bank $01 greet:`), the sugar
+follows; the manual form would silently call into the wrong bank.
+
 **See also**: [`examples/asm/banks/`](../examples/asm/banks/) — full multi-bank cart with cross-bank calls via two `bank $XX` files glued together by `include`.
 
 ---
