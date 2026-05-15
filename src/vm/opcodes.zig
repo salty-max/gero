@@ -73,7 +73,7 @@ pub const table: [256]?OpcodeInfo = blk: {
 
     // block memory ops
     t[0x27] = .{ .mnemonic = "bcpy", .operands = &.{ .reg, .reg, .reg } };
-    t[0x28] = .{ .mnemonic = "bset", .operands = &.{ .reg, .reg, .reg } };
+    t[0x28] = .{ .mnemonic = "bfill", .operands = &.{ .reg, .reg, .reg } };
 
     // stack
     t[0x30] = .{ .mnemonic = "push", .operands = &.{.imm16} };
@@ -125,6 +125,9 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x61] = .{ .mnemonic = "cmp", .operands = &.{ .reg, .reg } };
     t[0x62] = .{ .mnemonic = "tst", .operands = &.{ .reg, .imm16 } };
     t[0x63] = .{ .mnemonic = "tst", .operands = &.{ .reg, .reg } };
+    t[0x68] = .{ .mnemonic = "bset", .operands = &.{ .reg, .imm8 } };
+    t[0x69] = .{ .mnemonic = "bclr", .operands = &.{ .reg, .imm8 } };
+    t[0x6A] = .{ .mnemonic = "btest", .operands = &.{ .reg, .imm8 } };
 
     // control flow
     t[0x70] = .{ .mnemonic = "jmp", .operands = &.{.addr} };

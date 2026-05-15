@@ -91,7 +91,10 @@ mnemonic_kitchen_sink:
   ; compare / test / bit
   cmp  r1, $42
   tst  r2, $0F               ; reg & imm, flags-only
-  bset r1, r2, r3            ; addr, len, val
+  bfill r1, r2, r3           ; addr, len, val — memset block fill
+  bset  r4, $03              ; r4 |= 1 << 3 — set single bit
+  bclr  r5, $07              ; r5 &= ~(1 << 7) — clear single bit
+  btest r6, $0F              ; flg.Z ← !(r6 & (1 << 15))
 
   ; control flow — jumps take Addr operands, not raw hex
   jmp  &1234

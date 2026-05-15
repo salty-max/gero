@@ -296,12 +296,12 @@ pub fn bcpyRegRegReg(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x28` — `bset Reg, Reg, Reg` → block byte-fill.
+/// `0x28` — `bfill Reg, Reg, Reg` → block byte-fill (memset).
 /// `mem[addr..addr+len] ← val.lo` for each byte. Reads three
 /// register indices: dst-addr, length (u16), value (low byte
 /// used; high byte ignored). Address arithmetic wraps at the
 /// 16-bit boundary.
-pub fn bsetRegRegReg(vm: *VM) StepResult {
+pub fn bfillRegRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const addr_reg = vm.readByte(ip +% 1);
     const len_reg = vm.readByte(ip +% 2);
