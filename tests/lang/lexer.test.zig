@@ -342,3 +342,70 @@ test "lex: match expression with or-pattern + guard" {
         },
     );
 }
+
+// ---------- ++ / -- + comment disambiguation ----------
+
+test "lex: `x++` increments — operand-end + no space → plus_plus" {
+    try expectKinds("x++", &.{ .ident, .plus_plus });
+}
+
+test "lex: `x--` decrements — operand-end + no space → minus_minus" {
+    try expectKinds("x--", &.{ .ident, .minus_minus });
+}
+
+test "lex: `-- text` at start of line is a comment" {
+    try expectKinds("-- header\nlet x", &.{ .kw_let, .ident });
+}
+
+test "lex: trailing `-- comment` after whitespace is a comment" {
+    try expectKinds("let x = 1 -- bump\nlet y", &.{
+        .kw_let, .ident, .equals, .int_lit, .newline, .kw_let, .ident,
+    });
+}
+
+test "lex: `++` mid-expression on a field" {
+    try expectKinds("items.count++", &.{ .ident, .dot, .ident, .plus_plus });
+}
+
+// ---------- char literals ----------
+
+test "lex: char literal `'A'` resolves to byte value 0x41" {
+    var ts = try tokenize("'A'");
+    defer ts.deinit();
+    try std.testing.expectEqual(Token.Kind.int_lit, ts.tokens[0].kind);
+    try std.testing.expectEqual(@as(i32, 0x41), ts.tokens[0].value);
+}
+
+test "lex: char literal escape `'\\n'` resolves to 0x0A" {
+    var ts = try tokenize("'\\n'");
+    defer ts.deinit();
+    try std.testing.expectEqual(Token.Kind.int_lit, ts.tokens[0].kind);
+    try std.testing.expectEqual(@as(i32, 0x0A), ts.tokens[0].value);
+}
+
+test "lex: char literal hex escape `'\\x41'`" {
+    var ts = try tokenize("'\\x41'");
+    defer ts.deinit();
+    try std.testing.expectEqual(Token.Kind.int_lit, ts.tokens[0].kind);
+    try std.testing.expectEqual(@as(i32, 0x41), ts.tokens[0].value);
+}
+
+test "lex: char literal `'\\''` (escaped single quote)" {
+    var ts = try tokenize("'\\''");
+    defer ts.deinit();
+    try std.testing.expectEqual(@as(i32, 0x27), ts.tokens[0].value);
+}
+
+test "lex: unterminated char literal reports an error" {
+    var ts = try tokenize("'A");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+}
+
+test "lex: char literal compares natural in expressions" {
+    // `if s.at(0) == 'A' then ...` should lex cleanly.
+    try expectKinds("if s.at(0) == 'A' then", &.{
+        .kw_if, .ident,   .dot,     .ident, .lparen, .int_lit, .rparen,
+        .eq_eq, .int_lit, .kw_then,
+    });
+}

@@ -1,15 +1,12 @@
-# Gero Language — Spec v0.1 (DRAFT)
+# Gero Language — Spec
 
 The high-level language that compiles to [Gero bytecode](./isa.md).
 Source file extension `.gr`. Compiler is a Zig program in this repo
 (`src/lang/`).
 
-> **Status: design draft.** Builds on the prior
-> [eevee-source](https://github.com/salty-max/eevee-source) prototype
-> (Crafting Interpreters-style tree-walk in TypeScript) but
-> deliberately diverges on three axes: **no semicolons**, **typed**,
-> **module / import system**. Locks happen as the compiler
-> implementation forces decisions.
+The language reads like Lua / BASIC, types at the variable + function
+boundary, integer-only arithmetic, compiles to gero bytecode. Designed
+for J-RPG-class games and similar carts; see §1 for the philosophy.
 
 ---
 
@@ -98,6 +95,22 @@ non-terminated buffers, or interop with C-style APIs.
 Strings are stored as null-terminated byte arrays in static data;
 the variable holds a 16-bit pointer to the start. Mutating a string
 literal is undefined (it lives in ROM at runtime).
+
+#### 2.5.1 Char literals
+
+Single-quoted single-byte literals are sugar for their ASCII value:
+
+```
+let c: u8 = 'A'              -- 0x41
+let nl: u8 = '\n'            -- 0x0A
+if s.at(0) == 'A' then ...   -- byte compare reads naturally
+```
+
+The token's type is `u8`. Same escape table as strings (`\n` `\t`
+`\r` `\0` `\\` `\'` `\xHH`). `'A'` and `0x41` compile to identical
+bytecode — char literals exist purely for source readability. Mirrors
+the asm spec's `'A'` (asm §1.4) so byte literals look the same across
+both languages.
 
 ### 2.6 Keywords (reserved)
 
@@ -268,7 +281,8 @@ PICO-8, Sonic, early Doom used.
 | Form | Example | Notes |
 |------|---------|-------|
 | Array (fixed-size) | `[u8; 64]` | N is comptime. Stack-allocated if local. |
-| Tuple | `(i16, str)` | Anonymous heterogeneous pair / triple / etc. Up to 4 elements in v0.1. Destructurable in `let` and `match`. Field access via `.0`, `.1`, …. |
+| Dynamic array | `Vec(i16)` | Growable buffer with `push` / `pop` / `len` / `at`. See §3.4.3. |
+| Tuple | `(i16, str)` | Anonymous heterogeneous pair / triple / etc. Max 4 elements (5+ → use a struct). Destructurable in `let` and `match`. Field access via `.0`, `.1`, …. |
 | Optional | `T?` | Nullable pointer type — see §3.4.1. |
 | Function | `fn(i16, i16) -> i16` | First-class — assignable, passable. |
 | Struct | `struct Foo a: i16, b: u8 end` | C-style POD. Fields contiguous in memory, no methods. See §3.4.2. Literal: `Foo { a: 1, b: 2 }`. |
@@ -408,6 +422,51 @@ let s = Stats { hp: 100, mp: 30, atk: 12, def: 8 }
 ```
 
 Trailing comma after the last field is optional in both forms.
+
+#### 3.4.3 `Vec(T)` — dynamic array
+
+Fixed-size arrays (`[T; N]`) are stack-allocated and their length
+is comptime. When the data is intrinsically variable-length — an
+inventory that grows, an event queue, a scratch buffer — use
+`Vec(T)` instead.
+
+```
+let inv: Vec(Item) = Vec.new()             -- empty, cap = 0
+let buf: Vec(u8)   = Vec.with_capacity(64) -- empty, cap = 64
+let xs: Vec(i16)   = Vec.from([1, 2, 3])   -- pre-filled from a fixed array
+```
+
+**Operations:**
+
+| Form | Returns | Notes |
+|------|---------|-------|
+| `v.push(x)`        | `nil` | Append; grows the backing buffer (doubles cap) when full. Amortized O(1). |
+| `v.pop()`          | `T?` | Remove + return the last element. `nil` when empty. |
+| `v.len()`          | `u16` | Current element count. |
+| `v.cap()`          | `u16` | Current backing capacity. |
+| `v.at(i)`          | `T` | Bounds-checked. Out-of-range → fault vector `0x02`. |
+| `v.get(i)`         | `T?` | Safe variant — `nil` instead of fault. |
+| `v.set(i, x)`      | `nil` | Bounds-checked write. |
+| `v[i]` / `v[i] = x` | `T` / `nil` | Sugar for `at` / `set`. |
+| `v.clear()`        | `nil` | `len ← 0`, keeps the backing buffer. |
+| `v.slice(a, b)`    | `Vec(T)` | Borrowed view, lifetime ≤ `v`'s. Mutating the slice mutates the parent. |
+
+`Vec(T)` participates in `for-in`:
+
+```
+for item in inv do
+  use(item)
+end
+```
+
+**Layout** = 6 bytes per `Vec` value: `(ptr: *T, len: u16, cap: u16)`.
+The backing buffer lives in the VM's general-purpose allocator. Reads
+and writes on a moved-from `Vec` are undefined.
+
+**Generics scope.** `Vec(T)` is a compiler-known built-in (same status
+as `Range` and `[T; N]`) — there are no user-defined generic types
+or functions. If you need a typed container beyond `Vec`, build a
+class around `[T; N]` or `Vec(T)` with the right operations.
 
 ### 3.5 Inference
 
@@ -687,7 +746,7 @@ The compiler enforces:
 
 | Annotation | Applies to | Effect |
 |------------|------------|--------|
-| `@asm("...")` | statement-level | Embed a single asm instruction (or a multi-line block via heredoc syntax — TBD). Operands can reference gero-lang locals via `{name}` substitution. |
+| `@asm("...")` | statement-level | Embed a single asm instruction. Operands can reference gero-lang locals via `{name}` substitution. |
 
 ```
 def fast_swap(a: u16, b: u16)
@@ -773,11 +832,27 @@ x |= expr   -- bitwise OR
 x ^= expr   -- bitwise XOR
 x <<= expr  -- shift left
 x >>= expr  -- shift right
+
+x++         -- statement only — sugar for x += 1
+x--         -- statement only — sugar for x -= 1
 ```
 
-No `++` / `--` (they were in the eevee-source prototype but
-deliberately dropped — `x += 1` covers it without operator-overload
-rules around prefix vs postfix).
+`++` and `--` are **statements**, not expressions. They cannot be
+nested inside another expression:
+
+```
+x++                    -- OK
+items.count++          -- OK (works on any int field / index)
+
+let y = x++            -- COMPILE ERROR: ++ is not an expression
+foo(x++)               -- COMPILE ERROR: ++ is not an expression
+
+let y = x; x += 1      -- write it like this if you need the prior value
+```
+
+The statement-only restriction avoids the C-style prefix-vs-postfix
+ambiguity entirely — `++` always means "increment by 1 right here,
+no value produced". Go uses the same rule.
 
 #### 4.2.1 Operators (binary)
 
@@ -943,10 +1018,15 @@ step:  <int type>     -- 1 by default
 inclusive: bool       -- true for ..=, false for ..
 ```
 
-For an `i16` range the runtime slot is 8 bytes (3 × 2 + 1, padded).
-The compiler special-cases ranges (no user-defined generics — see
-§3.4.2). For value types other than `i16`, ranges are not exposed
-in v0.1.
+Ranges work over any integer type — `i8`, `u8`, `i16`, `u16`. The
+inner type is the same as `start`'s type; `end` and `step` are
+checked to match. Runtime slot: 4 × `sizeof(T)` + 1 byte for the
+inclusive flag (padded to the next 2-byte boundary).
+
+```
+for byte_val in 0u8..=255u8 do            -- iterate every byte
+for tile_id in 0i16..=tile_count do
+```
 
 Methods:
 
@@ -957,9 +1037,8 @@ Methods:
 | `r.len()` | `u16` | Number of elements that would be visited. |
 
 `for x in r do` is special-cased by the compiler — no allocation,
-no iterator object. Custom iterables (anything other than ranges,
-arrays, or strings) are a v0.2 feature pending the iterator protocol
-spec.
+no iterator object. User-defined iterables ship via the iterator
+protocol; see §4.5.3.
 
 #### 4.5.2 `while let`
 
@@ -991,6 +1070,55 @@ end
 
 `while let` is the natural shape for "drain a stream / queue / iterator
 of optional results" — common enough to deserve sugar.
+
+#### 4.5.3 Iterator protocol
+
+`for-in` works on any value with a `next(self) -> T?` method.
+The compiler reads the return type to deduce the loop variable's
+type; iteration stops when `next()` returns `nil`. No declaration,
+no trait, no `iter()` indirection — Lua-style convention.
+
+```
+class Inventory
+  let items: [Item; 64]
+  let count: u16
+  let cursor: u16 = 0
+
+  def next(self) -> Item?
+    if self.cursor >= self.count then return nil end
+    let item = self.items[self.cursor]
+    self.cursor += 1
+    return item
+  end
+end
+
+let inv = Inventory.new()
+for item in inv do
+  use(item)
+end                  -- terminates when inv.next() returns nil
+```
+
+**Desugaring.** `for x in expr do body end` compiles to:
+
+```
+let __it = expr
+while true do
+  let __v = __it.next()
+  if __v == nil then break end
+  let x = __v
+  body
+end
+```
+
+The iterator value is the expression itself — there's no separate
+"iterator object". Iteration is destructive (the instance's own
+cursor advances). To iterate the same data twice, instantiate
+twice or expose a `reset()` method on your class.
+
+**Built-ins** (`Range`, `[T; N]`, `str`, `Vec(T)`) are special-cased
+by the compiler — `for-in` over them emits direct memory access
+with no `next()` call. The user-visible model is identical to a
+custom iterator; the special-case is invisible.
 
 ### 4.6 Functions
 
@@ -1092,15 +1220,19 @@ print c()   -- 11
 print c()   -- 12
 ```
 
-(Mutable closure captures like the example above are **v0.2**. v0.1
-captures by value: `n` would be snapshotted at lambda construction
-and `c()` would always return the same `start + 1`. The example
-above shows the *intended* end state.)
+**Capture semantics.** When a `let` binding is captured **and**
+mutated by an inner closure, the compiler promotes it to a
+heap-allocated "upvalue" slot — both the outer scope and every
+closure that captures it share the same pointer. Mutations through
+either side are visible to the other. Same model as Lua's upvalues.
 
-For v0.1: captured variables are **copied** into the closure at
-construction. Mutating the outer variable after that has no effect on
-the closure; mutating the captured copy inside the closure has no
-effect on the outer.
+If a binding is only **read** by inner closures (never written from
+the closure), it stays on the stack and the closure copies the value
+at construction. Zero heap overhead for the common read-only case.
+
+The promotion decision is automatic — the programmer doesn't
+annotate. To inspect the choice, `gero check --verbose` reports
+which `let` bindings were promoted.
 
 #### 4.7.2 Inline scoped computation: use `do … end`
 
@@ -1307,7 +1439,9 @@ Resolution:
 
 ### 5.3 Standard library
 
-v0.1 stdlib is intentionally tiny:
+The stdlib is intentionally tiny — gero-lang programs targeting
+cartridges shouldn't carry incidental complexity. Each module
+solves one concrete need:
 
 | Module | What |
 |--------|------|
@@ -1546,48 +1680,31 @@ end
 
 ---
 
-## 9. Roadmap (post-v0.1)
+## 9. Out of scope
 
-| Feature | Why |
-|---------|-----|
-| Iterator protocol | Custom `for x in custom_collection` (v0.1 special-cases ranges, arrays, strings) |
-| Async / coroutines | Game-dev needs them; deferred until cooperative-multitasking story is sorted |
-| **Mutable closures** | Capture-by-reference. v0.1 captures by value; the example uses the intended end state for clarity |
-| Traits / interfaces | Polymorphism without inheritance. Ruled out for v0.1 (single inheritance + enums cover the J-RPG use case); reopen if a real consumer surfaces friction |
+These design choices are deliberate. They keep the language small
+and the compiler simple; the absence isn't a missing feature.
 
----
-
-## 10. Reference & divergence from eevee-source
-
-The [eevee-source](https://github.com/salty-max/eevee-source)
-prototype provides the conceptual base — keywords (`let`, `do`,
-`end`, `if/then/else`, `def`, `class`, `lambda`, `match`), a
-recursive-descent parser, expression precedence chain.
-
-This v0.1 spec **diverges** on:
-
-| eevee-source | gero-lang v0.1 | Why |
-|--------------|----------------|-----|
-| Statements end with `;` | Statements end at newline | Less noise |
-| Untyped (dynamic) | Typed at let/fn boundaries | 16-bit target needs known widths |
-| No imports / single file | `use` modules | J-RPG-scale projects need them |
-| `++` / `--` operators | Dropped | `+= 1` covers it |
-| `print` as statement | Same — kept | Old-school BASIC vibe matches |
-| Basic `match` (literals + wildcards) | Rust-style: enums + destructuring + guards + range patterns + exhaustiveness | ADTs are how a language stays honest at scale |
-
-**Carried forward from eevee-source unchanged:**
-
-- First-class functions (assign, pass, return, store)
-- Static lexical scope (all functions are closures over their
-  definition site)
-- Lambda functions (anonymous, first-class)
-- Inline scoped computation (replaced by `do … end` as expression
-  in v0.1; the IILE-via-lambda form still parses but is no longer
-  the recommended pattern)
-- Class-based OOP with single inheritance
-- Imperative core (statements, mutable `let`, sequential evaluation)
-
-Implementation will follow the same recursive-descent shape since
-[knit](https://github.com/salty-max/knit) (parser-combinators) is
-the natural fit — but the AST, type-checker, and pattern-match
-compiler are net-new for v0.1.
+- **Async / coroutines.** gero-lang programs are single-threaded.
+  Cooperative multitasking is the host's job — gtx-16 carts run an
+  asm-level interrupt loop and dispatch work from there, or build a
+  game state machine in pure gero-lang. No `async` / `await`,
+  no generators.
+- **Traits / interfaces.** Polymorphism dispatches through class
+  inheritance (§6) or enum variants (§3.6). The J-RPG / cart use
+  case doesn't need structural polymorphism; adding it would force
+  vtable indirection on every class.
+- **User-defined generics.** `Vec(T)`, `Range`, `[T; N]`, and
+  tuples are compiler-known; user types can't take type parameters.
+  If you need typed containers beyond those, wrap them in a class
+  with the right interface for your use case.
+- **Block comments.** `--` to EOL is the only comment syntax —
+  matches the asm `;` family in spirit (no `--[[ ... ]]`).
+- **Decimal floats.** The VM is integer-only; `fixed` (Q8.8) covers
+  the fractional arithmetic gtx-16 carts actually need.
+- **`Option<T>` / `Result<T, E>` enums.** Pointer-like types use
+  `T?` + `nil`; fallible operations use multi-return tuples
+  (§3.4.1). No `?` propagation operator. Lua/Go-style explicit
+  checks.
+- **`++` / `--` as expressions.** They're statements only (§4.2);
+  no `let y = x++` ambiguity.
