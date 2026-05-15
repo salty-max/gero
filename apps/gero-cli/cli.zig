@@ -29,6 +29,12 @@ pub const Optimize = enum { debug, release, size };
 /// `--color` values: `auto` (TTY + `NO_COLOR`), `always`, `never`.
 pub const ColorChoice = enum { auto, always, never };
 
+/// `--format` values per `cli.md` §3.9 — output renderer for
+/// commands that produce diagnostics. `human` is the default
+/// caret-style; `json` is the machine-parseable shape editors
+/// consume.
+pub const Format = enum { human, json };
+
 /// Maximum positional args a single invocation can hold. v0.1
 /// commands top out at 1-2; keep it generous to absorb future
 /// `gero build` multi-source forms without re-architecting.
@@ -62,6 +68,15 @@ pub const Options = struct {
     /// files that would be reformatted (exit 8) without writing.
     /// Editor / CI use case.
     check: bool = false,
+    /// `--stdin` for `gero fmt` — read source from stdin, write
+    /// formatted output to stdout. Unblocks editor format-on-save
+    /// without needing the LSP. Mutually exclusive with positional
+    /// path args.
+    stdin: bool = false,
+    /// `--format=<m>` for `gero check` — output renderer.
+    /// `human` (default) is the caret-style report; `json` is a
+    /// machine-parseable shape for editor integration.
+    format: Format = .human,
     /// `--target=<vm|gtx-16>` for `gero build` — overrides the
     /// manifest's `package.target`. `null` = inherit from manifest;
     /// `gtx-16` is reserved (errors with "not yet implemented").
@@ -278,20 +293,22 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero test --verbose{s}          {s}# show per-test duration{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .check => {
-            try out.print("  {s}gero check{s} <path...> [--quiet] [-v]\n\n", .{ a.cyan, a.reset });
+            try out.print("  {s}gero check{s} <path...> [--format=<m>] [--quiet] [-v]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
             try out.print("  {s}gero check prog.gas{s}             {s}# parse + codegen-validate, no .gx written{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero check src/{s}                 {s}# walk a directory recursively for *.gas{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero check a.gas b.gas src/{s}     {s}# any mix of files and directories{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero check --format=json src/{s}   {s}# editor-friendly JSON diagnostics on stdout{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero check prog.gas --quiet{s}     {s}# suppress the ok summary (exit code only){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero check prog.gas -v{s}          {s}# per-phase timings (include / parse / codegen){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .fmt => {
-            try out.print("  {s}gero fmt{s} <path...> [--check] [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("  {s}gero fmt{s} <path...> [--check] [--stdin] [--quiet]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
             try out.print("  {s}gero fmt prog.gas{s}               {s}# rewrite in place if not canonical{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero fmt src/{s}                   {s}# recurse + format every .gas{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero fmt --check src/{s}           {s}# CI mode — exit 8 if any file would change{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}cat prog.gas | gero fmt --stdin{s} {s}# editor format-on-save (stdin → stdout){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .new => {
             try out.print("  {s}gero new{s} <name> [--quiet]\n\n", .{ a.cyan, a.reset });
@@ -344,6 +361,8 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .no_show_bytes => .{ .sig = "--no-show-bytes", .desc = "Strip the hex-bytes column for a cleaner view." },
         .check_roundtrip => .{ .sig = "--check-roundtrip", .desc = "Verify asm → disasm → asm yields identical bytes (CI gate)." },
         .check => .{ .sig = "--check", .desc = "Non-destructive — exit 8 if any file would be reformatted." },
+        .stdin => .{ .sig = "--stdin", .desc = "Read source from stdin, write formatted bytes to stdout." },
+        .format => .{ .sig = "--format=<m>", .desc = "human (default) / json. JSON output suppresses human messages." },
         .target => .{ .sig = "--target=<m>", .desc = "vm (default) / gtx-16. Overrides manifest's [package].target." },
     };
 }
@@ -358,8 +377,8 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .info => &.{ .help, .color, .no_color },
         .disasm => &.{ .help, .bank, .no_show_bytes, .check_roundtrip, .quiet, .color, .no_color },
         .test_ => &.{ .help, .verbose, .color, .no_color },
-        .check => &.{ .help, .quiet, .verbose, .color, .no_color },
-        .fmt => &.{ .help, .check, .quiet, .color, .no_color },
+        .check => &.{ .help, .format, .quiet, .verbose, .color, .no_color },
+        .fmt => &.{ .help, .check, .stdin, .quiet, .color, .no_color },
         .new => &.{ .help, .quiet, .color, .no_color },
         .init => &.{ .help, .quiet, .color, .no_color },
         .build => &.{ .help, .target, .quiet, .verbose, .color, .no_color },
@@ -386,7 +405,13 @@ fn parseColor(s: []const u8) ParseError!ColorChoice {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, target };
+fn parseFormat(s: []const u8) ParseError!Format {
+    if (std.mem.eql(u8, s, "human")) return .human;
+    if (std.mem.eql(u8, s, "json")) return .json;
+    return error.InvalidEnumValue;
+}
+
+const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, stdin, format, target };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
@@ -402,6 +427,8 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "no-show-bytes")) return .no_show_bytes;
     if (std.mem.eql(u8, s, "check-roundtrip")) return .check_roundtrip;
     if (std.mem.eql(u8, s, "check")) return .check;
+    if (std.mem.eql(u8, s, "stdin")) return .stdin;
+    if (std.mem.eql(u8, s, "format")) return .format;
     if (std.mem.eql(u8, s, "target")) return .target;
     return null;
 }
@@ -432,6 +459,8 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .no_show_bytes => opts.show_bytes = false,
         .check_roundtrip => opts.check_roundtrip = true,
         .check => opts.check = true,
+        .stdin => opts.stdin = true,
+        .format => opts.format = try parseFormat(value orelse return error.MissingFlagValue),
         .target => opts.target = value orelse return error.MissingFlagValue,
     }
 }
@@ -442,7 +471,7 @@ fn parseBank(s: []const u8) ParseError!u8 {
 
 fn needsValue(kind: FlagKind) bool {
     return switch (kind) {
-        .optimize, .out, .color, .bank, .target => true,
+        .optimize, .out, .color, .bank, .format, .target => true,
         else => false,
     };
 }

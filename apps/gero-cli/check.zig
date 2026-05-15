@@ -83,12 +83,25 @@ pub fn execute(
     // ParseTree slices, Codegen image) stay live until the arena
     // resets, so the failures collected here keep their source-map
     // + diagnostic references valid across the loop.
+    //
+    // JSON-format mode suppresses all per-file output during the
+    // loop (✓ lines, read-error stderr) and emits a single JSON
+    // object after the loop. Host-IO failures get captured as
+    // ReadErrorEntry rows so they show up in the JSON.
+    const json_mode = opts.format == .json;
+    var read_errors: std.ArrayList(diagnostics.ReadErrorEntry) = .empty;
     var pass: usize = 0;
     var failures: std.ArrayList(FileEntry) = .empty;
     for (files.items) |path| {
         const t_phase_start_include = std.Io.Timestamp.now(io, .awake);
         const fused = gero.asm_.resolveIncludes(io, arena, path) catch |err| {
-            try term.err("gero check: cannot read {s} ({s})", .{ path, @errorName(err) });
+            const err_name = @errorName(err);
+            if (json_mode) {
+                const msg = try std.fmt.allocPrint(arena, "cannot read ({s})", .{err_name});
+                try read_errors.append(arena, .{ .path = path, .message = msg });
+            } else {
+                try term.err("gero check: cannot read {s} ({s})", .{ path, err_name });
+            }
             // Synthesize a single-diagnostic failure so the merged
             // report has something to render. Skipping the failure
             // would mis-count totals.
@@ -127,13 +140,27 @@ pub fn execute(
         }
 
         pass += 1;
-        if (!opts.quiet) {
+        if (!opts.quiet and !json_mode) {
             try printPass(stdout, style, path, cg, single, opts.verbose, .{
                 .include = t_phase_start_include.durationTo(t_after_include).nanoseconds,
                 .parse = t_after_include.durationTo(t_after_parse).nanoseconds,
                 .codegen = t_after_parse.durationTo(t_after_codegen).nanoseconds,
             });
         }
+    }
+
+    const fail = failures.items.len;
+
+    // JSON mode emits one object covering every diagnostic + read
+    // error, then exits. No human-readable header / summary / footer.
+    if (json_mode) {
+        var pipeline_failures: std.ArrayList(diagnostics.FileFailure) = .empty;
+        for (failures.items) |f| switch (f.info) {
+            .read_error => {}, // surfaced via read_errors list instead
+            .from_pipeline => |pf| try pipeline_failures.append(arena, pf),
+        };
+        try diagnostics.printJsonReport(stdout, pipeline_failures.items, read_errors.items, files.items.len, fail);
+        return if (fail > 0) 4 else 0;
     }
 
     // Pass 2: render the merged diagnostic report (if any failure).
@@ -153,7 +180,6 @@ pub fn execute(
         }
     }
 
-    const fail = failures.items.len;
     if (!single and !opts.quiet) {
         const pass_noun: []const u8 = if (pass == 1) "file" else "files";
         const fail_noun: []const u8 = if (fail == 1) "failure" else "failures";

@@ -256,6 +256,7 @@ gero fmt --check main.gas         # check only (exit 8 if changes needed)
 gero fmt src/                     # recurse into directory
 gero fmt a.gas b.gas src/         # any mix of files and directories
 gero fmt                          # project-aware: [build].entry + [test].include
+cat main.gas | gero fmt --stdin   # editor format-on-save (stdin → stdout)
 ```
 
 **Behavior:**
@@ -268,6 +269,13 @@ gero fmt                          # project-aware: [build].entry + [test].includ
 - `--check` is non-destructive: exits 0 if every file is canonical,
   8 if any file would be reformatted, 3 on a genuine parse error.
   CI use case.
+- `--stdin` reads source from stdin, writes formatted bytes to
+  stdout. Mutually exclusive with positional paths (exit 2).
+  Manifest `[fmt]` overrides are **not** consulted in stdin mode
+  — there's no project root context, so compile-time defaults
+  apply. `--stdin --check` exits 0 if already canonical, 8 if it
+  would reformat (no stdout in `--check` mode). Use case: editor
+  format-on-save (VS Code / Neovim / Helix).
 - Recurses into directories, formats every `.gas` found. `.gr`
   sources route to "not yet implemented" until the
   gero-lang front-end.
@@ -340,6 +348,7 @@ gero check                        # project-aware: [build].entry + [test].includ
 gero check main.gr                # → "not yet implemented" while gero-lang is not yet implemented
 gero check main.gas --quiet       # suppress per-file lines + summary
 gero check main.gas --verbose     # per-phase timings (single-file only)
+gero check --format=json src/     # editor-friendly JSON diagnostics
 ```
 
 **Project-aware fallback**: invoked with no positional args
@@ -360,6 +369,40 @@ manifest + no positional args → exit 2 with a usage hint.
   noise.
 - `--quiet` suppresses per-file ok lines + the summary but keeps
   failure diagnostics + the footer.
+
+**`--format=json` mode:**
+
+Emits a single JSON object to stdout (no per-file ✓ lines, no
+summary, no footer). Stderr stays reserved for host I/O failures
+(file missing, stat error). Schema:
+
+```json
+{
+  "version": 1,
+  "diagnostics": [
+    {
+      "file": "src/main.gas",
+      "line": 12,
+      "column": 5,
+      "severity": "error",
+      "code": "E004",
+      "message": "undefined symbol",
+      "note": "did you mean `foo_bar`?"
+    }
+  ],
+  "files_checked": 4,
+  "files_failed": 1
+}
+```
+
+- `code` is omitted for plain syntax errors that don't map to an
+  E-code.
+- `note` is omitted when absent.
+- Exit codes are unchanged from `human` mode (0 / 4 / 1 / 2) —
+  editors can branch on the code, then `JSON.parse(stdout)` for
+  the diagnostic list.
+- The `version` field lets the schema evolve while keeping the
+  contract stable.
 
 **Exit:** `0` if clean; `4` on any diagnostic; `1` on host IO
 problem; `2` on usage error.
