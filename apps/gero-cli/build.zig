@@ -60,11 +60,11 @@ pub fn execute(
     defer manifest.deinit(arena);
 
     // 2. Target gate. `--target=<vm|gtx-16>` overrides the manifest;
-    //    only `vm` is wired in v0.2 — `gtx-16` lights up later.
+    //    only `vm` is wired today — `gtx-16` is a downstream target.
     const target = opts.target orelse manifest.package.target;
     if (!std.mem.eql(u8, target, "vm")) {
         if (std.mem.eql(u8, target, "gtx-16")) {
-            try term.err("gero build: target `gtx-16` is not yet implemented (lights up later — only `vm` works in v0.2)", .{});
+            try term.err("gero build: target `gtx-16` is not yet implemented (only `vm` is currently wired)", .{});
         } else {
             try term.err("gero build: unknown target `{s}` (expected `vm` or `gtx-16`)", .{target});
         }

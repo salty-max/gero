@@ -160,7 +160,7 @@ test "lex: @ followed by digit rejected — both bytes flagged" {
 }
 
 test "lex: legacy '!sym' no longer recognized after spec revision" {
-    // '!' is no longer the sym-ref prefix (replaced by '@' in v0.1-final).
+    // '!' is no longer the sym-ref prefix (replaced by '@').
     // The bare '!' surfaces as an unknown byte; the rest still lexes.
     var ts = try tokenize("!hasFrame");
     defer ts.deinit();

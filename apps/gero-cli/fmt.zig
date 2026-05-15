@@ -10,8 +10,8 @@
 ///   - `3` parse error in source
 ///   - `8` `--check` mode and at least one file would change
 ///
-/// `.gr` sources route to a "not yet implemented" stub until v0.3
-/// wires the gero-lang front-end.
+/// `.gr` sources route to a "not yet implemented" stub until the
+/// gero-lang front-end ships.
 ///
 /// Notes
 /// -----
@@ -105,7 +105,7 @@ pub fn execute(
     } else {
         for (positionals) |path| {
             if (std.mem.endsWith(u8, path, ".gr")) {
-                try term.err("gero fmt: .gr support lands in v0.3 (gero-lang front-end)", .{});
+                try term.err("gero fmt: .gr support is not yet implemented (waits on the gero-lang front-end)", .{});
                 return 1;
             }
             try collectGasFiles(io, arena, term, path, &files);

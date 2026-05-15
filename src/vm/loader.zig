@@ -121,9 +121,9 @@ pub fn parse(bytes: []const u8) LoaderError!LoadedProgram {
 
     var debug: []const u8 = bytes[cursor..cursor];
     if ((flags & flag_has_debug) != 0) {
-        // Debug symbols are variable-length; for v0.1 the loader
-        // just exposes the trailing slice. The disassembler will
-        // parse it on demand.
+        // Debug symbols are variable-length; the loader exposes
+        // the trailing slice as-is. The disassembler parses it on
+        // demand.
         debug = bytes[cursor..];
     }
 

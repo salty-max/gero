@@ -40,7 +40,7 @@ pub const Symbols = struct {
 
     /// `null` when no symbol covers `addr`. Linear scan — the
     /// symbol count tops out at ~thousands per cart so binary
-    /// search isn't worth the complexity for v0.1.
+    /// search isn't worth the complexity yet.
     pub fn lookup(self: Symbols, addr: u16) ?[]const u8 {
         for (self.entries) |e| if (e.address == addr) return e.name;
         return null;
@@ -57,7 +57,7 @@ pub const Symbols = struct {
 /// One file's worth of decoded header info + section slices, all
 /// borrowed from the caller's `bytes` buffer.
 pub const Header = struct {
-    /// Cart version (`0x0001` for v0.1).
+    /// Bytecode format version — currently `0x0001`.
     version: u16,
     /// Bit-set per ISA §7.1 (bit 0 = banked, bit 1 = has-debug).
     flags: u16,
@@ -77,7 +77,7 @@ pub const Header = struct {
     /// Concatenated bank bytes (length == `bank_count * 0x4000`).
     /// Empty when the cart is unbanked.
     banks: []const u8,
-    /// Trailing debug-symbol bytes — opaque blob for v0.1.
+    /// Trailing debug-symbol bytes — opaque blob.
     /// Empty when the cart has no debug symbols.
     debug: []const u8,
 

@@ -11,8 +11,8 @@
 ///   - `4` ≥ 1 diagnostic from any file
 ///
 /// `.gr` positional paths dispatch to a "not yet implemented" stub
-/// until the gero-lang front-end lands in v0.3 (#7). Directory
-/// walks ignore `.gr` extensions entirely until then.
+/// until the gero-lang front-end ships. Directory walks ignore
+/// `.gr` extensions entirely until then.
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
@@ -61,7 +61,7 @@ pub fn execute(
     } else {
         for (positionals) |path| {
             if (std.mem.endsWith(u8, path, ".gr")) {
-                try term.err("gero check: .gr support lands in v0.3 (gero-lang front-end)", .{});
+                try term.err("gero check: .gr support is not yet implemented (waits on the gero-lang front-end)", .{});
                 return 1;
             }
             try collectGasFiles(io, arena, term, path, &files);

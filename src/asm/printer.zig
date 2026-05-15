@@ -67,7 +67,7 @@ pub const PrintOptions = struct {
 
 /// Case policy for hex literals.
 pub const HexCase = enum {
-    /// `$ABCD`, `&FFFF` — canonical for v0.1 examples.
+    /// `$ABCD`, `&FFFF` — the canonical default.
     upper,
     /// `$abcd`, `&ffff` — lowercase (some C / Rust shops).
     lower,

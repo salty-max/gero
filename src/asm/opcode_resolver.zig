@@ -49,13 +49,13 @@ pub const Shape = struct {
     opcode: u8,
 };
 
-/// Maximum operand count per instruction in v0.1 (`mov` indexed
-/// has 2 source-level operands; bcpy/bset have 3 register operands).
+/// Maximum operand count per instruction — `bcpy` / `bset` have
+/// 3 register operands; everything else has 2 or fewer.
 const max_operands: usize = 3;
 
 /// The dispatch table. Order matters: more-specific shapes go
-/// first when shapes share a prefix (none in v0.1, but the rule
-/// is good hygiene). Mnemonics use lowercase, matching the lexer.
+/// first when shapes share a prefix. Mnemonics use lowercase,
+/// matching the lexer.
 const shapes: []const Shape = &.{
     // mov family
     .{ .mnemonic = "mov", .kinds = &.{ .imm16, .reg }, .opcode = 0x10 },
@@ -196,7 +196,7 @@ const shapes: []const Shape = &.{
 
 /// 256-entry reverse lookup: opcode byte → asm-side `Shape`.
 /// Built once at comptime by walking `shapes`. `null` slots are
-/// opcodes the v0.1 ISA doesn't define. The disassembler indexes
+/// opcode bytes the ISA doesn't define. The disassembler indexes
 /// this directly to render bytes back into asm syntax.
 pub const shape_by_opcode: [256]?Shape = blk: {
     var t = [_]?Shape{null} ** 256;
@@ -214,8 +214,8 @@ pub const shape_by_opcode: [256]?Shape = blk: {
 /// `.imm16`, so layout is correct either way).
 ///
 /// `addr_lit` operands with `value ≤ 0xFF` classify as `.zp` so the
-/// resolver picks the 1-byte zero-page variants when they exist
-/// (peephole optimization — shipped from v0.2 onward). Other Addr
+/// resolver picks the 1-byte zero-page variants when they exist —
+/// peephole optimization, transparent to the user. Other Addr
 /// shapes (sym_ref, addr_expr, cast) stay `.addr` because their
 /// values aren't always known at classify time.
 pub fn classify(op: ast.Operand, symbols: ?*const symtab.SymbolTable) Kind {

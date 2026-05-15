@@ -13,7 +13,7 @@ const gero = @import("../gero.zig");
 const decoder = @import("decoder.zig");
 const header = @import("header.zig");
 
-/// Mnemonic column width in characters — covers every v0.1
+/// Mnemonic column width in characters — covers every ISA
 /// mnemonic plus one trailing space.
 const mnemonic_col_width: usize = 6;
 
@@ -323,7 +323,7 @@ fn writeZeroRunComment(
 }
 
 /// `XXXX:  ` address column + optional hex-bytes column. Width
-/// of the hex column is fixed at 5 bytes (max v0.1 instruction
+/// of the hex column is fixed at 5 bytes (max ISA instruction
 /// width) so subsequent columns align.
 fn writePrefix(
     writer: *std.Io.Writer,

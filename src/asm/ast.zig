@@ -246,7 +246,7 @@ pub const StructField = struct {
     /// Span of the field's identifier.
     name: Span,
     /// `u8` (1 byte) or `u16` (2 bytes). Per asm spec §2.2 these
-    /// are the only field types in v0.1.
+    /// are the only supported field types.
     ty: FieldType,
     /// Byte offset within the struct.
     offset: u16,
@@ -255,8 +255,8 @@ pub const StructField = struct {
 };
 
 /// Field type per asm spec §2.2. The width values are 1 byte for
-/// `u8`, 2 bytes for `u16`; nothing wider in v0.1. Variant names
-/// match the source-level keyword so `std.meta.stringToEnum`
+/// `u8`, 2 bytes for `u16` — the only supported widths. Variant
+/// names match the source-level keyword so `std.meta.stringToEnum`
 /// resolves them directly.
 pub const FieldType = enum {
     u8,

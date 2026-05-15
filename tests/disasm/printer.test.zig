@@ -58,7 +58,7 @@ test "printer: int imm8 → \"int $XX\\n\"" {
 }
 
 test "printer: unknown opcode emits a `.byte $XX` comment + continues" {
-    // 0x00 isn't in the v0.1 ISA; the disasm comments it then
+    // 0x00 isn't a defined opcode; the disasm comments it then
     // resumes with the next byte (0xFF = hlt).
     const out = try renderBytes(&.{ 0x00, 0xFF });
     defer alloc.free(out);
