@@ -554,6 +554,13 @@ fn writeOperand(
             try writer.writeAll(text);
             break :blk text.len;
         },
+        .reg_offset => |r| blk: {
+            // Round-trip verbatim — the user's `+`/`-` sign + hex
+            // case is the source of truth.
+            const text = slice(source, r.span);
+            try writer.writeAll(text);
+            break :blk text.len;
+        },
         .cast => |c| blk: {
             const text = slice(source, c.span);
             try writer.writeAll(text);

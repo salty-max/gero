@@ -492,6 +492,18 @@ mov r2, [r1]     ; store r2 into mem[r1] (indirect store)
 Brackets distinguish "the value held in r1" (use `r1`) from
 "the byte at address r1" (use `[r1]`).
 
+**Register-relative offset** — `[reg + offset]` and `[reg - offset]`
+add a compile-time signed byte to the base register. Range
+−128..+127, encoded as a signed imm8. Typical use is stack-frame
+local access without computing the address by hand:
+
+```asm
+mov [fp - $04], r1     ; load local at fp - 4 into r1
+mov r2, [fp - $02]     ; store r2 to the local at fp - 2
+```
+
+Out-of-range offsets (|n| > 127) produce `E007`.
+
 ### 3.3 Immediate values and addresses
 
 Two distinct prefixes — `$` for "this is a value", `&` for "this

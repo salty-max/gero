@@ -835,6 +835,36 @@ fn emitInstruction(
             try emitValue(allocator, image, base, 2);
             try image.append(allocator, @intFromEnum(idx.reg.id));
         },
+        .reg_offset => |r| {
+            const offset_eval = expr.evalExpr(r.offset, source, consts);
+            const offset_word: u16 = switch (offset_eval) {
+                .ok => |v| v,
+                .err => |d| blk: {
+                    try errors.append(allocator, d);
+                    break :blk 0;
+                },
+            };
+            // Range-check the signed byte representation: value
+            // must fit in i8 (−128..+127). u16 representation:
+            // 0..0x7F or 0xFF80..0xFFFF (the negative-wrapped form).
+            const in_range = (offset_word <= 0x7F) or (offset_word >= 0xFF80);
+            if (!in_range) {
+                try errors.append(allocator, .{
+                    .code = .addr_out_of_range,
+                    .parse_error = core.parseError(
+                        "codegen",
+                        r.span.start,
+                        "register-relative offset out of range (-128..+127)",
+                        .{ .expected = "signed imm8", .actual = "", .kind = .semantic },
+                    ),
+                });
+            }
+            try image.append(allocator, @intFromEnum(r.reg.id));
+            // safety: truncating to u8 captures the sign-extended low
+            //         byte; out-of-range values were diagnosed above.
+            const offset_byte: u8 = @truncate(offset_word);
+            try image.append(allocator, offset_byte);
+        },
     };
 }
 

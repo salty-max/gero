@@ -468,3 +468,44 @@ test "sext: invalid register raises invalid-register fault" {
     try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }
+
+// ---------- reg-offset mov (0x1C / 0x1D) ----------
+
+test "mov 0x1C [reg+imm], reg — frame-local load with negative offset" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.fp, 0x5000);
+    vm.mmap.writeWord(0x4FFE, 0xCAFE); // mem[fp - 2]
+    loadProgram(&vm, &.{ 0x1C, 0x0B, 0xFE, 0x02 }); // mov [fp - $02], r1
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0xCAFE), vm.regs.read(.r1));
+}
+
+test "mov 0x1C — positive offset reads above base" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x3000);
+    vm.mmap.writeWord(0x3010, 0xBEEF);
+    loadProgram(&vm, &.{ 0x1C, 0x02, 0x10, 0x03 }); // mov [r1 + $10], r2
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0xBEEF), vm.regs.read(.r2));
+}
+
+test "mov 0x1D reg, [reg+imm] — frame-local store with negative offset" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x1234);
+    vm.regs.write(.fp, 0x5000);
+    loadProgram(&vm, &.{ 0x1D, 0x02, 0x0B, 0xFC }); // mov r1, [fp - $04]
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x1234), vm.mmap.readWord(0x4FFC));
+}
+
+test "mov reg-offset: invalid base register raises invalid-register fault" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
+    loadProgram(&vm, &.{ 0x1C, 0xFF, 0x00, 0x02 });
+    try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+}

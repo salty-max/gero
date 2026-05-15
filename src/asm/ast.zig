@@ -338,6 +338,10 @@ pub const Operand = union(enum) {
     register: RegisterRef,
     /// Indirect via register: `[r1]` — see asm spec §3.2.
     indirect: IndirectReg,
+    /// Register-relative indirect: `[reg + offset]` /
+    /// `[reg - offset]` — stack-frame locals + struct-field
+    /// loads. Offset is a compile-time signed byte (-128..+127).
+    reg_offset: RegOffset,
     /// Immediate value: `$FFFF` / `'A'` / a compile-time
     /// expression. The evaluator folds it to a `u16` at codegen
     /// time (or earlier, if the expression contains no forward
@@ -368,6 +372,7 @@ pub const Operand = union(enum) {
         return switch (self) {
             .register => |r| r.span,
             .indirect => |i| i.span,
+            .reg_offset => |r| r.span,
             .immediate => |e| e.span(),
             .addr_lit => |a| a.span,
             .sym_ref => |s| s.span,
@@ -391,6 +396,18 @@ pub const RegisterRef = struct {
 /// lives in `reg`; `span` covers the brackets too.
 pub const IndirectReg = struct {
     reg: RegisterRef,
+    span: Span,
+};
+
+/// `[reg + offset]` or `[reg - offset]` — register-relative
+/// indirect with a signed compile-time offset. Codegen folds
+/// `offset` to a `u16` then encodes as a signed byte (range
+/// -128..+127). Typical use: stack-frame locals (`[fp - 4]`).
+pub const RegOffset = struct {
+    reg: RegisterRef,
+    /// Compile-time offset expression. The parser stores it
+    /// verbatim; codegen folds + range-checks it.
+    offset: *Expr,
     span: Span,
 };
 
@@ -588,6 +605,7 @@ pub const Program = struct {
                         .immediate => |e| freeExpr(self.allocator, e),
                         .addr_expr => |a| freeExpr(self.allocator, a.expr),
                         .indexed => |idx| freeExpr(self.allocator, idx.addr),
+                        .reg_offset => |r| freeExpr(self.allocator, r.offset),
                         .register, .indirect, .addr_lit, .sym_ref, .label_ref, .cast => {},
                     };
                     self.allocator.free(i.operands);

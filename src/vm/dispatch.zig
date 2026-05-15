@@ -86,6 +86,8 @@ pub const handler_table: [256]Handler = blk: {
     t[0x19] = mov.movRegZp;
     t[0x1A] = mov.movZpReg;
     t[0x1B] = mov.movImm16Zp;
+    t[0x1C] = mov.movRegOffsetReg;
+    t[0x1D] = mov.movRegRegOffset;
 
     // mov8 / movh / movl
     t[0x20] = mov.mov8Imm8Addr;

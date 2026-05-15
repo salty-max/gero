@@ -391,6 +391,22 @@ fn writeOperand(
             try writeReg(writer, idx.reg, style);
             try writer.writeByte(']');
         },
+        .reg_offset => |r| {
+            try writer.writeByte('[');
+            try writeReg(writer, r.reg, style);
+            if (r.offset >= 0) {
+                // @as: narrow non-negative i8 → u8 for the hex print.
+                const v: u8 = @as(u8, @intCast(r.offset));
+                try writer.print(" + {s}${X:0>2}{s}", .{ style.literal, v, style.reset });
+            } else {
+                // i8 negation overflows only for −128; render that
+                // boundary as `$80` (its absolute value) directly.
+                // @as: narrow `-offset` (in i8 range 1..127) → u8.
+                const abs: u8 = if (r.offset == -128) 0x80 else @as(u8, @intCast(-r.offset));
+                try writer.print(" - {s}${X:0>2}{s}", .{ style.literal, abs, style.reset });
+            }
+            try writer.writeByte(']');
+        },
     }
 }
 
