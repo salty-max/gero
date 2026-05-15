@@ -6,3 +6,5 @@
 # Asm example outputs — regenerated per-build, not committed.
 examples/**/*.gx
 examples/**/*.sav
+docs/examples/**/*.gx
+docs/examples/**/*.sav

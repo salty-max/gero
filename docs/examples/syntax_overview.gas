@@ -5,33 +5,39 @@
 ; to see every construct from `docs/asm.md` at least once. Companion
 ; to `docs/examples/syntax_overview.gr` (the gero-lang side).
 ;
-; This file is documentation, not a runnable example — it exercises
-; the syntax surface (directives, addressing modes, every mnemonic
-; group) without committing to a coherent program. The runnable
-; examples under `examples/asm/*.gas` cover end-to-end flows.
+; This file is documentation — every construct it exercises is also
+; verified by `zig build check-examples` so editor highlight files
+; and asm-parser drift stay in sync.
+;
+; It produces no useful program. The runnable examples under
+; `examples/asm/*.gas` cover end-to-end flows.
 ; ====================================================================
 
 ; -------------------- directives ----------------------------
 
 org $1000                    ; place next bytes at $1000
 bank $00                     ; sticky — every statement under bank 0
-sram_banks $02               ; reserve 2 sram-backed banks
-reserve $20                  ; pad 32 bytes of zeros
+bank $01                     ; declare a second bank slot
+sram_banks $01               ; reserve 1 sram-backed bank (last slot)
 include "shared.gas"         ; pull in another source file
 
 const PRINT   = $10
 const NEWLINE = $0A
-+const EXPORTED = $42         ; leading + = export marker
+const EXPORTED = $42         ; const with a name a downstream file might use
 
 data8  STRING8  = "Hello", $00
 data16 STRING16 = $1234, $5678
 data8  CHAR_DATA = 'X', 'Y', 'Z', $00
+data8  SCRATCH  = reserve $10            ; reserve N — inside data8 only
 
 struct Sprite {
   pos:  u16,                 ; sprite x:y packed
   size: u8,
   attr: u8
 }
+
+; Data block laid out per the `Sprite` struct above.
+data8 obj = $00, $00, $20, $0F
 
 ; -------------------- global + local labels -----------------
 
@@ -58,7 +64,7 @@ mnemonic_kitchen_sink:
   push r1
   pop  r2
   swap r3, r4
-  bcpy
+  bcpy r1, r2, r3            ; dst, src, len
 
   ; arithmetic
   add  $0001, r1
@@ -84,25 +90,25 @@ mnemonic_kitchen_sink:
 
   ; compare / test / bit
   cmp  r1, $42
-  tst  r2
-  bset r3, $07
+  tst  r2, $0F               ; reg & imm, flags-only
+  bset r1, r2, r3            ; addr, len, val
 
-  ; control flow
-  jmp  $1234
-  jeq  $1235
-  jne  $1236
-  jlt  $1237
-  jgt  $1238
-  jle  $1239
-  jge  $123A
-  jz   $123B
-  jnz  $123C
-  jcc  $123D
-  jcs  $123E
-  jvc  $123F
-  jvs  $1240
-  jr   $0008
-  djnz r4, $1242
+  ; control flow — jumps take Addr operands, not raw hex
+  jmp  &1234
+  jeq  &1235
+  jne  &1236
+  jlt  &1237
+  jgt  &1238
+  jle  &1239
+  jge  &123A
+  jz   &123B
+  jnz  &123C
+  jcc  &123D
+  jcs  &123E
+  jvc  &123F
+  jvs  &1240
+  jr   $08                   ; relative — Imm8, signed −128..+127
+  djnz r4, &1242
   call routine
   ret
 
@@ -130,15 +136,11 @@ addressing_kitchen_sink:
   mov  $00, r1                         ; imm16, reg
   mov  r1, &2020                       ; reg, addr
   mov  $00, &2020                      ; imm16, addr
-  mov  &r1, r2                         ; reg-ptr operand
-  mov  @SYMBOL, r1                     ; symbol-ref operand
+  mov  @STRING16, r1                   ; symbol-ref operand → folds to addr
   mov  [r1], r2                        ; indirect via register
-  mov  [@SYMBOL], r1                   ; indirect via symbol-ref
-  mov  [@SYMBOL + r3], r1              ; indexed (no &)
-  mov  &[@SYMBOL + r3], r1             ; indexed (legacy &-prefix form)
-  mov  &[ (@SYMBOL) + ($0004 * $42) ], &3030  ; nested parens
-  mov  &[ <Sprite> obj.pos ], r1       ; cast inside bracket expr
-  mov  &[ <Word> mem.ptr ], r2
+  mov  [@STRING8 + r3], r1             ; indexed (sym + register)
+  mov  &[(@STRING8) + ($04 * $02)], r1 ; address expression with operators
+  mov  <Sprite> @obj.pos, r1           ; struct-field cast (compile-time fold)
 
 ; -------------------- literals ------------------------------
 
@@ -146,8 +148,6 @@ literals_showcase:
   mov $00,   r1      ; tiny hex
   mov $FFFF, r1      ; full 16-bit hex
   mov &1234, r1      ; address literal
-  mov 'A',   r1      ; char literal
+  mov 'A',   r1      ; char literal — same byte as $41
   mov '\n',  r1      ; escape char literal
   data8 ESCAPED = "He said \"hi\"\n", $00   ; string with escapes
-
-; -------------------- nothing should be uncolored below -----

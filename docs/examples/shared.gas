@@ -1,0 +1,4 @@
+; Stub companion to syntax_overview.gas — exists so the `include`
+; directive in the showcase parses cleanly. Intentionally empty
+; (one comment line) — the showcase exercises the include statement
+; itself, not the included content.
