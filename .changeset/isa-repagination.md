@@ -1,5 +1,6 @@
 ---
-bump: major
+bump: minor
+breaking: true
 ---
 
 ISA repagination: one 16-slot page per role. All opcode bytes outside the `mov`,
