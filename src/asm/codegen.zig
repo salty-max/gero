@@ -473,7 +473,7 @@ fn layoutPass(
                     cursor_ptr.* += 1;
                 }
             },
-            .comment, .unknown => {},
+            .cond_directive, .comment, .unknown => {},
         }
     }
 }
@@ -582,7 +582,7 @@ fn emitPass(
                 const name = source[l.name.start..l.name.end];
                 if (name.len == 0 or name[0] != '.') parent_label = name;
             },
-            .const_decl, .struct_decl, .sram_banks_decl, .comment, .unknown => {},
+            .const_decl, .struct_decl, .sram_banks_decl, .cond_directive, .comment, .unknown => {},
             .bank_switch => |b| {
                 if (b.index) |idx| current_bank = idx;
             },

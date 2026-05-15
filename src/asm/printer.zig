@@ -355,6 +355,12 @@ fn writeStatementCanonical(
             try writer.writeAll(source[start..c.span.end]);
             break :blk c.span.end - start;
         },
+        .cond_directive => |c| blk: {
+            // Round-trip verbatim — include-guard layout is the
+            // user's choice, fmt shouldn't normalize it.
+            try writer.writeAll(slice(source, c.span));
+            break :blk c.span.end - c.span.start;
+        },
         .unknown => |u| blk: {
             try writer.writeAll(slice(source, u.span));
             break :blk u.span.end - u.span.start;

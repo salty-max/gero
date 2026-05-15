@@ -180,7 +180,7 @@ loop:
 <directive_keyword> <args...>
 ```
 
-Six directives:
+Nine directives:
 
 | Keyword   | Form                                   | Effect |
 |-----------|----------------------------------------|--------|
@@ -190,6 +190,9 @@ Six directives:
 | `struct`  | `struct NAME { field: TYPE, ... }`     | Compile-time struct layout (offsets only, no bytes emitted). |
 | `org`     | `org $ADDR`                            | Set the current emit address. Subsequent statements emit starting at `$ADDR`. |
 | `include` | `include "path.gas"`                   | Textually splice another `.gas` file at this point (6502 / z80 style). |
+| `ifndef`  | `ifndef NAME`                          | Open a conditional block — body emitted only if `NAME` is **not** currently bound as a `const`. |
+| `ifdef`   | `ifdef NAME`                           | Open a conditional block — body emitted only if `NAME` **is** currently bound as a `const`. |
+| `endif`   | `endif`                                | Close the most recent `ifdef` / `ifndef` block. |
 
 #### `const`
 
@@ -329,8 +332,69 @@ Rules:
 **Re-include semantics:** every `include` directive splices in
 the target's tokens, every time. If two files both `include
 "utils.gas"`, the bytes from `utils.gas` are emitted twice.
-Control the include graph manually (don't `include` the same
-file from two ancestors) or accept the duplicate emission.
+For shared headers included from multiple ancestors, wrap the
+header body in an `ifndef` / `endif` guard — see below.
+
+#### `ifdef` / `ifndef` / `endif`
+
+NASM/ca65-style conditional assembly. The body between the
+opening directive and the matching `endif` is emitted only when
+the condition holds; otherwise it's skipped entirely (no AST, no
+diagnostics, no emit-cursor advance).
+
+```asm
+ifndef HARDWARE_INCLUDED
+const HARDWARE_INCLUDED = $01
+const PPU_CTRL = &2000
+const PPU_MASK = &2001
+struct Sprite { x: u8, y: u8, tile: u8, attr: u8 }
+endif
+```
+
+Semantics:
+
+- `ifndef NAME` enters its body when `NAME` is **not** currently
+  bound as a `const`. `ifdef NAME` is the inverse.
+- "Currently bound" is a parse-time check against the
+  `ConstantTable` built incrementally as the parser walks
+  statements top-to-bottom. So `ifndef X` placed **before**
+  `const X` is true; placed **after**, false. Same ordering rule
+  as NASM `%ifdef`.
+- The check only inspects `const` definitions. Labels and
+  `data8` / `data16` names aren't queryable — `const` is the
+  explicit declaration sigil for guard names.
+- Blocks **nest** — a nested `ifdef` inside a true outer branch
+  evaluates its own condition normally. A nested directive inside
+  a **false** outer branch is still tracked (its `endif` pops the
+  right frame) but its body is suppressed regardless.
+
+Diagnostics:
+
+- `endif` without a matching open → `E018`.
+- `ifdef` / `ifndef` block left open at EOF → `E019`.
+
+Typical use case — re-includable header for a multi-bank gtx-16
+cart:
+
+```asm
+; hardware.gas — included by every code file that touches PPU/APU
+ifndef HARDWARE_INCLUDED
+const HARDWARE_INCLUDED = $01
+const PPU_CTRL = &2000
+struct Sprite { x: u8, y: u8, tile: u8, attr: u8 }
+endif
+```
+
+```asm
+; main.gas
+include "hardware.gas"
+include "sprite.gas"        ; itself includes hardware.gas — no
+                            ; duplicate-def error thanks to the
+                            ; guard above.
+```
+
+Without the guard, the second `include` would re-emit
+`HARDWARE_INCLUDED` and produce a duplicate-`const` error.
 
 ### 2.3 Instructions
 
@@ -696,5 +760,7 @@ Common errors:
 | `E015` | `include` target file not found |
 | `E016` | Char literal must be exactly one byte (empty `''` or multi-char) |
 | `E017` | `sram_banks N` exceeds the declared `bank N` count (loader invariant — SRAM banks live in the trailing slots of the bank pool, so they need at least N total banks to occupy) |
+| `E018` | `endif` without a matching `ifdef` / `ifndef` |
+| `E019` | `ifdef` / `ifndef` block left open at EOF (missing `endif`) |
 
 Errors print with caret-style snippets (knit's `formatParseErrorPretty`).
