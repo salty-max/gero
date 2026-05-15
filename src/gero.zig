@@ -1,6 +1,8 @@
 /// Gero — 16-bit virtual machine + assembler + Lua-style language
 /// ecosystem in Zig. Public barrel.
-pub const VERSION = "0.0.0";
+/// Package version — sourced from `build.zig.zon` via `build_options`
+/// so library consumers don't need a second site to bump.
+pub const VERSION: []const u8 = @import("build_options").version;
 
 /// VM kernel — register file, memory, and the composing `VM` type.
 pub const vm = @import("vm/vm.zig");
