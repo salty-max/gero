@@ -354,7 +354,7 @@ test "bcpy: invalid register index raises invalid-register fault" {
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }
 
-test "bset 0x28: fills len bytes with the value-register's low byte" {
+test "bfill 0x28: fills len bytes with the value-register's low byte" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
@@ -373,7 +373,7 @@ test "bset 0x28: fills len bytes with the value-register's low byte" {
     try std.testing.expectEqual(@as(u16, 0x1104), vm.regs.read(.ip));
 }
 
-test "bset: len = 0 is a no-op" {
+test "bfill: len = 0 is a no-op" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
@@ -387,7 +387,7 @@ test "bset: len = 0 is a no-op" {
     try std.testing.expectEqual(@as(u8, 0xCC), vm.mmap.readByte(0x3000));
 }
 
-test "bset: address wraps at the 16-bit boundary" {
+test "bfill: address wraps at the 16-bit boundary" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
@@ -402,7 +402,7 @@ test "bset: address wraps at the 16-bit boundary" {
     try std.testing.expectEqual(@as(u8, 0x5A), vm.mmap.readByte(0x0000));
 }
 
-test "bset: doesn't touch flags" {
+test "bfill: doesn't touch flags" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
@@ -413,12 +413,58 @@ test "bset: doesn't touch flags" {
     try expectFlagsUnchanged(&vm);
 }
 
-test "bset: invalid register index raises invalid-register fault" {
+test "bfill: invalid register index raises invalid-register fault" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
     vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
     loadProgram(&vm, &.{ 0x28, 0x02, 0xFF, 0x04 });
+    try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+}
+
+// ---------- sext (0x2E) ----------
+
+test "sext 0x2E: negative low byte (bit 7 set) → reg.hi ← 0xFF" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x1234); // hi byte garbage
+    vm.mmap.writeByte(0x1100, 0x80); // r1.lo will be set to 0x80 first via mov8
+    loadProgram(&vm, &.{
+        0x21, 0x80, 0x02, // mov8 $80, r1  → r1 = 0x0080
+        0x2E, 0x02, // sext r1            → r1 = 0xFF80
+    });
+    _ = gero.vm.step(&vm); // mov8
+    _ = gero.vm.step(&vm); // sext
+    try std.testing.expectEqual(@as(u16, 0xFF80), vm.regs.read(.r1));
+}
+
+test "sext 0x2E: positive low byte (bit 7 clear) → reg.hi ← 0x00" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0xFFFF); // hi byte garbage, will be cleaned
+    loadProgram(&vm, &.{
+        0x21, 0x7F, 0x02, // mov8 $7F, r1  → r1 = 0x007F
+        0x2E, 0x02, // sext r1            → r1 = 0x007F (no change)
+    });
+    _ = gero.vm.step(&vm);
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x007F), vm.regs.read(.r1));
+}
+
+test "sext: doesn't touch flags" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x0080); // bit 7 set
+    loadProgram(&vm, &.{ 0x2E, 0x02 });
+    try expectFlagsUnchanged(&vm);
+}
+
+test "sext: invalid register raises invalid-register fault" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_register), 0x5000);
+    loadProgram(&vm, &.{ 0x2E, 0xFF });
     try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
 }

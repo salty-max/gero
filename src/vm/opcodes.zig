@@ -74,6 +74,7 @@ pub const table: [256]?OpcodeInfo = blk: {
     // block memory ops
     t[0x27] = .{ .mnemonic = "bcpy", .operands = &.{ .reg, .reg, .reg } };
     t[0x28] = .{ .mnemonic = "bfill", .operands = &.{ .reg, .reg, .reg } };
+    t[0x2E] = .{ .mnemonic = "sext", .operands = &.{.reg} };
 
     // stack
     t[0x30] = .{ .mnemonic = "push", .operands = &.{.imm16} };

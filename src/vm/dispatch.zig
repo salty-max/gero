@@ -98,6 +98,7 @@ pub const handler_table: [256]Handler = blk: {
     t[0x26] = mov.movlRegAddr;
     t[0x27] = mov.bcpyRegRegReg;
     t[0x28] = mov.bfillRegRegReg;
+    t[0x2E] = mov.sextReg;
     t[0x2A] = mov.mov8Imm8Zp;
     t[0x2B] = mov.mov8ZpReg;
     t[0x2C] = mov.movhRegZp;
