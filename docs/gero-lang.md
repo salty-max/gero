@@ -575,6 +575,8 @@ Multiple annotations stack. Order matters only when explicitly noted.
 | `@bank N` | `def`, `let`, `const`, **file** | Place compiled output in bank `N` (compiler emits cross-bank trampolines for calls — §7.3). See precedence note below. |
 | `@zero_page` | `let` | Place this global in the zero-page region (`0x0000..0x00FF`) — 1-byte addressing mode, faster + smaller code. Slot pressure is high (256 bytes shared); compiler errors on overflow. |
 | `@addr $1234` | `let` | Pin this global at the given absolute address. Use for binding to memory-mapped IO registers or fixed-position state. The compiler reserves no other RAM at that address. |
+| `@volatile` | `let` | Treat every read of this binding as a real memory load (never cached in a register). Pair with `@addr` for memory-mapped IO registers whose value changes outside the compiler's view (vblank flag, input port, RNG tap). |
+| `@align(N)` | `let`, `const`, `struct` | Force `N`-byte alignment of the placement. `N` must be a power of two (1, 2, 4, 8, 16, …). Necessary when the hardware demands aligned data — sprite sheets at 16-byte boundaries, tile maps at page boundaries (256), audio buffers at 4 bytes. |
 
 **`@bank` precedence.** `@bank N` may appear at either:
 - **File scope** — the first non-comment token in a `.gr` file.
@@ -593,7 +595,12 @@ in the base image (bank-less area before `0xC000`).
 let cursor_pos: u16 = 0      -- fast access, e.g. updated 60×/sec
 
 @addr $FE40
+@volatile
 let DISPCTL: u8 = 0          -- bound to gtx-16 display-control IO register
+
+@align(16)
+@addr $C000
+let sprite_sheet: [u8; 2048] -- aligned tile data, banked window
 
 @bank 5
 def town_intro_dialog() -> str
@@ -606,6 +613,7 @@ end
 | Annotation | Applies to | Effect |
 |------------|------------|--------|
 | `@inline` | `def` | Always inline at call sites. Compiler errors if the function is recursive or its body is too large. |
+| `@cold` | `def` | Mark the function as unlikely-called. The compiler is free to place it far from the hot path (separate code page, late in the section) so adjacent hot code stays in cache / prefetch range. Useful for error helpers, panic paths, debug-only dumps. |
 
 ```
 @inline
@@ -614,6 +622,12 @@ def fast_clamp(x: i16, min: i16, max: i16) -> i16
   if x > max then return max end
   return x
 end
+
+@cold
+def panic_oob(addr: u16) -> noreturn
+  print "PANIC: out-of-bounds @ ", addr
+  hlt
+end
 ```
 
 `@inline` attaches to named `def`s only. Lambdas already inline
@@ -621,6 +635,10 @@ when they don't escape (their body folds into the caller); when
 they do escape they become first-class values and inlining would
 defeat that — there's no useful middle ground to expose via
 annotation.
+
+`@cold` is a *hint*, not a guarantee — the compiler decides
+placement. A `@cold` function on the hot path (called from a tight
+loop) still compiles correctly, just sub-optimally.
 
 #### 3.7.3 Diverging functions
 
