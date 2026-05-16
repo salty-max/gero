@@ -865,6 +865,38 @@ test "parse: unterminated let surfaces a diagnostic and recovers" {
     try std.testing.expect(saw_y);
 }
 
+test "parse: cast `x as u8` produces a cast node" {
+    var tree = try parseClean("let small = raw as u8");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .cast);
+    try std.testing.expect(init.cast.target_type.* == .named);
+}
+
+test "parse: cast precedence — `a + b as u8` is `a + (b as u8)`" {
+    var tree = try parseClean("let x = a + b as u8");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expectEqual(ast.BinaryOp.add, init.binary.op);
+    try std.testing.expect(init.binary.rhs.* == .cast);
+}
+
+test "parse: cast precedence — `x as u8 + 1` is `(x as u8) + 1`" {
+    var tree = try parseClean("let y = x as u8 + 1");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expectEqual(ast.BinaryOp.add, init.binary.op);
+    try std.testing.expect(init.binary.lhs.* == .cast);
+}
+
+test "parse: cast to compound type" {
+    var tree = try parseClean("let v = x as Vec(i16)");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .cast);
+    try std.testing.expect(init.cast.target_type.* == .vec);
+}
+
 test "parse: $-hex literal lexes as int_lit" {
     var tree = try parseClean("let x = $FF");
     defer tree.deinit();

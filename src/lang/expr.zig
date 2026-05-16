@@ -45,10 +45,13 @@ pub const Prec = struct {
     pub const mul: u8 = 10;
     /// `is` — variant-tag test. Binds tighter than arithmetic.
     pub const is_test: u8 = 11;
+    /// `as` — explicit type cast. Binds tighter than `is` so
+    /// `x as u8 is Foo.A` reads as `(x as u8) is Foo.A`.
+    pub const as_cast: u8 = 12;
     /// Unary prefix: `-x` / `not x` / `~x`.
-    pub const unary: u8 = 12;
+    pub const unary: u8 = 13;
     /// Postfix: call `( )`, index `[ ]`, field `.`.
-    pub const call: u8 = 13;
+    pub const call: u8 = 14;
 };
 
 /// Parse an expression with the Pratt loop. `min_prec` is the
@@ -89,6 +92,24 @@ pub fn parseExpression(p: *Parser, min_prec: u8) ParserError!*ast.Expr {
                 .lhs = lhs,
                 .variant_path = path,
                 .span = .{ .start = lhs.span().start, .end = var_tok.end },
+            } });
+            lhs = new_node;
+            continue;
+        }
+
+        // `x as T` — explicit type conversion (§3.8). RHS is a type
+        // annotation, not an expression; uses the same parser as
+        // `let x: T` / `-> T`.
+        if (k == .kw_as) {
+            const prec = Prec.as_cast;
+            if (prec < min_prec) break;
+            p.pos += 1;
+            const type_mod = @import("type_ann.zig");
+            const target_type = try type_mod.parseTypeAnn(p);
+            const new_node = try p.allocExpr(.{ .cast = .{
+                .inner = lhs,
+                .target_type = target_type,
+                .span = .{ .start = lhs.span().start, .end = target_type.span().end },
             } });
             lhs = new_node;
             continue;
