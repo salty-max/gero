@@ -7,6 +7,7 @@ const std = @import("std");
 const lexer_mod = @import("lang/lexer.zig");
 const ast_mod = @import("lang/ast.zig");
 const parser_mod = @import("lang/parser.zig");
+const print_mod = @import("lang/print.zig");
 
 /// Re-export: lexer token.
 pub const Token = lexer_mod.Token;
@@ -21,3 +22,7 @@ pub const ast = ast_mod;
 pub const ParseTree = parser_mod.ParseTree;
 /// Re-export: parse a tokenized source into an `ast.Program`.
 pub const parse = parser_mod.parse;
+
+/// Re-export: pretty-print an `ast.Program` to canonical `.gr` text.
+/// Round-trip safe: `parse(print(parse(s))) == parse(s)`.
+pub const print = print_mod.print;
