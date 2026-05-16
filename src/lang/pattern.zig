@@ -49,6 +49,17 @@ fn parseAtomicPattern(p: *Parser) ParserError!*ast.Pattern {
             if (p.check(.dot_dot) or p.check(.dot_dot_eq)) {
                 return try parseRangePatternFrom(p, intLitExpr(tok), tok.start);
             }
+            // Char literals lex as `int_lit` (lexer normalizes `'A'`
+            // to int_lit with the byte value). Disambiguate here so
+            // pattern matching against `'A'` produces a `char_lit`
+            // pattern, not an int_lit pattern.
+            if (tok.start < p.source.len and p.source[tok.start] == '\'') {
+                // safety: lexer stores byte value of a char literal as u8 widened to i32; truncating back to u8 preserves bytes.
+                return try p.allocPattern(.{ .char_lit = .{
+                    .value = @intCast(tok.value),
+                    .span = .{ .start = tok.start, .end = tok.end },
+                } });
+            }
             return try p.allocPattern(.{ .int_lit = .{
                 .value = tok.value,
                 .span = .{ .start = tok.start, .end = tok.end },

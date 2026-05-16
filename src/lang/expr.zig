@@ -308,6 +308,17 @@ fn parsePrimary(p: *Parser) ParserError!*ast.Expr {
     switch (tok.kind) {
         .int_lit => {
             p.pos += 1;
+            // The lexer emits char literals (`'A'`) as `int_lit`
+            // tokens whose span starts with `'`. Disambiguate here
+            // so the AST preserves the source form — `char` is a
+            // distinct primitive per spec §3.1.
+            if (tok.start < p.source.len and p.source[tok.start] == '\'') {
+                // safety: lexer stores the byte value of a char literal in `tok.value` as u8 widened to i32; truncating back to u8 preserves bytes.
+                return try p.allocExpr(.{ .char_lit = .{
+                    .value = @intCast(tok.value),
+                    .span = .{ .start = tok.start, .end = tok.end },
+                } });
+            }
             return try p.allocExpr(.{ .int_lit = .{
                 .value = tok.value,
                 .span = .{ .start = tok.start, .end = tok.end },

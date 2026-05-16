@@ -1139,7 +1139,7 @@ const Checker = struct {
             .fixed_lit => return try self.primitive(.fixed),
             .bool_lit => return try self.primitive(.bool_),
             .nil_lit => |lit| return try self.inferNilLit(lit, hint),
-            .char_lit => return try self.primitive(.u8),
+            .char_lit => return try self.primitive(.char),
             .str_lit => |s| {
                 for (s.parts) |part| switch (part) {
                     .lit => {},

@@ -1227,6 +1227,27 @@ test "typecheck: multi-return bail propagates non-nil to sibling slot" {
     );
 }
 
+// ---------- char literal typing ----------
+
+test "typecheck: char literal infers as `char` primitive" {
+    try expectClean(
+        \\let c: char = 'A'
+    );
+}
+
+test "typecheck: char literal does not match `u8` annotation (cast required)" {
+    try expectCode(
+        \\let c: u8 = 'A'
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: char ↔ u8 explicit cast accepts" {
+    try expectClean(
+        \\let c: char = 'A'
+        \\let b: u8 = c as u8
+    );
+}
+
 // ---------- CheckedProgram surface ----------
 
 test "typecheck: CheckedProgram retains program pointer" {

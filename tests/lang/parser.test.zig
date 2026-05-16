@@ -770,27 +770,33 @@ test "parse: wildcard pattern alone" {
     try std.testing.expect(arm0.pattern.* == .wildcard);
 }
 
-test "parse: literal patterns (int / str / bool / nil)" {
-    // Char-literal patterns are lexed as `int_lit` tokens with the
-    // byte value (the lexer normalizes `'A'` to int_lit(65)); the
-    // `Pattern.char_lit` AST variant therefore stays unused by the
-    // current parser. Tracked as a follow-up; the working forms
-    // are exercised here.
+test "parse: literal patterns (int / str / char / bool / nil)" {
     var tree = try parseClean(
         \\match x
         \\  case 42 => print "int"
         \\  case "hello" => print "str"
+        \\  case 'A' => print "char"
         \\  case true => print "bool"
         \\  case nil => print "nil"
         \\end
     );
     defer tree.deinit();
     const arms = tree.program.statements[0].match_stmt.arms;
-    try std.testing.expectEqual(@as(usize, 4), arms.len);
+    try std.testing.expectEqual(@as(usize, 5), arms.len);
     try std.testing.expect(arms[0].pattern.* == .int_lit);
     try std.testing.expect(arms[1].pattern.* == .str_lit);
-    try std.testing.expect(arms[2].pattern.* == .bool_lit);
-    try std.testing.expect(arms[3].pattern.* == .nil_lit);
+    try std.testing.expect(arms[2].pattern.* == .char_lit);
+    try std.testing.expectEqual(@as(u8, 'A'), arms[2].pattern.char_lit.value);
+    try std.testing.expect(arms[3].pattern.* == .bool_lit);
+    try std.testing.expect(arms[4].pattern.* == .nil_lit);
+}
+
+test "parse: char literal in expression position produces char_lit AST" {
+    var tree = try parseClean("let c = 'Z'");
+    defer tree.deinit();
+    const s = tree.program.statements[0];
+    try std.testing.expect(s.let_decl.init.?.* == .char_lit);
+    try std.testing.expectEqual(@as(u8, 'Z'), s.let_decl.init.?.char_lit.value);
 }
 
 test "parse: nested variant + tuple + or-pattern with guard" {
