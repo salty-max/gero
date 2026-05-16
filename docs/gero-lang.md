@@ -609,6 +609,49 @@ genuinely want a `u16` address value — DMA setup, manual MMIO setup,
 the address as a plain integer; it's the explicit "I want bytes,
 not a typed reference" escape hatch.
 
+#### 3.4.5 Memory access patterns — when to use which
+
+gero-lang gives you four ways to touch memory at different
+abstraction levels. Picking the right one is mostly about the
+question you're answering:
+
+| Tool | Reach for it when |
+|------|-------------------|
+| **Value type** (`Stats`, `[u8; 64]`, `u16`) | Default. Copy semantics, no aliasing. The type system tracks everything. |
+| **`&T` reference** (§3.4.4) | "Pass this compound value without paying the copy cost; the callee will mutate it." Typed, auto-deref, lifetime-limited. |
+| **`@addr $XXXX` binding** (§3.7.1) | "There's a hardware register or fixed-position state at this address; give it a name and a type." Pair with `@volatile` for MMIO. |
+| **`mem.read_*` / `mem.write_*`** (§5.3.1) | "I have a `u16` address (computed at runtime, or coming from a DMA setup) and I want to peek/poke specific bytes there." |
+| **`mem.addr_of(x) -> u16`** (§5.3) | "I need the raw integer address of `x` to feed an asm bridge or DMA register." Escape from the typed world. |
+
+**Decision tree.**
+
+```
+Do you have a name for the location?
+├─ yes, and it's a hardware register
+│    → @addr + @volatile binding (read/write like a normal var)
+├─ yes, and it's a regular variable
+│    → use the variable directly; the type system handles it
+│
+└─ no, you have a runtime u16 address
+     → mem.read_* / mem.write_* (typed peek/poke)
+
+Do you need to pass a compound value to a function?
+├─ small (<= 4 bytes), purely consumed → pass by value
+├─ large or mutated by callee → pass &T reference
+└─ needs to outlive the call frame → store in a class field
+                                     or static binding
+
+Do you need to bridge a value into asm "..." or DMA setup?
+├─ typed pointer is fine → &x (and the asm reads it as a u16)
+└─ raw u16 is what the hardware expects → mem.addr_of(x)
+```
+
+**What NOT to do.** Don't reach for `mem.read_u8($1234)` when you
+could write a `@addr $1234 let foo: u8` binding — the binding is
+named, typed, and respects `@volatile`. Don't take `mem.addr_of(x)`
+when `&x` would work — references carry the type and let the
+compiler check field access for you.
+
 ### 3.5 Inference
 
 Type annotations are **optional everywhere** the compiler can deduce
@@ -686,6 +729,22 @@ let vx:    i16 = (player.vx_fixed) as i16  -- truncate frac toward zero
 unary prefix. `x + y as u8` parses as `x + (y as u8)`. `x as u8 + 1`
 parses as `(x as u8) + 1`. Use parentheses when in doubt — the spec
 won't get less surprising the longer you stare at it.
+
+**Three ways to inspect a value's type — when to use which.**
+
+gero-lang separates *converting* a value, *testing* a value's tag,
+and *destructuring* it. Same value, three distinct questions:
+
+| Form | Question | Returns |
+|------|----------|---------|
+| `value as T` | "Re-interpret these bytes as `T`." (cast / convert) | The converted value. |
+| `value is Variant` | "Is this enum value the `Variant` tag?" (test, no bind) | `bool`. |
+| `match value` arms | "Which variant is it, and what's the payload?" (test + bind + dispatch) | The arm's body value. |
+
+Don't mix them: `if x as Item.Sword` is a compile error (you can't
+cast to an enum variant); use `if x is Item.Sword`. `let y = x is
+Player` is rarely what you want — if you need to act on the test, use
+`if let Player { ... } = x` or `match`.
 
 ### 3.6 Enums (tagged unions)
 
@@ -1181,8 +1240,6 @@ no value produced". Go uses the same rule.
 | Category | Operators | Notes |
 |----------|-----------|-------|
 | Arithmetic | `+` `-` `*` `/` `%` | `/` and `%` on signed → truncated toward zero. Overflow: trap in debug, wrap in release (see below). |
-| Arithmetic (explicit wrap) | `+%` `-%` `*%` | Always wrap on overflow, in any build mode. Use when wrap is intentional (RNG step, hash mixing). |
-| Arithmetic (saturate) | `+\|` `-\|` `*\|` | Clamp to the type's min/max on overflow, in any build mode. Use when saturation is the correct semantics (HP after damage, audio mix levels). |
 | Comparison | `==` `!=` `<` `<=` `>` `>=` | All return `bool` |
 | Logical | `and` `or` `not` | Short-circuit evaluation. `not` is unary. |
 | Bitwise | `&` `\|` `^` `<<` `>>` `~` | Map directly to ISA `and` / `or` / `xor` / `shl` / `shr` / `not`. `~` is unary bitwise NOT. |
@@ -1191,26 +1248,29 @@ no value produced". Go uses the same rule.
 | Type test | `is` | `value is EnumVariant` — see §3.6. |
 | Type cast | `as` | `value as T` converts between numeric types — see §3.5.1. |
 
-**Overflow on plain arithmetic** (`+`, `-`, `*`):
+**Overflow on arithmetic** (`+`, `-`, `*`):
 
 - **Debug builds** (`gero build`, default): the compiler emits an
   overflow check. On overflow, the program traps via fault vector
   `$02` with a diagnostic pointing at the source location.
 - **Release builds** (`gero build --release`): the check is elided
-  and the operation wraps two's-complement. Use `+%` / `+|` to make
-  the wrap or saturate intent explicit when the choice matters.
+  and the operation wraps two's-complement.
 
-Saturating `+|` on signed types clamps to `[T::MIN, T::MAX]` of the
-result type; on unsigned, clamps to `[0, T::MAX]`. The intermediate
-computation uses one bit of extra width to detect the overflow cheaply
-on the gero VM's add-with-carry.
+This is the Rust model — one set of operators, build mode decides
+the policy. No `+%` / `+|` operator variants: if you genuinely need
+wrap or saturate as the semantic (RNG step, HP-after-damage clamp),
+use the `math` stdlib helpers (`math.wrap_add`, `math.sat_add`, …)
+or drop to `asm "..."` for the one-instruction case. Keeping the
+operator surface narrow is intentional — explicit wrap is a rare
+need, and binding `+` to its build-mode policy lets the same
+source read the same way regardless of context.
 
 **Precedence (highest to lowest):**
 
 1. Unary prefix: `-` `not` `~` `&`
 2. `as` (cast)
-3. `*` `/` `%` `*%` `*|`
-4. `+` `-` `+%` `-%` `+|` `-|`
+3. `*` `/` `%`
+4. `+` `-`
 5. `<<` `>>`
 6. `&` (bitwise AND — context disambiguates from prefix `&`)
 7. `^`
@@ -1221,9 +1281,6 @@ on the gero VM's add-with-carry.
 12. `or`
 13. `..` `..=`
 14. Assignment (`=`, `+=`, etc. — right-associative)
-
-Wrapping (`+%`) and saturating (`+|`) operators share their plain
-counterpart's precedence — they're not "promoted" relative to `+`.
 
 Same precedence as C / Rust for bitwise vs comparison (low) and
 shifts vs arithmetic (low). Use parens when in doubt — `if (flags &
