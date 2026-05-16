@@ -107,6 +107,9 @@ pub const Token = struct {
         kw_break,
         kw_continue,
         kw_print,
+        /// `defer` — schedule a statement to run when the enclosing
+        /// block exits (§4.10). LIFO order across multiple defers.
+        kw_defer,
 
         // -- punctuation --------------------------------------
         newline,
@@ -253,6 +256,7 @@ const keyword_table = [_]KeywordEntry{
     .{ .lex = "break", .kind = .kw_break },
     .{ .lex = "continue", .kind = .kw_continue },
     .{ .lex = "print", .kind = .kw_print },
+    .{ .lex = "defer", .kind = .kw_defer },
 };
 
 /// Lookup `name` (already lowercase per the identifier rule) in

@@ -865,6 +865,50 @@ test "parse: unterminated let surfaces a diagnostic and recovers" {
     try std.testing.expect(saw_y);
 }
 
+test "parse: defer wraps a single call" {
+    var tree = try parseClean(
+        \\def f()
+        \\  defer cleanup()
+        \\  work()
+        \\end
+    );
+    defer tree.deinit();
+    const body = tree.program.statements[0].def_decl.body;
+    try std.testing.expectEqual(@as(usize, 2), body.len);
+    try std.testing.expect(body[0] == .defer_stmt);
+    try std.testing.expect(body[0].defer_stmt.body.* == .expr_stmt);
+}
+
+test "parse: defer with do-block body" {
+    var tree = try parseClean(
+        \\def f()
+        \\  defer do
+        \\    log("cleaning up")
+        \\    release(resource)
+        \\  end
+        \\  work()
+        \\end
+    );
+    defer tree.deinit();
+    const body = tree.program.statements[0].def_decl.body;
+    try std.testing.expect(body[0] == .defer_stmt);
+    try std.testing.expect(body[0].defer_stmt.body.* == .block);
+}
+
+test "parse: defer of an assignment" {
+    var tree = try parseClean(
+        \\def f()
+        \\  let old = read_palette()
+        \\  defer set_palette(old)
+        \\  set_palette(new)
+        \\end
+    );
+    defer tree.deinit();
+    const body = tree.program.statements[0].def_decl.body;
+    try std.testing.expectEqual(@as(usize, 3), body.len);
+    try std.testing.expect(body[1] == .defer_stmt);
+}
+
 test "parse: cast `x as u8` produces a cast node" {
     var tree = try parseClean("let small = raw as u8");
     defer tree.deinit();

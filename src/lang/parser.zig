@@ -413,6 +413,7 @@ pub fn parseStatement(
             try p.requireStatementBoundary();
         },
         .kw_print => try statements.append(p.allocator, try stmt_mod.parsePrintStatement(p)),
+        .kw_defer => try statements.append(p.allocator, try stmt_mod.parseDeferStatement(p)),
         .eof => return,
         else => try stmt_mod.parseExprOrAssignStatement(p, statements),
     }
