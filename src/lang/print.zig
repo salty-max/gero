@@ -28,10 +28,36 @@ pub fn print(
 ) std.Io.Writer.Error!void {
     var p: Printer = .{ .writer = writer, .source = source, .indent = 0 };
     for (program.statements, 0..) |s, i| {
-        if (i > 0) try p.writer.writeByte('\n');
+        if (i > 0) {
+            try p.writer.writeByte('\n');
+            // Visual breathing room between multi-line decls — insert a
+            // blank line when either neighbor is a multi-line construct
+            // (def / class / struct / enum / if / while / for / repeat /
+            // match / do block).
+            if (isMultiLineStatement(s) or isMultiLineStatement(program.statements[i - 1])) {
+                try p.writer.writeByte('\n');
+            }
+        }
         try p.writeStatement(s);
     }
     if (program.statements.len > 0) try p.writer.writeByte('\n');
+}
+
+fn isMultiLineStatement(s: ast.Statement) bool {
+    return switch (s) {
+        .def_decl,
+        .class_decl,
+        .struct_decl,
+        .enum_decl,
+        .if_stmt,
+        .while_stmt,
+        .for_stmt,
+        .repeat_stmt,
+        .match_stmt,
+        .block,
+        => true,
+        else => false,
+    };
 }
 
 const Printer = struct {

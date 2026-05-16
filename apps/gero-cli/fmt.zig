@@ -1,6 +1,6 @@
-/// `gero fmt` — canonical formatter for `.gas` (and eventually
-/// `.gr`) source. Parses the file directly (without resolving
-/// includes), re-emits through `gero.asm_.printProgram`, and
+/// `gero fmt` — canonical formatter for `.gas` and `.gr` source.
+/// Parses the file directly (without resolving includes for asm),
+/// re-emits through the language-specific canonical printer, and
 /// either writes in-place or reports `--check` diffs.
 ///
 /// Exit codes per cli.md §3.8 + §5:
@@ -10,8 +10,8 @@
 ///   - `3` parse error in source
 ///   - `8` `--check` mode and at least one file would change
 ///
-/// `.gr` sources route to a "not yet implemented" stub until the
-/// gero-lang front-end ships.
+/// Dispatch by extension: `.gas` → `gero.asm_.printProgram`,
+/// `.gr` → `gero.lang.print`. Stdin mode is asm-only for now.
 ///
 /// Notes
 /// -----
@@ -104,15 +104,11 @@ pub fn execute(
         }
     } else {
         for (positionals) |path| {
-            if (std.mem.endsWith(u8, path, ".gr")) {
-                try term.err("gero fmt: .gr support is not yet implemented (waits on the gero-lang front-end)", .{});
-                return 1;
-            }
-            try collectGasFiles(io, arena, term, path, &files);
+            try collectSourceFiles(io, arena, term, path, &files);
         }
     }
     if (files.items.len == 0) {
-        try term.err("gero fmt: no .gas files found in the given paths", .{});
+        try term.err("gero fmt: no .gas or .gr files found in the given paths", .{});
         return 1;
     }
 
@@ -122,9 +118,17 @@ pub fn execute(
     var changed: usize = 0;
     var parse_failed: usize = 0;
     for (files.items) |path| {
-        const outcome = formatOne(io, arena, stdout, term, style, path, opts.check, single, opts.quiet, print_options) catch |err| {
-            try term.err("gero fmt: cannot read/write {s} ({s})", .{ path, @errorName(err) });
-            return 1;
+        const outcome = blk: {
+            if (std.mem.endsWith(u8, path, ".gr")) {
+                break :blk formatOneGr(io, arena, stdout, term, style, path, opts.check, single, opts.quiet) catch |err| {
+                    try term.err("gero fmt: cannot read/write {s} ({s})", .{ path, @errorName(err) });
+                    return 1;
+                };
+            }
+            break :blk formatOne(io, arena, stdout, term, style, path, opts.check, single, opts.quiet, print_options) catch |err| {
+                try term.err("gero fmt: cannot read/write {s} ({s})", .{ path, @errorName(err) });
+                return 1;
+            };
         };
         switch (outcome) {
             .unchanged => unchanged += 1,
@@ -281,7 +285,69 @@ fn formatOne(
 /// Resolve `path` into 0+ `.gas` entries appended to `out`.
 /// Mirrors the same helper in `check.zig` (split into a shared
 /// module later if more commands grow it).
-fn collectGasFiles(
+/// `.gr` variant of `formatOne`. Parses via `gero.lang`, re-emits
+/// through `gero.lang.print`, and writes back / reports a diff.
+/// Diagnostics on stderr use the same plain `<path>:<line>:<col>:
+/// <message>` shape as the asm path (the rich diagnostic renderer
+/// in `docs/lang-diagnostics.md` is a follow-up issue).
+fn formatOneGr(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    stdout: *std.Io.Writer,
+    term: *term_mod.Term,
+    style: gero.asm_.Style,
+    path: []const u8,
+    check_mode: bool,
+    single: bool,
+    quiet: bool,
+) !Outcome {
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited);
+
+    var stream = try gero.lang.tokenize(arena, src);
+    defer stream.deinit();
+    if (stream.hasErrors()) {
+        for (stream.errors) |d| {
+            // @as: ParseError.index fits in u32 — bounded by file size.
+            const lc = lineColAt(src, @as(u32, @intCast(d.index)));
+            try term.err("{s}:{d}:{d}: {s}", .{ path, lc.line, lc.col, d.message });
+        }
+        return .parse_error;
+    }
+
+    var tree = try gero.lang.parse(arena, src, stream);
+    defer tree.deinit();
+    if (tree.errors.len > 0) {
+        for (tree.errors) |d| {
+            const lc = lineColAt(src, @as(u32, @intCast(d.index)));
+            try term.err("{s}:{d}:{d}: {s}", .{ path, lc.line, lc.col, d.message });
+        }
+        return .parse_error;
+    }
+
+    var allocating = std.Io.Writer.Allocating.init(arena);
+    try gero.lang.print(&allocating.writer, &tree.program, src);
+    const formatted = allocating.written();
+
+    if (std.mem.eql(u8, src, formatted)) {
+        if (!quiet) try stdout.print("{s}✓{s} {s}\n", .{ style.location, style.reset, path });
+        _ = single;
+        return .unchanged;
+    }
+
+    if (check_mode) {
+        try stdout.print("{s}✗{s} {s} (would reformat)\n", .{ style.code, style.reset, path });
+        return .would_change;
+    }
+
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = formatted }) catch |err| {
+        try term.err("gero fmt: cannot write {s} ({s})", .{ path, @errorName(err) });
+        return err;
+    };
+    if (!quiet) try stdout.print("{s}↻{s} {s} (reformatted)\n", .{ style.gutter, style.reset, path });
+    return .would_change;
+}
+
+fn collectSourceFiles(
     io: std.Io,
     arena: std.mem.Allocator,
     term: *term_mod.Term,
@@ -302,7 +368,9 @@ fn collectGasFiles(
         defer walker.deinit();
         while (try walker.next(io)) |entry| {
             if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.path, ".gas")) continue;
+            const is_gas = std.mem.endsWith(u8, entry.path, ".gas");
+            const is_gr = std.mem.endsWith(u8, entry.path, ".gr");
+            if (!is_gas and !is_gr) continue;
             const full = try std.fs.path.join(arena, &.{ path, entry.path });
             try out.append(arena, full);
         }
