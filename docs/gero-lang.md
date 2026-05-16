@@ -136,7 +136,7 @@ enum is
 use from as local
 true false nil
 and or not
-break continue
+break continue defer
 print
 ```
 
@@ -1471,6 +1471,78 @@ day one. The trade-off is intentional.
 Compiles to a host-provided syscall (`int 0x10`). The host's printer
 implementation defines the output channel (gtx-16 prints to a debug
 console; CLI tools print to stdout).
+
+### 4.10 Defer
+
+`defer <stmt>` schedules a statement to run when the enclosing block
+exits. Useful for hardware-state save / restore, IRQ-mask windows,
+and any cleanup that has to fire on **every** exit path including
+`return` / `break` / `continue`:
+
+```
+def render_with_palette(new_pal: u8)
+  let old = read_palette()
+  defer set_palette(old)        -- restoration guaranteed
+  set_palette(new_pal)
+  render_frame()
+  -- if render_frame returns early, the palette still restores
+end
+
+def safe_update()
+  let mask = read_irq_mask()
+  defer set_irq_mask(mask)
+  set_irq_mask(0)
+  -- critical section: any return / break / continue still restores
+end
+```
+
+**Scope.** Block-scoped — the defer attaches to the nearest
+enclosing block (`do`, `if`-arm, `while` / `for` body, function
+body, `match`-arm body, `lambda` body). The deferred statement runs
+when that block exits, not when the function returns.
+
+```
+while cond do
+  let frame = acquire()
+  defer release(frame)      -- runs at the bottom of every iteration
+  if early then break end   -- release still runs before the break
+  process(frame)
+end
+```
+
+**Order.** Multiple defers in the same block run in **LIFO** order:
+
+```
+defer a()
+defer b()
+defer c()
+-- on exit: c, then b, then a
+```
+
+**Exit paths covered.** Normal end-of-block, `return`, `break`,
+`continue`. The deferred statement also runs when the block exits
+via an early `return` that's nested in deeper blocks below the
+defer — every exit path through this block fires the cleanup.
+
+**Exit paths NOT covered.** Hardware faults (gero's `int 0x02`-style
+traps — out-of-bounds, nil-deref, div-by-zero). Defers do **not**
+run on fault. Faults are terminal in gero; no user-level recovery
+path runs.
+
+**Restrictions.** The deferred statement is parsed as a regular
+statement, but the codegen / typechecker rejects:
+
+- `defer return …`, `defer break`, `defer continue` — cleanup
+  blocks can't redirect control flow. Wrap with `do … end` if you
+  need a multi-line body that doesn't contain those forms.
+- `defer defer …` — pointless, doesn't compose.
+
+**Compilation.** The compiler walks the block accumulating defers
+into a per-block list. At each scope-exit point it emits the
+cleanup code in reverse order; for `return` / `break` / `continue`
+it routes the jump through a generated cleanup label so the same
+emission code is shared. Zero runtime overhead on the common
+no-defer path.
 
 ---
 

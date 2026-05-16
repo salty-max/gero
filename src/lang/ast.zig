@@ -729,6 +729,10 @@ pub const Statement = union(enum) {
     local_decl: LocalDecl,
     /// `@asm("...")` — single inline-asm escape hatch line.
     asm_stmt: AsmStmt,
+    /// `defer <stmt>` — schedule `stmt` to run when the enclosing
+    /// block exits (§4.10). LIFO across multiple defers in the same
+    /// block. Codegen owns the cleanup-label management.
+    defer_stmt: DeferStmt,
     /// Catch-all for unrecognized lines. Carries a span so consumers
     /// can skip cleanly.
     unknown: UnknownStmt,
@@ -757,6 +761,7 @@ pub const Statement = union(enum) {
             .use_decl => |s| s.span,
             .local_decl => |s| s.span,
             .asm_stmt => |s| s.span,
+            .defer_stmt => |s| s.span,
             .unknown => |s| s.span,
         };
     }
@@ -1049,6 +1054,15 @@ pub const AsmStmt = struct {
     span: Span,
 };
 
+/// `defer <stmt>` — schedule a statement to run when the enclosing
+/// block exits (§4.10). The body is held as a single `*Statement`;
+/// wrap in `do … end` for multi-statement cleanups. LIFO order
+/// across multiple defers in the same block.
+pub const DeferStmt = struct {
+    body: *Statement,
+    span: Span,
+};
+
 /// Catch-all for unrecognized statement-position input. The span
 /// covers the recovered source range; consumers usually just emit a
 /// diagnostic and skip.
@@ -1158,6 +1172,10 @@ pub fn freeStatement(allocator: std.mem.Allocator, s: *Statement) void {
             allocator.free(ed.variants);
         },
         .use_decl => |ud| allocator.free(ud.items),
+        .defer_stmt => |d| {
+            freeStatement(allocator, d.body);
+            allocator.destroy(d.body);
+        },
         .local_decl, .asm_stmt, .unknown => {},
     }
 }

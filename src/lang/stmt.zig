@@ -349,6 +349,39 @@ pub fn parseReturnStatement(p: *Parser) ParserError!ast.Statement {
     } };
 }
 
+/// `defer <stmt>` — schedule a statement to run at scope exit
+/// (§4.10). The inner statement is parsed via the normal
+/// `parseStatement` dispatch (so `defer foo()`, `defer do … end`,
+/// `defer obj.cleanup()` all work).
+pub fn parseDeferStatement(p: *Parser) ParserError!ast.Statement {
+    const defer_tok = p.peek();
+    p.pos += 1;
+    const start = defer_tok.start;
+
+    var temp: std.ArrayList(ast.Statement) = .empty;
+    errdefer parser_mod.cleanupStatements(p.allocator, &temp);
+    try parser_mod.parseStatement(p, &temp);
+    if (temp.items.len != 1) {
+        for (temp.items) |*s| ast.freeStatement(p.allocator, s);
+        temp.deinit(p.allocator);
+        try p.recordError(
+            "defer requires exactly one statement (wrap with `do … end` for multi-statement cleanups)",
+            "single statement",
+        );
+        return error.ParseFailed;
+    }
+    const body_stmt = temp.items[0];
+    temp.deinit(p.allocator);
+
+    const body_ptr = try p.allocator.create(ast.Statement);
+    body_ptr.* = body_stmt;
+
+    return .{ .defer_stmt = .{
+        .body = body_ptr,
+        .span = .{ .start = start, .end = body_stmt.span().end },
+    } };
+}
+
 /// `print expr, expr, ...`.
 pub fn parsePrintStatement(p: *Parser) ParserError!ast.Statement {
     const print_tok = p.peek();
