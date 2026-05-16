@@ -71,7 +71,19 @@ pub fn typecheck(
         .current_ret_ty = null,
         .current_class_extends = null,
         .non_nil = .{},
+        .enum_registry = .{},
+        .fn_locals = null,
     };
+
+    // Pre-pass: capture stable enum-decl pointers (slice elements
+    // have a stable address — the union variant payload sits in
+    // place). Match-exhaustiveness consults this map.
+    for (program.statements) |*stmt| {
+        if (stmt.* == .enum_decl) {
+            const name = source[stmt.enum_decl.name.start..stmt.enum_decl.name.end];
+            try c.enum_registry.put(a, name, &stmt.enum_decl);
+        }
+    }
 
     // Pass 1: register top-level decls so forward references resolve.
     for (program.statements) |stmt| try c.registerTopLevel(stmt);
@@ -115,6 +127,14 @@ const Checker = struct {
     /// fall-through). Keys are source-buffer slices owned by the
     /// caller's source.
     non_nil: std.StringHashMapUnmanaged(void),
+    /// Enum-name → decl pointer map populated during pass 1. Used
+    /// by `match` exhaustiveness to retrieve the variant list when
+    /// the scrutinee resolves to a named-enum type.
+    enum_registry: std.StringHashMapUnmanaged(*const ast.EnumDecl),
+    /// Names declared inside the currently-walked function body
+    /// (parameters + nested `let` / `const` / `def`). `null` at
+    /// module scope. Drives `return &local` stack-lifetime checks.
+    fn_locals: ?std.StringHashMapUnmanaged(void),
 
     /// Mutually recursive walker fns need an explicit error set —
     /// Zig's inferred sets would deadlock the dependency graph.
@@ -300,9 +320,15 @@ const Checker = struct {
                 );
                 try self.emit("E_TYPE_REDEFINED", info.decl_span.start, msg, name);
                 _ = existing;
+                return;
             },
             error.OutOfMemory => return error.OutOfMemory,
         };
+        // Track function-body locals for the `return &local`
+        // stack-lifetime check. `null` at module / class scope.
+        if (self.fn_locals) |*set| {
+            _ = try set.put(self.arena, name, {});
+        }
     }
 
     /// Build the function-pointer type for a `def` from its
@@ -577,8 +603,23 @@ const Checker = struct {
     }
 
     fn checkMatch(self: *Checker, ms: ast.MatchStmt) WalkError!void {
-        _ = try self.inferExpr(ms.scrutinee, null);
+        const scrut_ty = try self.inferExpr(ms.scrutinee, null);
+
+        // Lookup enum decl when scrutinee resolves to a named-enum.
+        const enum_decl: ?*const ast.EnumDecl = if (scrut_ty) |st|
+            self.enumDeclForType(st.*)
+        else
+            null;
+
+        // Track variant-name coverage when scrutinee is an enum.
+        var covered: std.StringHashMapUnmanaged(void) = .{};
+        defer covered.deinit(self.arena);
+        var has_wildcard: bool = false;
+
         for (ms.arms) |arm| {
+            // Exhaustiveness + reachability checks (enum scrutinee only).
+            if (enum_decl) |ed| try self.recordArmCoverage(arm, ed, &covered, &has_wildcard);
+
             const saved = self.current_scope;
             var child: Scope = .init(self.arena, saved);
             self.current_scope = &child;
@@ -587,10 +628,130 @@ const Checker = struct {
             if (arm.guard) |g| _ = try self.inferExpr(g, null);
             try self.walkStatementSequence(arm.body);
         }
+
+        // Exhaustiveness: every variant must be covered (or wildcard).
+        if (enum_decl) |ed| if (!has_wildcard) {
+            try self.checkExhaustiveness(ms.span, ed, &covered);
+        };
+    }
+
+    /// Resolve `ty` to its underlying enum decl (when `ty` is a
+    /// `Named(EnumName)` whose name maps to a registered enum
+    /// declaration). Returns `null` otherwise.
+    fn enumDeclForType(self: *const Checker, ty: types.Type) ?*const ast.EnumDecl {
+        if (ty != .named) return null;
+        return self.enum_registry.get(ty.named.name);
+    }
+
+    /// `true` when `name` is one of `ed`'s declared variant names.
+    /// Names compare by the source-buffer lexeme.
+    fn variantExists(self: *const Checker, ed: *const ast.EnumDecl, name: []const u8) bool {
+        for (ed.variants) |v| {
+            if (std.mem.eql(u8, self.lexeme(v.name), name)) return true;
+        }
+        return false;
+    }
+
+    /// Walk one match arm's pattern (including or-pattern
+    /// alternatives) and record which variant names it covers.
+    /// Emits `E_MATCH_UNREACHABLE_ARM` on duplicates and on any arm
+    /// that follows a wildcard.
+    fn recordArmCoverage(
+        self: *Checker,
+        arm: ast.MatchArm,
+        ed: *const ast.EnumDecl,
+        covered: *std.StringHashMapUnmanaged(void),
+        has_wildcard: *bool,
+    ) WalkError!void {
+        if (has_wildcard.*) {
+            try self.emit(
+                "E_MATCH_UNREACHABLE_ARM",
+                arm.span.start,
+                "this arm cannot be reached — a wildcard `_` arm above already handles every remaining variant",
+                null,
+            );
+        }
+        try self.walkArmPattern(arm.pattern, ed, covered, has_wildcard);
+    }
+
+    fn walkArmPattern(
+        self: *Checker,
+        pat: *const ast.Pattern,
+        ed: *const ast.EnumDecl,
+        covered: *std.StringHashMapUnmanaged(void),
+        has_wildcard: *bool,
+    ) WalkError!void {
+        switch (pat.*) {
+            .wildcard, .ident => {
+                // Bare ident in match-arm position binds the value
+                // — equivalent to `_` from the exhaustiveness POV.
+                has_wildcard.* = true;
+            },
+            .variant_pattern => |vp| {
+                const split = splitPath(self.lexeme(vp.path));
+                // Verify the head matches the enum name (skip when
+                // it doesn't — pattern targets a different enum).
+                if (split.head.len > 0 and !std.mem.eql(u8, split.head, self.lexeme(ed.name))) return;
+                // Verify variant exists on this enum.
+                if (!self.variantExists(ed, split.tail)) return;
+                const gop = try covered.getOrPut(self.arena, split.tail);
+                if (gop.found_existing) {
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "variant `{s}.{s}` is already handled by an earlier arm",
+                        .{ self.lexeme(ed.name), split.tail },
+                    );
+                    try self.emit("E_MATCH_UNREACHABLE_ARM", pat.span().start, msg, null);
+                }
+            },
+            .or_pattern => |op| {
+                for (op.alts) |alt| try self.walkArmPattern(alt, ed, covered, has_wildcard);
+            },
+            else => {
+                // Literal / range / tuple / struct patterns don't
+                // contribute to enum-variant coverage and don't
+                // qualify as a catch-all.
+            },
+        }
+    }
+
+    fn checkExhaustiveness(
+        self: *Checker,
+        match_span: ast.Span,
+        ed: *const ast.EnumDecl,
+        covered: *const std.StringHashMapUnmanaged(void),
+    ) WalkError!void {
+        // Collect uncovered variant names for the message body.
+        var missing: std.ArrayList([]const u8) = .empty;
+        defer missing.deinit(self.arena);
+        for (ed.variants) |v| {
+            const name = self.lexeme(v.name);
+            if (!covered.contains(name)) try missing.append(self.arena, name);
+        }
+        if (missing.items.len == 0) return;
+
+        // Render "A, B, C" (cap at 3 to keep messages compact).
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.arena);
+        const limit: usize = @min(missing.items.len, 3);
+        for (missing.items[0..limit], 0..) |name, i| {
+            if (i > 0) try buf.appendSlice(self.arena, ", ");
+            try buf.appendSlice(self.arena, name);
+        }
+        if (missing.items.len > limit) try buf.appendSlice(self.arena, ", …");
+
+        const suffix: []const u8 = if (missing.items.len == 1) "" else "s";
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "non-exhaustive match on enum `{s}` — missing variant{s}: {s}",
+            .{ self.lexeme(ed.name), suffix, buf.items },
+        );
+        try self.emit("E_MATCH_NON_EXHAUSTIVE", match_span.start, msg, null);
     }
 
     fn checkReturn(self: *Checker, rs: ast.ReturnStmt) WalkError!void {
         if (rs.value) |v| {
+            try self.checkReturnStackLifetime(v);
             const v_ty = try self.inferExpr(v, self.current_ret_ty);
             if (self.current_ret_ty) |rt| if (v_ty) |vt| {
                 if (!rt.eql(vt.*) and !isNilType(rt.*)) {
@@ -600,11 +761,36 @@ const Checker = struct {
         }
     }
 
+    /// `return &x` where `x` is a function-local binding produces a
+    /// dangling pointer once the frame unwinds — reject per §3.4.4.
+    /// Only the lexical form `return &ident` is checked; values
+    /// stashed in temporaries pass.
+    fn checkReturnStackLifetime(self: *Checker, v: *const ast.Expr) WalkError!void {
+        if (v.* != .ref_of) return;
+        const inner = v.ref_of.inner;
+        const name = identName(self, inner) orelse return;
+        const locals = self.fn_locals orelse return;
+        if (!locals.contains(name)) return;
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "returning a reference to local binding `{s}` — its storage is freed when the function returns",
+            .{name},
+        );
+        try self.emit("E_REF_STACK_LIFETIME", v.span().start, msg, null);
+    }
+
     fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
         const saved_scope = self.current_scope;
         var fn_scope: Scope = .init(self.arena, saved_scope);
         self.current_scope = &fn_scope;
         defer self.current_scope = saved_scope;
+
+        // Fresh `fn_locals` per fn — params and inner `let`s land
+        // here; nested `def`s push their own frame too so an inner
+        // fn doesn't inherit outer-fn locals.
+        const saved_locals = self.fn_locals;
+        self.fn_locals = .{};
+        defer self.fn_locals = saved_locals;
 
         for (d.params) |p| {
             const pt: ?*const types.Type = if (p.type_ann) |t|
@@ -1374,6 +1560,15 @@ fn bodyAlwaysExits(body: []const ast.Statement) bool {
         .return_stmt, .break_stmt, .continue_stmt => true,
         else => false,
     };
+}
+
+/// Split a dotted variant path lexeme (`Enum.Variant`) into head /
+/// tail. Returns an empty head when there is no `.` in the path.
+fn splitPath(text: []const u8) struct { head: []const u8, tail: []const u8 } {
+    if (std.mem.lastIndexOfScalar(u8, text, '.')) |dot| {
+        return .{ .head = text[0..dot], .tail = text[dot + 1 ..] };
+    }
+    return .{ .head = "", .tail = text };
 }
 
 // ---------- type predicates ----------

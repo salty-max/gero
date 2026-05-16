@@ -787,6 +787,156 @@ test "typecheck: super inside a class with no extends errors" {
     , "E_UNDEFINED_SYMBOL");
 }
 
+// ---------- slice 5: match exhaustiveness (§4.8) ----------
+
+test "typecheck: exhaustive match on enum accepts" {
+    try expectClean(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\  case Key(name: str, count: u8)
+        \\end
+        \\
+        \\let it: Item = Item.Sword
+        \\match it
+        \\  case Item.Sword => let x = 0
+        \\  case Item.Potion(_) => let x = 1
+        \\  case Item.Key(_, _) => let x = 2
+        \\end
+    );
+}
+
+test "typecheck: non-exhaustive match errors with E_MATCH_NON_EXHAUSTIVE" {
+    try expectCode(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\
+        \\let it: Item = Item.Sword
+        \\match it
+        \\  case Item.Sword => let x = 0
+        \\end
+    , "E_MATCH_NON_EXHAUSTIVE");
+}
+
+test "typecheck: wildcard arm satisfies exhaustiveness" {
+    try expectClean(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\
+        \\let it: Item = Item.Sword
+        \\match it
+        \\  case Item.Sword => let x = 0
+        \\  case _ => let x = 1
+        \\end
+    );
+}
+
+test "typecheck: bare ident arm satisfies exhaustiveness (binding catch-all)" {
+    try expectClean(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\
+        \\let it: Item = Item.Sword
+        \\match it
+        \\  case anything => let x = 0
+        \\end
+    );
+}
+
+test "typecheck: duplicate variant arm errors with E_MATCH_UNREACHABLE_ARM" {
+    try expectCode(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\
+        \\let it: Item = Item.Sword
+        \\match it
+        \\  case Item.Sword => let x = 0
+        \\  case Item.Sword => let x = 1
+        \\  case _ => let x = 2
+        \\end
+    , "E_MATCH_UNREACHABLE_ARM");
+}
+
+test "typecheck: arm after wildcard errors with E_MATCH_UNREACHABLE_ARM" {
+    try expectCode(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\
+        \\let it: Item = Item.Sword
+        \\match it
+        \\  case _ => let x = 0
+        \\  case Item.Sword => let x = 1
+        \\end
+    , "E_MATCH_UNREACHABLE_ARM");
+}
+
+test "typecheck: or-pattern contributes each alternative to coverage" {
+    try expectClean(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\  case Key(name: str, count: u8)
+        \\end
+        \\
+        \\let it: Item = Item.Sword
+        \\match it
+        \\  case Item.Sword | Item.Potion(_) => let x = 0
+        \\  case Item.Key(_, _) => let x = 1
+        \\end
+    );
+}
+
+test "typecheck: match on non-enum scrutinee skips exhaustiveness" {
+    // i16 has no variant list; the typechecker must not invent
+    // missing-variant diagnostics for primitive scrutinees.
+    try expectClean(
+        \\let n: i16 = 0
+        \\match n
+        \\  case 0 => let x = 0
+        \\  case _ => let x = 1
+        \\end
+    );
+}
+
+// ---------- slice 5: reference stack lifetime (§3.4.4) ----------
+
+test "typecheck: return &local errors with E_REF_STACK_LIFETIME" {
+    try expectCode(
+        \\def bad() -> &i16
+        \\  let x: i16 = 0
+        \\  return &x
+        \\end
+    , "E_REF_STACK_LIFETIME");
+}
+
+test "typecheck: return &param errors (params count as locals)" {
+    try expectCode(
+        \\def bad(x: i16) -> &i16
+        \\  return &x
+        \\end
+    , "E_REF_STACK_LIFETIME");
+}
+
+test "typecheck: return &module_static accepts" {
+    try expectClean(
+        \\let static_x: i16 = 0
+        \\
+        \\def ok() -> &i16
+        \\  return &static_x
+        \\end
+    );
+}
+
 // ---------- CheckedProgram surface ----------
 
 test "typecheck: CheckedProgram retains program pointer" {
