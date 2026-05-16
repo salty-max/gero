@@ -302,34 +302,75 @@ fn parseTopLevel(
     p: *Parser,
     statements: *std.ArrayList(ast.Statement),
 ) !void {
-    // Accumulate annotations into the parser's pending buffer.
-    while (p.check(.annotation)) {
-        const ann = annotation_mod.parseAnnotation(p) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.ParseFailed => {
-                try p.recoverToNewline();
-                return;
-            },
-        };
-        try p.pending_annotations.append(p.allocator, ann);
-        p.skipNewlines();
-    }
-
     parseStatement(p, statements) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.ParseFailed => try p.recoverToNewline(),
     };
 }
 
+/// `@asm("…")` — statement-level inline-assembly escape hatch
+/// (§3.7.7). Consumes the annotation, validates it carries exactly
+/// one string-literal argument, and emits an `asm_stmt` whose `body`
+/// span covers the string literal (including the surrounding
+/// quotes). Codegen reads the literal and performs `{name}`
+/// substitution against the enclosing scope.
+fn emitAsmStmt(
+    p: *Parser,
+    statements: *std.ArrayList(ast.Statement),
+) ParserError!void {
+    const ann = try annotation_mod.parseAnnotation(p);
+    defer {
+        for (ann.args) |a| ast.freeExpr(p.allocator, a);
+        p.allocator.free(ann.args);
+    }
+
+    if (ann.args.len != 1 or ann.args[0].* != .str_lit) {
+        try p.errors.append(p.allocator, core.parseError(
+            "lang_parser",
+            ann.span.start,
+            "@asm expects exactly one string-literal argument",
+            .{ .expected = "@asm(\"...\")", .kind = .syntactic },
+        ));
+        try statements.append(p.allocator, .{ .unknown = .{ .span = ann.span } });
+        try p.requireStatementBoundary();
+        return;
+    }
+
+    const body_span = ann.args[0].span();
+    try statements.append(p.allocator, .{ .asm_stmt = .{
+        .body = body_span,
+        .span = ann.span,
+    } });
+    try p.requireStatementBoundary();
+}
+
 /// Dispatch on the leading token kind. Public so sibling modules
 /// (`expr.zig` for `do`/`if`/`lambda` bodies, `stmt.zig` for `if`/
 /// `while`/`for`/`match` bodies) can recurse back through the same
 /// statement-kind switch.
+///
+/// Annotations are handled here uniformly: `@asm("…")` emits an
+/// `asm_stmt` directly (§3.7.7 — statement-level escape hatch); any
+/// other `@name(…)` pushes into the pending buffer and the parser
+/// recurses to consume the following decl that will drain it.
 pub fn parseStatement(
     p: *Parser,
     statements: *std.ArrayList(ast.Statement),
 ) ParserError!void {
     switch (p.peek().kind) {
+        .annotation => {
+            const tok = p.peek();
+            const name = p.source[tok.start + 1 .. tok.end];
+            if (std.mem.eql(u8, name, "asm")) {
+                try emitAsmStmt(p, statements);
+                return;
+            }
+            const ann = try annotation_mod.parseAnnotation(p);
+            try p.pending_annotations.append(p.allocator, ann);
+            p.skipNewlines();
+            try parseStatement(p, statements);
+            return;
+        },
         .kw_let => try statements.append(p.allocator, try decl_mod.parseLetDecl(p, false)),
         .kw_const => try statements.append(p.allocator, try decl_mod.parseConstDecl(p, false)),
         .kw_def => try statements.append(p.allocator, try decl_mod.parseDefDecl(p, false)),
