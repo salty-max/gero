@@ -865,6 +865,39 @@ test "parse: unterminated let surfaces a diagnostic and recovers" {
     try std.testing.expect(saw_y);
 }
 
+test "parse: fixed-point literal 1.5 encodes as Q8.8 0x0180" {
+    var tree = try parseClean("let v: fixed = 1.5");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .fixed_lit);
+    try std.testing.expectEqual(@as(i32, 0x0180), init.fixed_lit.value);
+}
+
+test "parse: fixed-point literal 0.125 encodes as Q8.8 0x0020" {
+    var tree = try parseClean("let v: fixed = 0.125");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .fixed_lit);
+    try std.testing.expectEqual(@as(i32, 0x0020), init.fixed_lit.value);
+}
+
+test "parse: fixed-point literal 3.14159 encodes as 0x0324 (rounded)" {
+    var tree = try parseClean("const PI: fixed = 3.14159");
+    defer tree.deinit();
+    const init = tree.program.statements[0].const_decl.init;
+    try std.testing.expect(init.* == .fixed_lit);
+    try std.testing.expectEqual(@as(i32, 0x0324), init.fixed_lit.value);
+}
+
+test "parse: `1.foo()` parses as int.method, not fixed_lit" {
+    var tree = try parseClean("let x = 1.foo()");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .method_call);
+    try std.testing.expect(init.method_call.receiver.* == .int_lit);
+    try std.testing.expectEqual(@as(i32, 1), init.method_call.receiver.int_lit.value);
+}
+
 test "parse: @zero_page on let global" {
     var tree = try parseClean(
         \\@zero_page
