@@ -193,6 +193,16 @@ fn parseUnary(p: *Parser) ParserError!*ast.Expr {
                 .span = .{ .start = tok.start, .end = operand.span().end },
             } });
         },
+        .amp => {
+            // `&x` — take a borrowed reference (§3.4.4). Same
+            // precedence as other unary prefix operators.
+            p.pos += 1;
+            const operand = try parseUnary(p);
+            return try p.allocExpr(.{ .ref_of = .{
+                .inner = operand,
+                .span = .{ .start = tok.start, .end = operand.span().end },
+            } });
+        },
         else => return try parseCallChain(p),
     }
 }
@@ -356,6 +366,7 @@ fn parsePrimary(p: *Parser) ParserError!*ast.Expr {
         .lparen => return try parseParenOrTupleExpr(p),
         .lbracket => return try parseListLit(p),
         .kw_do => return try parseDoExpr(p),
+        .kw_bake => return try parseBakeExpr(p),
         .kw_if => return try parseIfExpr(p),
         .kw_lambda => return try parseLambda(p),
         // Short lambda form `|x| expr`, `|x, y| expr`, `|| expr`.
@@ -533,15 +544,39 @@ fn parseListLit(p: *Parser) ParserError!*ast.Expr {
         for (elems.items) |e| ast.freeExpr(p.allocator, e);
         elems.deinit(p.allocator);
     }
-    if (!p.check(.rbracket)) {
-        while (true) {
-            p.skipNewlines();
-            const e = try parseExpression(p, 0);
-            try elems.append(p.allocator, e);
-            if (p.accept(.comma) == null) break;
-            p.skipNewlines();
-            if (p.check(.rbracket)) break;
-        }
+    if (p.check(.rbracket)) {
+        // `[]` — empty list.
+        const rb_empty = p.peek();
+        p.pos += 1;
+        return try p.allocExpr(.{ .list_lit = .{
+            .elems = try elems.toOwnedSlice(p.allocator),
+            .span = .{ .start = lb.start, .end = rb_empty.end },
+        } });
+    }
+
+    const first = try parseExpression(p, 0);
+
+    // `[value; count]` — array-repeat literal. Disambiguated by the
+    // `;` after the first element.
+    if (p.accept(.semicolon)) |_| {
+        errdefer ast.freeExpr(p.allocator, first);
+        const count = try parseExpression(p, 0);
+        errdefer ast.freeExpr(p.allocator, count);
+        p.skipNewlines();
+        const rb_rep = try p.expect(.rbracket, "]");
+        return try p.allocExpr(.{ .list_repeat = .{
+            .value = first,
+            .count = count,
+            .span = .{ .start = lb.start, .end = rb_rep.end },
+        } });
+    }
+
+    try elems.append(p.allocator, first);
+    while (p.accept(.comma)) |_| {
+        p.skipNewlines();
+        if (p.check(.rbracket)) break;
+        const e = try parseExpression(p, 0);
+        try elems.append(p.allocator, e);
     }
     p.skipNewlines();
     const rb = try p.expect(.rbracket, "]");
@@ -567,6 +602,35 @@ fn parseDoExpr(p: *Parser) ParserError!*ast.Expr {
         .body = try body.toOwnedSlice(p.allocator),
         .span = .{ .start = do_tok.start, .end = end_tok.end },
     } });
+}
+
+/// `bake do … end` — `do`-expression flagged for compile-time
+/// evaluation (§3.8). `bake_start` is the start byte of the `bake`
+/// keyword so the resulting span covers the whole `bake do … end`.
+/// Caller must already have consumed the `bake` keyword and have
+/// the parser positioned at `kw_do`.
+pub fn parseBakeDoExpr(p: *Parser, bake_start: u32) ParserError!*ast.Expr {
+    const inner = try parseDoExpr(p);
+    inner.do_expr.is_bake = true;
+    inner.do_expr.span = .{ .start = bake_start, .end = inner.do_expr.span.end };
+    return inner;
+}
+
+/// `bake do … end` in expression position — e.g. `const X = bake do
+/// … end`. Only `bake do` is accepted here; `bake def` lives at
+/// statement position only.
+fn parseBakeExpr(p: *Parser) ParserError!*ast.Expr {
+    const bake_tok = p.peek();
+    p.pos += 1; // consume `bake`
+    p.skipNewlines();
+    if (!p.check(.kw_do)) {
+        try p.recordError(
+            "in expression position `bake` must prefix a `do` block",
+            "bake do",
+        );
+        return error.ParseFailed;
+    }
+    return try parseBakeDoExpr(p, bake_tok.start);
 }
 
 fn parseIfExpr(p: *Parser) ParserError!*ast.Expr {

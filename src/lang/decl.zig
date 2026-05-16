@@ -172,7 +172,10 @@ fn hasAnnotationNamed(
 pub fn parseParamList(p: *Parser) ParserError![]ast.Param {
     var params: std.ArrayList(ast.Param) = .empty;
     errdefer {
-        freeParams(p.allocator, params.items);
+        // Free nested type-anns then let the ArrayList free its own
+        // backing buffer. (Don't call `freeParams` here — that takes
+        // an owned slice and would double-free the ArrayList buffer.)
+        for (params.items) |item| if (item.type_ann) |t| ast.freeTypeAnn(p.allocator, t);
         params.deinit(p.allocator);
     }
 
@@ -196,16 +199,32 @@ pub fn parseParamList(p: *Parser) ParserError![]ast.Param {
         };
 
         var type_ann: ?*ast.TypeAnn = null;
+        var variadic = false;
+        var variadic_end: u32 = name_span.end;
         if (p.accept(.colon)) |_| {
-            type_ann = try type_mod.parseTypeAnn(p);
+            // `name: ...` — variadic marker (§4.6.2). No type
+            // annotation; the typechecker pins the element type from
+            // call-site usage.
+            if (p.accept(.dot_dot_dot)) |dots| {
+                variadic = true;
+                variadic_end = dots.end;
+            } else {
+                type_ann = try type_mod.parseTypeAnn(p);
+            }
         }
 
-        const param_end: u32 = if (type_ann) |t| t.span().end else name_span.end;
+        const param_end: u32 = if (variadic) variadic_end else if (type_ann) |t| t.span().end else name_span.end;
         try params.append(p.allocator, .{
             .name = name_span,
             .type_ann = type_ann,
+            .variadic = variadic,
             .span = .{ .start = name_span.start, .end = param_end },
         });
+
+        // A variadic parameter must be the last one. We break here
+        // so any trailing `, more_param` would surface as
+        // `expected )` at the next iteration boundary.
+        if (variadic) break;
 
         if (p.accept(.comma) == null) break;
         p.skipNewlines();

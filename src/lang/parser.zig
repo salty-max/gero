@@ -26,6 +26,7 @@ const ast = @import("ast.zig");
 const annotation_mod = @import("annotation.zig");
 const decl_mod = @import("decl.zig");
 const stmt_mod = @import("stmt.zig");
+const expr_mod = @import("expr.zig");
 
 const Kind = lexer.Token.Kind;
 
@@ -308,6 +309,44 @@ fn parseTopLevel(
     };
 }
 
+/// `bake def …` or `bake do … end` at statement position (§3.8).
+/// The `bake` prefix marks the construct for compile-time
+/// evaluation; codegen later runs the bake interpreter and lowers
+/// the result to static data.
+fn parseBakeStatement(p: *Parser) ParserError!ast.Statement {
+    const bake_tok = p.peek();
+    p.pos += 1; // consume `bake`
+    p.skipNewlines();
+
+    switch (p.peek().kind) {
+        .kw_def => {
+            var decl = try decl_mod.parseDefDeclInner(p, false);
+            decl.is_bake = true;
+            decl.span = .{ .start = bake_tok.start, .end = decl.span.end };
+            try p.requireStatementBoundary();
+            return .{ .def_decl = decl };
+        },
+        .kw_do => {
+            // `bake do … end` at statement position — evaluate the
+            // block at compile time and discard the result. Wrap
+            // in an `expr_stmt` carrying the bake-flagged DoExpr.
+            const do_expr = try expr_mod.parseBakeDoExpr(p, bake_tok.start);
+            try p.requireStatementBoundary();
+            return .{ .expr_stmt = .{
+                .expr = do_expr,
+                .span = do_expr.span(),
+            } };
+        },
+        else => {
+            try p.recordError(
+                "`bake` must prefix a `def` or `do` block",
+                "bake def | bake do",
+            );
+            return error.ParseFailed;
+        },
+    }
+}
+
 /// Parse an optional `:label` suffix on a loop head or
 /// `break` / `continue`. Returns `null` when the next token is not
 /// a colon — that's the unlabeled form. Identifiers after `:` must
@@ -403,6 +442,7 @@ pub fn parseStatement(
         .kw_let => try statements.append(p.allocator, try decl_mod.parseLetDecl(p, false)),
         .kw_const => try statements.append(p.allocator, try decl_mod.parseConstDecl(p, false)),
         .kw_def => try statements.append(p.allocator, try decl_mod.parseDefDecl(p, false)),
+        .kw_bake => try statements.append(p.allocator, try parseBakeStatement(p)),
         .kw_class => try statements.append(p.allocator, try decl_mod.parseClassDecl(p, false)),
         .kw_enum => try statements.append(p.allocator, try decl_mod.parseEnumDecl(p, false)),
         .kw_local => try decl_mod.parseLocalDecl(p, statements),

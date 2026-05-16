@@ -84,6 +84,9 @@ pub const TypeAnn = union(enum) {
     /// `fn(args...) -> ret` — function pointer type. `ret` is
     /// optional (defaults to `nil`).
     fn_type: FnType,
+    /// `&T` — borrowed reference (§3.4.4). Always mutates through;
+    /// no `&const` distinction.
+    reference: ReferenceType,
 
     /// Smallest `Span` covering the whole type annotation.
     pub fn span(self: TypeAnn) Span {
@@ -94,6 +97,7 @@ pub const TypeAnn = union(enum) {
             .vec => |v| v.span,
             .tuple => |t| t.span,
             .fn_type => |f| f.span,
+            .reference => |r| r.span,
         };
     }
 };
@@ -140,6 +144,13 @@ pub const FnType = struct {
     /// "no return type" to `nil`. Provided here so the printer can
     /// round-trip the source shape.
     ret: ?*TypeAnn,
+    span: Span,
+};
+
+/// `&T` — borrowed reference type (§3.4.4). Auto-derefs for field
+/// access and method calls. No arithmetic, no `&&T`, no `&temp`.
+pub const ReferenceType = struct {
+    inner: *TypeAnn,
     span: Span,
 };
 
@@ -354,6 +365,9 @@ pub const Expr = union(enum) {
     /// `[expr, expr, ...]` — array literal. Used for `[T; N]` init
     /// and `Vec.from([...])` arg.
     list_lit: ListLit,
+    /// `[value; count]` — array-repeat literal. `value` is replicated
+    /// `count` times. `count` must be a comptime integer expression.
+    list_repeat: ListRepeatLit,
     /// `Type { field: expr, ... }` — struct literal.
     struct_lit: StructLit,
     /// `(a, b, ...)` — tuple literal (at least 2 elements; singletons
@@ -367,6 +381,10 @@ pub const Expr = union(enum) {
     /// sign / zero extension, fixed↔int rounding); the parser just
     /// captures the inner expression + target type annotation.
     cast: CastExpr,
+    /// `&x` — take a borrowed reference to `x` (§3.4.4). Inner must
+    /// be a place expression (ident / field / index); the
+    /// typechecker rejects `&(a+b)` and similar temporaries.
+    ref_of: RefOfExpr,
 
     /// Smallest `Span` covering the whole expression.
     pub fn span(self: Expr) Span {
@@ -390,10 +408,12 @@ pub const Expr = union(enum) {
             .if_expr => |e| e.span,
             .lambda => |e| e.span,
             .list_lit => |e| e.span,
+            .list_repeat => |e| e.span,
             .struct_lit => |e| e.span,
             .tuple_lit => |e| e.span,
             .is_test => |e| e.span,
             .cast => |e| e.span,
+            .ref_of => |e| e.span,
         };
     }
 };
@@ -581,6 +601,10 @@ pub const IndexExpr = struct {
 /// `do ... end` used as an expression.
 pub const DoExpr = struct {
     body: []Statement,
+    /// `true` when written as `bake do … end` (§3.8). The block is
+    /// evaluated at compile time and the result is lowered to static
+    /// data.
+    is_bake: bool = false,
     span: Span,
 };
 
@@ -622,6 +646,16 @@ pub const ListLit = struct {
     span: Span,
 };
 
+/// `[value; count]` — array-repeat literal. `value` is the element
+/// to replicate and `count` is the number of copies (must be a
+/// compile-time integer expression at typecheck time; the parser
+/// accepts any expression).
+pub const ListRepeatLit = struct {
+    value: *Expr,
+    count: *Expr,
+    span: Span,
+};
+
 /// `Type { field: expr, ... }` — struct literal.
 pub const StructLit = struct {
     /// Type name (`Player`, `Stats`, etc.).
@@ -658,6 +692,15 @@ pub const CastExpr = struct {
     span: Span,
 };
 
+/// `&x` — take a borrowed reference to a place expression. The
+/// parser accepts any expression as `inner`; the typechecker
+/// rejects non-place targets (temporaries, results of `+`/`*`, etc.)
+/// per §3.4.4.
+pub const RefOfExpr = struct {
+    inner: *Expr,
+    span: Span,
+};
+
 // =====================================================================
 // Function parameters — shared between `def`, `lambda`, and class
 // methods.
@@ -667,8 +710,14 @@ pub const CastExpr = struct {
 pub const Param = struct {
     name: Span,
     /// `null` when the parameter has no explicit type — inference
-    /// will pin it from call-site usage (§3.5).
+    /// will pin it from call-site usage (§3.5). For a variadic
+    /// parameter (`name: ...`) the type is also `null`; the
+    /// `variadic` flag carries the intent.
     type_ann: ?*TypeAnn,
+    /// `true` for the variadic last parameter (`name: ...`, §4.6.2).
+    /// Only the last param of a list may be variadic; the parser
+    /// enforces that.
+    variadic: bool = false,
     span: Span,
 };
 
@@ -959,6 +1008,10 @@ pub const DefDecl = struct {
     ret_type: ?*TypeAnn,
     body: []Statement,
     is_local: bool,
+    /// `true` when prefixed with `bake` (§3.8). Bake functions are
+    /// evaluated by the compile-time interpreter and their results
+    /// are baked into static data.
+    is_bake: bool = false,
     span: Span,
 };
 
@@ -1302,6 +1355,10 @@ pub fn freeExpr(allocator: std.mem.Allocator, e: *Expr) void {
             for (ll.elems) |x| freeExpr(allocator, x);
             allocator.free(ll.elems);
         },
+        .list_repeat => |lr| {
+            freeExpr(allocator, lr.value);
+            freeExpr(allocator, lr.count);
+        },
         .struct_lit => |sl| {
             for (sl.fields) |f| freeExpr(allocator, f.value);
             allocator.free(sl.fields);
@@ -1315,6 +1372,7 @@ pub fn freeExpr(allocator: std.mem.Allocator, e: *Expr) void {
             freeExpr(allocator, c.inner);
             freeTypeAnn(allocator, c.target_type);
         },
+        .ref_of => |r| freeExpr(allocator, r.inner),
     }
     allocator.destroy(e);
 }
@@ -1373,6 +1431,7 @@ pub fn freeTypeAnn(allocator: std.mem.Allocator, t: *TypeAnn) void {
             allocator.free(fn_t.params);
             if (fn_t.ret) |r| freeTypeAnn(allocator, r);
         },
+        .reference => |r| freeTypeAnn(allocator, r.inner),
     }
     allocator.destroy(t);
 }

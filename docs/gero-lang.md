@@ -308,7 +308,7 @@ PICO-8, Sonic, early Doom used.
 
 | Form | Example | Notes |
 |------|---------|-------|
-| Array (fixed-size) | `[u8; 64]` | N is comptime. Stack-allocated if local. |
+| Array (fixed-size) | `[u8; 64]` | N is comptime. Stack-allocated if local. Literals: `[a, b, c]` for explicit elements or `[value; count]` to repeat a single value. |
 | Dynamic array | `Vec(i16)` | Growable buffer with `push` / `pop` / `len` / `at`. See §3.4.3. |
 | Tuple | `(i16, str)` | Anonymous heterogeneous pair / triple / etc. Max 4 elements (5+ → use a struct). Destructurable in `let` and `match`. Field access via `.0`, `.1`, …. |
 | Optional | `T?` | Nullable pointer type — see §3.4.1. |
