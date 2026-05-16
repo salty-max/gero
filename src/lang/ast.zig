@@ -700,8 +700,11 @@ pub const Statement = union(enum) {
     if_stmt: IfStmt,
     /// `while cond do ... end`.
     while_stmt: WhileStmt,
-    /// `for binding in iter [step expr] do ... end`.
+    /// `for binding in iter [step expr] ... end`.
     for_stmt: ForStmt,
+    /// `repeat ... until cond` — body runs at least once; loop exits
+    /// when `cond` evaluates true. §4.5.5.
+    repeat_stmt: RepeatStmt,
     /// `match scrutinee case pat [when guard] then body ... end`.
     match_stmt: MatchStmt,
     /// `return [expr]`.
@@ -750,6 +753,7 @@ pub const Statement = union(enum) {
             .if_stmt => |s| s.span,
             .while_stmt => |s| s.span,
             .for_stmt => |s| s.span,
+            .repeat_stmt => |s| s.span,
             .match_stmt => |s| s.span,
             .return_stmt => |s| s.span,
             .break_stmt, .continue_stmt => |s| s.span,
@@ -900,6 +904,18 @@ pub const ForStmt = struct {
     /// Loop label, if the head carried a `:name` suffix.
     label: ?Span,
     body: []Statement,
+    span: Span,
+};
+
+/// `repeat ... until cond` — do-while-style loop. Body runs at
+/// least once; `cond` is tested **after** each iteration and the
+/// loop exits when it evaluates true (§4.5.5).
+pub const RepeatStmt = struct {
+    body: []Statement,
+    /// Termination expression — loop exits when this is truthy.
+    cond: *Expr,
+    /// Loop label, if the head carried a `:name` suffix.
+    label: ?Span,
     span: Span,
 };
 
@@ -1145,6 +1161,10 @@ pub fn freeStatement(allocator: std.mem.Allocator, s: *Statement) void {
             freeExpr(allocator, fs.iter);
             if (fs.step) |s_| freeExpr(allocator, s_);
             freeStatementList(allocator, fs.body);
+        },
+        .repeat_stmt => |rs| {
+            freeStatementList(allocator, rs.body);
+            freeExpr(allocator, rs.cond);
         },
         .match_stmt => |ms| {
             freeExpr(allocator, ms.scrutinee);

@@ -142,8 +142,8 @@ both languages.
 
 ```
 let const def lambda return
-if then elif else end
-while do for in step
+if elif else end
+while do for in step repeat until
 match case when
 class extends self super
 enum is
@@ -155,17 +155,9 @@ print
 asm bake
 ```
 
-`then` is reserved but not a syntactic separator anywhere — `if` /
-`elif` / `match case` end their heads at the newline (§4.4 / §4.8),
-no `then` needed. Writing `if cond then …` is a syntax error.
-
-`do` is still a keyword — it opens a block (`do … end`, §4.3) — but
-no longer required after `while` / `for` heads. Writing `while cond
-do …` is a syntax error.
-
-`asm` is a builtin statement (§4.11) for one-instruction inline
-assembly. `bake` marks a `def` or `do`-block for compile-time
-evaluation (§3.8).
+`do` opens a `do … end` block (§4.3); it's not a loop-head
+separator. `asm` is a builtin statement (§4.11). `bake` marks a
+`def` or `do`-block for compile-time evaluation (§3.8).
 
 `and`, `or`, `not` are the boolean operators (short-circuit). The
 bitwise counterparts use symbolic operators `&` `|` `^` `<<` `>>`
@@ -1553,7 +1545,37 @@ by the compiler — `for-in` over them emits direct memory access
 with no `next()` call. The user-visible model is identical to a
 custom iterator; the special-case is invisible.
 
-#### 4.5.4 Labeled loops
+#### 4.5.4 `repeat … until` (do-while)
+
+Body runs at least once; the loop exits when the trailing
+expression evaluates true:
+
+```
+repeat
+  let cmd = read_input()
+  process(cmd)
+until cmd == "quit"
+```
+
+The condition is tested **after** each iteration, so the body is
+guaranteed to execute at least once. To exit early use `break`; to
+skip to the next iteration use `continue` (the condition is still
+tested after the skipped tail).
+
+There is no `end` — the `until <cond>` line terminates the loop.
+Statement boundary follows the condition.
+
+Labels work as on `while` / `for`:
+
+```
+repeat :outer
+  for x in 0..width
+    if found(x) break :outer end
+  end
+until exhausted
+```
+
+#### 4.5.5 Labeled loops
 
 A loop may carry a `:label` after its head; `break :label` and
 `continue :label` target the labeled loop instead of the innermost:
@@ -2522,7 +2544,5 @@ and the compiler simple; the absence isn't a missing feature.
   local" (§3.4.4). The cart audience doesn't need Rust-grade memory
   safety on top of what `T?` and explicit checks already provide.
 - **`then` / `do` as block-head separators.** Removed for source
-  noise reduction; the parser is recursive-descent and doesn't need
-  them. See §4.4 / §4.5. (Lua keeps them for LR-parser reasons that
-  don't apply here.) `then` is still reserved as a keyword for clear
-  diagnostics; `do` remains the opener for `do…end` blocks (§4.3).
+  noise reduction; the parser is recursive-descent and doesn't
+  need them. See §4.4 / §4.5.

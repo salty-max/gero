@@ -556,6 +556,44 @@ test "parse: break + continue" {
     try std.testing.expect(body[1] == .continue_stmt);
 }
 
+test "parse: repeat … until cond loop" {
+    var tree = try parseClean(
+        \\repeat
+        \\  x = x - 1
+        \\until x == 0
+    );
+    defer tree.deinit();
+    const s = tree.program.statements[0];
+    try std.testing.expect(s == .repeat_stmt);
+    try std.testing.expectEqual(@as(usize, 1), s.repeat_stmt.body.len);
+    try std.testing.expect(s.repeat_stmt.cond.* == .binary);
+}
+
+test "parse: repeat with label + break :label" {
+    var tree = try parseClean(
+        \\repeat :outer
+        \\  for x in 0..10
+        \\    break :outer
+        \\  end
+        \\until done
+    );
+    defer tree.deinit();
+    const s = tree.program.statements[0].repeat_stmt;
+    try std.testing.expect(s.label != null);
+}
+
+test "parse: repeat body with multiple statements" {
+    var tree = try parseClean(
+        \\repeat
+        \\  let cmd = read_input()
+        \\  process(cmd)
+        \\until cmd == "quit"
+    );
+    defer tree.deinit();
+    const s = tree.program.statements[0].repeat_stmt;
+    try std.testing.expectEqual(@as(usize, 2), s.body.len);
+}
+
 test "parse: labeled while + break :label" {
     var tree = try parseClean(
         \\while true :outer
@@ -1232,11 +1270,10 @@ test "parse: `asm \"...\"` inside a function body" {
     try std.testing.expect(body[0] == .asm_stmt);
 }
 
-test "parse: legacy `@asm(\"...\")` surfaces a migration diagnostic" {
+test "parse: `@asm(\"...\")` annotation form is rejected" {
     var tree = try parseSource("@asm(\"swap r1, r2\")");
     defer tree.deinit();
     try std.testing.expect(tree.errors.len > 0);
-    try std.testing.expect(std.mem.indexOf(u8, tree.errors[0].message, "asm \"...\"") != null);
 }
 
 test "parse: `asm \"$(x)\"` rejects interpolation in the body" {

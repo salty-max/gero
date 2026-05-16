@@ -77,13 +77,14 @@ test "lex: every reserved keyword maps to its kind" {
         .{ .src = "lambda", .kind = .kw_lambda },
         .{ .src = "return", .kind = .kw_return },
         .{ .src = "if", .kind = .kw_if },
-        .{ .src = "then", .kind = .kw_then },
         .{ .src = "else", .kind = .kw_else },
         .{ .src = "elif", .kind = .kw_elif },
         .{ .src = "end", .kind = .kw_end },
         .{ .src = "while", .kind = .kw_while },
         .{ .src = "do", .kind = .kw_do },
         .{ .src = "for", .kind = .kw_for },
+        .{ .src = "repeat", .kind = .kw_repeat },
+        .{ .src = "until", .kind = .kw_until },
         .{ .src = "in", .kind = .kw_in },
         .{ .src = "step", .kind = .kw_step },
         .{ .src = "match", .kind = .kw_match },
@@ -148,11 +149,11 @@ test "lex: legacy `0x` hex literal is rejected with a diagnostic" {
     try std.testing.expect(std.mem.indexOf(u8, ts.errors[0].message, "$") != null);
 }
 
-test "lex: `then` and `do` remain reserved keywords" {
-    // The parser rejects them in if/while/for-head positions (§4.4/§4.5)
-    // with a diagnostic, but the lexer keeps them tokenized for clear
-    // error messages. `do…end` (§4.3) still uses `kw_do`.
-    try expectKinds("then do", &.{ .kw_then, .kw_do });
+test "lex: `then` is no longer reserved (plain identifier)" {
+    // §4.4 removed `then` as a syntactic separator entirely; the
+    // lexer treats it like any other identifier. `do` remains
+    // reserved for `do…end` blocks (§4.3).
+    try expectKinds("then do", &.{ .ident, .kw_do });
 }
 
 test "lex: `=>` fat arrow" {

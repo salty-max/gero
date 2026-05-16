@@ -422,6 +422,7 @@ pub fn parseStatement(
         .kw_if => try statements.append(p.allocator, try stmt_mod.parseIfStatement(p)),
         .kw_while => try statements.append(p.allocator, try stmt_mod.parseWhileStatement(p)),
         .kw_for => try statements.append(p.allocator, try stmt_mod.parseForStatement(p)),
+        .kw_repeat => try statements.append(p.allocator, try stmt_mod.parseRepeatStatement(p)),
         .kw_match => try statements.append(p.allocator, try stmt_mod.parseMatchStatement(p)),
         .kw_do => try statements.append(p.allocator, try stmt_mod.parseBlockStatement(p)),
         .kw_return => try statements.append(p.allocator, try stmt_mod.parseReturnStatement(p)),
