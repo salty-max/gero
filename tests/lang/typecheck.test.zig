@@ -580,6 +580,213 @@ test "typecheck: return value mismatched ret type errors" {
     , "E_TYPE_MISMATCH");
 }
 
+// ---------- slice 4: nullable validation (§3.4.1) ----------
+
+test "typecheck: str? accepts (str is pointer-like)" {
+    try expectClean(
+        \\let s: str? = nil
+    );
+}
+
+test "typecheck: class? accepts" {
+    try expectClean(
+        \\class Player
+        \\  let hp: i16
+        \\end
+        \\
+        \\let p: Player? = nil
+    );
+}
+
+test "typecheck: i16? errors with E_NULL_NON_POINTER" {
+    try expectCode(
+        \\let x: i16? = nil
+    , "E_NULL_NON_POINTER");
+}
+
+test "typecheck: bool? errors with E_NULL_NON_POINTER" {
+    try expectCode(
+        \\let x: bool? = nil
+    , "E_NULL_NON_POINTER");
+}
+
+test "typecheck: fixed? errors with E_NULL_NON_POINTER" {
+    try expectCode(
+        \\let x: fixed? = nil
+    , "E_NULL_NON_POINTER");
+}
+
+test "typecheck: struct? errors (structs are by-value)" {
+    try expectCode(
+        \\struct Stats
+        \\  hp: i16
+        \\end
+        \\
+        \\let s: Stats? = nil
+    , "E_NULL_NON_POINTER");
+}
+
+// ---------- slice 4: nullable deref + flow analysis ----------
+
+test "typecheck: direct deref on nullable errors with E_NULL_DEREF" {
+    try expectCode(
+        \\let s: str? = nil
+        \\let n = s.len
+    , "E_NULL_DEREF");
+}
+
+test "typecheck: deref inside `if x != nil` arm accepts" {
+    try expectClean(
+        \\let s: str? = nil
+        \\if s != nil
+        \\  let n = s.len
+        \\end
+    );
+}
+
+test "typecheck: deref inside `if nil != x` arm accepts (commutative)" {
+    try expectClean(
+        \\let s: str? = nil
+        \\if nil != s
+        \\  let n = s.len
+        \\end
+    );
+}
+
+test "typecheck: deref inside `if x == nil` else arm accepts" {
+    try expectClean(
+        \\let s: str? = nil
+        \\if s == nil
+        \\  let x = 0
+        \\else
+        \\  let n = s.len
+        \\end
+    );
+}
+
+test "typecheck: deref after `if x == nil then return end` accepts (fall-through)" {
+    try expectClean(
+        \\def f(s: str?)
+        \\  if s == nil
+        \\    return
+        \\  end
+        \\  let n = s.len
+        \\end
+    );
+}
+
+test "typecheck: method call on nullable errors with E_NULL_DEREF" {
+    try expectCode(
+        \\class Player
+        \\  let hp: i16
+        \\
+        \\  def greet(self)
+        \\    print "hi"
+        \\  end
+        \\end
+        \\
+        \\let p: Player? = nil
+        \\p.greet()
+    , "E_NULL_DEREF");
+}
+
+// ---------- slice 4: nil → non-nullable ----------
+
+test "typecheck: nil to non-nullable param errors with E_NULL_NIL_TO_NONNULL" {
+    try expectCode(
+        \\def f(s: str)
+        \\  print s
+        \\end
+        \\
+        \\f(nil)
+    , "E_NULL_NIL_TO_NONNULL");
+}
+
+test "typecheck: nil to a `&T` reference errors with E_REF_NULLABLE" {
+    try expectCode(
+        \\def f(p: &i16)
+        \\  print p
+        \\end
+        \\
+        \\f(nil)
+    , "E_REF_NULLABLE");
+}
+
+test "typecheck: `let x: str = nil` errors with E_NULL_NIL_TO_NONNULL" {
+    try expectCode(
+        \\let x: str = nil
+    , "E_NULL_NIL_TO_NONNULL");
+}
+
+// ---------- slice 4: reference rules (§3.4.4) ----------
+
+test "typecheck: &local accepts (ident is a place)" {
+    try expectClean(
+        \\let x: i16 = 5
+        \\let r = &x
+    );
+}
+
+test "typecheck: &(a + b) errors with E_REF_TEMPORARY" {
+    try expectCode(
+        \\let a: i16 = 1
+        \\let b: i16 = 2
+        \\let r = &(a + b)
+    , "E_REF_TEMPORARY");
+}
+
+test "typecheck: &foo() errors with E_REF_TEMPORARY" {
+    try expectCode(
+        \\def foo() -> i16
+        \\  return 0
+        \\end
+        \\
+        \\let r = &foo()
+    , "E_REF_TEMPORARY");
+}
+
+test "typecheck: && double-reference errors with E_REF_DOUBLE" {
+    try expectCode(
+        \\let x: i16 = 0
+        \\let r = &x
+        \\let rr = &r
+    , "E_REF_DOUBLE");
+}
+
+// ---------- slice 4: super resolution (§6) ----------
+
+test "typecheck: super inside method of class with extends accepts" {
+    try expectClean(
+        \\class Entity
+        \\  let hp: i16
+        \\end
+        \\
+        \\class Player extends Entity
+        \\  def greet(self)
+        \\    let s = super
+        \\  end
+        \\end
+    );
+}
+
+test "typecheck: super outside any class errors" {
+    try expectCode(
+        \\let x = super
+    , "E_UNDEFINED_SYMBOL");
+}
+
+test "typecheck: super inside a class with no extends errors" {
+    try expectCode(
+        \\class Player
+        \\  let hp: i16
+        \\
+        \\  def greet(self)
+        \\    let s = super
+        \\  end
+        \\end
+    , "E_UNDEFINED_SYMBOL");
+}
+
 // ---------- CheckedProgram surface ----------
 
 test "typecheck: CheckedProgram retains program pointer" {
