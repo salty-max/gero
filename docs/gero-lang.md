@@ -12,10 +12,18 @@ for J-RPG-class games and similar carts; see §1 for the philosophy.
 
 ## 1. Philosophy
 
-- **Reads like Lua / BASIC** — `let`, `do … end`, `if … then … end`,
+- **Reads like Lua / BASIC** — `let`, `do … end`, `if … end`,
   `print`. Familiar to anyone who's touched a teaching language.
+- **No block keywords mid-statement** — no `then` after `if`, no `do`
+  after `while` / `for`. The newline ends the head; the body starts
+  on the next line. Less noise, fewer cumulative `end`s to read past.
 - **No semicolons** — statement boundaries are newlines. Cheap to
   type, less visual noise. (Modern Lua, Go, Python convention.)
+- **Mutable `let` by default** — `let x = 0` is mutable, `const X = 0`
+  is immutable. Style follows Lua / JS / BASIC, not Rust / Swift.
+  This is a deliberate choice for the teaching-language audience the
+  syntax targets; the cost is a small friction for devs arriving from
+  Rust/Swift where `let` means immutable.
 - **Typed at the variable / function boundary** — every `let` /
   parameter / return type gets an annotation OR is inferred from
   context. Once compiled, types are erased — runtime is fully
@@ -57,7 +65,7 @@ continuation (`a +\n  b`) is **not** a line-continuation rule.
 
 The one exception lives outside the bracket families: a `.` at the
 start of the next line continues the postfix chain on the previous
-expression (§4.6.1). That's the only newline-significant carve-out
+expression (§4.6.3). That's the only newline-significant carve-out
 in the otherwise strict newline-terminated grammar.
 
 ### 2.2 Comments
@@ -85,12 +93,16 @@ The compiler doesn't enforce — convention only.
 | Form | Example | Type |
 |------|---------|------|
 | Decimal | `42`, `1000` | `int` (= `i16`) by default |
-| Hex | `0xFF`, `0xABCD` | `int` |
+| Hex | `$FF`, `$ABCD` | `int`. `$` prefix only — retro 6502/Z80 style. |
 | Binary | `0b1010_0101` | `int`. Underscores allowed for readability. |
 | Negative | `-1` | `int` (unary minus operator) |
 
 No floating-point literals — gero VM is integer-only. For fractions
 use the `fixed` type (8.8 fixed-point — see §3.3).
+
+The lexer disambiguates `$FE40` (hex literal) from `$(expr)` (string
+interpolation, §3.2.2) by lookahead: digit / hex-letter after `$` →
+literal; `(` after `$` → interpolation marker.
 
 ### 2.5 String literals
 
@@ -113,13 +125,15 @@ literal is undefined (it lives in ROM at runtime).
 Single-quoted single-byte literals are sugar for their ASCII value:
 
 ```
-let c: u8 = 'A'              -- 0x41
-let nl: u8 = '\n'            -- 0x0A
-if s.at(0) == 'A' then ...   -- byte compare reads naturally
+let c: u8 = 'A'              -- $41
+let nl: u8 = '\n'            -- $0A
+if s.at(0) == 'A'            -- byte compare reads naturally
+  ...
+end
 ```
 
 The token's type is `u8`. Same escape table as strings (`\n` `\t`
-`\r` `\0` `\\` `\'` `\xHH`). `'A'` and `0x41` compile to identical
+`\r` `\0` `\\` `\'` `\xHH`). `'A'` and `$41` compile to identical
 bytecode — char literals exist purely for source readability. Mirrors
 the asm spec's `'A'` (asm §1.4) so byte literals look the same across
 both languages.
@@ -128,8 +142,8 @@ both languages.
 
 ```
 let const def lambda return
-if then else end
-while do for in step
+if else end
+while for in step
 match case when
 class extends self super
 enum is
@@ -138,7 +152,16 @@ true false nil
 and or not
 break continue defer
 print
+asm bake
 ```
+
+`then` after `if`/`elif` and `do` after `while`/`for` are **not**
+keywords. The head expression ends at the newline; the body starts
+on the next line. Writing `if cond then …` is a syntax error.
+
+`asm` is a builtin statement (§4.11) for one-instruction inline
+assembly. `bake` marks a `def` or `do`-block for compile-time
+evaluation (§3.8).
 
 `and`, `or`, `not` are the boolean operators (short-circuit). The
 bitwise counterparts use symbolic operators `&` `|` `^` `<<` `>>`
@@ -186,7 +209,7 @@ Mutable byte buffers are `[u8; N]` (fixed size).
 |------|---------|------------|
 | `a + b`           | `str` (concatenation) | **Yes** — new buffer in `state.allocator` |
 | `s.len`           | `u16` (byte count, excluding `\0`) | No |
-| `s.at(i)`         | `u8` (byte at index `i`) | No. Bounds-check at runtime; out-of-bounds → fault vector `0x02`. |
+| `s.at(i)`         | `u8` (byte at index `i`) | No. Bounds-check at runtime; out-of-bounds → fault vector `$02`. |
 | `s == other`      | `bool` (lexicographic equality, byte-wise) | No |
 | `s != other`      | `bool` | No |
 | `s < other` etc.  | `bool` (lex ordering) | No |
@@ -264,8 +287,8 @@ same spec language, runtime-evaluated. Allocates the result.
 fraction). Range ±127.99…, precision 1/256.
 
 ```
-let v: fixed = 1.5    -- compiles to 0x0180
-let dx: fixed = 0.125 -- compiles to 0x0020
+let v: fixed = 1.5    -- compiles to $0180
+let dx: fixed = 0.125 -- compiles to $0020
 ```
 
 Standard arithmetic operators work transparently:
@@ -296,9 +319,10 @@ PICO-8, Sonic, early Doom used.
 | Dynamic array | `Vec(i16)` | Growable buffer with `push` / `pop` / `len` / `at`. See §3.4.3. |
 | Tuple | `(i16, str)` | Anonymous heterogeneous pair / triple / etc. Max 4 elements (5+ → use a struct). Destructurable in `let` and `match`. Field access via `.0`, `.1`, …. |
 | Optional | `T?` | Nullable pointer type — see §3.4.1. |
+| Reference | `&T` | Borrowed reference, no arithmetic. See §3.4.4. |
 | Function | `fn(i16, i16) -> i16` | First-class — assignable, passable. |
 | Struct | `struct Foo a: i16, b: u8 end` | C-style POD. Fields contiguous in memory, no methods. See §3.4.2. Literal: `Foo { a: 1, b: 2 }`. |
-| Class | `class Foo { … }` | Vtable + fields, methods, single inheritance. See §6. |
+| Class | `class Foo … end` | Vtable + fields, methods, single inheritance. See §6. |
 
 #### 3.4.1 Nullable types `T?`
 
@@ -316,18 +340,18 @@ let n: i16     = 0            -- not nullable; use a sentinel for "absent"
 const NOT_FOUND: i16 = -1     -- conventional sentinel for absent index
 ```
 
-**Layout** = `sizeof(T)`. The value `0x0000` is the canonical `nil`
-representation (since pointer types use `0x0000` as their natural
+**Layout** = `sizeof(T)`. The value `$0000` is the canonical `nil`
+representation (since pointer types use `$0000` as their natural
 null), so no tag byte is needed.
 
 **Testing for nil:**
 
 ```
-if p != nil then
+if p != nil
   p.greet()           -- safe — flow analysis carries non-nil through
 end
 
-if p == nil then
+if p == nil
   return
 end
 p.greet()             -- safe here too
@@ -335,7 +359,7 @@ p.greet()             -- safe here too
 
 **Dereferencing a nullable.** Direct method/field access on a `T?`
 value compiles with a runtime nil-check that faults via vector
-`0x02` if the value is `nil`. The compiler **statically requires
+`$02` if the value is `nil`. The compiler **statically requires
 a nil-check** in obvious cases — uncheck-then-deref in straight-line
 code is a compile error:
 
@@ -353,17 +377,46 @@ just `nil` and explicit checks. Old-school authentic.
 
 ```
 def parse_int(s: str) -> (i16, str?)
-  if s.len == 0 then return (0, "empty input") end
+  if s.len == 0
+    return (0, "empty input")
+  end
   -- ...
   return (value, nil)
 end
 
 let (n, err) = parse_int(input)
-if err != nil then handle(err) end
+if err != nil
+  log(err)
+  return
+end
+use(n)        -- compiler tracks: on this path err was nil,
+              -- so n came from the success arm and is valid
 ```
 
 The `str?` second slot is the error message when present, `nil` on
 success. Idiomatic in Lua, Go, and most pre-Rust runtimes.
+
+**Flow analysis.** The compiler tracks the relationship between a
+multi-return tuple's slots so that the success path doesn't pessimize
+into the error path. Specifically, when the source has the shape
+
+```
+let (value, err) = produces_value_or_error()
+if err != nil
+  -- bail path (return / break / continue / @noreturn call)
+end
+-- here: err is statically nil, value came from the success arm
+```
+
+the compiler treats `value` as definitely valid after the bail
+branch — no second check needed. The same applies to `if err ==
+nil then …` (truthy branch sees the success path) and to `match`
+with explicit `nil` / non-`nil` arms.
+
+The analysis works on the **most-recent assignment** of `err`: if
+the user reassigns `err` between the check and the use, the
+guarantee evaporates. This is intentional — same shape as Go's
+or Lua's idiom; no implicit linear typing.
 
 #### 3.4.2 `struct` vs `class` — when to use which
 
@@ -456,7 +509,7 @@ let xs: Vec(i16)   = Vec.from([1, 2, 3])   -- pre-filled from a fixed array
 | `v.pop()`          | `T?` | Remove + return the last element. `nil` when empty. |
 | `v.len()`          | `u16` | Current element count. |
 | `v.cap()`          | `u16` | Current backing capacity. |
-| `v.at(i)`          | `T` | Bounds-checked. Out-of-range → fault vector `0x02`. |
+| `v.at(i)`          | `T` | Bounds-checked. Out-of-range → fault vector `$02`. |
 | `v.get(i)`         | `T?` | Safe variant — `nil` instead of fault. |
 | `v.set(i, x)`      | `nil` | Bounds-checked write. |
 | `v[i]` / `v[i] = x` | `T` / `nil` | Sugar for `at` / `set`. |
@@ -466,7 +519,7 @@ let xs: Vec(i16)   = Vec.from([1, 2, 3])   -- pre-filled from a fixed array
 `Vec(T)` participates in `for-in`:
 
 ```
-for item in inv do
+for item in inv
   use(item)
 end
 ```
@@ -479,6 +532,82 @@ and writes on a moved-from `Vec` are undefined.
 as `Range` and `[T; N]`) — there are no user-defined generic types
 or functions. If you need a typed container beyond `Vec`, build a
 class around `[T; N]` or `Vec(T)` with the right operations.
+
+#### 3.4.4 References `&T`
+
+A reference is a 16-bit address bound to a typed slot. References
+exist for two reasons on a 16-bit cart target:
+
+1. **Avoid copying compound values** at function-call boundaries.
+   Passing a `Stats` struct (6 bytes) by value copies 6 bytes on every
+   call. Passing `&Stats` copies 2 bytes (the address) and the callee
+   mutates in place.
+2. **Compose with the asm escape hatch and MMIO setup** — getting the
+   address of a stack-local buffer to pass to a DMA register or an
+   `asm "..."` block.
+
+**Syntax.**
+
+```
+def apply_damage(stats: &Stats, dmg: i16)
+  stats.hp = stats.hp - dmg     -- mutates the referenced struct
+end
+
+let s = Stats { hp: 100, mp: 50, atk: 10, def: 5 }
+apply_damage(&s, 20)             -- prefix `&` to take a reference
+print s.hp                       -- 80 (mutation visible)
+```
+
+The `&` prefix produces a reference; the callee's parameter type is
+`&T`. References auto-deref for field access and method calls
+(`stats.hp`, `stats.method()`) — no explicit `*` deref operator.
+
+**Mutability.** A reference is always mutating through the binding.
+There is no `&const T` / `&mut T` distinction (no borrow checker in
+gero-lang). To document "read-only", pass by value (with the copy
+cost) or follow a naming convention. The trade-off is intentional:
+the borrow checker adds compile-time complexity that the target
+audience doesn't need and the cart target doesn't reward.
+
+**Lifetime.** A reference is valid as long as the binding it points
+at is in scope. Returning `&local` from a function (where `local` is
+a stack binding) is a compile error — the compiler tracks
+stack-vs-static origin to reject the obvious cases:
+
+```
+def bad() -> &Stats
+  let s = Stats { hp: 0, mp: 0, atk: 0, def: 0 }
+  return &s          -- COMPILE ERROR: returns ref to stack-local
+end
+
+let static_s = Stats { ... }
+def ok() -> &Stats
+  return &static_s   -- OK: static binding outlives any caller
+end
+```
+
+The compiler does **not** track cross-call lifetimes (no full borrow
+checker). Storing a reference inside a class field and outliving the
+referent is undefined behavior — discipline at the source level.
+
+**Restrictions.**
+
+- No reference arithmetic (`&x + 1` is a compile error).
+- No `&&T` (reference-to-reference).
+- No reference to a temporary (`&(a + b)` is a compile error — there
+  is no addressable storage for the temporary).
+- A reference parameter cannot be `nil` — use `&T` for "always
+  present, mutate this", or use `T?` (nullable pointer) for "may be
+  absent".
+
+**Layout.** 2 bytes (a 16-bit pointer). Same runtime cost as a class
+instance reference.
+
+For raw byte-level address arithmetic (the rare cases where you
+genuinely want a `u16` address value — DMA setup, manual MMIO setup,
+`asm "..."` bridge), use `mem.addr_of(x) -> u16` (§5.3). That returns
+the address as a plain integer; it's the explicit "I want bytes,
+not a typed reference" escape hatch.
 
 ### 3.5 Inference
 
@@ -526,7 +655,7 @@ crossing the integer / `fixed` boundary — use `as` to force the
 conversion:
 
 ```
-let small: u8 = (raw & 0xFF) as u8
+let small: u8 = (raw & $FF) as u8
 let wide:  i16 = byte_count as i16
 let pixel: u8 = palette[i] as u8
 let dx:    fixed = velocity as fixed     -- top byte = velocity, frac = 0
@@ -594,7 +723,9 @@ documented per program.
 Use `is` for variant-tag tests (binding-free):
 
 ```
-if item is Item.Sword then equip_basic() end
+if item is Item.Sword
+  equip_basic()
+end
 ```
 
 For payload extraction, use `match` (§4.8).
@@ -612,7 +743,7 @@ Multiple annotations stack. Order matters only when explicitly noted.
 | Annotation | Applies to | Effect |
 |------------|------------|--------|
 | `@bank N` | `def`, `let`, `const`, **file** | Place compiled output in bank `N` (compiler emits cross-bank trampolines for calls — §7.3). See precedence note below. |
-| `@zero_page` | `let` | Place this global in the zero-page region (`0x0000..0x00FF`) — 1-byte addressing mode, faster + smaller code. Slot pressure is high (256 bytes shared); compiler errors on overflow. |
+| `@zero_page` | `let` | Place this global in the zero-page region (`$0000..$00FF`) — 1-byte addressing mode, faster + smaller code. Slot pressure is high (256 bytes shared); compiler errors on overflow. |
 | `@addr $1234` | `let` | Pin this global at the given absolute address. Use for binding to memory-mapped IO registers or fixed-position state. The compiler reserves no other RAM at that address. |
 | `@volatile` | `let` | Treat every read of this binding as a real memory load (never cached in a register). Pair with `@addr` for memory-mapped IO registers whose value changes outside the compiler's view (vblank flag, input port, RNG tap). |
 | `@align(N)` | `let`, `const`, `struct` | Force `N`-byte alignment of the placement. `N` must be a power of two (1, 2, 4, 8, 16, …). Necessary when the hardware demands aligned data — sprite sheets at 16-byte boundaries, tile maps at page boundaries (256), audio buffers at 4 bytes. |
@@ -627,7 +758,7 @@ Per-declaration `@bank` always wins over the file-level default. A
 declaration inside a file with `@bank 5` at the top can opt out
 back to the base image with `@bank 0`. Declarations that appear
 without any `@bank` annotation (and no file-level default) land
-in the base image (bank-less area before `0xC000`).
+in the base image (bank-less area before `$C000`).
 
 ```
 @zero_page
@@ -651,14 +782,19 @@ end
 
 | Annotation | Applies to | Effect |
 |------------|------------|--------|
-| `@inline` | `def` | Always inline at call sites. Compiler errors if the function is recursive or its body is too large. |
-| `@cold` | `def` | Mark the function as unlikely-called. The compiler is free to place it far from the hot path (separate code page, late in the section) so adjacent hot code stays in cache / prefetch range. Useful for error helpers, panic paths, debug-only dumps. |
+| `@inline` | `def` | Always inline at call sites. Compile error if the function is recursive or its lowered body exceeds **32 bytecode instructions**. |
+| `@cold` | `def` | Mark the function as unlikely-called. Codegen emits all `@cold` functions of a module **after** every non-cold function, in source-declaration order. Bytecode placement is deterministic and reproducible across compiler versions. |
+| `@no_capture` | `def` | Forbid this function from defining any closure that captures-and-mutates a binding from its lexical scope. See §4.7.2 (closures auto-promote to heap when they mutate captures; `@no_capture` forces a compile error instead so cycle-critical functions can't pay that cost by accident). |
 
 ```
 @inline
 def fast_clamp(x: i16, min: i16, max: i16) -> i16
-  if x < min then return min end
-  if x > max then return max end
+  if x < min
+    return min
+  end
+  if x > max
+    return max
+  end
   return x
 end
 
@@ -667,17 +803,38 @@ def panic_oob(addr: u16) -> noreturn
   print "PANIC: out-of-bounds @ ", addr
   hlt
 end
+
+@no_capture
+def hot_render_loop(state: &GameState)
+  for sprite in state.sprites
+    let draw = |s| blit(s)        -- read-only capture: OK
+    draw(sprite)
+  end
+end
 ```
 
 `@inline` attaches to named `def`s only. Lambdas already inline
 when they don't escape (their body folds into the caller); when
 they do escape they become first-class values and inlining would
 defeat that — there's no useful middle ground to expose via
-annotation.
+annotation. The 32-instruction limit is on the function body **after
+lowering** (post-typecheck, pre-codegen). The limit is fixed across
+compiler versions so source that compiles today keeps compiling.
 
-`@cold` is a *hint*, not a guarantee — the compiler decides
-placement. A `@cold` function on the hot path (called from a tight
-loop) still compiles correctly, just sub-optimally.
+`@cold` placement is deterministic: each module's compiled output is
+laid out as `[hot fn 1, hot fn 2, …, cold fn A, cold fn B, …]`. The
+relative order of hot functions matches source order; the relative
+order of cold functions matches source order. Same input source →
+same byte layout, every time, every compiler version. The cost is one
+extra branch on the rare hot-to-cold call; the win is a denser hot
+path.
+
+`@no_capture` is a compile-time-only check. A function annotated with
+it can still **define** closures, and those closures can still
+capture read-only — the only thing rejected is capture-and-mutate
+(which is what triggers the heap promotion). The check runs after
+typechecking, before codegen. Useful on per-frame game loops and ISR
+helpers where a hidden alloc is unacceptable.
 
 #### 3.7.3 Diverging functions
 
@@ -694,8 +851,8 @@ end
 
 def use_potion(item: Action)
   match item
-    case Action.Heal(n) then heal(n)
-    case _              then panic("not a healing item")
+    case Action.Heal(n) => heal(n)
+    case _              => panic("not a healing item")
   end
 end
 ```
@@ -713,15 +870,15 @@ Module-level visibility is controlled by the `local` keyword
 
 | Annotation | Applies to | Effect |
 |------------|------------|--------|
-| `@interrupt N` | `def` | Bind this function as the handler for vector `N` (gero ISA §6.1). The compiler emits the `rti` epilogue automatically and writes the function address into `mem[0x1000 + 2 * N]` at boot. The function body must take no parameters and return nothing. |
+| `@interrupt N` | `def` | Bind this function as the handler for vector `N` (gero ISA §6.1). The compiler emits the `rti` epilogue automatically and writes the function address into `mem[$1000 + 2 * N]` at boot. The function body must take no parameters and return nothing. |
 
 ```
-@interrupt 0x06              -- vblank
+@interrupt $06              -- vblank
 def on_vblank()
   frame_count += 1
 end
 
-@interrupt 0x21              -- save-flush convention
+@interrupt $21              -- save-flush convention
 def on_save_request()
   flush_save_state()
 end
@@ -819,19 +976,92 @@ The compiler enforces:
 
 #### 3.7.7 Inline assembly
 
-| Annotation | Applies to | Effect |
-|------------|------------|--------|
-| `@asm("...")` | statement-level | Embed a single asm instruction. Operands can reference gero-lang locals via `{name}` substitution. |
+Inline asm is not an annotation — see §4.11 for the `asm "..."`
+statement form.
+
+### 3.8 Compile-time evaluation (`bake`)
+
+`bake` marks a `def` or `do`-block for **compile-time evaluation**.
+The compiler runs the marked code at compile time and bakes the
+result into static data — no runtime cost, no runtime code emitted
+for the baked computation itself.
+
+This is the canonical way to generate lookup tables (sin/cos,
+palette ramps, RNG seeds, mip levels) without hand-encoding the
+bytes, and without a separate build script that emits `.gr` files.
 
 ```
-def fast_swap(a: u16, b: u16)
-  @asm("swap {a}, {b}")
+bake def make_sin_table() -> [i16; 256]
+  let t: [i16; 256] = [0; 256]
+  for i in 0..256
+    t[i] = fixed_sin(i * 360 / 256)
+  end
+  return t
+end
+
+const SIN_TABLE = make_sin_table()
+-- 512 bytes of static data; no runtime cost
+```
+
+`bake do` is the same idea inline, without a named function:
+
+```
+const PALETTE = bake do
+  let p: [u8; 16] = [0; 16]
+  for i in 0..16
+    p[i] = ramp_to_palette(i)
+  end
+  p
 end
 ```
 
-The asm escape hatch is the **last resort** — if you find yourself
-using it more than 2-3 times in a project, the compiler is missing a
-codegen optimization and you should file an issue.
+**Restrictions on bake bodies.** The bake interpreter is a strict
+subset of the runtime:
+
+- **No MMIO access.** Reading or writing a binding annotated `@addr`
+  is a compile error inside `bake` code. The hardware doesn't exist
+  at compile time.
+- **No `asm "..."` statements.** Same reason — no VM at compile time.
+- **No `@interrupt` handlers triggered.** Bake runs in a pure
+  evaluator with no scheduler.
+- **No calls to non-`bake` functions** except a curated set of pure
+  stdlib helpers (`math.*` arithmetic + fixed-point routines). The
+  compiler errors on calls to functions it can't prove
+  side-effect-free. Other `bake` functions can call each other freely.
+- **No `mem.*` raw memory access** — `read_*`, `write_*`, `memcpy`,
+  `memset`, `peek`, `poke`, `addr_of` all have no compile-time
+  meaning. Bake code operates on language-level values only.
+- **No `defer`, no `@volatile`.** Both are runtime-only concepts.
+- **`const` references and literals** are readable freely.
+
+The bake interpreter is finite: it has an instruction budget
+(default: 100 million micro-steps) to prevent infinite loops at
+compile time. Exceeding the budget is a compile error with a
+diagnostic pointing at the source.
+
+**Output types.** Any value that has a constant runtime
+representation can be baked: `[T; N]`, tuples, structs containing
+only bakeable fields, primitive integers, `bool`, `str` (interned in
+static data). Classes are **not** bakeable — vtable pointers can't
+be resolved until link time. `Vec(T)` is not bakeable either (heap
+allocation has no compile-time meaning); use `[T; N]` instead.
+
+**Lifetime.** A baked value is in static data, just like a string
+literal. It lives in ROM at runtime and cannot be mutated. Assigning
+to a `let` initialized from a `bake` result copies the bytes into a
+mutable location:
+
+```
+const READONLY_TABLE = bake make_sin_table()      -- in ROM
+let scratch_table = bake make_sin_table()         -- copied to mutable slot
+
+READONLY_TABLE[0] = 1   -- COMPILE ERROR: bake result is const
+scratch_table[0] = 1    -- OK
+```
+
+The `bake` keyword cannot be combined with `@cold`, `@inline`,
+`@interrupt`, `@bank`, or `@no_capture` — those describe runtime
+codegen and have no meaning for compile-time evaluation.
 
 ---
 
@@ -862,7 +1092,7 @@ Same model as JavaScript / TypeScript `const`. Old-school BASIC's
 matters and the compiler can help catch reassignment bugs.
 
 ```
-const PI_FIXED = 0x0324       -- comptime, inlined
+const PI_FIXED = $0324       -- comptime, inlined
 const player_name = read_input()  -- runtime, but read-only
 player_name = "x"             -- compile error: cannot reassign const
 ```
@@ -888,8 +1118,8 @@ out if the shape doesn't match), use `match` with an early-return:
 
 ```
 match item
-  case Item.Potion(n) then heal(n)
-  case _              then return
+  case Item.Potion(n) => heal(n)
+  case _              => return
 end
 ```
 
@@ -912,6 +1142,23 @@ x++         -- statement only — sugar for x += 1
 x--         -- statement only — sugar for x -= 1
 ```
 
+**MMIO writes** — when `x` is a global annotated `@addr` (and
+typically `@volatile`), assignment compiles to a real store at the
+pinned address. No special syntax needed:
+
+```
+@addr $FE40
+@volatile
+let DISPCTL: u8 = 0
+
+DISPCTL = $42        -- writes byte $42 to address $FE40
+DISPCTL |= $80       -- read-modify-write through the pin
+```
+
+The `@volatile` annotation (§3.7.1) guarantees both reads and writes
+are real memory operations (never cached in a register, never elided
+by dead-store optimization).
+
 `++` and `--` are **statements**, not expressions. They cannot be
 nested inside another expression:
 
@@ -933,32 +1180,54 @@ no value produced". Go uses the same rule.
 
 | Category | Operators | Notes |
 |----------|-----------|-------|
-| Arithmetic | `+` `-` `*` `/` `%` | `/` and `%` on signed → truncated toward zero |
+| Arithmetic | `+` `-` `*` `/` `%` | `/` and `%` on signed → truncated toward zero. Overflow: trap in debug, wrap in release (see below). |
+| Arithmetic (explicit wrap) | `+%` `-%` `*%` | Always wrap on overflow, in any build mode. Use when wrap is intentional (RNG step, hash mixing). |
+| Arithmetic (saturate) | `+\|` `-\|` `*\|` | Clamp to the type's min/max on overflow, in any build mode. Use when saturation is the correct semantics (HP after damage, audio mix levels). |
 | Comparison | `==` `!=` `<` `<=` `>` `>=` | All return `bool` |
 | Logical | `and` `or` `not` | Short-circuit evaluation. `not` is unary. |
 | Bitwise | `&` `\|` `^` `<<` `>>` `~` | Map directly to ISA `and` / `or` / `xor` / `shl` / `shr` / `not`. `~` is unary bitwise NOT. |
+| Reference | `&` (prefix) | `&x` takes a typed reference to `x`. See §3.4.4. |
 | Range | `..` `..=` | See §4.5. Produce range values (built-in special type). |
 | Type test | `is` | `value is EnumVariant` — see §3.6. |
+| Type cast | `as` | `value as T` converts between numeric types — see §3.5.1. |
+
+**Overflow on plain arithmetic** (`+`, `-`, `*`):
+
+- **Debug builds** (`gero build`, default): the compiler emits an
+  overflow check. On overflow, the program traps via fault vector
+  `$02` with a diagnostic pointing at the source location.
+- **Release builds** (`gero build --release`): the check is elided
+  and the operation wraps two's-complement. Use `+%` / `+|` to make
+  the wrap or saturate intent explicit when the choice matters.
+
+Saturating `+|` on signed types clamps to `[T::MIN, T::MAX]` of the
+result type; on unsigned, clamps to `[0, T::MAX]`. The intermediate
+computation uses one bit of extra width to detect the overflow cheaply
+on the gero VM's add-with-carry.
 
 **Precedence (highest to lowest):**
 
-1. Unary: `-` `not` `~`
-2. `*` `/` `%`
-3. `+` `-`
-4. `<<` `>>`
-5. `&`
-6. `^`
-7. `\|`
-8. Comparison: `==` `!=` `<` `<=` `>` `>=`
-9. `and`
-10. `or`
-11. `..` `..=`
-12. Assignment (`=`, `+=`, etc. — right-associative)
+1. Unary prefix: `-` `not` `~` `&`
+2. `as` (cast)
+3. `*` `/` `%` `*%` `*|`
+4. `+` `-` `+%` `-%` `+|` `-|`
+5. `<<` `>>`
+6. `&` (bitwise AND — context disambiguates from prefix `&`)
+7. `^`
+8. `\|`
+9. Comparison: `==` `!=` `<` `<=` `>` `>=`
+10. `is`
+11. `and`
+12. `or`
+13. `..` `..=`
+14. Assignment (`=`, `+=`, etc. — right-associative)
+
+Wrapping (`+%`) and saturating (`+|`) operators share their plain
+counterpart's precedence — they're not "promoted" relative to `+`.
 
 Same precedence as C / Rust for bitwise vs comparison (low) and
 shifts vs arithmetic (low). Use parens when in doubt — `if (flags &
-MASK) == TARGET then` reads better than relying on precedence
-memory.
+MASK) == TARGET` reads better than relying on precedence memory.
 
 #### 4.2.2 Discarding a value
 
@@ -1011,69 +1280,73 @@ returns; `return` propagates to the enclosing function.
 ### 4.4 Conditionals
 
 ```
-if cond then
+if cond
   body
 end
 
-if cond then
+if cond
   body
 else
   other
 end
 
-if cond then
+if cond
   body
-else if cond2 then
+else if cond2
   other
 else
   default
 end
 ```
 
-No parentheses around conditions. Lua-style.
+No parentheses around conditions, no `then` keyword. The condition
+expression ends at the newline; the body starts on the next line.
 
 #### 4.4.1 `if let`
 
 Pattern-match in conditional position. Bindings introduced by the
-pattern are in scope inside the `then` branch (and only there):
+pattern are in scope inside the truthy branch (and only there):
 
 ```
-if let Item.Potion(n) = item then
+if let Item.Potion(n) = item
   drink(n)
 end
 
-if let Event.MouseClick(x, y) = e when x < 128 then
+if let Event.MouseClick(x, y) = e when x < 128
   hit_left(x, y)
 end
 ```
 
 Pattern syntax = §4.8.1; `when` guards are accepted (§4.8.2). When
-the pattern doesn't match, the `then` branch is skipped (and `else`
+the pattern doesn't match, the truthy branch is skipped (and `else`
 runs if present).
 
 ### 4.5 Loops
 
 ```
-while cond do
+while cond
   body
 end
 
-for i in 0..=10 do          -- inclusive 0..10
+for i in 0..=10              -- inclusive 0..10
   body
 end
 
-for i in 0..10 do           -- exclusive (0..9)
+for i in 0..10               -- exclusive (0..9)
   body
 end
 
-for i in 0..=100 step 5 do  -- explicit step
+for i in 0..=100 step 5      -- explicit step
   body
 end
 
-for item in collection do
+for item in collection
   body
 end
 ```
+
+No `do` keyword after the head — the condition / range expression
+ends at the newline, body starts on the next line.
 
 `break` and `continue` work in any loop.
 
@@ -1099,8 +1372,8 @@ checked to match. Runtime slot: 4 × `sizeof(T)` + 1 byte for the
 inclusive flag (padded to the next 2-byte boundary).
 
 ```
-for byte_val in 0u8..=255u8 do            -- iterate every byte
-for tile_id in 0i16..=tile_count do
+for byte_val in 0u8..=255u8              -- iterate every byte
+for tile_id in 0i16..=tile_count
 ```
 
 Methods:
@@ -1111,7 +1384,7 @@ Methods:
 | `r.empty()` | `bool` | True if no elements would be produced (e.g. `5..=2`). |
 | `r.len()` | `u16` | Number of elements that would be visited. |
 
-`for x in r do` is special-cased by the compiler — no allocation,
+`for x in r` is special-cased by the compiler — no allocation,
 no iterator object. User-defined iterables ship via the iterator
 protocol; see §4.5.3.
 
@@ -1121,11 +1394,11 @@ Loop while a pattern keeps matching. The bindings refresh each
 iteration:
 
 ```
-while let Event.KeyDown(k) = poll_event() do
+while let Event.KeyDown(k) = poll_event()
   handle_key(k)
 end
 
-while let Item.Potion(n) = inventory.next() when n > 0 do
+while let Item.Potion(n) = inventory.next() when n > 0
   drink(n)
 end
 ```
@@ -1133,9 +1406,9 @@ end
 Equivalent rewrite (longer) for the keydown loop:
 
 ```
-while true do
+while true
   let evt = poll_event()
-  if let Event.KeyDown(k) = evt then
+  if let Event.KeyDown(k) = evt
     handle_key(k)
   else
     break
@@ -1160,7 +1433,9 @@ class Inventory
   let cursor: u16 = 0
 
   def next(self) -> Item?
-    if self.cursor >= self.count then return nil end
+    if self.cursor >= self.count
+      return nil
+    end
     let item = self.items[self.cursor]
     self.cursor += 1
     return item
@@ -1168,32 +1443,81 @@ class Inventory
 end
 
 let inv = Inventory.new()
-for item in inv do
+for item in inv
   use(item)
 end                  -- terminates when inv.next() returns nil
 ```
 
-**Desugaring.** `for x in expr do body end` compiles to:
+**Desugaring.** `for x in expr <body> end` compiles to:
 
 ```
 let __it = expr
-while true do
+while true
   let __v = __it.next()
-  if __v == nil then break end
+  if __v == nil
+    break
+  end
   let x = __v
-  body
+  <body>
 end
 ```
 
 The iterator value is the expression itself — there's no separate
-"iterator object". Iteration is destructive (the instance's own
-cursor advances). To iterate the same data twice, instantiate
-twice or expose a `reset()` method on your class.
+"iterator object". **Iteration is destructive**: the instance's own
+cursor advances during the loop. After `for item in inv … end`, `inv`
+is at its end; a second loop produces nothing until `inv` is reset.
+To iterate the same data twice, instantiate twice or expose a
+`reset()` method on your class:
+
+```
+for item in inv             -- first pass: iterates 0..count
+  use(item)
+end
+for item in inv             -- second pass: empty! cursor already at count
+  use(item)
+end
+
+inv.cursor = 0              -- manual reset
+for item in inv             -- now this works again
+  use(item)
+end
+```
+
+This is intentional — `next(self) -> T?` is the simplest possible
+iterator protocol on a 16-bit target. The user is responsible for
+reset semantics if reuse is needed.
 
 **Built-ins** (`Range`, `[T; N]`, `str`, `Vec(T)`) are special-cased
 by the compiler — `for-in` over them emits direct memory access
 with no `next()` call. The user-visible model is identical to a
 custom iterator; the special-case is invisible.
+
+#### 4.5.4 Labeled loops
+
+A loop may carry a `:label` after its head; `break :label` and
+`continue :label` target the labeled loop instead of the innermost:
+
+```
+for y in 0..height :rows
+  for x in 0..width
+    if hit_wall(x, y)
+      break :rows               -- exits the outer loop
+    end
+    if skip_column(x)
+      continue :rows             -- next y, not next x
+    end
+  end
+end
+```
+
+The label is a lowercase identifier. Unlabeled `break` / `continue`
+keep targeting the innermost loop. A `break :unknown` referencing a
+non-existent label is a compile error. Labels do not leak into the
+expression namespace — they're a loop-local annotation.
+
+`while` and `for-in` both accept labels; the syntax is `<head>
+:label` (the label trails after the iterable / condition, before the
+newline).
 
 ### 4.6 Functions
 
@@ -1210,7 +1534,9 @@ end
 
 -- recursion: name is in scope inside its own body
 def fib(n: i16) -> i16
-  if n < 2 then return n end
+  if n < 2
+    return n
+  end
   return fib(n - 1) + fib(n - 2)
 end
 ```
@@ -1236,7 +1562,84 @@ let r = apply(add, 3, 4)   -- 7
 The function-pointer type is spelled `fn(args) -> ret` in
 annotations. At runtime it's a 16-bit code address.
 
-#### 4.6.1 Method calls and chaining
+#### 4.6.1 Tail-call optimization
+
+When a function's last action before returning is `return f(args)`
+where `f` is either the current function (self) or another function
+of the same parameter shape (sibling), the compiler reuses the
+current stack frame instead of pushing a new one. This is **the
+only** tail-call shape optimized — full Scheme-style TCO across all
+call positions is out of scope.
+
+```
+def count_down(n: i16)
+  if n == 0
+    return
+  end
+  print n
+  return count_down(n - 1)        -- TCO: reuses frame, no stack growth
+end
+
+def alt_a(n: i16) -> i16
+  if n == 0
+    return 0
+  end
+  return alt_b(n - 1)             -- sibling TCO: same param shape
+end
+def alt_b(n: i16) -> i16
+  if n == 0
+    return 1
+  end
+  return alt_a(n - 1)
+end
+```
+
+TCO does **not** apply to:
+
+- `return f(args) + 1` — there is work after the call.
+- `return f(args)` where `f` has a different parameter shape — the
+  frame layout differs.
+- Function-pointer calls (`return op(x)` where `op` is a variable) —
+  the target isn't known at compile time.
+
+Use `gero check --verbose` to confirm a tail call was optimized.
+Non-tail recursion (`fib`-style) is unaffected — each call still
+pushes a frame. Deep non-tail recursion will overflow the gero VM
+stack (typically `$0100..$0FFF`, 4 KB); rewrite as a loop when
+depth is unbounded.
+
+#### 4.6.2 Variadic parameters
+
+The last parameter of a `def` may be variadic, spelled `args: ...`:
+
+```
+def log(level: u8, fmt: str, args: ...)
+  print level, " ", format(fmt, args)
+end
+
+log(1, "player at $(d:3d), $(d:3d)", x, y)
+```
+
+Inside the body, `args` is a **tuple** containing the supplied
+arguments. There is no runtime length field — the compiler knows
+the arity at each call site and emits a per-call specialization
+sharing the function body. The arity must be ≥ 0 (zero variadic
+args is allowed).
+
+The format-spec language (§3.2.2) understands varargs: `format(fmt,
+args)` forwards a varargs tuple positionally. User-defined helpers
+follow the same convention.
+
+Restrictions:
+
+- Only the **last** parameter may be variadic.
+- A variadic parameter has **no default value** — caller supplies
+  zero or more positional args of the expected type.
+- All variadic args must be **the same statically-known type** (or
+  satisfy a common annotation). Mixed-type varargs aren't supported;
+  for heterogeneous data, pass a tuple or struct explicitly.
+
+#### 4.6.3 Method calls and chaining
 
 Methods on classes (and stdlib helpers spelled as methods) call with
 dot notation:
@@ -1275,7 +1678,51 @@ Lambdas are first-class function values (same as named `def`s) —
 assign, pass, return, store. They differ from `def` only in being
 unnamed and inline.
 
-#### 4.7.1 Static lexical scope (closures)
+#### 4.7.1 Short lambda form
+
+For single-expression lambdas (the common case in `map`, `filter`,
+`fold`), gero-lang accepts a Rust-style short form:
+
+```
+|x| x * 2                           -- one param, expression body
+|x, y| x + y                        -- multiple params
+|| read_input()                     -- zero params
+|x: i16| -> i16  x * 2              -- explicit types (rare; usually inferred)
+```
+
+The body is a **single expression**, not a block — there is no
+`return` keyword, no `end` terminator. The expression's value is the
+lambda's return value.
+
+```
+let doubled = xs.map(|x| x * 2)
+let evens   = xs.filter(|x| x % 2 == 0)
+let total   = xs.fold(0, |acc, x| acc + x)
+```
+
+For multi-statement bodies, drop back to the long form:
+
+```
+let summary = items.map(lambda (item: Item) -> str
+  let n = format_count(item.count)
+  let name = item.display_name()
+  return name + " x" + n
+end)
+```
+
+Or wrap the work in a `do … end` expression so the short form still
+applies:
+
+```
+let labels = items.map(|item| do
+  let n = format_count(item.count)
+  item.display_name() + " x" + n
+end)
+```
+
+Both lambda forms have identical capture semantics (see §4.7.2).
+
+#### 4.7.2 Static lexical scope (closures)
 
 All functions — `def` and `lambda` alike — close over the lexical
 scope they were defined in. Free variables in the body resolve to the
@@ -1309,7 +1756,7 @@ The promotion decision is automatic — the programmer doesn't
 annotate. To inspect the choice, `gero check --verbose` reports
 which `let` bindings were promoted.
 
-#### 4.7.2 Inline scoped computation: use `do … end`
+#### 4.7.3 Inline scoped computation: use `do … end`
 
 Older lang traditions use Immediately Invoked Lambda Expressions
 (IILEs) for "compute a value with some scratch state". gero-lang
@@ -1325,7 +1772,7 @@ end
 
 let board = do
   let b: [u8; 64] = [0; 64]
-  for i in 0..8 do
+  for i in 0..8
     b[i * 8 + i] = 1   -- diagonal
   end
   b
@@ -1365,17 +1812,17 @@ patterns, and compile-time exhaustiveness checking.
 
 ```
 match item
-  case Item.Potion(n) when n > 50 then
+  case Item.Potion(n) when n > 50 =>
     print "big potion"
-  case Item.Potion(_) then
+  case Item.Potion(_) =>
     print "small potion"
-  case _ then
+  case _ =>
     print "not a potion"
 end
 ```
 
 The guard runs only after the pattern matches; failure falls through
-to the next arm.
+to the next arm. The arm separator is `=>` (fat arrow), not `then`.
 
 #### 4.8.3 Exhaustiveness
 
@@ -1384,13 +1831,13 @@ unhandled and there's no wildcard arm:
 
 ```
 match item
-  case Item.Sword then ...
-  case Item.Potion(_) then ...
+  case Item.Sword => ...
+  case Item.Potion(_) => ...
   -- ERROR: missing case for Item.Key
 end
 ```
 
-Add a `case _ then ...` to discharge the warning, OR list every
+Add a `case _ => ...` to discharge the warning, OR list every
 variant explicitly. For non-enum scrutinees (integers, strings),
 exhaustiveness can't be checked — the compiler requires a wildcard
 arm or warns.
@@ -1407,19 +1854,19 @@ end
 
 def handle(e: Event)
   match e
-    case Event.Quit then
+    case Event.Quit =>
       cleanup()
-    case Event.KeyDown(k) when k == 0x1B then       -- ESC
+    case Event.KeyDown(k) when k == $1B =>       -- ESC
       cleanup()
-    case Event.KeyDown(_) then
+    case Event.KeyDown(_) =>
       -- ignore other keys
-    case Event.MouseClick(x, y) when x < 128 then
+    case Event.MouseClick(x, y) when x < 128 =>
       hit_left_pane(x, y)
-    case Event.MouseClick(x, y) then
+    case Event.MouseClick(x, y) =>
       hit_right_pane(x, y)
-    case Event.Tick(f) when f % 60 == 0 then
+    case Event.Tick(f) when f % 60 == 0 =>
       one_second_tick()
-    case Event.Tick(_) then
+    case Event.Tick(_) =>
       -- frame tick, no per-second action
   end
 end
@@ -1431,7 +1878,7 @@ end
   tag byte
 - **With payloads**: dispatch on tag, then bind locals from payload
   bytes, then evaluate guard if present
-- **Or patterns**: expanded to `case A then X case B then X`
+- **Or patterns**: expanded to `case A => X case B => X`
   (compiler dedupes the body if it can)
 - **Range patterns**: emit `cmp` + bounded jumps
 
@@ -1445,7 +1892,7 @@ end
 | Want to handle the no-match case inline (else branch) | `if let` |
 | Pattern is in a loop draining a stream | `while let` |
 | Want guards with multiple cases | `match` (single-case guards work in `if let` too) |
-| Single pattern but failure should bail (return / break) | `match` with `case _ then return` (or @noreturn helper) |
+| Single pattern but failure should bail (return / break) | `match` with `case _ => return` (or @noreturn helper) |
 
 In short: `match` is the dispatcher; `if let` / `while let` / `let
 else` are sugar for the single-pattern shapes. Reach for `match`
@@ -1468,7 +1915,7 @@ without imports, parens, or `io.print(…)` ceremony — exactly the
 shape a 12-year-old learning to code on the gtx-16 should hit on
 day one. The trade-off is intentional.
 
-Compiles to a host-provided syscall (`int 0x10`). The host's printer
+Compiles to a host-provided syscall (`int $10`). The host's printer
 implementation defines the output channel (gtx-16 prints to a debug
 console; CLI tools print to stdout).
 
@@ -1502,10 +1949,12 @@ body, `match`-arm body, `lambda` body). The deferred statement runs
 when that block exits, not when the function returns.
 
 ```
-while cond do
+while cond
   let frame = acquire()
   defer release(frame)      -- runs at the bottom of every iteration
-  if early then break end   -- release still runs before the break
+  if early
+    break                   -- release still runs before the break
+  end
   process(frame)
 end
 ```
@@ -1524,7 +1973,7 @@ defer c()
 via an early `return` that's nested in deeper blocks below the
 defer — every exit path through this block fires the cleanup.
 
-**Exit paths NOT covered.** Hardware faults (gero's `int 0x02`-style
+**Exit paths NOT covered.** Hardware faults (gero's `int $02`-style
 traps — out-of-bounds, nil-deref, div-by-zero). Defers do **not**
 run on fault. Faults are terminal in gero; no user-level recovery
 path runs.
@@ -1544,6 +1993,70 @@ it routes the jump through a generated cleanup label so the same
 emission code is shared. Zero runtime overhead on the common
 no-defer path.
 
+**Bytecode cost.** A block with `N` defers and `M` distinct exit
+paths emits one shared cleanup tail (`N` instructions on average) and
+`M` jumps routed through it — total ≈ `N + M` bytecode instructions
+per block on top of the bare block, regardless of how often the
+exits are taken at runtime. The cleanup tail is reached by the
+jumps via the cleanup label; each `return` / `break` / `continue`
+becomes one branch. The runtime cost per exit is the LIFO-walk of
+the cleanup tail itself (`N` calls + the original control transfer).
+For typical use (1-2 defers, 1-3 exits), the cost is small enough
+to be invisible at the per-frame scale; for hot loops that defer
+inside the loop body, the defer cost runs **once per iteration** —
+budget accordingly.
+
+### 4.11 Inline assembly (`asm`)
+
+`asm "<instruction>"` is a builtin statement that emits a single
+bytecode instruction directly. It's the escape hatch into the
+gero ISA for cases the compiler can't express: ISR atomic
+windows, hand-tuned hot loops, cycle-counted timing tricks, or
+direct manipulation of the VM's register / flag state.
+
+```
+def fast_swap(a: u16, b: u16)
+  asm "swap {a}, {b}"
+end
+
+def fence()
+  asm "memfence"
+end
+```
+
+**Substitution.** Operands inside `{name}` braces resolve to the
+gero-lang local with that name. The compiler validates that the
+local exists and emits the appropriate register / addressing
+reference at the asm slot.
+
+**Constraints.**
+
+- **One instruction per `asm` statement.** Multi-instruction asm
+  blocks are not supported; chain multiple `asm "..."` statements
+  in source order if needed.
+- **Substituted operands must be of a type the instruction accepts**
+  — the assembler validates this at lowering time. Type mismatch
+  is a compile error pointing at the gero-lang local, not the asm
+  string.
+- **No control-flow into / out of an `asm` statement.** The asm
+  instruction must complete normally; no embedded branches, no
+  jumps to labels outside the asm. (The asm statement itself can
+  still affect the VM PC if the instruction is a branch — `asm
+  "ret"` returns from the enclosing function, like any `return`
+  statement would — but the compiler does not analyze this and the
+  user is responsible for the resulting control flow.)
+
+**When to reach for it.** The asm escape hatch is the **last
+resort**. If you find yourself using it more than 2-3 times in a
+real project, the compiler is missing a codegen optimization and
+the right move is to surface the missing feature in the language
+or stdlib. The lifeline is real but it shouldn't carry weight.
+
+For longer cycle-counted routines, write the whole function in
+gero asm (`.gx` source) and link it via the standard linker rules
+— inline `asm` is for the one-instruction sliver of a high-level
+function, not for whole subroutines.
+
 ---
 
 ## 5. Modules
@@ -1557,10 +2070,12 @@ prefix with `local` to keep private.
 ```
 -- file: math.gr
 
-const PI_FIXED = 0x0324      -- π ≈ 3.14159 in 8.8 fixed
+const PI_FIXED = $0324      -- π ≈ 3.14159 in 8.8 fixed
 
 def abs(x: i16) -> i16
-  if x < 0 then return -x end
+  if x < 0
+    return -x
+  end
   return x
 end
 
@@ -1593,22 +2108,59 @@ solves one concrete need:
 | Module | What |
 |--------|------|
 | `math` | `abs`, `min`, `max`, `clamp`, `sqrt_fixed`, fixed-point helpers, `rng()` |
-| `mem`  | `memcpy`, `memset`, `peek`, `poke` (raw VM-level memory ops) |
-| `str`  | `len`, `at`, `cmp`, `concat` (allocated) |
+| `mem`  | typed peek / poke / memcpy / memset / `addr_of` — see §5.3.1 |
+| `str`  | `len`, `at`, `cmp`, `concat` (allocated), `format(fmt, args)` |
 | `bank` | `switch_to(N)`, `current()` — bank manipulation |
-| `test` | `assert(cond, msg?)`, `assert_eq(a, b)` — for `@test` functions |
+| `test` | `assert_eq(a, b)`, `assert_ne(a, b)` — used in `@test` functions |
 
-`assert` is **always in scope** without import — it's a built-in
-pseudo-function that compiles to a conditional `int 0x02`-style
-trap (Invalid-state fault, vector `0x02`) when the condition is
-false. The optional message is included in the diagnostic. Outside
-of `@test` functions, prefer explicit error handling — `assert` is
-for invariants that **should never** fail.
+`assert` and `debug_assert` are **always in scope** without import —
+both are built-in pseudo-functions:
+
+- `assert(cond, msg?)` — always evaluated, in every build mode. On
+  `false`, traps via fault vector `$02` with the optional message
+  in the diagnostic. Use for invariants that **must never fail**
+  in production code.
+- `debug_assert(cond, msg?)` — evaluated in debug builds only.
+  Elided entirely (zero bytecode emitted) under `gero build
+  --release`. Use for pedagogical / development-time checks that
+  shouldn't carry shipping cost.
 
 ```
-assert(self.hp >= 0, "hp went negative")
-assert_eq(items.len(), 4)
+assert(self.hp >= 0, "hp went negative")        -- always live
+debug_assert(items.len() < 1000)                -- debug-only
 ```
+
+#### 5.3.1 `mem` stdlib
+
+```
+mem.read_u8(addr: u16) -> u8
+mem.read_u16(addr: u16) -> u16
+mem.read_i8(addr: u16) -> i8
+mem.read_i16(addr: u16) -> i16
+mem.write_u8(addr: u16, v: u8)
+mem.write_u16(addr: u16, v: u16)
+mem.write_i8(addr: u16, v: i8)
+mem.write_i16(addr: u16, v: i16)
+
+mem.memcpy(dst: u16, src: u16, n: u16)
+mem.memset(dst: u16, v: u8, n: u16)
+
+mem.addr_of(x) -> u16
+mem.peek(addr: u16) -> u8           -- alias for read_u8
+mem.poke(addr: u16, v: u8)          -- alias for write_u8
+```
+
+`mem.read_u16` / `mem.write_u16` follow the gero VM convention:
+little-endian, low byte at `addr`, high byte at `addr + 1`. Signed
+variants (`read_i16`, `write_i16`) use the same byte order with
+two's-complement interpretation.
+
+`mem.addr_of(x)` returns the runtime address of `x` as a plain `u16`.
+For typed reference passing, use `&T` (§3.4.4) — `addr_of` is the raw
+escape for the cases where the bytes themselves matter (DMA setup,
+asm bridge, manual MMIO layout). Calling `addr_of` on a `let` local
+returns its stack-slot address, valid until the enclosing scope ends;
+calling on a `const` returns its static-data address (always valid).
 
 Host-specific modules (`input`, `display`, `audio` for gtx-16) live
 outside the gero stdlib — gtx-16 ships its own header modules.
@@ -1636,7 +2188,7 @@ class Player
 
   def take_damage(self, amount: i16)
     self.hp = self.hp - amount
-    if self.hp <= 0 then
+    if self.hp <= 0
       self.die()
     end
   end
@@ -1672,6 +2224,40 @@ Single inheritance only. Method resolution: walks the chain bottom
 up, first hit wins. `super.method(args)` calls the parent's version
 explicitly.
 
+**Field shadowing and `super.<field>`.** A subclass may declare a
+field with the same name as a parent field — the subclass field
+shadows the parent's for unqualified access (`self.value`). The
+shadowed parent field remains addressable via `super.<field>`:
+
+```
+class Parent
+  let value: i16 = 10
+end
+
+class Child extends Parent
+  let value: i16 = 20    -- shadows Parent.value
+
+  def report(self)
+    print self.value      -- 20 (own field)
+    print super.value     -- 10 (parent field, still in memory)
+  end
+end
+```
+
+`super.<field>` follows the same chain-walking resolution as
+`super.<method>` — first ancestor that declares the named field
+wins. Layout-wise, both fields occupy distinct slots in the instance
+memory (Child instances have one `value` for the parent layout +
+one for the subclass).
+
+**Visibility default.** Class members (fields and methods) are
+**public by default** — no `@public` annotation needed. This is
+intentional: on a 16-bit target the cycle cost of enforcing
+encapsulation is paid in code size and call indirection, and the
+target audience (game logic, not library API design) gets more value
+from terse direct access than from contract-enforcement. Mark
+members `@private` (§3.7.6) when the encapsulation actively matters.
+
 OOP compiles to:
 - A vtable in static data per class (function pointers indexed by
   method ID)
@@ -1700,22 +2286,22 @@ Old-school enough — same model NES games used for actor systems.
 ### 7.2 Memory layout of a compiled program
 
 ```
-0x0000..0x00FF  zero page (stdlib uses for fast globals)
-0x0100..0x0FFF  conventional stack range
-0x1000..0x10FF  IVT (compiler emits handlers if program declares them)
-0x1100..       compiled code
+$0000..$00FF  zero page (stdlib uses for fast globals)
+$0100..$0FFF  conventional stack range
+$1000..$10FF  IVT (compiler emits handlers if program declares them)
+$1100..       compiled code
               ↓
               user state (allocated globals, mutable data)
               ↓
-0x7FFF (or wherever code ends)
+$7FFF (or wherever code ends)
 
-0x8000..0xBFFF  Mapped region A (plain RAM; on gtx-16, carts
+$8000..$BFFF  Mapped region A (plain RAM; on gtx-16, carts
                                   typically store sprite sheets here)
-0xC000..0xFEFF  bank window (compiler emits per-bank if program
+$C000..$FEFF  bank window (compiler emits per-bank if program
                               uses banked modules)
-0xFE40..0xFEFF  gtx-16 IO surface (display, drawing, audio,
+$FE40..$FEFF  gtx-16 IO surface (display, drawing, audio,
                                     input — see gtx-16 §14)
-0xFF00..0xFFFF  IO page tail (RNG, timing, KV store, mouse)
+$FF00..$FFFF  IO page tail (RNG, timing, KV store, mouse)
 ```
 
 ### 7.3 Banked modules
@@ -1772,7 +2358,9 @@ print "Hello, world!"
 
 ```
 def fib(n: i16) -> i16
-  if n < 2 then return n end
+  if n < 2
+    return n
+  end
   return fib(n - 1) + fib(n - 2)
 end
 
@@ -1794,7 +2382,7 @@ class GameState
   let bag: [u8; 64]
 
   def init(self)
-    if save.exists() then
+    if save.exists()
       save.load(self)
     else
       self.player_x = 128
@@ -1804,10 +2392,18 @@ class GameState
   end
 
   def update(self)
-    if input.up()    then self.player_y = self.player_y - 1 end
-    if input.down()  then self.player_y = self.player_y + 1 end
-    if input.left()  then self.player_x = self.player_x - 1 end
-    if input.right() then self.player_x = self.player_x + 1 end
+    if input.up()
+      self.player_y -= 1
+    end
+    if input.down()
+      self.player_y += 1
+    end
+    if input.left()
+      self.player_x -= 1
+    end
+    if input.right()
+      self.player_x += 1
+    end
   end
 
   def draw(self)
@@ -1819,7 +2415,7 @@ end
 
 let state = GameState()
 
-while true do
+while true
   state.update()
   state.draw()
 end
@@ -1855,3 +2451,16 @@ and the compiler simple; the absence isn't a missing feature.
   checks.
 - **`++` / `--` as expressions.** They're statements only (§4.2);
   no `let y = x++` ambiguity.
+- **Raw pointers `*T` with arithmetic.** References (`&T`, §3.4.4)
+  cover the "pass without copy" use case without arithmetic. For
+  raw `u16` addresses (asm bridge, DMA setup), `mem.addr_of(x)` and
+  `mem.read_*` / `mem.write_*` (§5.3.1) are the explicit escape;
+  there is no `*T + 1` syntax.
+- **Borrow checker.** References don't track exclusive vs shared
+  borrows; lifetime checking is limited to "no return ref to stack
+  local" (§3.4.4). The cart audience doesn't need Rust-grade memory
+  safety on top of what `T?` and explicit checks already provide.
+- **`then` / `do` after block heads.** Removed for source noise
+  reduction; the parser is recursive-descent and doesn't need them.
+  See §4.4 / §4.5. (Lua keeps them for LR-parser reasons that don't
+  apply here.)
