@@ -323,38 +323,33 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // ----- Lint scripts ----------------------------------------------------
+    // ----- Lint ------------------------------------------------------------
+    //
+    // The whole-tree lint runs through a single Zig binary that reads
+    // every .zig file once and runs every rule against the in-memory
+    // lines. ~10× faster than the per-script bash setup (which each
+    // walked the tree independently and check-unused did O(decls × tree)
+    // grepping). The bash scripts in scripts/check-*.sh are kept for
+    // lefthook pre-commit (per-file mode is already fast there).
 
-    const check_imports = b.addSystemCommand(&.{ "bash", "scripts/check-imports.sh" });
-    b.step("imports", "Forbid @import past one parent").dependOn(&check_imports.step);
-
-    const check_unused = b.addSystemCommand(&.{ "bash", "scripts/check-unused.sh" });
-    b.step("unused", "Detect unused public exports").dependOn(&check_unused.step);
-
-    const check_strict = b.addSystemCommand(&.{ "bash", "scripts/check-strict.sh" });
-    b.step("strict", "Forbid anyerror, *anyopaque in pub APIs, unjustified casts").dependOn(&check_strict.step);
-
-    const check_mirror = b.addSystemCommand(&.{ "bash", "scripts/check-mirror.sh" });
-    b.step("mirror", "Verify every src module has its mirror test").dependOn(&check_mirror.step);
-
-    const check_test_alloc = b.addSystemCommand(&.{ "bash", "scripts/check-testing-allocator.sh" });
-    b.step("testing-allocator", "Require std.testing.allocator in alloc-touching tests").dependOn(&check_test_alloc.step);
-
-    const check_docs = b.addSystemCommand(&.{ "bash", "scripts/check-docs.sh" });
-    b.step("docs", "Require /// doc comments on every public declaration").dependOn(&check_docs.step);
-
-    const check_naming = b.addSystemCommand(&.{ "bash", "scripts/check-naming.sh" });
-    b.step("naming", "Enforce PascalCase for type-returning fns, camelCase otherwise").dependOn(&check_naming.step);
+    const lint_mod = b.createModule(.{
+        .root_source_file = b.path("tools/lint/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const lint_exe = b.addExecutable(.{
+        .name = "gero-lint",
+        .root_module = lint_mod,
+    });
+    // Install so lefthook's pre-commit hook can call the staged-file
+    // form via `./zig-out/bin/gero-lint <files>`.
+    b.installArtifact(lint_exe);
+    const lint_run = b.addRunArtifact(lint_exe);
+    lint_run.setCwd(b.path("."));
 
     const lint_step = b.step("lint", "Run every static check CI runs");
     lint_step.dependOn(&fmt_check.step);
-    lint_step.dependOn(&check_imports.step);
-    lint_step.dependOn(&check_unused.step);
-    lint_step.dependOn(&check_strict.step);
-    lint_step.dependOn(&check_mirror.step);
-    lint_step.dependOn(&check_test_alloc.step);
-    lint_step.dependOn(&check_docs.step);
-    lint_step.dependOn(&check_naming.step);
+    lint_step.dependOn(&lint_run.step);
 
     // ----- Example integration tests ---------------------------------------
     //
