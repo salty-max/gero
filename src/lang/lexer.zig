@@ -28,7 +28,7 @@ pub const Token = struct {
     pub const Kind = enum {
         // -- literals + identifiers ---------------------------
         ident,
-        /// Integer literal — decimal, hex (`0x…`), or binary
+        /// Integer literal — decimal, hex (`$…`), or binary
         /// (`0b…`). Underscores allowed as digit separators
         /// (`1_000`, `0b1010_0101`). Optional leading `-` is
         /// captured into the token when the lexer is at an
@@ -38,8 +38,8 @@ pub const Token = struct {
         /// Fixed-point literal — decimal with fractional part
         /// (`1.5`, `0.125`, `3.14159`). Pre-encoded as Q8.8 in the
         /// `value` field: top byte is the integer part, bottom byte
-        /// is `round(frac * 256)`. `1.5` → `0x0180`, `0.125` →
-        /// `0x0020`. Negative form via the unary minus operator,
+        /// is `round(frac * 256)`. `1.5` → `$0180`, `0.125` →
+        /// `$0020`. Negative form via the unary minus operator,
         /// not the literal itself.
         fixed_lit,
         /// `@`-prefixed annotation marker. `start` covers the
@@ -69,18 +69,27 @@ pub const Token = struct {
         /// `"` — closes the string literal.
         str_end,
 
-        // -- keywords (28+ per spec §2.6) ---------------------
+        // -- keywords (per spec §2.6) -------------------------
         kw_let,
         kw_const,
         kw_def,
         kw_lambda,
         kw_return,
         kw_if,
+        /// Reserved but no longer a syntactic separator. The parser
+        /// emits a diagnostic if `then` appears after `if` / `elif`
+        /// / `match case` heads (§4.4 / §4.8 no longer use it; bodies
+        /// start on the next line). Kept reserved so identifiers
+        /// can't accidentally shadow it.
         kw_then,
         kw_else,
         kw_elif,
         kw_end,
         kw_while,
+        /// `do` — block opener (`do … end`, §4.3). Still a keyword;
+        /// only its use as a loop-head separator (after `while` /
+        /// `for`) was removed. The parser emits a diagnostic if it
+        /// appears in that position.
         kw_do,
         kw_for,
         kw_in,
@@ -110,6 +119,14 @@ pub const Token = struct {
         /// `defer` — schedule a statement to run when the enclosing
         /// block exits (§4.10). LIFO order across multiple defers.
         kw_defer,
+        /// `asm` — builtin statement for one-instruction inline
+        /// assembly (§4.11). Body is a single string literal with
+        /// `{name}` operand substitution.
+        kw_asm,
+        /// `bake` — compile-time evaluation marker on `def` /
+        /// `do`-block (§3.8). Evaluated by the bake interpreter at
+        /// compile time; result lowered to static data.
+        kw_bake,
 
         // -- punctuation --------------------------------------
         newline,
@@ -179,6 +196,8 @@ pub const Token = struct {
         // -- arrows + range ---------------------------------
         /// `->` — lambda + function-return arrows.
         arrow,
+        /// `=>` — match-arm separator (§4.8): `case PAT => BODY`.
+        fat_arrow,
         /// `..` — exclusive range.
         dot_dot,
         /// `..=` — inclusive range.
@@ -257,6 +276,8 @@ const keyword_table = [_]KeywordEntry{
     .{ .lex = "continue", .kind = .kw_continue },
     .{ .lex = "print", .kind = .kw_print },
     .{ .lex = "defer", .kind = .kw_defer },
+    .{ .lex = "asm", .kind = .kw_asm },
+    .{ .lex = "bake", .kind = .kw_bake },
 };
 
 /// Lookup `name` (already lowercase per the identifier rule) in
@@ -437,18 +458,16 @@ fn lexInteger(state: *State, negative: bool) !void {
     if (state.index + 1 < state.source.len and state.source[state.index] == '0' and
         (state.source[state.index + 1] == 'x' or state.source[state.index + 1] == 'X'))
     {
-        // Hex form.
+        // `0x...` is no longer accepted — gero-lang uses `$...` for
+        // hex literals (§2.4). Consume the digits so the error spans
+        // the whole would-be literal, then report.
         state.index += 2;
-        const digits_start = state.index;
         while (state.index < state.source.len) : (state.index += 1) {
             const b = state.source[state.index];
             if (b == '_') continue;
             if (!isHexDigit(b)) break;
-            value = value * 16 + hexValue(b);
         }
-        if (state.index == digits_start) {
-            try pushError(state, start, "expected hex digit after `0x`", "0x");
-        }
+        try pushError(state, start, "hex literals use `$` (e.g. `$FE40`); `0x` is not accepted", state.source[start..state.index]);
     } else if (state.index + 1 < state.source.len and state.source[state.index] == '0' and
         (state.source[state.index + 1] == 'b' or state.source[state.index + 1] == 'B'))
     {
@@ -818,6 +837,12 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
             const start = state.index;
             state.index += 2;
             try pushToken(&state, .eq_eq, start, state.index, 0);
+            continue;
+        }
+        if (b == '=' and state.index + 1 < source.len and source[state.index + 1] == '>') {
+            const start = state.index;
+            state.index += 2;
+            try pushToken(&state, .fat_arrow, start, state.index, 0);
             continue;
         }
         if (b == '!' and state.index + 1 < source.len and source[state.index + 1] == '=') {

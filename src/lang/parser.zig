@@ -308,40 +308,67 @@ fn parseTopLevel(
     };
 }
 
-/// `@asm("…")` — statement-level inline-assembly escape hatch
-/// (§3.7.7). Consumes the annotation, validates it carries exactly
-/// one string-literal argument, and emits an `asm_stmt` whose `body`
-/// span covers the string literal (including the surrounding
-/// quotes). Codegen reads the literal and performs `{name}`
-/// substitution against the enclosing scope.
-fn emitAsmStmt(
+/// Parse an optional `:label` suffix on a loop head or
+/// `break` / `continue`. Returns `null` when the next token is not
+/// a colon — that's the unlabeled form. Identifiers after `:` must
+/// be plain `[a-z_][a-zA-Z0-9_]*`; the lexer already enforces the
+/// lexical shape.
+pub fn parseOptionalJumpLabel(p: *Parser) ParserError!?ast.Span {
+    if (!p.check(.colon)) return null;
+    p.pos += 1; // consume `:`
+    const tok = try p.expect(.ident, "label identifier");
+    return .{ .start = tok.start, .end = tok.end };
+}
+
+/// Builtin `asm "<instruction>"` statement (§4.11). One instruction
+/// per `asm` statement; the body is captured as a byte span and the
+/// codegen pass performs `{name}` operand substitution. Interpolation
+/// `$(…)` inside the asm body is rejected — the syntax is reserved
+/// for runtime string interpolation, not asm substitution.
+fn emitAsmKeywordStmt(
     p: *Parser,
     statements: *std.ArrayList(ast.Statement),
 ) ParserError!void {
-    const ann = try annotation_mod.parseAnnotation(p);
-    defer {
-        for (ann.args) |a| ast.freeExpr(p.allocator, a);
-        p.allocator.free(ann.args);
-    }
+    const asm_tok = p.peek();
+    p.pos += 1; // consume `asm`
 
-    if (ann.args.len != 1 or ann.args[0].* != .str_lit) {
-        try p.errors.append(p.allocator, core.parseError(
-            "lang_parser",
-            ann.span.start,
-            "@asm expects exactly one string-literal argument",
-            .{ .expected = "@asm(\"...\")", .kind = .syntactic },
-        ));
-        try statements.append(p.allocator, .{ .unknown = .{ .span = ann.span } });
-        try p.requireStatementBoundary();
-        return;
+    if (!p.check(.str_start)) {
+        try p.recordError(
+            "`asm` expects a string literal with the instruction body",
+            "asm \"...\"",
+        );
+        return error.ParseFailed;
     }
+    const open_tok = p.peek();
+    p.pos += 1; // consume `str_start`
 
-    const body_span = ann.args[0].span();
-    try statements.append(p.allocator, .{ .asm_stmt = .{
-        .body = body_span,
-        .span = ann.span,
-    } });
-    try p.requireStatementBoundary();
+    // Body: consume parts up to `str_end`; reject interpolation.
+    while (true) {
+        const t = p.peek();
+        switch (t.kind) {
+            .str_part => p.pos += 1,
+            .str_expr_start => {
+                try p.recordError(
+                    "`$(...)` interpolation is not allowed inside `asm`; use `{name}` operand substitution instead",
+                    "asm body without interpolation",
+                );
+                return error.ParseFailed;
+            },
+            .str_end => {
+                p.pos += 1;
+                try statements.append(p.allocator, .{ .asm_stmt = .{
+                    .body = .{ .start = open_tok.start, .end = t.end },
+                    .span = .{ .start = asm_tok.start, .end = t.end },
+                } });
+                try p.requireStatementBoundary();
+                return;
+            },
+            else => {
+                try p.recordError("malformed asm body", "string content");
+                return error.ParseFailed;
+            },
+        }
+    }
 }
 
 /// Dispatch on the leading token kind. Public so sibling modules
@@ -349,10 +376,9 @@ fn emitAsmStmt(
 /// `while`/`for`/`match` bodies) can recurse back through the same
 /// statement-kind switch.
 ///
-/// Annotations are handled here uniformly: `@asm("…")` emits an
-/// `asm_stmt` directly (§3.7.7 — statement-level escape hatch); any
-/// other `@name(…)` pushes into the pending buffer and the parser
-/// recurses to consume the following decl that will drain it.
+/// Annotations push into the pending buffer and the parser recurses
+/// to consume the following decl that will drain it. (`asm` is now
+/// a builtin statement — see §4.11 — not an annotation.)
 pub fn parseStatement(
     p: *Parser,
     statements: *std.ArrayList(ast.Statement),
@@ -362,8 +388,11 @@ pub fn parseStatement(
             const tok = p.peek();
             const name = p.source[tok.start + 1 .. tok.end];
             if (std.mem.eql(u8, name, "asm")) {
-                try emitAsmStmt(p, statements);
-                return;
+                try p.recordError(
+                    "`@asm(\"...\")` is no longer accepted; use the `asm \"...\"` statement (§4.11)",
+                    "asm \"...\"",
+                );
+                return error.ParseFailed;
             }
             const ann = try annotation_mod.parseAnnotation(p);
             try p.pending_annotations.append(p.allocator, ann);
@@ -399,21 +428,28 @@ pub fn parseStatement(
         .kw_break => {
             const t = p.peek();
             p.pos += 1;
+            const label = try parseOptionalJumpLabel(p);
+            const end: u32 = if (label) |lbl| lbl.end else t.end;
             try statements.append(p.allocator, .{ .break_stmt = .{
-                .span = .{ .start = t.start, .end = t.end },
+                .label = label,
+                .span = .{ .start = t.start, .end = end },
             } });
             try p.requireStatementBoundary();
         },
         .kw_continue => {
             const t = p.peek();
             p.pos += 1;
+            const label = try parseOptionalJumpLabel(p);
+            const end: u32 = if (label) |lbl| lbl.end else t.end;
             try statements.append(p.allocator, .{ .continue_stmt = .{
-                .span = .{ .start = t.start, .end = t.end },
+                .label = label,
+                .span = .{ .start = t.start, .end = end },
             } });
             try p.requireStatementBoundary();
         },
         .kw_print => try statements.append(p.allocator, try stmt_mod.parsePrintStatement(p)),
         .kw_defer => try statements.append(p.allocator, try stmt_mod.parseDeferStatement(p)),
+        .kw_asm => try emitAsmKeywordStmt(p, statements),
         .eof => return,
         else => try stmt_mod.parseExprOrAssignStatement(p, statements),
     }

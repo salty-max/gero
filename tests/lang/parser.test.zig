@@ -185,7 +185,7 @@ test "parse: `not` is unary, binds tighter than `and`" {
 }
 
 test "parse: bitwise NOT (`~`) is unary" {
-    var tree = try parseClean("let x = ~mask & 0xFF");
+    var tree = try parseClean("let x = ~mask & $FF");
     defer tree.deinit();
     const init = tree.program.statements[0].let_decl.init.?;
     try std.testing.expectEqual(ast.BinaryOp.bit_and, init.binary.op);
@@ -363,11 +363,54 @@ test "parse: lambda expression" {
     try std.testing.expect(init.* == .lambda);
 }
 
+test "parse: short lambda `|x| x*2`" {
+    var tree = try parseClean("let f = |x| x * 2");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .lambda);
+    try std.testing.expectEqual(@as(usize, 1), init.lambda.params.len);
+    // Body desugars to a single `return <expr>` statement.
+    try std.testing.expectEqual(@as(usize, 1), init.lambda.body.len);
+    try std.testing.expect(init.lambda.body[0] == .return_stmt);
+}
+
+test "parse: short lambda multi-arg `|x, y| x + y`" {
+    var tree = try parseClean("let add = |x, y| x + y");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .lambda);
+    try std.testing.expectEqual(@as(usize, 2), init.lambda.params.len);
+}
+
+test "parse: short lambda zero-arg `|| read_input()`" {
+    var tree = try parseClean("let f = || read_input()");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .lambda);
+    try std.testing.expectEqual(@as(usize, 0), init.lambda.params.len);
+}
+
+test "parse: short lambda with explicit types `|x: i16| -> i16 x*2`" {
+    var tree = try parseClean("let f = |x: i16| -> i16 x * 2");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .lambda);
+    try std.testing.expect(init.lambda.params[0].type_ann != null);
+    try std.testing.expect(init.lambda.ret_type != null);
+}
+
+test "parse: short lambda inside `.map(|x| ...)`" {
+    var tree = try parseClean("let r = xs.map(|x| x + 1)");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .method_call);
+}
+
 // ---------- control flow ----------
 
 test "parse: if/then/end" {
     var tree = try parseClean(
-        \\if x > 0 then
+        \\if x > 0
         \\  print x
         \\end
     );
@@ -378,9 +421,9 @@ test "parse: if/then/end" {
 
 test "parse: if/elif/else chain" {
     var tree = try parseClean(
-        \\if x > 0 then
+        \\if x > 0
         \\  print "pos"
-        \\elif x == 0 then
+        \\elif x == 0
         \\  print "zero"
         \\else
         \\  print "neg"
@@ -394,7 +437,7 @@ test "parse: if/elif/else chain" {
 
 test "parse: `if let` pattern binding" {
     var tree = try parseClean(
-        \\if let Item.Potion(n) = item then
+        \\if let Item.Potion(n) = item
         \\  drink(n)
         \\end
     );
@@ -408,7 +451,7 @@ test "parse: `if let` pattern binding" {
 
 test "parse: `if let` with `when` guard" {
     var tree = try parseClean(
-        \\if let Event.Click(x, y) = e when x < 128 then
+        \\if let Event.Click(x, y) = e when x < 128
         \\  hit(x, y)
         \\end
     );
@@ -419,7 +462,7 @@ test "parse: `if let` with `when` guard" {
 
 test "parse: while loop" {
     var tree = try parseClean(
-        \\while i < 10 do
+        \\while i < 10
         \\  i = i + 1
         \\end
     );
@@ -431,7 +474,7 @@ test "parse: while loop" {
 
 test "parse: for-in with range" {
     var tree = try parseClean(
-        \\for i in 0..10 do
+        \\for i in 0..10
         \\  print i
         \\end
     );
@@ -443,7 +486,7 @@ test "parse: for-in with range" {
 
 test "parse: for-in with step" {
     var tree = try parseClean(
-        \\for i in 0..=100 step 5 do
+        \\for i in 0..=100 step 5
         \\  print i
         \\end
     );
@@ -502,7 +545,7 @@ test "parse: bare return" {
 
 test "parse: break + continue" {
     var tree = try parseClean(
-        \\while true do
+        \\while true
         \\  break
         \\  continue
         \\end
@@ -511,6 +554,47 @@ test "parse: break + continue" {
     const body = tree.program.statements[0].while_stmt.body;
     try std.testing.expect(body[0] == .break_stmt);
     try std.testing.expect(body[1] == .continue_stmt);
+}
+
+test "parse: labeled while + break :label" {
+    var tree = try parseClean(
+        \\while true :outer
+        \\  while x < 10
+        \\    break :outer
+        \\  end
+        \\end
+    );
+    defer tree.deinit();
+    const outer = tree.program.statements[0].while_stmt;
+    try std.testing.expect(outer.label != null);
+    const inner_body = outer.body[0].while_stmt.body;
+    try std.testing.expect(inner_body[0].break_stmt.label != null);
+}
+
+test "parse: labeled for + continue :label" {
+    var tree = try parseClean(
+        \\for y in 0..10 :rows
+        \\  for x in 0..10
+        \\    continue :rows
+        \\  end
+        \\end
+    );
+    defer tree.deinit();
+    const outer = tree.program.statements[0].for_stmt;
+    try std.testing.expect(outer.label != null);
+    const inner_body = outer.body[0].for_stmt.body;
+    try std.testing.expect(inner_body[0].continue_stmt.label != null);
+}
+
+test "parse: unlabeled break stays null" {
+    var tree = try parseClean(
+        \\while true
+        \\  break
+        \\end
+    );
+    defer tree.deinit();
+    const body = tree.program.statements[0].while_stmt.body;
+    try std.testing.expect(body[0].break_stmt.label == null);
 }
 
 test "parse: print statement" {
@@ -530,11 +614,11 @@ test "parse: print with multiple args" {
 test "parse: match statement with multiple arms" {
     var tree = try parseClean(
         \\match item
-        \\  case Item.Sword then
+        \\  case Item.Sword =>
         \\    print "sword"
-        \\  case Item.Potion(n) then
+        \\  case Item.Potion(n) =>
         \\    print n
-        \\  case _ then
+        \\  case _ =>
         \\    print "?"
         \\end
     );
@@ -546,7 +630,7 @@ test "parse: match statement with multiple arms" {
 test "parse: match arm with `when` guard" {
     var tree = try parseClean(
         \\match item
-        \\  case Item.Potion(n) when n > 50 then
+        \\  case Item.Potion(n) when n > 50 =>
         \\    print "big"
         \\end
     );
@@ -558,7 +642,7 @@ test "parse: match arm with `when` guard" {
 test "parse: or-pattern" {
     var tree = try parseClean(
         \\match x
-        \\  case 1 | 2 | 3 then
+        \\  case 1 | 2 | 3 =>
         \\    print "small"
         \\end
     );
@@ -571,7 +655,7 @@ test "parse: or-pattern" {
 test "parse: range pattern" {
     var tree = try parseClean(
         \\match x
-        \\  case 0..=15 then
+        \\  case 0..=15 =>
         \\    print "small"
         \\end
     );
@@ -583,7 +667,7 @@ test "parse: range pattern" {
 test "parse: tuple pattern" {
     var tree = try parseClean(
         \\match p
-        \\  case (a, b) then
+        \\  case (a, b) =>
         \\    print a
         \\end
     );
@@ -595,7 +679,7 @@ test "parse: tuple pattern" {
 test "parse: struct pattern with shorthand" {
     var tree = try parseClean(
         \\match p
-        \\  case Player { hp, mp } then
+        \\  case Player { hp, mp } =>
         \\    print hp
         \\end
     );
@@ -608,7 +692,7 @@ test "parse: struct pattern with shorthand" {
 test "parse: variant pattern with binding" {
     var tree = try parseClean(
         \\match e
-        \\  case Event.KeyDown(k) then
+        \\  case Event.KeyDown(k) =>
         \\    print k
         \\end
     );
@@ -722,7 +806,7 @@ test "parse: multiple annotations stack on a single decl" {
 
 test "parse: `@interrupt N` parses on def" {
     var tree = try parseClean(
-        \\@interrupt 0x06
+        \\@interrupt $06
         \\def on_vblank()
         \\  return
         \\end
@@ -1008,7 +1092,7 @@ test "parse: @zero_page on let global" {
 
 test "parse: @addr with hex arg on let global" {
     var tree = try parseClean(
-        \\@addr 0xFE40
+        \\@addr $FE40
         \\let DISPCTL: u8 = 0
     );
     defer tree.deinit();
@@ -1129,17 +1213,17 @@ test "parse: @abstract def with return type, still no body" {
     try std.testing.expect(m.ret_type != null);
 }
 
-test "parse: @asm(\"...\") as a top-level statement" {
-    var tree = try parseClean("@asm(\"swap r1, r2\")");
+test "parse: `asm \"...\"` as a top-level statement" {
+    var tree = try parseClean("asm \"swap r1, r2\"");
     defer tree.deinit();
     try std.testing.expectEqual(@as(usize, 1), tree.program.statements.len);
     try std.testing.expect(tree.program.statements[0] == .asm_stmt);
 }
 
-test "parse: @asm(\"...\") inside a function body" {
+test "parse: `asm \"...\"` inside a function body" {
     var tree = try parseClean(
         \\def fast_swap(a: u16, b: u16)
-        \\  @asm("swap {a}, {b}")
+        \\  asm "swap {a}, {b}"
         \\end
     );
     defer tree.deinit();
@@ -1148,8 +1232,15 @@ test "parse: @asm(\"...\") inside a function body" {
     try std.testing.expect(body[0] == .asm_stmt);
 }
 
-test "parse: @asm without a string arg surfaces a diagnostic" {
-    var tree = try parseSource("@asm(42)");
+test "parse: legacy `@asm(\"...\")` surfaces a migration diagnostic" {
+    var tree = try parseSource("@asm(\"swap r1, r2\")");
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, tree.errors[0].message, "asm \"...\"") != null);
+}
+
+test "parse: `asm \"$(x)\"` rejects interpolation in the body" {
+    var tree = try parseSource("asm \"ret $(reg)\"");
     defer tree.deinit();
     try std.testing.expect(tree.errors.len > 0);
 }

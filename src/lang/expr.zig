@@ -358,6 +358,11 @@ fn parsePrimary(p: *Parser) ParserError!*ast.Expr {
         .kw_do => return try parseDoExpr(p),
         .kw_if => return try parseIfExpr(p),
         .kw_lambda => return try parseLambda(p),
+        // Short lambda form `|x| expr`, `|x, y| expr`, `|| expr`.
+        // §4.7.1. At expression start, a leading `|` always means a
+        // short lambda — bitwise OR is binary and never appears at
+        // primary position.
+        .pipe => return try parseShortLambda(p),
         else => {
             try p.recordError("expected expression", "expression");
             return error.ParseFailed;
@@ -602,5 +607,74 @@ fn parseLambda(p: *Parser) ParserError!*ast.Expr {
         .ret_type = ret_type,
         .body = try body.toOwnedSlice(p.allocator),
         .span = .{ .start = lambda_tok.start, .end = end_tok.end },
+    } });
+}
+
+/// Short lambda form per §4.7.1:
+///
+///   |x| x*2                         -- one param, expression body
+///   |x, y| x + y                    -- multiple params
+///   || read_input()                 -- zero params (`||` lexes as
+///                                      two consecutive `pipe` tokens)
+///   |x: i16| -> i16  x * 2          -- explicit types
+///
+/// Desugars to a `LambdaExpr` whose body is a single `return <expr>`
+/// statement, so downstream passes (typechecker, codegen) handle one
+/// shape only.
+fn parseShortLambda(p: *Parser) ParserError!*ast.Expr {
+    const open_tok = p.peek();
+    p.pos += 1; // consume opening `|`
+
+    var params: std.ArrayList(ast.Param) = .empty;
+    errdefer decl_mod.freeParams(p.allocator, params.toOwnedSlice(p.allocator) catch &.{});
+
+    if (!p.check(.pipe)) {
+        while (true) {
+            p.skipNewlines();
+            const name_tok = try p.expect(.ident, "parameter name");
+            var type_ann: ?*ast.TypeAnn = null;
+            if (p.accept(.colon)) |_| {
+                const type_mod = @import("type_ann.zig");
+                type_ann = try type_mod.parseTypeAnn(p);
+            }
+            try params.append(p.allocator, .{
+                .name = ast.Span.fromToken(name_tok),
+                .type_ann = type_ann,
+                .span = ast.Span.fromToken(name_tok),
+            });
+            p.skipNewlines();
+            if (!p.check(.comma)) break;
+            p.pos += 1; // consume `,`
+        }
+    }
+    _ = try p.expect(.pipe, "|");
+
+    var ret_type: ?*ast.TypeAnn = null;
+    if (p.accept(.arrow)) |_| {
+        const type_mod = @import("type_ann.zig");
+        ret_type = try type_mod.parseTypeAnn(p);
+    }
+    errdefer if (ret_type) |r| ast.freeTypeAnn(p.allocator, r);
+
+    const body_expr = try parseExpression(p, 0);
+    errdefer ast.freeExpr(p.allocator, body_expr);
+
+    // Wrap the body expression in a `return` statement so the
+    // resulting `LambdaExpr` body is `[]Statement` like the long
+    // form.
+    var body: std.ArrayList(ast.Statement) = .empty;
+    errdefer parser_mod.cleanupStatements(p.allocator, &body);
+    const body_span = body_expr.span();
+    try body.append(p.allocator, .{ .return_stmt = .{
+        .value = body_expr,
+        .span = body_span,
+    } });
+
+    const params_slice = try params.toOwnedSlice(p.allocator);
+    return try p.allocExpr(.{ .lambda = .{
+        .params = params_slice,
+        .ret_type = ret_type,
+        .body = try body.toOwnedSlice(p.allocator),
+        .span = .{ .start = open_tok.start, .end = body_span.end },
     } });
 }

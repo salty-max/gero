@@ -706,10 +706,10 @@ pub const Statement = union(enum) {
     match_stmt: MatchStmt,
     /// `return [expr]`.
     return_stmt: ReturnStmt,
-    /// `break`.
-    break_stmt: SpanOnly,
-    /// `continue`.
-    continue_stmt: SpanOnly,
+    /// `break [:label]` (§4.5.4).
+    break_stmt: LoopJumpStmt,
+    /// `continue [:label]` (§4.5.4).
+    continue_stmt: LoopJumpStmt,
     /// `print expr1, expr2, ...`.
     print_stmt: PrintStmt,
     /// `def name(params) [-> T] body end`.
@@ -868,20 +868,26 @@ pub const IfStmt = struct {
     span: Span,
 };
 
-/// `while cond do ... end` (or the `while let` variant).
+/// `while cond ... end` (or the `while let` variant). Optional
+/// trailing `:label` (§4.5.4) lets nested loops target this one via
+/// `break :label` / `continue :label`.
 pub const WhileStmt = struct {
-    /// For `while let pat = expr do ... end`, `cond` is null and
+    /// For `while let pat = expr ... end`, `cond` is null and
     /// `let_pattern` / `let_expr` carry the binding shape.
     cond: ?*Expr,
     let_pattern: ?*Pattern,
     let_expr: ?*Expr,
     /// Optional `when guard` clause on the `while let` form.
     let_guard: ?*Expr,
+    /// Loop label, if the head carried a `:name` suffix. `null` for
+    /// unlabeled loops.
+    label: ?Span,
     body: []Statement,
     span: Span,
 };
 
-/// `for x in iter [step N] do ... end`.
+/// `for x in iter [step N] ... end`. Optional trailing `:label`
+/// (§4.5.4) — see `WhileStmt`.
 pub const ForStmt = struct {
     /// Binding name (typical `for x in xs` form). Tuple destructuring
     /// can be added later by upgrading to a `Pattern`; today the
@@ -891,6 +897,8 @@ pub const ForStmt = struct {
     iter: *Expr,
     /// `null` unless the source explicitly carried `step N`.
     step: ?*Expr,
+    /// Loop label, if the head carried a `:name` suffix.
+    label: ?Span,
     body: []Statement,
     span: Span,
 };
@@ -1051,6 +1059,15 @@ pub const AsmStmt = struct {
     /// quotes). Codegen reads the bytes and performs `{name}`
     /// substitution against the enclosing scope.
     body: Span,
+    span: Span,
+};
+
+/// `break` / `continue` with optional `:label` (§4.5.4). When the
+/// source has no label, `label` is `null` and the statement targets
+/// the innermost enclosing loop; otherwise it targets the loop
+/// whose `WhileStmt.label` / `ForStmt.label` matches.
+pub const LoopJumpStmt = struct {
+    label: ?Span,
     span: Span,
 };
 

@@ -142,8 +142,8 @@ both languages.
 
 ```
 let const def lambda return
-if else end
-while for in step
+if then elif else end
+while do for in step
 match case when
 class extends self super
 enum is
@@ -155,9 +155,13 @@ print
 asm bake
 ```
 
-`then` after `if`/`elif` and `do` after `while`/`for` are **not**
-keywords. The head expression ends at the newline; the body starts
-on the next line. Writing `if cond then …` is a syntax error.
+`then` is reserved but not a syntactic separator anywhere — `if` /
+`elif` / `match case` end their heads at the newline (§4.4 / §4.8),
+no `then` needed. Writing `if cond then …` is a syntax error.
+
+`do` is still a keyword — it opens a block (`do … end`, §4.3) — but
+no longer required after `while` / `for` heads. Writing `while cond
+do …` is a syntax error.
 
 `asm` is a builtin statement (§4.11) for one-instruction inline
 assembly. `bake` marks a `def` or `do`-block for compile-time
@@ -2517,7 +2521,8 @@ and the compiler simple; the absence isn't a missing feature.
   borrows; lifetime checking is limited to "no return ref to stack
   local" (§3.4.4). The cart audience doesn't need Rust-grade memory
   safety on top of what `T?` and explicit checks already provide.
-- **`then` / `do` after block heads.** Removed for source noise
-  reduction; the parser is recursive-descent and doesn't need them.
-  See §4.4 / §4.5. (Lua keeps them for LR-parser reasons that don't
-  apply here.)
+- **`then` / `do` as block-head separators.** Removed for source
+  noise reduction; the parser is recursive-descent and doesn't need
+  them. See §4.4 / §4.5. (Lua keeps them for LR-parser reasons that
+  don't apply here.) `then` is still reserved as a keyword for clear
+  diagnostics; `do` remains the opener for `do…end` blocks (§4.3).

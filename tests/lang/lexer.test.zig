@@ -108,6 +108,9 @@ test "lex: every reserved keyword maps to its kind" {
         .{ .src = "break", .kind = .kw_break },
         .{ .src = "continue", .kind = .kw_continue },
         .{ .src = "print", .kind = .kw_print },
+        .{ .src = "defer", .kind = .kw_defer },
+        .{ .src = "asm", .kind = .kw_asm },
+        .{ .src = "bake", .kind = .kw_bake },
     };
     for (cases) |c| {
         var ts = try tokenize(c.src);
@@ -131,11 +134,33 @@ test "lex: decimal integer literal" {
     try std.testing.expectEqual(@as(i32, 42), ts.tokens[0].value);
 }
 
-test "lex: hex integer literal" {
-    var ts = try tokenize("0xFF");
+test "lex: hex integer literal uses `$` prefix" {
+    var ts = try tokenize("$FF");
     defer ts.deinit();
     try std.testing.expectEqual(Token.Kind.int_lit, ts.tokens[0].kind);
     try std.testing.expectEqual(@as(i32, 255), ts.tokens[0].value);
+}
+
+test "lex: legacy `0x` hex literal is rejected with a diagnostic" {
+    var ts = try tokenize("0xFE40");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, ts.errors[0].message, "$") != null);
+}
+
+test "lex: `then` and `do` remain reserved keywords" {
+    // The parser rejects them in if/while/for-head positions (§4.4/§4.5)
+    // with a diagnostic, but the lexer keeps them tokenized for clear
+    // error messages. `do…end` (§4.3) still uses `kw_do`.
+    try expectKinds("then do", &.{ .kw_then, .kw_do });
+}
+
+test "lex: `=>` fat arrow" {
+    try expectKinds("=>", &.{.fat_arrow});
+}
+
+test "lex: `==` and `=>` disambiguated" {
+    try expectKinds("== =>", &.{ .eq_eq, .fat_arrow });
 }
 
 test "lex: binary integer literal with underscore separators" {
@@ -170,7 +195,9 @@ test "lex: `-` after an operand-end token is the binary minus operator" {
     try std.testing.expectEqual(@as(i32, 1), ts.tokens[2].value);
 }
 
-test "lex: malformed `0x` reports an error but still emits a token" {
+test "lex: bare `0x` reports the rejection diagnostic" {
+    // `0x` is no longer accepted; the lexer reports the migration
+    // hint pointing at `$`.
     var ts = try tokenize("let x = 0x");
     defer ts.deinit();
     try std.testing.expect(ts.hasErrors());
@@ -333,12 +360,13 @@ test "lex: small function body" {
 
 test "lex: match expression with or-pattern + guard" {
     try expectKinds(
-        "match x do\n  case 1 or 2 when x > 0 then a\nend",
+        "match x\n  case 1 or 2 when x > 0 => a\nend",
         &.{
-            .kw_match, .ident,   .kw_do,   .newline,
-            .kw_case,  .int_lit, .kw_or,   .int_lit,
-            .kw_when,  .ident,   .gt,      .int_lit,
-            .kw_then,  .ident,   .newline, .kw_end,
+            .kw_match, .ident,   .newline,
+            .kw_case,  .int_lit, .kw_or,
+            .int_lit,  .kw_when, .ident,
+            .gt,       .int_lit, .fat_arrow,
+            .ident,    .newline, .kw_end,
         },
     );
 }
@@ -403,9 +431,9 @@ test "lex: unterminated char literal reports an error" {
 }
 
 test "lex: char literal compares natural in expressions" {
-    // `if s.at(0) == 'A' then ...` should lex cleanly.
-    try expectKinds("if s.at(0) == 'A' then", &.{
-        .kw_if, .ident,   .dot,     .ident, .lparen, .int_lit, .rparen,
-        .eq_eq, .int_lit, .kw_then,
+    // `if s.at(0) == 'A'` should lex cleanly.
+    try expectKinds("if s.at(0) == 'A'", &.{
+        .kw_if, .ident,   .dot, .ident, .lparen, .int_lit, .rparen,
+        .eq_eq, .int_lit,
     });
 }
