@@ -865,6 +865,28 @@ test "parse: unterminated let surfaces a diagnostic and recovers" {
     try std.testing.expect(saw_y);
 }
 
+test "parse: $-hex literal lexes as int_lit" {
+    var tree = try parseClean("let x = $FF");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .int_lit);
+    try std.testing.expectEqual(@as(i32, 0xFF), init.int_lit.value);
+}
+
+test "parse: @addr $FE40 captures the literal arg" {
+    var tree = try parseClean(
+        \\@addr $FE40
+        \\let DISPCTL: u8 = 0
+    );
+    defer tree.deinit();
+    const s = tree.program.statements[0].let_decl;
+    try std.testing.expectEqual(@as(usize, 1), s.annotations.len);
+    try std.testing.expectEqual(@as(usize, 1), s.annotations[0].args.len);
+    const arg = s.annotations[0].args[0];
+    try std.testing.expect(arg.* == .int_lit);
+    try std.testing.expectEqual(@as(i32, 0xFE40), arg.int_lit.value);
+}
+
 test "parse: fixed-point literal 1.5 encodes as Q8.8 0x0180" {
     var tree = try parseClean("let v: fixed = 1.5");
     defer tree.deinit();
