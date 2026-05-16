@@ -296,6 +296,10 @@ pub const StructPatternField = struct {
 /// it builds these nodes.
 pub const Expr = union(enum) {
     int_lit: IntLitExpr,
+    /// Fixed-point literal — `1.5`, `0.125`, etc. The lexer
+    /// pre-encodes the value as Q8.8 (top byte integer, bottom byte
+    /// `round(frac * 256)`).
+    fixed_lit: FixedLitExpr,
     bool_lit: BoolLitExpr,
     nil_lit: SpanOnly,
     char_lit: CharLitExpr,
@@ -363,6 +367,7 @@ pub const Expr = union(enum) {
     pub fn span(self: Expr) Span {
         return switch (self) {
             .int_lit => |e| e.span,
+            .fixed_lit => |e| e.span,
             .bool_lit => |e| e.span,
             .nil_lit, .self_expr, .super_expr => |e| e.span,
             .char_lit => |e| e.span,
@@ -390,6 +395,16 @@ pub const Expr = union(enum) {
 /// Integer literal (decimal / hex / binary; the lexer normalizes
 /// all three into a single `int_lit` token).
 pub const IntLitExpr = struct {
+    value: i32,
+    span: Span,
+};
+
+/// Fixed-point literal — `1.5`, `0.125`, etc. `value` is the
+/// pre-encoded Q8.8 (top byte integer part, bottom byte
+/// `round(frac * 256)`). Sign carried in the 16-bit two's-complement
+/// pattern; the lexer applies negation when the literal is preceded
+/// by `-` in operand position.
+pub const FixedLitExpr = struct {
     value: i32,
     span: Span,
 };
@@ -1174,7 +1189,7 @@ fn freeAnnotations(allocator: std.mem.Allocator, anns: []Annotation) void {
 /// Recursively release an expression tree owned by `allocator`.
 pub fn freeExpr(allocator: std.mem.Allocator, e: *Expr) void {
     switch (e.*) {
-        .int_lit, .bool_lit, .nil_lit, .char_lit, .ident, .self_expr, .super_expr => {},
+        .int_lit, .fixed_lit, .bool_lit, .nil_lit, .char_lit, .ident, .self_expr, .super_expr => {},
         .str_lit => |s| {
             for (s.parts) |p| switch (p) {
                 .lit => {},

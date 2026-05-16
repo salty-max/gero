@@ -282,6 +282,13 @@ fn parsePrimary(p: *Parser) ParserError!*ast.Expr {
                 .span = .{ .start = tok.start, .end = tok.end },
             } });
         },
+        .fixed_lit => {
+            p.pos += 1;
+            return try p.allocExpr(.{ .fixed_lit = .{
+                .value = tok.value,
+                .span = .{ .start = tok.start, .end = tok.end },
+            } });
+        },
         .kw_true => {
             p.pos += 1;
             return try p.allocExpr(.{ .bool_lit = .{
