@@ -297,7 +297,12 @@ fn checkStrict(
             }
         }
 
-        // Rule 12: //! outside src/gero.zig (the public barrel).
+        // Rule 12: //! outside the public barrel (src/gero.zig).
+        // The bash version used `src/core.zig` as the exempt path —
+        // that's a stale reference from an earlier refactor; the
+        // actual barrel is `src/gero.zig` (no `//!` exists in the
+        // tree today, so the rule's old behavior couldn't be
+        // observed). Aligned with the actual barrel here.
         if (std.mem.startsWith(u8, stripped, "//!")) {
             const is_barrel = std.mem.eql(u8, file.path, "src/gero.zig");
             if (!is_barrel and !isAllowed(prev)) {
@@ -340,6 +345,32 @@ fn pushStrict(
         .message = msg,
         .rule = .strict,
     });
+}
+
+/// Match `) <whitespace>+ type <whitespace>* {` — the signature
+/// shape of a comptime type-returning function. Bash uses a regex
+/// `\)[[:space:]]+type[[:space:]]*\{`; this is the literal port.
+fn hasReturnTypeMarker(line: []const u8) bool {
+    // Find every `)` and probe the trailing whitespace + `type` +
+    // whitespace + `{` shape from there.
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        if (line[i] != ')') continue;
+        var j = i + 1;
+        // Required whitespace (at least one).
+        const ws_start = j;
+        while (j < line.len and (line[j] == ' ' or line[j] == '\t')) : (j += 1) {}
+        if (j == ws_start) continue;
+        // Match `type` keyword.
+        const kw = "type";
+        if (j + kw.len > line.len) continue;
+        if (!std.mem.eql(u8, line[j .. j + kw.len], kw)) continue;
+        j += kw.len;
+        // Optional whitespace.
+        while (j < line.len and (line[j] == ' ' or line[j] == '\t')) : (j += 1) {}
+        if (j < line.len and line[j] == '{') return true;
+    }
+    return false;
 }
 
 /// True if `needle` appears in `haystack` as a whole word (delimited by
@@ -430,9 +461,10 @@ fn checkNaming(
         const name = after_kw[0..name_end];
         const first = name[0];
 
-        // Detect `) type {` (with optional whitespace) on the same line.
-        const is_type_returning = std.mem.indexOf(u8, line, ") type {") != null or
-            std.mem.indexOf(u8, line, ") type  {") != null;
+        // Detect `) <ws>+ type <ws>* {` on the same line — match the
+        // bash regex `\)[[:space:]]+type[[:space:]]*\{` (any number
+        // of spaces / tabs).
+        const is_type_returning = hasReturnTypeMarker(line);
 
         if (is_type_returning) {
             if (first >= 'a' and first <= 'z' and !isAllowed(prev)) {
@@ -668,7 +700,10 @@ fn checkMirror(
 fn isMirrorExempt(path: []const u8) bool {
     // Public barrel.
     if (std.mem.eql(u8, path, "src/gero.zig")) return true;
-    // internal.zig anywhere under src/.
+    // internal.zig anywhere under src/. CLAUDE.md says "colocated
+    // with a module dir" — the bash version pinned this to exactly
+    // one level (`src/*/internal.zig`), which is narrower than the
+    // documented convention. Following the spec here.
     if (std.mem.endsWith(u8, path, "/internal.zig")) return true;
     // Top-level module barrels: src/<name>.zig with no further slash.
     const inside = path["src/".len..];
