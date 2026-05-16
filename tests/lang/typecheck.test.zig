@@ -379,6 +379,46 @@ test "typecheck: bitwise & on fixed errors" {
     , "E_TYPE_MISMATCH");
 }
 
+test "typecheck: fixed + fixed accepts" {
+    try expectClean(
+        \\let a: fixed = 1.5
+        \\let b: fixed = a + 2.0
+    );
+}
+
+test "typecheck: bool literals with `and` produce bool" {
+    try expectClean(
+        \\let x: bool = true and false
+    );
+}
+
+test "typecheck: unary minus on int literal accepts" {
+    try expectClean(
+        \\let x: i16 = -1
+    );
+}
+
+test "typecheck: compound `+=` with wrong rhs type errors" {
+    try expectCode(
+        \\let x: i16 = 0
+        \\x += "one"
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: class-to-class `as` cast errors with E_CAST_INVALID" {
+    try expectCode(
+        \\class A
+        \\  let n: i16
+        \\end
+        \\class B
+        \\  let n: i16
+        \\end
+        \\
+        \\let a: A = A()
+        \\let b = a as B
+    , "E_CAST_INVALID");
+}
+
 test "typecheck: shift << on integer accepts" {
     try expectClean(
         \\let a: u8 = 1
