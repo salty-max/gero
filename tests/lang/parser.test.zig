@@ -758,6 +758,93 @@ test "parse: variant pattern with binding" {
     try std.testing.expectEqual(@as(usize, 1), arm0.pattern.variant_pattern.args.len);
 }
 
+test "parse: wildcard pattern alone" {
+    var tree = try parseClean(
+        \\match x
+        \\  case _ =>
+        \\    print "anything"
+        \\end
+    );
+    defer tree.deinit();
+    const arm0 = tree.program.statements[0].match_stmt.arms[0];
+    try std.testing.expect(arm0.pattern.* == .wildcard);
+}
+
+test "parse: literal patterns (int / str / bool / nil)" {
+    // Char-literal patterns are lexed as `int_lit` tokens with the
+    // byte value (the lexer normalizes `'A'` to int_lit(65)); the
+    // `Pattern.char_lit` AST variant therefore stays unused by the
+    // current parser. Tracked as a follow-up; the working forms
+    // are exercised here.
+    var tree = try parseClean(
+        \\match x
+        \\  case 42 => print "int"
+        \\  case "hello" => print "str"
+        \\  case true => print "bool"
+        \\  case nil => print "nil"
+        \\end
+    );
+    defer tree.deinit();
+    const arms = tree.program.statements[0].match_stmt.arms;
+    try std.testing.expectEqual(@as(usize, 4), arms.len);
+    try std.testing.expect(arms[0].pattern.* == .int_lit);
+    try std.testing.expect(arms[1].pattern.* == .str_lit);
+    try std.testing.expect(arms[2].pattern.* == .bool_lit);
+    try std.testing.expect(arms[3].pattern.* == .nil_lit);
+}
+
+test "parse: nested variant + tuple + or-pattern with guard" {
+    // Nested patterns: a tuple destructure inside a variant
+    // payload, with an or-pattern on one element + a `when` guard
+    // on the arm.
+    var tree = try parseClean(
+        \\match e
+        \\  case Event.Hit((x, 0 | 1)) when x > 0 =>
+        \\    print x
+        \\end
+    );
+    defer tree.deinit();
+    const arm0 = tree.program.statements[0].match_stmt.arms[0];
+    try std.testing.expect(arm0.pattern.* == .variant_pattern);
+    try std.testing.expect(arm0.guard != null);
+    const payload = arm0.pattern.variant_pattern.args;
+    try std.testing.expectEqual(@as(usize, 1), payload.len);
+    try std.testing.expect(payload[0].* == .tuple_pattern);
+    const tuple_elems = payload[0].tuple_pattern.elems;
+    try std.testing.expectEqual(@as(usize, 2), tuple_elems.len);
+    try std.testing.expect(tuple_elems[1].* == .or_pattern);
+}
+
+test "parse: match with 3 malformed arms emits multiple diagnostics" {
+    // Multi-error recovery: every malformed arm should surface its
+    // own diagnostic, not just the first one. AC #192 / #191.
+    var tree = try parseSource(
+        \\match x
+        \\  case = > broken1
+        \\  case = > broken2
+        \\  case = > broken3
+        \\end
+    );
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len >= 2);
+}
+
+test "parse: `case PAT then BODY` (legacy) does not parse as a clean arm" {
+    // After the syntax patches (#215), `then` is no longer the
+    // arm-body separator. Source with the old `then` keyword must
+    // not silently parse as a successful match arm — either a
+    // diagnostic fires or the `then` is treated as an identifier
+    // that produces a downstream error.
+    var tree = try parseSource(
+        \\match x
+        \\  case 1 then print "one"
+        \\  case _ => print "other"
+        \\end
+    );
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+}
+
 // ---------- struct / class / enum ----------
 
 test "parse: struct declaration" {
