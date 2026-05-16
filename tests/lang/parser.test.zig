@@ -865,6 +865,31 @@ test "parse: unterminated let surfaces a diagnostic and recovers" {
     try std.testing.expect(saw_y);
 }
 
+test "parse: @asm(\"...\") as a top-level statement" {
+    var tree = try parseClean("@asm(\"swap r1, r2\")");
+    defer tree.deinit();
+    try std.testing.expectEqual(@as(usize, 1), tree.program.statements.len);
+    try std.testing.expect(tree.program.statements[0] == .asm_stmt);
+}
+
+test "parse: @asm(\"...\") inside a function body" {
+    var tree = try parseClean(
+        \\def fast_swap(a: u16, b: u16)
+        \\  @asm("swap {a}, {b}")
+        \\end
+    );
+    defer tree.deinit();
+    const body = tree.program.statements[0].def_decl.body;
+    try std.testing.expectEqual(@as(usize, 1), body.len);
+    try std.testing.expect(body[0] == .asm_stmt);
+}
+
+test "parse: @asm without a string arg surfaces a diagnostic" {
+    var tree = try parseSource("@asm(42)");
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+}
+
 test "parse: dangling annotation at EOF surfaces a diagnostic" {
     var tree = try parseSource("@final\n");
     defer tree.deinit();
