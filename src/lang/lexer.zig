@@ -76,12 +76,6 @@ pub const Token = struct {
         kw_lambda,
         kw_return,
         kw_if,
-        /// Reserved but no longer a syntactic separator. The parser
-        /// emits a diagnostic if `then` appears after `if` / `elif`
-        /// / `match case` heads (§4.4 / §4.8 no longer use it; bodies
-        /// start on the next line). Kept reserved so identifiers
-        /// can't accidentally shadow it.
-        kw_then,
         kw_else,
         kw_elif,
         kw_end,
@@ -93,6 +87,13 @@ pub const Token = struct {
         kw_do,
         kw_for,
         kw_in,
+        /// `repeat` — opens a `repeat … until cond` loop (§4.5.5).
+        /// The body runs at least once; the loop terminates when
+        /// `cond` evaluates true.
+        kw_repeat,
+        /// `until` — closes a `repeat` loop (§4.5.5). Followed by
+        /// the termination-condition expression.
+        kw_until,
         kw_step,
         kw_match,
         kw_case,
@@ -244,7 +245,6 @@ const keyword_table = [_]KeywordEntry{
     .{ .lex = "lambda", .kind = .kw_lambda },
     .{ .lex = "return", .kind = .kw_return },
     .{ .lex = "if", .kind = .kw_if },
-    .{ .lex = "then", .kind = .kw_then },
     .{ .lex = "else", .kind = .kw_else },
     .{ .lex = "elif", .kind = .kw_elif },
     .{ .lex = "end", .kind = .kw_end },
@@ -252,6 +252,8 @@ const keyword_table = [_]KeywordEntry{
     .{ .lex = "do", .kind = .kw_do },
     .{ .lex = "for", .kind = .kw_for },
     .{ .lex = "in", .kind = .kw_in },
+    .{ .lex = "repeat", .kind = .kw_repeat },
+    .{ .lex = "until", .kind = .kw_until },
     .{ .lex = "step", .kind = .kw_step },
     .{ .lex = "match", .kind = .kw_match },
     .{ .lex = "case", .kind = .kw_case },
