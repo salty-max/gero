@@ -201,6 +201,7 @@ fn parseCallChain(p: *Parser) ParserError!*ast.Expr {
 
 fn parseCallArgs(p: *Parser, callee: *ast.Expr) ParserError!*ast.Expr {
     p.pos += 1;
+    p.skipNewlines();
     var args: std.ArrayList(*ast.Expr) = .empty;
     errdefer {
         for (args.items) |a| ast.freeExpr(p.allocator, a);
@@ -211,8 +212,11 @@ fn parseCallArgs(p: *Parser, callee: *ast.Expr) ParserError!*ast.Expr {
             const a = try parseExpression(p, 0);
             try args.append(p.allocator, a);
             if (p.accept(.comma) == null) break;
+            p.skipNewlines();
+            if (p.check(.rparen)) break; // trailing comma
         }
     }
+    p.skipNewlines();
     const rp = try p.expect(.rparen, ")");
     return try p.allocExpr(.{ .call = .{
         .callee = callee,
@@ -237,6 +241,7 @@ fn parseFieldOrMethod(p: *Parser, receiver: *ast.Expr) ParserError!*ast.Expr {
     const name_tok = try p.expect(.ident, "field or method name");
     if (p.check(.lparen)) {
         p.pos += 1;
+        p.skipNewlines();
         var args: std.ArrayList(*ast.Expr) = .empty;
         errdefer {
             for (args.items) |a| ast.freeExpr(p.allocator, a);
@@ -247,8 +252,11 @@ fn parseFieldOrMethod(p: *Parser, receiver: *ast.Expr) ParserError!*ast.Expr {
                 const a = try parseExpression(p, 0);
                 try args.append(p.allocator, a);
                 if (p.accept(.comma) == null) break;
+                p.skipNewlines();
+                if (p.check(.rparen)) break; // trailing comma
             }
         }
+        p.skipNewlines();
         const rp = try p.expect(.rparen, ")");
         return try p.allocExpr(.{ .method_call = .{
             .receiver = receiver,
