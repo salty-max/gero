@@ -20,10 +20,7 @@ for J-RPG-class games and similar carts; see §1 for the philosophy.
 - **No semicolons** — statement boundaries are newlines. Cheap to
   type, less visual noise. (Modern Lua, Go, Python convention.)
 - **Mutable `let` by default** — `let x = 0` is mutable, `const X = 0`
-  is immutable. Style follows Lua / JS / BASIC, not Rust / Swift.
-  This is a deliberate choice for the teaching-language audience the
-  syntax targets; the cost is a small friction for devs arriving from
-  Rust/Swift where `let` means immutable.
+  is immutable. Style follows Lua / JS / BASIC.
 - **Typed at the variable / function boundary** — every `let` /
   parameter / return type gets an annotation OR is inferred from
   context. Once compiled, types are erased — runtime is fully
@@ -1142,9 +1139,7 @@ error. Two flavors handled by the compiler:
   read_input()`), the binding gets a stack/static slot but is
   read-only — you can't `player_name = "x"` later.
 
-Same model as JavaScript / TypeScript `const`. Old-school BASIC's
-`LET` was always mutable; we add `const` for the cases where intent
-matters and the compiler can help catch reassignment bugs.
+Same model as JavaScript / TypeScript `const`.
 
 ```
 const PI_FIXED = $0324       -- comptime, inlined
@@ -2543,6 +2538,3 @@ and the compiler simple; the absence isn't a missing feature.
   borrows; lifetime checking is limited to "no return ref to stack
   local" (§3.4.4). The cart audience doesn't need Rust-grade memory
   safety on top of what `T?` and explicit checks already provide.
-- **`then` / `do` as block-head separators.** Removed for source
-  noise reduction; the parser is recursive-descent and doesn't
-  need them. See §4.4 / §4.5.
