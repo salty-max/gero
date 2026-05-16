@@ -865,6 +865,48 @@ test "parse: unterminated let surfaces a diagnostic and recovers" {
     try std.testing.expect(saw_y);
 }
 
+test "parse: multi-line call args" {
+    var tree = try parseClean(
+        \\let r = foo(
+        \\  1,
+        \\  2,
+        \\  3,
+        \\)
+    );
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .call);
+    try std.testing.expectEqual(@as(usize, 3), init.call.args.len);
+}
+
+test "parse: multi-line param list on def" {
+    var tree = try parseClean(
+        \\def damage(
+        \\  attacker: Stats,
+        \\  target: Stats,
+        \\  weapon: Weapon,
+        \\) -> i16
+        \\  return 0
+        \\end
+    );
+    defer tree.deinit();
+    const s = tree.program.statements[0].def_decl;
+    try std.testing.expectEqual(@as(usize, 3), s.params.len);
+}
+
+test "parse: multi-line method call args" {
+    var tree = try parseClean(
+        \\let r = obj.method(
+        \\  a,
+        \\  b
+        \\)
+    );
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .method_call);
+    try std.testing.expectEqual(@as(usize, 2), init.method_call.args.len);
+}
+
 test "parse: leading-dot continues a method chain across newlines" {
     var tree = try parseClean(
         \\let damaged = monsters

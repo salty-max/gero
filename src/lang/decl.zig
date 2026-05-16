@@ -158,7 +158,9 @@ fn hasAnnotationNamed(
 }
 
 /// Parameter list following the opening `(`. Consumes the closing
-/// `)`. Both `def` and `lambda` use this.
+/// `)`. Both `def` and `lambda` use this. Newlines are tolerated
+/// after `(`, after each `,`, and before `)` so long parameter
+/// lists can wrap across lines.
 pub fn parseParamList(p: *Parser) ParserError![]ast.Param {
     var params: std.ArrayList(ast.Param) = .empty;
     errdefer {
@@ -166,6 +168,7 @@ pub fn parseParamList(p: *Parser) ParserError![]ast.Param {
         params.deinit(p.allocator);
     }
 
+    p.skipNewlines();
     if (p.check(.rparen)) {
         _ = p.accept(.rparen);
         return try params.toOwnedSlice(p.allocator);
@@ -197,8 +200,11 @@ pub fn parseParamList(p: *Parser) ParserError![]ast.Param {
         });
 
         if (p.accept(.comma) == null) break;
+        p.skipNewlines();
+        if (p.check(.rparen)) break; // trailing comma
     }
 
+    p.skipNewlines();
     _ = try p.expect(.rparen, ")");
     return try params.toOwnedSlice(p.allocator);
 }
