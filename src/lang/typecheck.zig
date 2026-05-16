@@ -1,20 +1,19 @@
-/// Gero-lang typechecker — resolution + basic inference slice.
+/// Gero-lang typechecker — checking slice.
 ///
 /// Two passes over the AST:
 ///   1. Top-level decl registration — every module-scope `let` /
 ///      `const` / `def` / `class` / `struct` / `enum` / `use` lands
 ///      in the module scope before walking, so forward references
 ///      across the file resolve cleanly.
-///   2. Resolution + inference — walk every statement, resolve
-///      `NamedType` and `Expr.ident` against the scope chain, infer
-///      `let` / `const` initializer types, register `def` parameters
-///      in their function scope, check explicit type-vs-init
-///      assignability.
+///   2. Resolution + inference + checking — walk every statement,
+///      resolve `NamedType` and `Expr.ident` against the scope chain,
+///      infer literal / expression types with a bidirectional `hint`,
+///      type-check operators / casts / calls / assignments per the
+///      spec rules (§3.5.1, §4.2.1, §4.6, §4.2).
 ///
-/// Subsequent slices add operator / call / assignment type checking,
-/// nullable / reference / match / annotation / bake / cast / varargs
-/// rules, and the rendered-diagnostic shape from
-/// `docs/lang-diagnostics.md`.
+/// Subsequent slices cover nullable / reference / match / annotation /
+/// bake / cast-range / varargs rules and the rendered-diagnostic shape
+/// from `docs/lang-diagnostics.md`.
 const std = @import("std");
 const knit = @import("knit");
 const core = knit.core;
@@ -45,7 +44,7 @@ pub const CheckedProgram = struct {
     }
 };
 
-/// Walk `program` through resolution + basic inference.
+/// Walk `program` through resolution + inference + checking.
 pub fn typecheck(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -69,12 +68,13 @@ pub fn typecheck(
         .diagnostics = &diagnostics,
         .module_scope = &module_scope,
         .current_scope = &module_scope,
+        .current_ret_ty = null,
     };
 
     // Pass 1: register top-level decls so forward references resolve.
     for (program.statements) |stmt| try c.registerTopLevel(stmt);
 
-    // Pass 2: walk + resolve + infer.
+    // Pass 2: walk + resolve + infer + check.
     for (program.statements) |stmt| try c.walkStatement(stmt);
 
     return .{
@@ -98,6 +98,11 @@ const Checker = struct {
     /// The currently-active scope. Walker entry into a function /
     /// class / block sets this to a fresh child and restores on exit.
     current_scope: *Scope,
+    /// Return type of the enclosing function (or `null` at module
+    /// scope / inside a `def` with no explicit return annotation).
+    /// Used as a hint for `return expr` so int literals pin to the
+    /// declared return type.
+    current_ret_ty: ?*const types.Type,
 
     /// Mutually recursive walker fns need an explicit error set —
     /// Zig's inferred sets would deadlock the dependency graph.
@@ -250,9 +255,9 @@ const Checker = struct {
     }
 
     /// Build the function-pointer type for a `def` from its
-    /// annotations. Params and return without explicit type produce
-    /// a `nil` placeholder slot — slice 3 (call-site inference) may
-    /// refine those.
+    /// annotations. Params without an explicit type produce a `nil`
+    /// placeholder slot — `checkCall` treats those as "skip arg-type
+    /// check" pending the parameter-from-call-site inference slice.
     fn signatureFromDef(self: *Checker, d: ast.DefDecl) WalkError!*const types.Type {
         var param_types: std.ArrayList(*const types.Type) = .empty;
         errdefer param_types.deinit(self.arena);
@@ -275,28 +280,27 @@ const Checker = struct {
         return sig;
     }
 
-    // ---------- Pass 2: resolution + inference ----------
+    // ---------- Pass 2: resolution + inference + checking ----------
 
     fn walkStatement(self: *Checker, s: ast.Statement) WalkError!void {
         switch (s) {
             .let_decl => |d| try self.checkLetDecl(d),
             .const_decl => |d| try self.checkConstDecl(d),
-            .assign => |a| {
-                try self.walkExpr(a.target);
-                try self.walkExpr(a.value);
-            },
-            .inc_dec => |id| try self.walkExpr(id.target),
-            .discard => |d| try self.walkExpr(d.expr),
-            .expr_stmt => |es| try self.walkExpr(es.expr),
+            .assign => |a| try self.checkAssign(a),
+            .inc_dec => |id| try self.checkIncDec(id),
+            .discard => |d| _ = try self.inferExpr(d.expr, null),
+            .expr_stmt => |es| _ = try self.inferExpr(es.expr, null),
             .block => |b| try self.walkInScope(b.body),
             .if_stmt => |is_| try self.checkIfChain(is_.arms, is_.else_body),
             .while_stmt => |ws| try self.checkWhile(ws),
             .for_stmt => |fs| try self.checkFor(fs),
             .repeat_stmt => |rs| try self.checkRepeat(rs),
             .match_stmt => |ms| try self.checkMatch(ms),
-            .return_stmt => |rs| if (rs.value) |v| try self.walkExpr(v),
+            .return_stmt => |rs| try self.checkReturn(rs),
             .break_stmt, .continue_stmt => {},
-            .print_stmt => |ps| for (ps.args) |a| try self.walkExpr(a),
+            .print_stmt => |ps| {
+                for (ps.args) |a| _ = try self.inferExpr(a, null);
+            },
             .def_decl => |d| try self.checkDefDecl(d),
             .class_decl => |c| try self.checkClassDecl(c),
             .struct_decl, .enum_decl, .use_decl, .local_decl, .asm_stmt => {},
@@ -314,13 +318,14 @@ const Checker = struct {
     }
 
     fn checkLetDecl(self: *Checker, d: ast.LetDecl) WalkError!void {
-        // Resolve annotated type (if any) and infer init type.
         const ann_ty: ?*const types.Type = if (d.type_ann) |t|
             try self.resolveType(t)
         else
             null;
+        // Pass annotation type as a hint so int literals pin to the
+        // declared primitive (`let x: u8 = 0` now infers u8).
         const init_ty: ?*const types.Type = if (d.init) |e|
-            try self.inferExpr(e)
+            try self.inferExpr(e, ann_ty)
         else
             null;
         if (ann_ty != null and init_ty != null) {
@@ -328,15 +333,11 @@ const Checker = struct {
                 try self.emitMismatch(d.init.?.span(), ann_ty.?, init_ty.?);
             }
         }
-        // For ident patterns, update the scope entry's type.
         switch (d.pattern.*) {
             .ident => |i| {
                 const ty = ann_ty orelse init_ty;
                 if (ty) |t| {
                     self.current_scope.setType(self.lexeme(i.name), t) catch {
-                        // Pattern wasn't registered during pass 1
-                        // because we're inside a nested scope.
-                        // Register now.
                         try self.registerName(self.lexeme(i.name), .{
                             .kind = .let_binding,
                             .decl_span = i.name,
@@ -344,8 +345,6 @@ const Checker = struct {
                         });
                     };
                 } else {
-                    // Pass 1 may not have registered this if we're
-                    // in a nested scope; ensure presence.
                     if (self.current_scope.lookupLocal(self.lexeme(i.name)) == null) {
                         try self.registerName(self.lexeme(i.name), .{
                             .kind = .let_binding,
@@ -355,12 +354,7 @@ const Checker = struct {
                     }
                 }
             },
-            else => {
-                // Destructuring patterns: register each bound name
-                // with `null` ty for now; slice 5 handles tuple /
-                // struct destructure typing properly.
-                try self.registerPatternBindings(d.pattern);
-            },
+            else => try self.registerPatternBindings(d.pattern),
         }
     }
 
@@ -369,7 +363,7 @@ const Checker = struct {
             try self.resolveType(t)
         else
             null;
-        const init_ty = try self.inferExpr(d.init);
+        const init_ty = try self.inferExpr(d.init, ann_ty);
         const final = ann_ty orelse init_ty;
         if (ann_ty != null and init_ty != null and !ann_ty.?.eql(init_ty.?.*)) {
             try self.emitMismatch(d.init.span(), ann_ty.?, init_ty.?);
@@ -385,36 +379,78 @@ const Checker = struct {
         }
     }
 
+    fn checkAssign(self: *Checker, a: ast.AssignStmt) WalkError!void {
+        if (!isPlaceExpr(a.target)) {
+            try self.emit(
+                "E_TYPE_MISMATCH",
+                a.target.span().start,
+                "assignment target must be a place expression (ident, field, or index)",
+                null,
+            );
+            _ = try self.inferExpr(a.value, null);
+            return;
+        }
+        const tgt_ty = try self.inferExpr(a.target, null);
+        // Compound `op=` is sugar for `target = target op value`; the
+        // target's type is the hint for the rhs in either form.
+        const val_ty = try self.inferExpr(a.value, tgt_ty);
+        if (tgt_ty != null and val_ty != null and !tgt_ty.?.eql(val_ty.?.*)) {
+            try self.emitMismatch(a.value.span(), tgt_ty.?, val_ty.?);
+        }
+    }
+
+    fn checkIncDec(self: *Checker, id: ast.IncDecStmt) WalkError!void {
+        if (!isPlaceExpr(id.target)) {
+            try self.emit(
+                "E_TYPE_MISMATCH",
+                id.target.span().start,
+                "`++` / `--` target must be a place expression (ident, field, or index)",
+                null,
+            );
+            return;
+        }
+        const tgt_ty = try self.inferExpr(id.target, null);
+        if (tgt_ty) |t| {
+            if (!isIntegerType(t.*)) {
+                const ty_s = try types.render(self.arena, t.*);
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "`++` / `--` requires an integer type, found `{s}`",
+                    .{ty_s},
+                );
+                try self.emit("E_TYPE_MISMATCH", id.target.span().start, msg, null);
+            }
+        }
+    }
+
     fn checkIfChain(
         self: *Checker,
         arms: []const ast.IfArm,
         else_body: ?[]const ast.Statement,
     ) WalkError!void {
         for (arms) |arm| {
-            if (arm.cond) |c| try self.walkExpr(c);
-            if (arm.let_expr) |e| try self.walkExpr(e);
-            if (arm.let_guard) |g| try self.walkExpr(g);
+            if (arm.cond) |c| _ = try self.inferExpr(c, null);
+            if (arm.let_expr) |e| _ = try self.inferExpr(e, null);
+            if (arm.let_guard) |g| _ = try self.inferExpr(g, null);
             try self.walkInScope(arm.body);
         }
         if (else_body) |eb| try self.walkInScope(eb);
     }
 
     fn checkWhile(self: *Checker, ws: ast.WhileStmt) WalkError!void {
-        if (ws.cond) |c| try self.walkExpr(c);
-        if (ws.let_expr) |e| try self.walkExpr(e);
-        if (ws.let_guard) |g| try self.walkExpr(g);
+        if (ws.cond) |c| _ = try self.inferExpr(c, null);
+        if (ws.let_expr) |e| _ = try self.inferExpr(e, null);
+        if (ws.let_guard) |g| _ = try self.inferExpr(g, null);
         try self.walkInScope(ws.body);
     }
 
     fn checkFor(self: *Checker, fs: ast.ForStmt) WalkError!void {
-        try self.walkExpr(fs.iter);
-        if (fs.step) |st| try self.walkExpr(st);
+        _ = try self.inferExpr(fs.iter, null);
+        if (fs.step) |st| _ = try self.inferExpr(st, null);
         const saved = self.current_scope;
         var child: Scope = .init(self.arena, saved);
         self.current_scope = &child;
         defer self.current_scope = saved;
-        // Register the loop binding in the body's scope. Type left
-        // null for slice 2 — slice 3 will infer from `iter`.
         try self.registerName(self.lexeme(fs.binding), .{
             .kind = .let_binding,
             .decl_span = fs.binding,
@@ -425,29 +461,39 @@ const Checker = struct {
 
     fn checkRepeat(self: *Checker, rs: ast.RepeatStmt) WalkError!void {
         try self.walkInScope(rs.body);
-        try self.walkExpr(rs.cond);
+        _ = try self.inferExpr(rs.cond, null);
     }
 
     fn checkMatch(self: *Checker, ms: ast.MatchStmt) WalkError!void {
-        try self.walkExpr(ms.scrutinee);
+        _ = try self.inferExpr(ms.scrutinee, null);
         for (ms.arms) |arm| {
             const saved = self.current_scope;
             var child: Scope = .init(self.arena, saved);
             self.current_scope = &child;
             defer self.current_scope = saved;
             try self.registerPatternBindings(arm.pattern);
-            if (arm.guard) |g| try self.walkExpr(g);
+            if (arm.guard) |g| _ = try self.inferExpr(g, null);
             for (arm.body) |s| try self.walkStatement(s);
         }
     }
 
-    fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
-        const saved = self.current_scope;
-        var fn_scope: Scope = .init(self.arena, saved);
-        self.current_scope = &fn_scope;
-        defer self.current_scope = saved;
+    fn checkReturn(self: *Checker, rs: ast.ReturnStmt) WalkError!void {
+        if (rs.value) |v| {
+            const v_ty = try self.inferExpr(v, self.current_ret_ty);
+            if (self.current_ret_ty) |rt| if (v_ty) |vt| {
+                if (!rt.eql(vt.*) and !isNilType(rt.*)) {
+                    try self.emitMismatch(v.span(), rt, vt);
+                }
+            };
+        }
+    }
 
-        // Register params in the fn scope.
+    fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
+        const saved_scope = self.current_scope;
+        var fn_scope: Scope = .init(self.arena, saved_scope);
+        self.current_scope = &fn_scope;
+        defer self.current_scope = saved_scope;
+
         for (d.params) |p| {
             const pt: ?*const types.Type = if (p.type_ann) |t|
                 try self.resolveType(t)
@@ -460,10 +506,6 @@ const Checker = struct {
             });
         }
 
-        // Recursive-return-annotation check: if the body references
-        // the function name itself, the spec requires an explicit
-        // `-> R`. Slice 2 implements the simple check; full
-        // closure-self-reference detection awaits later passes.
         if (d.ret_type == null and self.bodyMentions(d.body, self.lexeme(d.name))) {
             const msg = try std.fmt.allocPrint(
                 self.arena,
@@ -473,11 +515,15 @@ const Checker = struct {
             try self.emit("E_TYPE_RECURSIVE_NO_RET", d.name.start, msg, self.lexeme(d.name));
         }
 
+        // Track ret type for `return expr` checking inside the body.
+        const saved_ret = self.current_ret_ty;
+        self.current_ret_ty = if (d.ret_type) |r| try self.resolveType(r) else null;
+        defer self.current_ret_ty = saved_ret;
+
         for (d.body) |s| try self.walkStatement(s);
     }
 
     fn checkClassDecl(self: *Checker, d: ast.ClassDecl) WalkError!void {
-        // Open a class scope so methods can see fields by name.
         const saved = self.current_scope;
         var class_scope: Scope = .init(self.arena, saved);
         self.current_scope = &class_scope;
@@ -493,7 +539,7 @@ const Checker = struct {
                 .decl_span = f.name,
                 .ty = ty,
             });
-            if (f.init) |init_| try self.walkExpr(init_);
+            if (f.init) |init_| _ = try self.inferExpr(init_, ty);
         }
         for (d.methods) |m| {
             const sig = try self.signatureFromDef(m);
@@ -591,8 +637,6 @@ const Checker = struct {
                     .{name},
                 );
                 try self.emit("E_TYPE_UNDEFINED", n.name.start, msg, name);
-                // Recover with an opaque named type so downstream
-                // passes can keep going.
                 return try types.mkNamed(self.arena, name, n.span);
             },
             .nullable => |n| {
@@ -602,7 +646,7 @@ const Checker = struct {
             .array => |a| {
                 const elem = try self.resolveType(a.elem);
                 const len_val: u32 = if (a.len_expr.* == .int_lit)
-                    // safety: parser stores array lengths as i32; §3.4 requires non-negative comptime int. Slice 3 will range-check; bit-cast preserves bytes.
+                    // safety: parser stores array lengths as i32; §3.4 requires non-negative comptime int. Slice 3+ will range-check; bit-cast preserves bytes.
                     @bitCast(a.len_expr.int_lit.value)
                 else
                     0;
@@ -646,19 +690,15 @@ const Checker = struct {
         return try types.mkPrimitive(self.arena, p);
     }
 
-    // ---------- expression walking + inference ----------
+    // ---------- expression walking + inference + checking ----------
 
-    fn walkExpr(self: *Checker, e: *const ast.Expr) WalkError!void {
-        _ = try self.inferExpr(e);
-    }
-
-    /// Infer the type of an expression. Returns `null` for shapes
-    /// slice 2 doesn't yet handle (binary op result types,
-    /// function-call result types beyond direct ident, etc.).
-    /// Subsequent slices replace those `null`s with concrete types.
-    fn inferExpr(self: *Checker, e: *const ast.Expr) WalkError!?*const types.Type {
+    /// Infer the type of an expression. `hint` is the type the
+    /// caller expects this expression to produce, used by literal
+    /// inference to pin to the requested primitive. `null` when no
+    /// context is available.
+    fn inferExpr(self: *Checker, e: *const ast.Expr, hint: ?*const types.Type) WalkError!?*const types.Type {
         switch (e.*) {
-            .int_lit => return try self.primitive(.i16),
+            .int_lit => |lit| return try self.inferIntLit(lit, hint),
             .fixed_lit => return try self.primitive(.fixed),
             .bool_lit => return try self.primitive(.bool_),
             .nil_lit => return try self.primitive(.nil_),
@@ -666,7 +706,7 @@ const Checker = struct {
             .str_lit => |s| {
                 for (s.parts) |part| switch (part) {
                     .lit => {},
-                    .interp => |ip| _ = try self.inferExpr(ip.expr),
+                    .interp => |ip| _ = try self.inferExpr(ip.expr, null),
                 };
                 return try self.primitive(.str);
             },
@@ -682,38 +722,27 @@ const Checker = struct {
                 return null;
             },
             .self_expr, .super_expr => return null,
-            .paren => |p| return try self.inferExpr(p.inner),
-            .unary => |u| {
-                _ = try self.inferExpr(u.operand);
-                return null; // operator type rules land in slice 3
-            },
-            .binary => |b| {
-                _ = try self.inferExpr(b.lhs);
-                _ = try self.inferExpr(b.rhs);
-                return null;
-            },
+            .paren => |p| return try self.inferExpr(p.inner, hint),
+            .unary => |u| return try self.checkUnary(u, hint),
+            .binary => |b| return try self.checkBinary(b, hint),
             .range => |r| {
-                _ = try self.inferExpr(r.start);
-                _ = try self.inferExpr(r.end);
+                _ = try self.inferExpr(r.start, null);
+                _ = try self.inferExpr(r.end, null);
                 return null;
             },
-            .call => |c| {
-                _ = try self.inferExpr(c.callee);
-                for (c.args) |a| _ = try self.inferExpr(a);
-                return null;
-            },
+            .call => |c| return try self.checkCall(c, hint),
             .method_call => |m| {
-                _ = try self.inferExpr(m.receiver);
-                for (m.args) |a| _ = try self.inferExpr(a);
+                _ = try self.inferExpr(m.receiver, null);
+                for (m.args) |a| _ = try self.inferExpr(a, null);
                 return null;
             },
             .field => |f| {
-                _ = try self.inferExpr(f.receiver);
+                _ = try self.inferExpr(f.receiver, null);
                 return null;
             },
             .index => |ix| {
-                _ = try self.inferExpr(ix.receiver);
-                _ = try self.inferExpr(ix.index);
+                _ = try self.inferExpr(ix.receiver, null);
+                _ = try self.inferExpr(ix.index, null);
                 return null;
             },
             .do_expr => |d| {
@@ -743,39 +772,17 @@ const Checker = struct {
                 for (l.body) |s| try self.walkStatement(s);
                 return null;
             },
-            .list_lit => |ll| {
-                var first_ty: ?*const types.Type = null;
-                for (ll.elems) |x| {
-                    const t = try self.inferExpr(x);
-                    if (first_ty == null) first_ty = t;
-                }
-                if (first_ty) |t| {
-                    return try types.mkArray(self.arena, t, @intCast(ll.elems.len));
-                }
-                return null;
-            },
-            .list_repeat => |lr| {
-                const v_ty = try self.inferExpr(lr.value);
-                _ = try self.inferExpr(lr.count);
-                if (v_ty) |t| {
-                    const len_val: u32 = if (lr.count.* == .int_lit)
-                        // safety: array-repeat count parsed as i32; §3.4 requires non-negative comptime int. Slice 3 will range-check; bit-cast preserves bytes.
-                        @bitCast(lr.count.int_lit.value)
-                    else
-                        0;
-                    return try types.mkArray(self.arena, t, len_val);
-                }
-                return null;
-            },
+            .list_lit => |ll| return try self.inferListLit(ll, hint),
+            .list_repeat => |lr| return try self.inferListRepeat(lr, hint),
             .struct_lit => |sl| {
-                for (sl.fields) |f| _ = try self.inferExpr(f.value);
+                for (sl.fields) |f| _ = try self.inferExpr(f.value, null);
                 return try types.mkNamed(self.arena, self.lexeme(sl.type_name), sl.type_name);
             },
             .tuple_lit => |tl| {
                 var elems: std.ArrayList(*const types.Type) = .empty;
                 errdefer elems.deinit(self.arena);
                 for (tl.elems) |x| {
-                    const t = try self.inferExpr(x) orelse return null;
+                    const t = try self.inferExpr(x, null) orelse return null;
                     try elems.append(self.arena, t);
                 }
                 const out = try self.arena.create(types.Type);
@@ -783,22 +790,287 @@ const Checker = struct {
                 return out;
             },
             .is_test => |it| {
-                _ = try self.inferExpr(it.lhs);
+                _ = try self.inferExpr(it.lhs, null);
                 return try self.primitive(.bool_);
             },
-            .cast => |c| {
-                _ = try self.inferExpr(c.inner);
-                return try self.resolveType(c.target_type);
-            },
+            .cast => |c| return try self.checkCast(c),
             .ref_of => |r| {
-                const inner = try self.inferExpr(r.inner) orelse return null;
+                const inner = try self.inferExpr(r.inner, null) orelse return null;
                 return try types.mkReference(self.arena, inner);
             },
         }
     }
+
+    // ---------- literal inference with bidirectional hint ----------
+
+    fn inferIntLit(self: *Checker, lit: ast.IntLitExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
+        // Bidirectional: pin to hint when the hint is an integer-like
+        // primitive. Range-check the literal against the pinned width.
+        if (hint) |h| if (h.* == .primitive) {
+            const p = h.primitive;
+            if (isIntegerPrimitive(p)) {
+                if (!intLitFits(lit.value, p)) {
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "literal `{d}` does not fit in `{s}`",
+                        .{ lit.value, primitiveName(p) },
+                    );
+                    try self.emit("E_TYPE_MISMATCH", lit.span.start, msg, null);
+                }
+                return try self.primitive(p);
+            }
+        };
+        // Default for unpinned int literals: i16 (`int`).
+        return try self.primitive(.i16);
+    }
+
+    fn inferListLit(self: *Checker, ll: ast.ListLit, hint: ?*const types.Type) WalkError!?*const types.Type {
+        // Hint may be `[T; N]` or `Vec(T)` — propagate the elem type.
+        const elem_hint: ?*const types.Type = if (hint) |h| switch (h.*) {
+            .array => |a| a.elem,
+            .vec => |v| v,
+            else => null,
+        } else null;
+        var first_ty: ?*const types.Type = null;
+        for (ll.elems) |x| {
+            const t = try self.inferExpr(x, elem_hint);
+            if (first_ty == null) first_ty = t;
+        }
+        if (first_ty) |t| {
+            return try types.mkArray(self.arena, t, @intCast(ll.elems.len));
+        }
+        return null;
+    }
+
+    fn inferListRepeat(self: *Checker, lr: ast.ListRepeatLit, hint: ?*const types.Type) WalkError!?*const types.Type {
+        const elem_hint: ?*const types.Type = if (hint) |h| switch (h.*) {
+            .array => |a| a.elem,
+            .vec => |v| v,
+            else => null,
+        } else null;
+        const v_ty = try self.inferExpr(lr.value, elem_hint);
+        _ = try self.inferExpr(lr.count, null);
+        if (v_ty) |t| {
+            const len_val: u32 = if (lr.count.* == .int_lit)
+                // safety: array-repeat count parsed as i32; §3.4 requires non-negative comptime int. Slice 3+ will range-check; bit-cast preserves bytes.
+                @bitCast(lr.count.int_lit.value)
+            else
+                0;
+            return try types.mkArray(self.arena, t, len_val);
+        }
+        return null;
+    }
+
+    // ---------- operator type rules (§4.2.1) ----------
+
+    fn checkUnary(self: *Checker, u: ast.UnaryExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
+        const op_hint: ?*const types.Type = if (u.op == .log_not)
+            try self.primitive(.bool_)
+        else
+            hint;
+        const operand_ty = try self.inferExpr(u.operand, op_hint);
+        if (operand_ty == null) return null;
+        const ot = operand_ty.?;
+        switch (u.op) {
+            .neg => {
+                if (!isNumericType(ot.*)) {
+                    try self.emitOperatorRequires(u.span, "negation `-`", "a numeric type", ot);
+                    return null;
+                }
+                return ot;
+            },
+            .log_not => {
+                if (!isBoolType(ot.*)) {
+                    try self.emitOperatorRequires(u.span, "logical `not`", "`bool`", ot);
+                    return null;
+                }
+                return try self.primitive(.bool_);
+            },
+            .bit_not => {
+                if (!isIntegerType(ot.*)) {
+                    try self.emitOperatorRequires(u.span, "bitwise `~`", "an integer type", ot);
+                    return null;
+                }
+                return ot;
+            },
+        }
+    }
+
+    fn checkBinary(self: *Checker, b: ast.BinaryExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
+        return switch (b.op) {
+            .add, .sub, .mul, .div, .mod => try self.checkArith(b, hint),
+            .shl, .shr => try self.checkShift(b, hint),
+            .bit_and, .bit_or, .bit_xor => try self.checkBitwise(b, hint),
+            .eq, .neq, .lt, .lte, .gt, .gte => try self.checkComparison(b),
+            .log_and, .log_or => try self.checkLogical(b),
+        };
+    }
+
+    fn checkArith(self: *Checker, b: ast.BinaryExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
+        const lhs_ty = try self.inferExpr(b.lhs, hint);
+        // Pin RHS to LHS once known; otherwise fall back to the outer hint.
+        const rhs_hint = lhs_ty orelse hint;
+        const rhs_ty = try self.inferExpr(b.rhs, rhs_hint);
+        if (lhs_ty == null or rhs_ty == null) return lhs_ty orelse rhs_ty;
+        // String concatenation: only `+`, both sides `str`.
+        if (b.op == .add and isStrType(lhs_ty.?.*) and isStrType(rhs_ty.?.*)) {
+            return try self.primitive(.str);
+        }
+        if (!isNumericType(lhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, opLexeme(b.op), "a numeric type", lhs_ty.?);
+            return null;
+        }
+        if (!isNumericType(rhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, opLexeme(b.op), "a numeric type", rhs_ty.?);
+            return null;
+        }
+        if (!lhs_ty.?.eql(rhs_ty.?.*)) {
+            try self.emitMismatch(b.rhs.span(), lhs_ty.?, rhs_ty.?);
+        }
+        return lhs_ty;
+    }
+
+    fn checkShift(self: *Checker, b: ast.BinaryExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
+        const lhs_ty = try self.inferExpr(b.lhs, hint);
+        // Shift count is itself an integer; default to u8-ish via i16 (no specific hint).
+        const rhs_ty = try self.inferExpr(b.rhs, null);
+        if (lhs_ty == null or rhs_ty == null) return lhs_ty;
+        if (!isIntegerType(lhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, opLexeme(b.op), "an integer type", lhs_ty.?);
+            return null;
+        }
+        if (!isIntegerType(rhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, opLexeme(b.op), "an integer shift count", rhs_ty.?);
+            return null;
+        }
+        return lhs_ty;
+    }
+
+    fn checkBitwise(self: *Checker, b: ast.BinaryExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
+        const lhs_ty = try self.inferExpr(b.lhs, hint);
+        const rhs_hint = lhs_ty orelse hint;
+        const rhs_ty = try self.inferExpr(b.rhs, rhs_hint);
+        if (lhs_ty == null or rhs_ty == null) return lhs_ty orelse rhs_ty;
+        if (!isIntegerType(lhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, opLexeme(b.op), "an integer type", lhs_ty.?);
+            return null;
+        }
+        if (!isIntegerType(rhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, opLexeme(b.op), "an integer type", rhs_ty.?);
+            return null;
+        }
+        if (!lhs_ty.?.eql(rhs_ty.?.*)) {
+            try self.emitMismatch(b.rhs.span(), lhs_ty.?, rhs_ty.?);
+        }
+        return lhs_ty;
+    }
+
+    fn checkComparison(self: *Checker, b: ast.BinaryExpr) WalkError!?*const types.Type {
+        const lhs_ty = try self.inferExpr(b.lhs, null);
+        const rhs_ty = try self.inferExpr(b.rhs, lhs_ty);
+        if (lhs_ty != null and rhs_ty != null and !lhs_ty.?.eql(rhs_ty.?.*)) {
+            try self.emitMismatch(b.rhs.span(), lhs_ty.?, rhs_ty.?);
+        }
+        return try self.primitive(.bool_);
+    }
+
+    fn checkLogical(self: *Checker, b: ast.BinaryExpr) WalkError!?*const types.Type {
+        const bool_ty = try self.primitive(.bool_);
+        const lhs_ty = try self.inferExpr(b.lhs, bool_ty);
+        const rhs_ty = try self.inferExpr(b.rhs, bool_ty);
+        if (lhs_ty) |t| if (!isBoolType(t.*)) {
+            try self.emitOperatorRequires(b.span, opLexeme(b.op), "`bool`", t);
+        };
+        if (rhs_ty) |t| if (!isBoolType(t.*)) {
+            try self.emitOperatorRequires(b.span, opLexeme(b.op), "`bool`", t);
+        };
+        return bool_ty;
+    }
+
+    fn emitOperatorRequires(
+        self: *Checker,
+        span: ast.Span,
+        op_name: []const u8,
+        wants: []const u8,
+        actual: *const types.Type,
+    ) WalkError!void {
+        const actual_s = try types.render(self.arena, actual.*);
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "operator {s} requires {s}, found `{s}`",
+            .{ op_name, wants, actual_s },
+        );
+        try self.emit("E_TYPE_MISMATCH", span.start, msg, null);
+    }
+
+    // ---------- cast (`as T`) checking ----------
+
+    fn checkCast(self: *Checker, c: ast.CastExpr) WalkError!?*const types.Type {
+        const inner_ty = try self.inferExpr(c.inner, null);
+        const target_ty = try self.resolveType(c.target_type);
+        if (inner_ty) |it| {
+            if (!canCast(it.*, target_ty.*)) {
+                const from_s = try types.render(self.arena, it.*);
+                const to_s = try types.render(self.arena, target_ty.*);
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "cannot cast `{s}` to `{s}`",
+                    .{ from_s, to_s },
+                );
+                try self.emit("E_CAST_INVALID", c.span.start, msg, null);
+            }
+        }
+        return target_ty;
+    }
+
+    // ---------- function call ----------
+
+    fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
+        _ = hint;
+        const callee_ty = try self.inferExpr(c.callee, null);
+        if (callee_ty == null) {
+            for (c.args) |a| _ = try self.inferExpr(a, null);
+            return null;
+        }
+        if (callee_ty.?.* != .function) {
+            const ty_s = try types.render(self.arena, callee_ty.?.*);
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "called value has type `{s}`, expected a function",
+                .{ty_s},
+            );
+            try self.emit("E_TYPE_MISMATCH", c.callee.span().start, msg, null);
+            for (c.args) |a| _ = try self.inferExpr(a, null);
+            return null;
+        }
+        const f = callee_ty.?.function;
+        if (c.args.len != f.params.len) {
+            const suffix: []const u8 = if (f.params.len == 1) "" else "s";
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "function takes {d} argument{s}, called with {d}",
+                .{ f.params.len, suffix, c.args.len },
+            );
+            try self.emit("E_TYPE_ARG_COUNT", c.span.start, msg, null);
+            for (c.args) |a| _ = try self.inferExpr(a, null);
+            return f.ret;
+        }
+        for (c.args, 0..) |arg, i| {
+            const param_ty = f.params[i];
+            // Skip the type check when the param's type is the
+            // `nil_` placeholder used for unannotated `def` params —
+            // call-site inference for those lands in a later slice.
+            const skip = isNilType(param_ty.*);
+            const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
+            if (!skip and arg_ty != null and !param_ty.eql(arg_ty.?.*)) {
+                try self.emitMismatch(arg.span(), param_ty, arg_ty.?);
+            }
+        }
+        return f.ret;
+    }
 };
 
-// ---------- module-level helpers (recursive cycle-breakers) ----------
+// ---------- module-level helpers ----------
 
 fn ifChainMentions(
     c: *const Checker,
@@ -832,5 +1104,131 @@ fn anyExprMentions(c: *const Checker, exprs: []const *ast.Expr, name: []const u8
 
 fn structLitMentions(c: *const Checker, fields: []const ast.StructLitField, name: []const u8) bool {
     for (fields) |f| if (c.exprMentions(f.value, name)) return true;
+    return false;
+}
+
+// ---------- type predicates ----------
+
+fn isIntegerPrimitive(p: types.Primitive) bool {
+    return switch (p) {
+        .i8, .u8, .i16, .u16 => true,
+        else => false,
+    };
+}
+
+fn isIntegerType(t: types.Type) bool {
+    return switch (t) {
+        .primitive => |p| isIntegerPrimitive(p),
+        else => false,
+    };
+}
+
+fn isNumericType(t: types.Type) bool {
+    return switch (t) {
+        .primitive => |p| isIntegerPrimitive(p) or p == .fixed,
+        else => false,
+    };
+}
+
+fn isBoolType(t: types.Type) bool {
+    return switch (t) {
+        .primitive => |p| p == .bool_,
+        else => false,
+    };
+}
+
+fn isStrType(t: types.Type) bool {
+    return switch (t) {
+        .primitive => |p| p == .str,
+        else => false,
+    };
+}
+
+fn isNilType(t: types.Type) bool {
+    return switch (t) {
+        .primitive => |p| p == .nil_,
+        else => false,
+    };
+}
+
+fn primitiveName(p: types.Primitive) []const u8 {
+    return switch (p) {
+        .i8 => "i8",
+        .u8 => "u8",
+        .i16 => "i16",
+        .u16 => "u16",
+        .bool_ => "bool",
+        .nil_ => "nil",
+        .str => "str",
+        .fixed => "fixed",
+        .char => "char",
+    };
+}
+
+fn intLitFits(value: i32, p: types.Primitive) bool {
+    return switch (p) {
+        .i8 => value >= -128 and value <= 127,
+        .u8 => value >= 0 and value <= 255,
+        .i16 => value >= -32768 and value <= 32767,
+        .u16 => value >= 0 and value <= 65535,
+        else => false,
+    };
+}
+
+fn opLexeme(op: ast.BinaryOp) []const u8 {
+    return switch (op) {
+        .add => "`+`",
+        .sub => "`-`",
+        .mul => "`*`",
+        .div => "`/`",
+        .mod => "`%`",
+        .shl => "`<<`",
+        .shr => "`>>`",
+        .bit_and => "`&`",
+        .bit_or => "`|`",
+        .bit_xor => "`^`",
+        .eq => "`==`",
+        .neq => "`!=`",
+        .lt => "`<`",
+        .lte => "`<=`",
+        .gt => "`>`",
+        .gte => "`>=`",
+        .log_and => "`and`",
+        .log_or => "`or`",
+    };
+}
+
+// ---------- place expression check ----------
+
+/// `true` when `e` is a valid assignment target — `ident`, `field`,
+/// `index`, or any of those wrapped in `paren`. Function-call results,
+/// arithmetic, literals, etc. are not place expressions.
+fn isPlaceExpr(e: *const ast.Expr) bool {
+    return switch (e.*) {
+        .ident, .field, .index => true,
+        .paren => |p| isPlaceExpr(p.inner),
+        else => false,
+    };
+}
+
+// ---------- cast convertibility (§3.5.1) ----------
+
+/// Spec §3.5.1 conversion table. Allows integer ↔ integer (any
+/// width / sign), bool ↔ integer, fixed ↔ integer, u8 ↔ char, and
+/// any same-primitive identity cast. Rejects everything else
+/// (class casts, function-pointer reinterpret, reference casts).
+fn canCast(from: types.Type, to: types.Type) bool {
+    if (from != .primitive or to != .primitive) return false;
+    const f = from.primitive;
+    const t = to.primitive;
+    if (f == t) return true;
+    const f_int = isIntegerPrimitive(f);
+    const t_int = isIntegerPrimitive(t);
+    if (f_int and t_int) return true;
+    if (f == .bool_ and t_int) return true;
+    if (f_int and t == .bool_) return true;
+    if (f == .fixed and t_int) return true;
+    if (f_int and t == .fixed) return true;
+    if ((f == .u8 and t == .char) or (f == .char and t == .u8)) return true;
     return false;
 }

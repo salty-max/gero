@@ -142,9 +142,6 @@ test "typecheck: short lambda body resolves params" {
 }
 
 test "typecheck: ref expr + array-repeat literal walks" {
-    // Bidirectional inference for integer literals lands in slice 3
-    // — until then `[0; 64]` infers as `[i16; 64]` regardless of
-    // annotation. Use a matching literal-array shape here.
     try expectClean(
         \\let buf: [i16; 64] = [0; 64]
     );
@@ -199,9 +196,6 @@ test "typecheck: forward reference to top-level let resolves (two-pass)" {
 // ---------- slice 2: named-type resolution ----------
 
 test "typecheck: primitive type names resolve" {
-    // Same caveat: integer literals pin to `i16` until slice 3
-    // adds bidirectional inference. Stick to the matching primitive
-    // for each annotated binding.
     try expectClean(
         \\let a: i16 = 0
         \\let c: bool = true
@@ -291,6 +285,299 @@ test "typecheck: selective import registers each item" {
         \\use abs from math
         \\let a = abs
     );
+}
+
+// ---------- slice 3: bidirectional integer-literal inference ----------
+
+test "typecheck: let x: u8 = 0 pins the literal to u8" {
+    try expectClean("let x: u8 = 0");
+}
+
+test "typecheck: let x: u8 = 255 accepts the boundary value" {
+    try expectClean("let x: u8 = 255");
+}
+
+test "typecheck: let x: u8 = 256 errors with E_TYPE_MISMATCH (out of range)" {
+    try expectCode("let x: u8 = 256", "E_TYPE_MISMATCH");
+}
+
+test "typecheck: let x: i8 = -128 accepts the boundary value" {
+    try expectClean("let x: i8 = -128");
+}
+
+test "typecheck: let x: u16 = 65535 accepts" {
+    try expectClean("let x: u16 = 65535");
+}
+
+test "typecheck: array-repeat with u8 elem pins literal" {
+    try expectClean(
+        \\let buf: [u8; 64] = [0; 64]
+    );
+}
+
+// ---------- slice 3: binary operator type rules ----------
+
+test "typecheck: i16 + i16 accepts" {
+    try expectClean(
+        \\let a: i16 = 1
+        \\let b: i16 = a + 2
+    );
+}
+
+test "typecheck: u8 + u8 with bidirectional hint accepts" {
+    try expectClean(
+        \\let a: u8 = 1
+        \\let b: u8 = a + 2
+    );
+}
+
+test "typecheck: str + str accepts (concatenation)" {
+    try expectClean(
+        \\let a: str = "hello"
+        \\let b: str = a + " world"
+    );
+}
+
+test "typecheck: 1 + true errors (mixed numeric / bool)" {
+    try expectCode(
+        \\let x = 1 + true
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: i16 + str errors (incompatible numeric / str)" {
+    try expectCode(
+        \\let a: i16 = 1
+        \\let b: str = "x"
+        \\let c = a + b
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: comparison returns bool" {
+    try expectClean(
+        \\let a: i16 = 1
+        \\let b: bool = a < 5
+    );
+}
+
+test "typecheck: and / or require bool operands" {
+    try expectCode(
+        \\let x = 1 and 2
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: bitwise & on integer accepts" {
+    try expectClean(
+        \\let a: u8 = $FF
+        \\let b: u8 = a & $0F
+    );
+}
+
+test "typecheck: bitwise & on fixed errors" {
+    try expectCode(
+        \\let a: fixed = 1.5
+        \\let b = a & a
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: shift << on integer accepts" {
+    try expectClean(
+        \\let a: u8 = 1
+        \\let b: u8 = a << 2
+    );
+}
+
+// ---------- slice 3: unary operator type rules ----------
+
+test "typecheck: -i16 accepts (numeric negation)" {
+    try expectClean(
+        \\let a: i16 = 5
+        \\let b: i16 = -a
+    );
+}
+
+test "typecheck: -true errors (negation on non-numeric)" {
+    try expectCode("let x = -true", "E_TYPE_MISMATCH");
+}
+
+test "typecheck: not bool accepts" {
+    try expectClean(
+        \\let a: bool = true
+        \\let b: bool = not a
+    );
+}
+
+test "typecheck: not int errors" {
+    try expectCode("let x = not 5", "E_TYPE_MISMATCH");
+}
+
+test "typecheck: ~int accepts" {
+    try expectClean(
+        \\let a: u8 = $FF
+        \\let b: u8 = ~a
+    );
+}
+
+test "typecheck: ~bool errors" {
+    try expectCode("let x = ~true", "E_TYPE_MISMATCH");
+}
+
+// ---------- slice 3: cast `as T` validation (§3.5.1) ----------
+
+test "typecheck: int as u8 accepts" {
+    try expectClean(
+        \\let a: i16 = 100
+        \\let b: u8 = a as u8
+    );
+}
+
+test "typecheck: bool as u8 accepts" {
+    try expectClean(
+        \\let a: bool = true
+        \\let b: u8 = a as u8
+    );
+}
+
+test "typecheck: u8 as char accepts (no-op)" {
+    try expectClean(
+        \\let a: u8 = 65
+        \\let b: char = a as char
+    );
+}
+
+test "typecheck: int as fixed accepts" {
+    try expectClean(
+        \\let a: i16 = 5
+        \\let b: fixed = a as fixed
+    );
+}
+
+test "typecheck: str as u8 errors with E_CAST_INVALID" {
+    try expectCode(
+        \\let s: str = "hi"
+        \\let x = s as u8
+    , "E_CAST_INVALID");
+}
+
+// ---------- slice 3: function call checking ----------
+
+test "typecheck: correct arity + arg types accepts" {
+    try expectClean(
+        \\def add(a: i16, b: i16) -> i16
+        \\  return a + b
+        \\end
+        \\
+        \\let r = add(1, 2)
+    );
+}
+
+test "typecheck: too many args errors with E_TYPE_ARG_COUNT" {
+    try expectCode(
+        \\def f(a: i16) -> i16
+        \\  return a
+        \\end
+        \\
+        \\let r = f(1, 2)
+    , "E_TYPE_ARG_COUNT");
+}
+
+test "typecheck: too few args errors with E_TYPE_ARG_COUNT" {
+    try expectCode(
+        \\def f(a: i16, b: i16) -> i16
+        \\  return a + b
+        \\end
+        \\
+        \\let r = f(1)
+    , "E_TYPE_ARG_COUNT");
+}
+
+test "typecheck: wrong arg type errors with E_TYPE_MISMATCH" {
+    try expectCode(
+        \\def f(a: i16) -> i16
+        \\  return a
+        \\end
+        \\
+        \\let r = f("hi")
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: arg int literal pins to param type" {
+    try expectClean(
+        \\def take_u8(x: u8) -> u8
+        \\  return x
+        \\end
+        \\
+        \\let r = take_u8(200)
+    );
+}
+
+test "typecheck: calling a non-function errors" {
+    try expectCode(
+        \\let x: i16 = 5
+        \\let r = x(1)
+    , "E_TYPE_MISMATCH");
+}
+
+// ---------- slice 3: assignment checking ----------
+
+test "typecheck: assign matching type accepts" {
+    try expectClean(
+        \\let x: i16 = 0
+        \\x = 5
+    );
+}
+
+test "typecheck: assign mismatched type errors" {
+    try expectCode(
+        \\let x: i16 = 0
+        \\x = "hi"
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: assign LHS literal errors (not a place)" {
+    // Parser may accept `1 = 5`; the typechecker rejects it.
+    try expectCode(
+        \\let x = 0
+        \\(x + 1) = 5
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: compound op= pins rhs to lhs type" {
+    try expectClean(
+        \\let x: u8 = 1
+        \\x += 2
+    );
+}
+
+test "typecheck: ++ on integer accepts" {
+    try expectClean(
+        \\let x: i16 = 0
+        \\x++
+    );
+}
+
+test "typecheck: ++ on bool errors" {
+    try expectCode(
+        \\let x: bool = true
+        \\x++
+    , "E_TYPE_MISMATCH");
+}
+
+// ---------- slice 3: return-type checking ----------
+
+test "typecheck: return value matches declared ret type" {
+    try expectClean(
+        \\def f() -> u8
+        \\  return 0
+        \\end
+    );
+}
+
+test "typecheck: return value mismatched ret type errors" {
+    try expectCode(
+        \\def f() -> u8
+        \\  return "hi"
+        \\end
+    , "E_TYPE_MISMATCH");
 }
 
 // ---------- CheckedProgram surface ----------
