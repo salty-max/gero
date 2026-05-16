@@ -24,6 +24,17 @@ What gero **is not**:
 - A self-hosting compiler — the lang compiler is in Zig
 - A graphics / IO runtime — that lives in the gtx-16 shell
 
+## Workflow Contract
+
+**Issue → branch → PR → wait for merge signal → next issue.**
+Never batch issues into a single PR. Never start the next issue
+before the current one is explicitly merged. The maintainer
+controls cadence; the implementer waits for the go-ahead.
+
+When the issue body lists acceptance criteria, treat them as the
+definition of done — not green CI. Re-read them before declaring
+the work finished (see [Self-Review](#self-review-before-declaring-done)).
+
 ## Tech Stack
 
 - **Zig 0.16.0** minimum (pinned in `build.zig.zon`)
@@ -33,6 +44,9 @@ What gero **is not**:
   runner. Every dev command is `zig build <step>`. No Makefile, no
   shell wrapper. Run `zig build --help` to list every step.
 - **Format**: `zig fmt` (driven via `zig build fmt` / `fmt-check`)
+- **Lint**: single Zig binary at `tools/lint/main.zig`, built as
+  `zig-out/bin/gero-lint`, runs every rule against the in-memory
+  source tree in ~2-3s
 - **Git hooks**: [lefthook](https://github.com/evilmartians/lefthook)
 - **Conventional commits**: [convco](https://github.com/convco/convco)
   — scope-enum enforced via `.versionrc`
@@ -58,18 +72,18 @@ tests/
 
 apps/                      # CLIs land here when needed
 docs/                      # ISA spec + lang spec live here
-editors/                   # Editor tooling — tree-sitter grammar (submodule), VS Code ext
-scripts/                   # Bash helpers for build.zig + lefthook
+editors/                   # Editor tooling — tree-sitter grammar + VS Code ext (submodules)
+tools/                     # Single-binary dev utilities (lint, etc.)
+scripts/                   # Bash helpers for build.zig + lefthook (slim — most logic in tools/)
 .changeset/                # *.md changeset files
 .github/                   # workflows + templates
-.gitmodules                # Submodule pinning (tree-sitter-gero-asm, vscode-gero in v0.2)
+.gitmodules                # Submodule pinning
 ```
 
 The `src/gero.zig` barrel and any `src/<module>.zig` (top-level
 module barrel) are exempt from the mirror rule. Every file deeper
 (`src/vm/foo.zig`, `src/asm/codegen.zig`, …) requires a matching
-`tests/vm/foo.test.zig` etc. — `scripts/check-mirror.sh` enforces
-this in CI.
+`tests/vm/foo.test.zig` etc. — the lint binary enforces this.
 
 `internal.zig` colocated with a module dir is the convention for
 private helpers — exempt from the mirror rule, must not be re-exported
@@ -91,7 +105,7 @@ mutable state, never read globals.
 ### Carry types through
 
 No `*anyopaque` in public signatures. No `anyerror` — explicit error
-sets only. The lint script enforces both.
+sets only. The lint binary enforces both.
 
 ### Justified casts
 
@@ -101,14 +115,29 @@ the call.
 
 ### Spans are first-class
 
-When Source positions matter (asm errors, lang diagnostics), use the
+When source positions matter (asm errors, lang diagnostics), use the
 `Span { start, end }` shape from `common`. Don't reinvent.
+
+### Complete designs, no deferral
+
+When proposing or reviewing a design — especially in user-facing
+specs (`docs/gero-lang.md`, `docs/isa.md`, public API surface) —
+ship the **complete** design. Helpers, edge cases, integration
+points, failure semantics: all decided up front.
+
+- ❌ "Status: design draft", "TBD", "deferred to later", "v0.X feature"
+- ❌ "Ranges work, custom iterables come later"
+- ✅ Either it's in the design (with full shape) or explicitly
+  "out of scope" (a non-feature with rationale)
+
+Implementation can stage across PRs; the **spec** describes the
+final shape from day one.
 
 ## Imports
 
 - **Single-level relative imports** — `../foo.zig` or `./foo.zig`.
   Anything past one parent (`@import("../../...")`) is rejected by
-  `scripts/check-imports.sh`.
+  the lint binary.
 - **Public consumers** import only `gero`:
   ```zig
   const gero = @import("gero");
@@ -118,9 +147,9 @@ When Source positions matter (asm errors, lang diagnostics), use the
 
 ## Strict Compiler Configuration
 
-Strictness up front pays back tenfold downstream — gero is the
-foundation for downstream consumers (gtx-16 native, future web shells)
-and a leaky type or silent UB here propagates everywhere.
+Strictness up front pays back downstream — gero is the foundation
+for gtx-16 native + future web shells. A leaky type or silent UB
+here propagates everywhere.
 
 ### Build modes
 
@@ -129,7 +158,7 @@ ReleaseFast, ReleaseSmall. A test passing only in Debug isn't done.
 
 ### Forbidden in `src/`
 
-`scripts/check-strict.sh` runs in CI and fails on any of:
+The lint binary fails on any of:
 
 - `anyerror` — use explicit error sets
 - `*anyopaque` or `*const anyopaque` anywhere
@@ -157,7 +186,7 @@ breaks any target fails CI.
 
 ### Naming convention
 
-`scripts/check-naming.sh` enforces:
+The lint binary enforces:
 
 - `pub fn Foo(...) type` → **PascalCase**
 - `pub fn foo(...) <other>` → **camelCase**
@@ -169,7 +198,7 @@ types (`pub const Foo = struct {...}`) and snake_case for values
 ## Testing
 
 - `zig build test` runs every native test in Debug
-- One spec per source file, mirror layout (`scripts/check-mirror.sh`)
+- One spec per source file, mirror layout (lint-enforced)
 - Naming: `<file>.test.zig`, `test "<symbol>: <behavior>" { ... }`
 - Helpers in `tests/util.zig`. Don't invent per-spec helpers when a
   shared one exists.
@@ -181,6 +210,7 @@ types (`pub const Foo = struct {...}`) and snake_case for values
 
 - `feat/<short-desc>` — new module, new public API
 - `fix/<short-desc>` — bug fix
+- `perf/<short-desc>` — measurable performance improvement
 - `chore/<short-desc>` — tooling, deps, CI, build
 - `docs/<short-desc>` — docs-only change
 - `refactor/<short-desc>` — internal restructuring with no behavior
@@ -202,7 +232,7 @@ asm                 → src/asm/*
 disasm              → src/disasm/*
 lang                → src/lang/*
 common              → src/common/*
-tooling             → build.zig, lefthook, convco, scripts/*
+tooling             → build.zig, lefthook, convco, tools/*, scripts/*
 ci                  → .github/workflows/*
 docs                → JSDoc-equivalent doc comments, README, in-source documentation
 meta                → top-level repo files (CLAUDE.md, LICENSE, .gitignore, root configs)
@@ -219,6 +249,10 @@ editors/<name>      → an editor-tooling submodule under editors/<name>/
 - **No scope-less commits** (`feat: add x` → rejected)
 - **Multi-concern changes** split into multiple commits in the PR
 - **`fixup!`** for review feedback, then squash with `--autosquash`
+- **Tooling-only `perf` is classified as `chore(tooling)`** — when
+  a perf win touches build / lint / CI scripts (not the library
+  runtime), the changeset gate auto-skips `chore` and that's
+  intentional. Library API perf wins remain `perf(<scope>)`.
 
 #### 🚫 No AI attribution — hard rule
 
@@ -231,7 +265,9 @@ default.** When committing in this repo:
 
 If a tool / hook / template adds one, **strip it** before committing.
 
-## Doc Comments
+## Comments
+
+### Doc comments (`///`)
 
 Every exported declaration gets `///` doc comments. File-attached
 `//!` reserved for the top-level barrel (`src/gero.zig`) only.
@@ -240,17 +276,28 @@ Every exported declaration gets `///` doc comments. File-attached
 - Param + return blurb when the names alone aren't self-explanatory
 - A 2-4 line example for non-trivial functions
 
-## Inline Comments
+### Inline comments (`//`)
 
-Comment **why**, not **what**. Single-line `//` comments only. Skip on
-obvious code.
+Comment **why**, not **what**. Single-line `//` comments only. Skip
+on obvious code.
 
-## Debug Code
+### Forbidden in any comment (`///` or `//`)
+
+- **No issue numbers** (`// see #189`, `/// closes #142`) — those
+  belong in commit messages / PR descriptions / changesets only.
+  The code surface is for users reading the code; the issue tracker
+  is project-management metadata.
+- **No version markers** (`// v0.X`, `/// Phase Y`, `// Roadmap:`)
+  — code describes what works today, factually. Versioning lives
+  in CHANGELOG / git tags / project board.
+- **No AI attribution** (see Commit Convention).
+
+### Debug prints
 
 `std.debug.print` is allowed in tests behind a local debug flag
 (`if (debug_dump) std.debug.print(...)`) but never left enabled. In
-`src/`, `std.debug.print` is forbidden — `scripts/check-strict.sh`
-greps for it.
+`src/`, `std.debug.print` is forbidden — the lint binary greps for
+it.
 
 ## Changesets
 
@@ -258,7 +305,8 @@ Every PR with a user-visible change drops a markdown file under
 `.changeset/`. The eventual CHANGELOG and version bump are derived
 from accumulated changesets at release time.
 
-**Add one** for: `feat`, `fix`, `perf`, breaking refactor.
+**Add one** for: `feat`, `fix`, library-level `perf`, breaking
+refactor.
 
 **Skip** for: `chore`, `docs`, `test`, `refactor` (internal-only),
 `ci`, `build`, `style`. The `changeset-check` workflow auto-skips
@@ -289,9 +337,75 @@ git push origin main --tags
 If `zig build version` produces a CHANGELOG you don't want, edit it
 by hand before tagging — that's the canonical workflow.
 
+## Local Gates
+
+Three layered gates with different speed / coverage trade-offs.
+Warm-cache numbers; cold cache adds ~30s-1m for the Zig build itself.
+
+```bash
+zig build quick     # inner loop (~1s)
+                    # fmt-check + test (Debug only). No lint.
+                    # Use between edits while iterating.
+
+zig build verify    # pre-push (~3s)
+                    # quick + lint + asm example gates. Required
+                    # green before pushing.
+
+zig build ci        # full matrix (~4s warm / ~2m cold)
+                    # verify + test-modes (ReleaseSafe / Fast / Small)
+                    #        + test-all (cross-target: linux / macos
+                    #          / windows / wasi)
+                    #        + test-examples (full asm + run + stdout
+                    #          diff + round-trip)
+                    # Mirrors what GitHub Actions runs. Required
+                    # before tagging a release; optional before PR push.
+```
+
+GitHub Actions runs `ci` on every push, so you don't have to gate
+every commit on it locally — but `verify` green is required before
+pushing.
+
+## Before Push
+
+Before every `git push` to a feature branch, run this checklist.
+Each item takes seconds; the alternative is a 4-10 min CI roundtrip
+to discover the same problem.
+
+1. **`zig build verify`** — must be green. Re-run if any code
+   changed since the last green.
+2. **Changeset present** if the PR title will be `feat` / `fix` /
+   library-level `perf`:
+   ```bash
+   git diff --name-only --diff-filter=A origin/main...HEAD \
+     | grep -E '^\.changeset/[a-zA-Z0-9_-]+\.md$' \
+     | grep -v '^\.changeset/README\.md$'
+   ```
+   If empty and the title is `feat` / `fix` / `perf`, run
+   `zig build changeset`.
+3. **Branch base is clean**:
+   ```bash
+   git log --oneline origin/main..HEAD
+   ```
+   Every commit listed must belong to this PR's concern only. Foreign
+   commits from a sibling branch → rebase
+   `git rebase --onto origin/main <last-foreign-sha> <my-branch>`.
+4. **Workflow integrity** if this PR touches `scripts/` / `tools/` /
+   `build.zig`:
+   ```bash
+   grep -rEn 'scripts/[a-zA-Z0-9_-]+\.sh|tools/[a-zA-Z0-9_-]+' \
+     .github/workflows/
+   ```
+   No dangling references to deleted files.
+5. **No AI attribution**:
+   ```bash
+   git log origin/main..HEAD --format='%B' \
+     | grep -iE 'claude|🤖|generated with|co-authored.*claude'
+   ```
+   Must be empty.
+
 ## Self-Review Before Declaring Done
 
-When you think the work on an issue is finished, **don't declare done
+When the work on an issue is finished, **don't declare done
 immediately**. Run a self-review pass, fix what you find, and loop
 until the review is clean.
 
@@ -309,39 +423,8 @@ and follow-up issue), or ❌ Missed (fix it).
 
 ### Step 2 — technical gates
 
-Three layered gates with different speed / coverage trade-offs.
-All numbers are warm-cache; cold-cache adds ~30s-1m for the Zig
-build itself.
-
-```bash
-zig build quick     # inner loop (~1s)
-                    # fmt-check + test (Debug only). No lint.
-                    # Use between edits while iterating.
-
-zig build verify    # pre-push (~3s)
-                    # lint + test + asm example gates. Required
-                    # green before pushing.
-
-zig build ci        # full matrix (~4s warm / ~2m cold)
-                    # verify + test-modes (ReleaseSafe / Fast / Small)
-                    #        + test-all (cross-target: linux / macos
-                    #          / windows / wasi)
-                    #        + test-examples (full asm + run + stdout
-                    #          diff + round-trip)
-                    # Mirrors what GitHub Actions runs. Required
-                    # before tagging a release; optional before PR push.
-```
-
-The lint step is a single Zig binary (`tools/lint/main.zig`) that
-reads every `.zig` file once and runs every rule against the
-in-memory lines. Per-rule scripts under `scripts/check-*.sh` are
-gone — they walked the tree per-rule (and check-unused did
-O(decls × tree) grepping), summing to ~4 minutes on the current
-codebase.
-
-GitHub Actions runs `ci` on every push so you don't have to gate
-every commit on it locally — but the green `verify` lights are
-required before pushing.
+Run `zig build ci` (or rely on a recent GitHub Actions run). All
+green is the floor, not the ceiling.
 
 ### Step 3 — explicit acceptance checks
 
@@ -357,7 +440,9 @@ required before pushing.
 ### Step 4 — hygiene
 
 - No leftover `std.debug.print`, `unreachable` without comment,
-  commented-out code, unused imports, `// TODO` without a linked issue
+  commented-out code, unused imports
+- No `// TODO` referencing an issue number (TODO must describe
+  what's missing, not point at a tracker)
 - Conventional-commit headers valid; every commit has a scope
 - No AI attribution
 - Diff scope matches what the issue says it should
@@ -371,17 +456,20 @@ it.
 
 ## Key Rules Summary
 
-1. **One concern per file** — split early
-2. **No `*anyopaque` / no `anyerror`** in public exports
-3. **Justified casts** — `@as`/`@ptrCast`/`@bitCast` need a why-comment
-4. **Spans are first-class** for diagnostics
-5. **Test the failure path** — happy + at least one failure per spec,
+1. **Issue → branch → PR → wait for merge signal → next issue**
+2. **One concern per file** — split early
+3. **Complete designs, no deferral** in specs and public surfaces
+4. **No `*anyopaque` / no `anyerror`** in public exports
+5. **Justified casts** — `@as`/`@ptrCast`/`@bitCast` need a why-comment
+6. **Spans are first-class** for diagnostics
+7. **Test the failure path** — happy + at least one failure per spec,
    all four release modes
-6. **Mirror layout** — every `src/<mod>/<file>.zig` has a
+8. **Mirror layout** — every `src/<mod>/<file>.zig` has a
    `tests/<mod>/<file>.test.zig`
-7. **Single-level relative imports** — no deep `../../`
-8. **Strict scope-enum** — every commit has a scope from the convco
-   enum
-9. **Doc comments on exports** — short description + params + returns
-10. **No AI attribution** — never in commits, PRs, or issue comments
-11. **Self-review loop** — fix until LGTM before declaring done
+9. **Single-level relative imports** — no deep `../../`
+10. **Strict scope-enum** — every commit has a scope from the convco
+    enum
+11. **No issue numbers or version markers in `///` / `//` comments**
+12. **No AI attribution** — never in commits, PRs, or issue comments
+13. **Before-push checklist** — 5 items, 10 seconds, saves CI roundtrips
+14. **Self-review loop** — fix until LGTM before declaring done
