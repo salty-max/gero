@@ -69,13 +69,15 @@ pub fn typecheck(
         .module_scope = &module_scope,
         .current_scope = &module_scope,
         .current_ret_ty = null,
+        .current_class_extends = null,
+        .non_nil = .{},
     };
 
     // Pass 1: register top-level decls so forward references resolve.
     for (program.statements) |stmt| try c.registerTopLevel(stmt);
 
     // Pass 2: walk + resolve + infer + check.
-    for (program.statements) |stmt| try c.walkStatement(stmt);
+    try c.walkStatementSequence(program.statements);
 
     return .{
         .program = program,
@@ -103,10 +105,59 @@ const Checker = struct {
     /// Used as a hint for `return expr` so int literals pin to the
     /// declared return type.
     current_ret_ty: ?*const types.Type,
+    /// Span of the enclosing class's `extends Parent` clause when
+    /// the walker is inside a class method body. `null` everywhere
+    /// else. Drives `super` resolution.
+    current_class_extends: ?ast.Span,
+    /// Identifiers statically known non-nil in the current
+    /// straight-line flow. Populated by simple nil-check pattern
+    /// matching (`if x != nil` arm / `if x == nil then return end`
+    /// fall-through). Keys are source-buffer slices owned by the
+    /// caller's source.
+    non_nil: std.StringHashMapUnmanaged(void),
 
     /// Mutually recursive walker fns need an explicit error set —
     /// Zig's inferred sets would deadlock the dependency graph.
     const WalkError = error{OutOfMemory};
+
+    // ---------- nil-flow helpers ----------
+
+    /// Mark `name` as statically non-nil. Returns `true` when the
+    /// addition is fresh (caller pops on scope exit); `false` when
+    /// the binding was already in the set.
+    fn pushNonNil(self: *Checker, name: []const u8) WalkError!bool {
+        const gop = try self.non_nil.getOrPut(self.arena, name);
+        return !gop.found_existing;
+    }
+
+    fn popNonNil(self: *Checker, name: []const u8) void {
+        _ = self.non_nil.remove(name);
+    }
+
+    /// Pattern-match a condition expression of the shape
+    /// `ident == nil` / `ident != nil` (in either operand order).
+    /// Returns the ident lexeme + whether the relation is `!=` so
+    /// callers can pick the right arm to confer non-nil status to.
+    fn matchNilCheck(self: *const Checker, cond: *const ast.Expr) ?NilCheck {
+        if (cond.* != .binary) return null;
+        const b = cond.binary;
+        if (b.op != .eq and b.op != .neq) return null;
+        const lhs_ident = identName(self, b.lhs);
+        const rhs_ident = identName(self, b.rhs);
+        const lhs_nil = b.lhs.* == .nil_lit;
+        const rhs_nil = b.rhs.* == .nil_lit;
+        if (lhs_ident) |n| if (rhs_nil) return .{ .name = n, .is_neq = b.op == .neq };
+        if (rhs_ident) |n| if (lhs_nil) return .{ .name = n, .is_neq = b.op == .neq };
+        return null;
+    }
+
+    const NilCheck = struct {
+        name: []const u8,
+        /// `true` when the relation is `!=` (then-arm confers
+        /// non-nil); `false` when it is `==` (else-arm confers
+        /// non-nil, or fall-through if the then-body exits).
+        is_neq: bool,
+    };
 
     // ---------- diagnostic helpers ----------
 
@@ -314,7 +365,41 @@ const Checker = struct {
         var child: Scope = .init(self.arena, saved);
         self.current_scope = &child;
         defer self.current_scope = saved;
-        for (body) |s| try self.walkStatement(s);
+        try self.walkStatementSequence(body);
+    }
+
+    /// Walk a flat statement list and absorb the "fall-through gain"
+    /// from `if x == nil then return end` patterns — code following
+    /// such an `if` may treat `x` as statically non-nil for the rest
+    /// of the surrounding block.
+    fn walkStatementSequence(self: *Checker, body: []const ast.Statement) WalkError!void {
+        var fall_through: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (fall_through.items) |name| self.popNonNil(name);
+            fall_through.deinit(self.arena);
+        }
+        for (body) |s| {
+            const gain = self.detectNilBailGain(s);
+            try self.walkStatement(s);
+            if (gain) |name| {
+                if (try self.pushNonNil(name)) try fall_through.append(self.arena, name);
+            }
+        }
+    }
+
+    /// Detect the `if x == nil then return / break / continue end`
+    /// shape (single-arm `if`, no else, then-body unconditionally
+    /// exits). Returns the bound name on a match.
+    fn detectNilBailGain(self: *const Checker, s: ast.Statement) ?[]const u8 {
+        if (s != .if_stmt) return null;
+        const is_ = s.if_stmt;
+        if (is_.arms.len != 1 or is_.else_body != null) return null;
+        const arm = is_.arms[0];
+        const cond = arm.cond orelse return null;
+        const nc = self.matchNilCheck(cond) orelse return null;
+        if (nc.is_neq) return null;
+        if (!bodyAlwaysExits(arm.body)) return null;
+        return nc.name;
     }
 
     fn checkLetDecl(self: *Checker, d: ast.LetDecl) WalkError!void {
@@ -428,13 +513,40 @@ const Checker = struct {
         arms: []const ast.IfArm,
         else_body: ?[]const ast.Statement,
     ) WalkError!void {
-        for (arms) |arm| {
+        // Flow analysis is applied only when there is exactly one
+        // arm — the simple `if cond then BODY [else …] end` shape.
+        // Multi-arm `elif` chains skip the bookkeeping (slice 5+
+        // can refine if it proves useful).
+        const flow: ?NilCheck = if (arms.len == 1 and arms[0].cond != null)
+            self.matchNilCheck(arms[0].cond.?)
+        else
+            null;
+
+        for (arms, 0..) |arm, i| {
             if (arm.cond) |c| _ = try self.inferExpr(c, null);
             if (arm.let_expr) |e| _ = try self.inferExpr(e, null);
             if (arm.let_guard) |g| _ = try self.inferExpr(g, null);
+
+            const arm_gain: ?[]const u8 = if (i == 0 and flow != null and flow.?.is_neq)
+                flow.?.name
+            else
+                null;
+            const added = if (arm_gain) |n| try self.pushNonNil(n) else false;
             try self.walkInScope(arm.body);
+            if (added) self.popNonNil(arm_gain.?);
         }
-        if (else_body) |eb| try self.walkInScope(eb);
+
+        if (else_body) |eb| {
+            // The else-arm fires when the `if` cond was false, so
+            // `x == nil` confers non-nil in the else.
+            const else_gain: ?[]const u8 = if (flow != null and !flow.?.is_neq)
+                flow.?.name
+            else
+                null;
+            const added = if (else_gain) |n| try self.pushNonNil(n) else false;
+            try self.walkInScope(eb);
+            if (added) self.popNonNil(else_gain.?);
+        }
     }
 
     fn checkWhile(self: *Checker, ws: ast.WhileStmt) WalkError!void {
@@ -456,7 +568,7 @@ const Checker = struct {
             .decl_span = fs.binding,
             .ty = null,
         });
-        for (fs.body) |s| try self.walkStatement(s);
+        try self.walkStatementSequence(fs.body);
     }
 
     fn checkRepeat(self: *Checker, rs: ast.RepeatStmt) WalkError!void {
@@ -473,7 +585,7 @@ const Checker = struct {
             defer self.current_scope = saved;
             try self.registerPatternBindings(arm.pattern);
             if (arm.guard) |g| _ = try self.inferExpr(g, null);
-            for (arm.body) |s| try self.walkStatement(s);
+            try self.walkStatementSequence(arm.body);
         }
     }
 
@@ -520,7 +632,7 @@ const Checker = struct {
         self.current_ret_ty = if (d.ret_type) |r| try self.resolveType(r) else null;
         defer self.current_ret_ty = saved_ret;
 
-        for (d.body) |s| try self.walkStatement(s);
+        try self.walkStatementSequence(d.body);
     }
 
     fn checkClassDecl(self: *Checker, d: ast.ClassDecl) WalkError!void {
@@ -528,6 +640,10 @@ const Checker = struct {
         var class_scope: Scope = .init(self.arena, saved);
         self.current_scope = &class_scope;
         defer self.current_scope = saved;
+
+        const saved_extends = self.current_class_extends;
+        self.current_class_extends = d.extends;
+        defer self.current_class_extends = saved_extends;
 
         for (d.fields) |f| {
             const ty: ?*const types.Type = if (f.type_ann) |t|
@@ -641,6 +757,15 @@ const Checker = struct {
             },
             .nullable => |n| {
                 const inner = try self.resolveType(n.inner);
+                if (!self.isPointerLike(inner.*)) {
+                    const inner_s = try types.render(self.arena, inner.*);
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "type `{s}?` is invalid — `T?` only applies to pointer-like types (`str`, class, fn-pointer, references)",
+                        .{inner_s},
+                    );
+                    try self.emit("E_NULL_NON_POINTER", n.span.start, msg, null);
+                }
                 return try types.mkOptional(self.arena, inner);
             },
             .array => |a| {
@@ -690,6 +815,28 @@ const Checker = struct {
         return try types.mkPrimitive(self.arena, p);
     }
 
+    /// Pointer-like types per §3.4.1 — `str`, references, function
+    /// pointers, and class names. Struct / enum / numeric / bool /
+    /// fixed are by-value and therefore not nullable-eligible.
+    fn isPointerLike(self: *const Checker, t: types.Type) bool {
+        return switch (t) {
+            .primitive => |p| p == .str,
+            .reference, .function => true,
+            .named => |n| {
+                if (self.current_scope.lookup(n.name)) |info| {
+                    return switch (info.kind) {
+                        .class, .module_alias, .imported => true,
+                        else => false,
+                    };
+                }
+                // Unresolved named type — accept defensively so the
+                // diagnostic surfaces from the resolution step.
+                return true;
+            },
+            else => false,
+        };
+    }
+
     // ---------- expression walking + inference + checking ----------
 
     /// Infer the type of an expression. `hint` is the type the
@@ -701,7 +848,7 @@ const Checker = struct {
             .int_lit => |lit| return try self.inferIntLit(lit, hint),
             .fixed_lit => return try self.primitive(.fixed),
             .bool_lit => return try self.primitive(.bool_),
-            .nil_lit => return try self.primitive(.nil_),
+            .nil_lit => |lit| return try self.inferNilLit(lit, hint),
             .char_lit => return try self.primitive(.u8),
             .str_lit => |s| {
                 for (s.parts) |part| switch (part) {
@@ -721,7 +868,18 @@ const Checker = struct {
                 try self.emit("E_UNDEFINED_SYMBOL", i.span.start, msg, name);
                 return null;
             },
-            .self_expr, .super_expr => return null,
+            .self_expr => return null,
+            .super_expr => |se| {
+                if (self.current_class_extends == null) {
+                    try self.emit(
+                        "E_UNDEFINED_SYMBOL",
+                        se.span.start,
+                        "`super` is only valid inside a method of a class that extends a parent",
+                        "super",
+                    );
+                }
+                return null;
+            },
             .paren => |p| return try self.inferExpr(p.inner, hint),
             .unary => |u| return try self.checkUnary(u, hint),
             .binary => |b| return try self.checkBinary(b, hint),
@@ -732,12 +890,14 @@ const Checker = struct {
             },
             .call => |c| return try self.checkCall(c, hint),
             .method_call => |m| {
-                _ = try self.inferExpr(m.receiver, null);
+                const recv_ty = try self.inferExpr(m.receiver, null);
+                try self.checkNotNullableDeref(m.receiver, recv_ty, m.span);
                 for (m.args) |a| _ = try self.inferExpr(a, null);
                 return null;
             },
             .field => |f| {
-                _ = try self.inferExpr(f.receiver, null);
+                const recv_ty = try self.inferExpr(f.receiver, null);
+                try self.checkNotNullableDeref(f.receiver, recv_ty, f.span);
                 return null;
             },
             .index => |ix| {
@@ -794,11 +954,89 @@ const Checker = struct {
                 return try self.primitive(.bool_);
             },
             .cast => |c| return try self.checkCast(c),
-            .ref_of => |r| {
-                const inner = try self.inferExpr(r.inner, null) orelse return null;
-                return try types.mkReference(self.arena, inner);
-            },
+            .ref_of => |r| return try self.checkRefOf(r),
         }
+    }
+
+    // ---------- nullable / reference checks ----------
+
+    /// Emit `E_NULL_DEREF` when the receiver of `.field` /
+    /// `.method()` is statically nullable and not in the
+    /// flow-known non-nil set.
+    fn checkNotNullableDeref(
+        self: *Checker,
+        receiver: *const ast.Expr,
+        recv_ty: ?*const types.Type,
+        access_span: ast.Span,
+    ) WalkError!void {
+        const rt = recv_ty orelse return;
+        if (rt.* != .optional) return;
+        if (identName(self, receiver)) |name| {
+            if (self.non_nil.contains(name)) return;
+        }
+        const ty_s = try types.render(self.arena, rt.*);
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "dereferencing nullable `{s}` without a prior nil-check",
+            .{ty_s},
+        );
+        try self.emit("E_NULL_DEREF", access_span.start, msg, null);
+    }
+
+    /// `&x` — verify the inner is a place expression and not
+    /// already a reference type.
+    fn checkRefOf(self: *Checker, r: ast.RefOfExpr) WalkError!?*const types.Type {
+        if (!isPlaceExpr(r.inner)) {
+            try self.emit(
+                "E_REF_TEMPORARY",
+                r.span.start,
+                "cannot take a reference to a temporary value (only places — ident, field, or index — have addresses)",
+                null,
+            );
+            _ = try self.inferExpr(r.inner, null);
+            return null;
+        }
+        const inner = try self.inferExpr(r.inner, null) orelse return null;
+        if (inner.* == .reference) {
+            try self.emit(
+                "E_REF_DOUBLE",
+                r.span.start,
+                "`&&T` is not a valid type — references do not nest",
+                null,
+            );
+            return inner;
+        }
+        return try types.mkReference(self.arena, inner);
+    }
+
+    /// `nil` literal type — honors the `hint` to emit specific codes
+    /// when used against an incompatible target.
+    fn inferNilLit(self: *Checker, lit: ast.SpanOnly, hint: ?*const types.Type) WalkError!?*const types.Type {
+        if (hint) |h| {
+            switch (h.*) {
+                .optional => return h,
+                .primitive => |p| if (p == .nil_) return try self.primitive(.nil_),
+                .reference => {
+                    try self.emit(
+                        "E_REF_NULLABLE",
+                        lit.span.start,
+                        "`nil` is not a valid reference value — use `T?` for nullable bindings",
+                        null,
+                    );
+                    return h;
+                },
+                else => {},
+            }
+            const ty_s = try types.render(self.arena, h.*);
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "cannot use `nil` where `{s}` is expected",
+                .{ty_s},
+            );
+            try self.emit("E_NULL_NIL_TO_NONNULL", lit.span.start, msg, null);
+            return h;
+        }
+        return try self.primitive(.nil_);
     }
 
     // ---------- literal inference with bidirectional hint ----------
@@ -968,8 +1206,14 @@ const Checker = struct {
     fn checkComparison(self: *Checker, b: ast.BinaryExpr) WalkError!?*const types.Type {
         const lhs_ty = try self.inferExpr(b.lhs, null);
         const rhs_ty = try self.inferExpr(b.rhs, lhs_ty);
-        if (lhs_ty != null and rhs_ty != null and !lhs_ty.?.eql(rhs_ty.?.*)) {
-            try self.emitMismatch(b.rhs.span(), lhs_ty.?, rhs_ty.?);
+        if (lhs_ty != null and rhs_ty != null) {
+            // Allow nil-comparison (`x != nil` / `nil == p`) — the
+            // canonical nullable idiom per §3.4.1. Strict-equality
+            // only when neither side is the nil literal.
+            const either_is_nil = isNilType(lhs_ty.?.*) or isNilType(rhs_ty.?.*);
+            if (!either_is_nil and !lhs_ty.?.eql(rhs_ty.?.*)) {
+                try self.emitMismatch(b.rhs.span(), lhs_ty.?, rhs_ty.?);
+            }
         }
         return try self.primitive(.bool_);
     }
@@ -1105,6 +1349,31 @@ fn anyExprMentions(c: *const Checker, exprs: []const *ast.Expr, name: []const u8
 fn structLitMentions(c: *const Checker, fields: []const ast.StructLitField, name: []const u8) bool {
     for (fields) |f| if (c.exprMentions(f.value, name)) return true;
     return false;
+}
+
+// ---------- flow-analysis helpers ----------
+
+/// Extract the source-buffer lexeme when `e` is a bare ident
+/// (possibly wrapped in `paren`). Returns `null` otherwise — used
+/// by nil-check pattern matching and by flow-sensitive deref
+/// lookups.
+fn identName(c: *const Checker, e: *const ast.Expr) ?[]const u8 {
+    return switch (e.*) {
+        .ident => |i| c.lexeme(i.span),
+        .paren => |p| identName(c, p.inner),
+        else => null,
+    };
+}
+
+/// `true` when the last statement of `body` is `return` / `break` /
+/// `continue` — used by the `if x == nil then return end`
+/// fall-through detector.
+fn bodyAlwaysExits(body: []const ast.Statement) bool {
+    if (body.len == 0) return false;
+    return switch (body[body.len - 1]) {
+        .return_stmt, .break_stmt, .continue_stmt => true,
+        else => false,
+    };
 }
 
 // ---------- type predicates ----------
