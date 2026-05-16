@@ -865,6 +865,38 @@ test "parse: unterminated let surfaces a diagnostic and recovers" {
     try std.testing.expect(saw_y);
 }
 
+test "parse: @abstract def parses without a body" {
+    var tree = try parseClean(
+        \\class Entity
+        \\  @abstract
+        \\  def update(self)
+        \\
+        \\  def position(self) -> (i16, i16)
+        \\    return (0, 0)
+        \\  end
+        \\end
+    );
+    defer tree.deinit();
+    const c = tree.program.statements[0].class_decl;
+    try std.testing.expectEqual(@as(usize, 2), c.methods.len);
+    try std.testing.expectEqual(@as(usize, 0), c.methods[0].body.len);
+    try std.testing.expectEqual(@as(usize, 1), c.methods[0].annotations.len);
+    try std.testing.expect(c.methods[1].body.len > 0);
+}
+
+test "parse: @abstract def with return type, still no body" {
+    var tree = try parseClean(
+        \\class Stream
+        \\  @abstract
+        \\  def next(self) -> i16?
+        \\end
+    );
+    defer tree.deinit();
+    const m = tree.program.statements[0].class_decl.methods[0];
+    try std.testing.expectEqual(@as(usize, 0), m.body.len);
+    try std.testing.expect(m.ret_type != null);
+}
+
 test "parse: @asm(\"...\") as a top-level statement" {
     var tree = try parseClean("@asm(\"swap r1, r2\")");
     defer tree.deinit();
