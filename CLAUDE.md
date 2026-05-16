@@ -309,27 +309,35 @@ and follow-up issue), or ❌ Missed (fix it).
 
 ### Step 2 — technical gates
 
-Three layered gates with different speed / coverage trade-offs:
+Three layered gates with different speed / coverage trade-offs.
+All numbers are warm-cache; cold-cache adds ~30s-1m for the Zig
+build itself.
 
 ```bash
-zig build quick     # inner loop (~1s warm, ~30s cold)
-                    # fmt-check + test. No shell-driven static checks.
+zig build quick     # inner loop (~1s)
+                    # fmt-check + test (Debug only). No lint.
                     # Use between edits while iterating.
 
-zig build verify    # pre-push (~3-5 min)
-                    # lint + test + asm example gates. The bash scripts
-                    # (strict, naming, unused, docs) grep across every
-                    # .zig file — that's most of the time.
-                    # Required green before pushing.
+zig build verify    # pre-push (~3s)
+                    # lint + test + asm example gates. Required
+                    # green before pushing.
 
-zig build ci        # full matrix (~6-10 min)
+zig build ci        # full matrix (~4s warm / ~2m cold)
                     # verify + test-modes (ReleaseSafe / Fast / Small)
-                    #        + test-all (linux / macos / win / wasi cross-target)
-                    #        + test-examples (full asm + run + stdout diff
-                    #          + round-trip)
-                    # Mirrors what GitHub Actions runs. Required before
-                    # tagging a release; optional before PR push.
+                    #        + test-all (cross-target: linux / macos
+                    #          / windows / wasi)
+                    #        + test-examples (full asm + run + stdout
+                    #          diff + round-trip)
+                    # Mirrors what GitHub Actions runs. Required
+                    # before tagging a release; optional before PR push.
 ```
+
+The lint step is a single Zig binary (`tools/lint/main.zig`) that
+reads every `.zig` file once and runs every rule against the
+in-memory lines. Per-rule scripts under `scripts/check-*.sh` are
+gone — they walked the tree per-rule (and check-unused did
+O(decls × tree) grepping), summing to ~4 minutes on the current
+codebase.
 
 GitHub Actions runs `ci` on every push so you don't have to gate
 every commit on it locally — but the green `verify` lights are

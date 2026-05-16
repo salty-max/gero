@@ -2,12 +2,8 @@
 #
 # Three hook layers:
 #   commit-msg → conventional commit format (convco + scope-mandatory wrapper)
-#   pre-commit → fast per-file checks on staged .zig files
-#   pre-push   → full test suite + whole-tree checks
-#
-# Hooks reference scripts/check-*.sh that arrive in their own Phase 0 PRs;
-# entries below land alongside their scripts. The current set covers what
-# already exists on main: convco-wrapper, zig fmt, zig build test.
+#   pre-commit → fast per-file checks on staged .zig / .gas files
+#   pre-push   → full test suite + whole-tree lint
 #
 # Bypass with --no-verify only with a justified reason in the PR description.
 
@@ -22,12 +18,11 @@ pre-commit:
     fmt:
       glob: "*.zig"
       run: zig fmt --check {staged_files}
-    imports:
+    lint:
       glob: "*.zig"
-      run: bash scripts/check-imports.sh {staged_files}
-    strict:
-      glob: "*.zig"
-      run: bash scripts/check-strict.sh {staged_files}
+      # Per-file mode skips the cross-file rules (unused / mirror) —
+      # those need the whole tree and run in pre-push.
+      run: ./zig-out/bin/gero-lint {staged_files}
     gero-check:
       glob: "*.gas"
       run: ./zig-out/bin/gero check --quiet {staged_files}
@@ -40,13 +35,5 @@ pre-push:
   commands:
     test:
       run: zig build test
-    unused:
-      run: bash scripts/check-unused.sh
-    mirror:
-      run: bash scripts/check-mirror.sh
-    testing-allocator:
-      run: bash scripts/check-testing-allocator.sh
-    docs:
-      run: bash scripts/check-docs.sh
-    naming:
-      run: bash scripts/check-naming.sh
+    lint:
+      run: zig build lint
