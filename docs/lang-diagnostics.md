@@ -708,9 +708,40 @@ Every gero-lang pass that surfaces diagnostics MUST:
 
 `gero check` runs every pass that can emit diagnostics — lexer,
 parser, typechecker, bake interpreter, codegen sanity — and prints
-all of them in source order before exiting non-zero. There is no
-"silent build" path for errors; warnings are always printed too
-(but don't fail the build unless `--werror` is passed).
+all of them before exiting non-zero. There is no "silent build"
+path for errors; warnings are always printed too (but don't fail
+the build unless `--werror` is passed).
+
+### 7.1 Per-file grouping
+
+Output mirrors the asm-side shape (`apps/gero-cli/diagnostics.zig`
+→ `printAllFailures`):
+
+```
+<N> errors in <M> files
+
+src/foo.gr
+  <diagnostic 1>
+  <diagnostic 2>
+
+src/bar.gr
+  <diagnostic 3>
+```
+
+Rules:
+
+- A single summary header on top: `<N> error(s) in <M> file(s)`.
+  Pluralized correctly.
+- Files appear in the order they were checked (typically the
+  command-line order, or the dependency-resolved import order).
+- Within a file, diagnostics are sorted by source byte offset
+  ascending — earlier in the file first.
+- Empty line between file groups.
+- A file with zero diagnostics doesn't get a header.
+
+This matches what `gero check` already does on the asm side; the
+lang front-end reuses the same renderer so a mixed-project build
+(asm + lang) prints under one unified summary.
 
 ---
 
@@ -731,3 +762,97 @@ holds the cross-pass diagnostic suite when patterns repeat.
 
 The lint rule `mirror` enforces the pairing between
 `src/lang/<pass>.zig` and `tests/lang/<pass>.test.zig`.
+
+---
+
+## 9. Machine-readable output (`--format=json`)
+
+Editors, CI, and external tooling consume diagnostics through the
+JSON format the asm side already ships (`gero check --format=json`).
+The lang front-end emits through the **same** schema — one report
+per `gero check` invocation, all files combined.
+
+Schema (mirrors `apps/gero-cli/diagnostics.zig::printJsonReport`):
+
+```json
+{
+  "version": 1,
+  "diagnostics": [
+    {
+      "file": "src/foo.gr",
+      "line": 12,
+      "column": 18,
+      "severity": "error",
+      "code": "E_TYPE_MISMATCH",
+      "message": "type mismatch",
+      "span": { "start": 234, "end": 241 },
+      "help": "convert with `... as i16` or use a literal",
+      "notes": [
+        {
+          "file": "src/foo.gr",
+          "line": 12,
+          "column": 7,
+          "message": "expected `i16` because of this annotation"
+        }
+      ]
+    }
+  ],
+  "files_checked": 3,
+  "files_failed": 1
+}
+```
+
+Rules:
+
+- Stdout carries the JSON object — nothing else. Stderr stays free
+  for host I/O failures.
+- `version` is the schema version; bump on any breaking field
+  change. Consumers should check it.
+- One JSON document per `gero check` run, not one per file. The
+  consumer iterates `diagnostics[]` to group by file if needed.
+- Codes use the registry in §6. Severities are exactly `"error"`,
+  `"warning"`, or `"note"`.
+- `notes[]` is the secondary-span / context list — same as the
+  human-readable `note:` lines but structured.
+- The `span` byte offsets are into the **original source file**
+  (not a fused source map). Editors can map back via `(line,
+  column)` and the diagnostic's `file`.
+
+## 10. Editor integration (LSP)
+
+The JSON output is the contract; an LSP server bridges it to
+editors. The `gero lsp` command (planned in #204) reads the JSON
+report and emits LSP `Diagnostic` notifications — the inline-lint
+squiggles, hover summaries, and quick-fix actions every editor
+expects.
+
+LSP `Diagnostic` mapping:
+
+| LSP field | Gero source |
+|-----------|-------------|
+| `range` | The diagnostic's `span` resolved to LSP positions |
+| `severity` | `error`/`warning`/`note` → 1/2/3 |
+| `code` | `E_*` registry code |
+| `message` | The human-readable summary + help line |
+| `relatedInformation[]` | The `notes[]` array, each mapped to an LSP `DiagnosticRelatedInformation` |
+
+What editor integration unlocks once `gero lsp` lands:
+
+- Inline squiggles under exact spans, updated on every keystroke.
+- Hover popups showing the full diagnostic including `help:` and
+  `note:` lines.
+- "Quick fix" actions for diagnostics that carry a single
+  unambiguous fix (e.g. `E_SYNTAX_HEX_PREFIX` → "replace `0x` with
+  `$`"). The diagnostic emitter marks fixable diagnostics with a
+  `"fix"` field; the LSP server translates to LSP `CodeAction`.
+- "Go to declaration" / "find references" — separate LSP work, not
+  driven by diagnostics, but the symbol resolution that the
+  typechecker performs feeds it too.
+
+Until `gero lsp` ships, editor integration is one of:
+
+1. Run `gero check --format=json` on save, parse the output in a
+   VS Code task / Vim quickfix.
+2. Use the existing tree-sitter grammar (`editors/tree-sitter-gero/`)
+   for syntax highlighting only — no semantic diagnostics.
+3. Run `gero check` in a terminal pane and click line:col links.
