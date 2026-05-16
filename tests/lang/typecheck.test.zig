@@ -1073,6 +1073,55 @@ test "typecheck: self.field resolves inside method body" {
     );
 }
 
+test "typecheck: class constructor call returns the class type" {
+    try expectClean(
+        \\class Player
+        \\  let hp: i16
+        \\
+        \\  def init(self, hp: i16)
+        \\    self.hp = hp
+        \\  end
+        \\
+        \\  def greet(self)
+        \\    print "hi"
+        \\  end
+        \\end
+        \\
+        \\let p = Player(0)
+        \\p.greet()
+    );
+}
+
+test "typecheck: nullary class constructor accepts" {
+    try expectClean(
+        \\class Empty
+        \\  let n: i16
+        \\end
+        \\
+        \\let e = Empty()
+    );
+}
+
+test "typecheck: super.method() resolves through parent class" {
+    try expectClean(
+        \\class Entity
+        \\  let hp: i16
+        \\
+        \\  def take_damage(self, n: i16)
+        \\    self.hp -= n
+        \\  end
+        \\end
+        \\
+        \\class Player extends Entity
+        \\  let mp: i16
+        \\
+        \\  def take_damage(self, n: i16)
+        \\    super.take_damage(n)
+        \\  end
+        \\end
+    );
+}
+
 test "typecheck: class with extends — inherited field resolves" {
     try expectClean(
         \\class Entity

@@ -1149,7 +1149,18 @@ const Checker = struct {
             },
             .ident => |i| {
                 const name = self.lexeme(i.span);
-                if (self.current_scope.lookup(name)) |info| return info.ty;
+                if (self.current_scope.lookup(name)) |info| {
+                    // Class names in expression position act as
+                    // constructors — synthesize `fn(init.params) ->
+                    // Named(Class)` so call sites type-check via
+                    // the regular `checkCall` path.
+                    if (info.kind == .class) {
+                        if (self.class_registry.get(name)) |cd| {
+                            return try self.constructorSignatureFor(cd, name, i.span);
+                        }
+                    }
+                    return info.ty;
+                }
                 const msg = try std.fmt.allocPrint(
                     self.arena,
                     "undefined symbol `{s}`",
@@ -1558,6 +1569,39 @@ const Checker = struct {
         // Class literals don't require every field to be set
         // (constructors fill defaults). Slice 7 may tighten this
         // when annotation rules pin field requiredness.
+    }
+
+    /// Synthesize a constructor signature for a class. Uses the
+    /// `init` method's params (sans implicit `self`) when present;
+    /// otherwise the constructor is nullary. Return type is always
+    /// `Named(class_name)`.
+    fn constructorSignatureFor(
+        self: *Checker,
+        cd: *const ast.ClassDecl,
+        class_name: []const u8,
+        name_span: ast.Span,
+    ) WalkError!*const types.Type {
+        var param_types: std.ArrayList(*const types.Type) = .empty;
+        errdefer param_types.deinit(self.arena);
+        if (self.lookupClassMethod(cd, "init")) |init_method| {
+            var has_self = false;
+            if (init_method.params.len > 0 and std.mem.eql(u8, self.lexeme(init_method.params[0].name), "self")) has_self = true;
+            const skip: usize = if (has_self) 1 else 0;
+            for (init_method.params[skip..]) |p| {
+                const pt: *const types.Type = if (p.type_ann) |t|
+                    try self.resolveType(t)
+                else
+                    try self.primitive(.nil_);
+                try param_types.append(self.arena, pt);
+            }
+        }
+        const ret = try types.mkNamed(self.arena, class_name, name_span);
+        const sig = try self.arena.create(types.Type);
+        sig.* = .{ .function = .{
+            .params = try param_types.toOwnedSlice(self.arena),
+            .ret = ret,
+        } };
+        return sig;
     }
 
     /// Walk a class's inheritance chain looking for a method by
