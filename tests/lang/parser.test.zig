@@ -865,6 +865,34 @@ test "parse: unterminated let surfaces a diagnostic and recovers" {
     try std.testing.expect(saw_y);
 }
 
+test "parse: leading-dot continues a method chain across newlines" {
+    var tree = try parseClean(
+        \\let damaged = monsters
+        \\  .filter(alive)
+        \\  .map(deal_damage)
+        \\  .filter(still_alive)
+    );
+    defer tree.deinit();
+    try std.testing.expectEqual(@as(usize, 1), tree.program.statements.len);
+    const init = tree.program.statements[0].let_decl.init.?;
+    // Outer call is `.filter(still_alive)` — the last link in the
+    // chain. Inner receiver is itself a chain.
+    try std.testing.expect(init.* == .method_call);
+    try std.testing.expect(init.method_call.receiver.* == .method_call);
+}
+
+test "parse: leading-dot threads through field + index + call" {
+    var tree = try parseClean(
+        \\let x = obj
+        \\  .field
+        \\  .method(1)
+        \\  .items[0]
+    );
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .index);
+}
+
 test "parse: @abstract def parses without a body" {
     var tree = try parseClean(
         \\class Entity
