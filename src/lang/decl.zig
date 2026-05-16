@@ -189,7 +189,10 @@ pub fn freeParams(allocator: std.mem.Allocator, params: []ast.Param) void {
 
 // ---------- class ----------
 
-/// `class Name [extends Parent] { ... }`.
+/// `class Name [extends Parent] ... end`. The body starts after
+/// the optional `extends` clause; fields and methods alternate
+/// freely; `end` closes the class. Consistent with `struct`, `def`,
+/// and `if` / `while` block delimiters (§6, §3.7.6).
 pub fn parseClassDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
     const class_tok = p.peek();
     p.pos += 1;
@@ -207,7 +210,6 @@ pub fn parseClassDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
         extends = ast.Span.fromToken(parent_tok);
     }
 
-    _ = try p.expect(.lbrace, "{");
     p.skipNewlines();
 
     var fields: std.ArrayList(ast.ClassField) = .empty;
@@ -215,7 +217,7 @@ pub fn parseClassDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
     var methods: std.ArrayList(ast.DefDecl) = .empty;
     errdefer cleanupMethods(p.allocator, &methods);
 
-    while (!p.atEnd() and !p.check(.rbrace)) {
+    while (!p.atEnd() and !p.check(.kw_end)) {
         // Accumulate annotations inside the class body, same as
         // file-level. They attach to the next field or method.
         while (p.check(.annotation)) {
@@ -233,7 +235,7 @@ pub fn parseClassDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
                 const m = try parseDefDeclInner(p, false);
                 try methods.append(p.allocator, m);
             },
-            .rbrace => break,
+            .kw_end => break,
             else => {
                 try p.recordError(
                     "expected field (`let`) or method (`def`) in class body",
@@ -245,7 +247,7 @@ pub fn parseClassDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
         p.skipNewlines();
     }
 
-    const close_tok = try p.expect(.rbrace, "}");
+    const close_tok = try p.expect(.kw_end, "end");
     try p.requireStatementBoundary();
 
     return .{ .class_decl = .{

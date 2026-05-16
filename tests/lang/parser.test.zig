@@ -636,14 +636,14 @@ test "parse: struct declaration" {
 
 test "parse: class with fields + method" {
     var tree = try parseClean(
-        \\class Player {
+        \\class Player
         \\  let hp: i16
         \\  let mp: i16
         \\  def init(self)
         \\    self.hp = 100
         \\    self.mp = 50
         \\  end
-        \\}
+        \\end
     );
     defer tree.deinit();
     const s = tree.program.statements[0];
@@ -654,9 +654,9 @@ test "parse: class with fields + method" {
 
 test "parse: class with extends" {
     var tree = try parseClean(
-        \\class Hero extends Player {
+        \\class Hero extends Player
         \\  let weapon: str
-        \\}
+        \\end
     );
     defer tree.deinit();
     const s = tree.program.statements[0].class_decl;
@@ -748,9 +748,9 @@ test "parse: annotation in parens form" {
 test "parse: annotation attaches to class" {
     var tree = try parseClean(
         \\@final
-        \\class Boss {
+        \\class Boss
         \\  let hp: i16
-        \\}
+        \\end
     );
     defer tree.deinit();
     const s = tree.program.statements[0].class_decl;
@@ -759,14 +759,14 @@ test "parse: annotation attaches to class" {
 
 test "parse: annotation attaches to class field + method" {
     var tree = try parseClean(
-        \\class Player {
+        \\class Player
         \\  @private
         \\  let _hp: i16
         \\  @override
         \\  def update(self)
         \\    return
         \\  end
-        \\}
+        \\end
     );
     defer tree.deinit();
     const c = tree.program.statements[0].class_decl;
