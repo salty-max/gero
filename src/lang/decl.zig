@@ -26,6 +26,9 @@ pub fn parseLetDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
     p.pos += 1;
     const start = let_tok.start;
 
+    const annotations = try parser_mod.takePendingAnnotations(p);
+    errdefer parser_mod.freeAnnSlice(p.allocator, annotations);
+
     const pattern = try pattern_mod.parsePattern(p);
 
     var type_ann: ?*ast.TypeAnn = null;
@@ -46,6 +49,7 @@ pub fn parseLetDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
     const end = if (init) |e| e.span().end else if (type_ann) |t| t.span().end else pattern.span().end;
     try p.requireStatementBoundary();
     return .{ .let_decl = .{
+        .annotations = annotations,
         .pattern = pattern,
         .type_ann = type_ann,
         .init = init,
@@ -59,6 +63,9 @@ pub fn parseConstDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
     const const_tok = p.peek();
     p.pos += 1;
     const start = const_tok.start;
+
+    const annotations = try parser_mod.takePendingAnnotations(p);
+    errdefer parser_mod.freeAnnSlice(p.allocator, annotations);
 
     const name_tok = try p.expect(.ident, "identifier");
     const name_span = ast.Span.fromToken(name_tok);
@@ -74,6 +81,7 @@ pub fn parseConstDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
     try p.requireStatementBoundary();
 
     return .{ .const_decl = .{
+        .annotations = annotations,
         .name = name_span,
         .type_ann = type_ann,
         .init = init,

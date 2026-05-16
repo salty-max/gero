@@ -865,6 +865,37 @@ test "parse: unterminated let surfaces a diagnostic and recovers" {
     try std.testing.expect(saw_y);
 }
 
+test "parse: @zero_page on let global" {
+    var tree = try parseClean(
+        \\@zero_page
+        \\let cursor_pos: u16 = 0
+    );
+    defer tree.deinit();
+    const s = tree.program.statements[0].let_decl;
+    try std.testing.expectEqual(@as(usize, 1), s.annotations.len);
+}
+
+test "parse: @addr with hex arg on let global" {
+    var tree = try parseClean(
+        \\@addr 0xFE40
+        \\let DISPCTL: u8 = 0
+    );
+    defer tree.deinit();
+    const s = tree.program.statements[0].let_decl;
+    try std.testing.expectEqual(@as(usize, 1), s.annotations.len);
+    try std.testing.expectEqual(@as(usize, 1), s.annotations[0].args.len);
+}
+
+test "parse: @bank N on const global" {
+    var tree = try parseClean(
+        \\@bank 5
+        \\const TOWN_INTRO = "Welcome to Mistwood..."
+    );
+    defer tree.deinit();
+    const s = tree.program.statements[0].const_decl;
+    try std.testing.expectEqual(@as(usize, 1), s.annotations.len);
+}
+
 test "parse: multi-line call args" {
     var tree = try parseClean(
         \\let r = foo(

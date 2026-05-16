@@ -736,6 +736,9 @@ pub const Statement = union(enum) {
 
 /// `let pattern[: T][ = expr]` — variable binding.
 pub const LetDecl = struct {
+    /// `@bank N` / `@zero_page` / `@addr $1234` attach here at
+    /// module scope (§3.7.1). Empty for nested `let`s.
+    annotations: []Annotation,
     /// Pattern bound by the `let`. For the canonical single-name
     /// case it's `Pattern.ident`; destructuring (§4.1.1) uses other
     /// pattern shapes.
@@ -753,6 +756,8 @@ pub const LetDecl = struct {
 
 /// `const NAME[: T] = expr` — immutable binding.
 pub const ConstDecl = struct {
+    /// `@bank N` attaches here at module scope (§3.7.1).
+    annotations: []Annotation,
     /// Span of the identifier being bound.
     name: Span,
     /// `null` when the form omits the type annotation (typical for
@@ -1051,11 +1056,13 @@ pub const Program = struct {
 pub fn freeStatement(allocator: std.mem.Allocator, s: *Statement) void {
     switch (s.*) {
         .let_decl => |ld| {
+            freeAnnotations(allocator, ld.annotations);
             freePattern(allocator, ld.pattern);
             if (ld.type_ann) |t| freeTypeAnn(allocator, t);
             if (ld.init) |e| freeExpr(allocator, e);
         },
         .const_decl => |cd| {
+            freeAnnotations(allocator, cd.annotations);
             if (cd.type_ann) |t| freeTypeAnn(allocator, t);
             freeExpr(allocator, cd.init);
         },
