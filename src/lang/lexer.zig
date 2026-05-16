@@ -729,6 +729,24 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
             continue;
         }
 
+        // `$FFFF` — asm-style hex literal, accepted in lang for
+        // ergonomics with memory-mapped IO addresses (§3.7.1
+        // `@addr $FE40`). Only valid outside string-body mode; the
+        // `$(…)` interpolation form short-circuits earlier.
+        if (b == '$' and state.index + 1 < source.len and isHexDigit(source[state.index + 1])) {
+            const start = state.index;
+            state.index += 1;
+            var value: i32 = 0;
+            while (state.index < source.len) : (state.index += 1) {
+                const c = source[state.index];
+                if (c == '_') continue;
+                if (!isHexDigit(c)) break;
+                value = value * 16 + hexValue(c);
+            }
+            try pushToken(&state, .int_lit, start, state.index, value);
+            continue;
+        }
+
         // Integer literal — bare digit, or `-` followed by a
         // digit at an operand position.
         if (isDigit(b)) {
