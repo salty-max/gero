@@ -34,12 +34,26 @@ fn parseTypeBase(p: *Parser) ParserError!*ast.TypeAnn {
     switch (tok.kind) {
         .lbracket => return try parseArrayType(p),
         .lparen => return try parseTupleOrParenType(p),
+        .amp => return try parseReferenceType(p),
         .ident => return try parseNamedOrVecType(p),
         else => {
             try p.recordError("expected type annotation", "type");
             return error.ParseFailed;
         },
     }
+}
+
+/// `&T` — borrowed reference (§3.4.4). The parser accepts `&&T`
+/// syntactically; the typechecker rejects it.
+fn parseReferenceType(p: *Parser) ParserError!*ast.TypeAnn {
+    const amp_tok = p.peek();
+    p.pos += 1;
+    const inner = try parseTypeAnn(p);
+    errdefer ast.freeTypeAnn(p.allocator, inner);
+    return try p.allocTypeAnn(.{ .reference = .{
+        .inner = inner,
+        .span = .{ .start = amp_tok.start, .end = inner.span().end },
+    } });
 }
 
 /// `[T; N]`.
@@ -78,6 +92,7 @@ fn parseTupleOrParenType(p: *Parser) ParserError!*ast.TypeAnn {
             .vec => |v| .{ .vec = .{ .elem = v.elem, .span = .{ .start = lp_tok.start, .end = rp.end } } },
             .tuple => |t| .{ .tuple = .{ .elems = t.elems, .span = .{ .start = lp_tok.start, .end = rp.end } } },
             .fn_type => |f| .{ .fn_type = .{ .params = f.params, .ret = f.ret, .span = .{ .start = lp_tok.start, .end = rp.end } } },
+            .reference => |r| .{ .reference = .{ .inner = r.inner, .span = .{ .start = lp_tok.start, .end = rp.end } } },
         };
         return first;
     }

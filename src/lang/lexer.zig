@@ -203,6 +203,8 @@ pub const Token = struct {
         dot_dot,
         /// `..=` — inclusive range.
         dot_dot_eq,
+        /// `...` — variadic-parameter marker (§4.6.2).
+        dot_dot_dot,
 
         // -- end of stream -----------------------------------
         eof,
@@ -830,6 +832,9 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
             if (state.index < source.len and source[state.index] == '=') {
                 state.index += 1;
                 try pushToken(&state, .dot_dot_eq, start, state.index, 0);
+            } else if (state.index < source.len and source[state.index] == '.') {
+                state.index += 1;
+                try pushToken(&state, .dot_dot_dot, start, state.index, 0);
             } else {
                 try pushToken(&state, .dot_dot, start, state.index, 0);
             }

@@ -301,6 +301,24 @@ test "parse: list literal" {
     try std.testing.expectEqual(@as(usize, 3), init.list_lit.elems.len);
 }
 
+test "parse: empty list literal `[]`" {
+    var tree = try parseClean("let x = []");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .list_lit);
+    try std.testing.expectEqual(@as(usize, 0), init.list_lit.elems.len);
+}
+
+test "parse: array-repeat literal `[value; count]`" {
+    var tree = try parseClean("let buf: [u8; 64] = [0; 64]");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .list_repeat);
+    try std.testing.expect(init.list_repeat.value.* == .int_lit);
+    try std.testing.expectEqual(@as(i32, 0), init.list_repeat.value.int_lit.value);
+    try std.testing.expectEqual(@as(i32, 64), init.list_repeat.count.int_lit.value);
+}
+
 test "parse: tuple literal" {
     var tree = try parseClean("let x = (1, 2)");
     defer tree.deinit();
@@ -933,6 +951,113 @@ test "parse: `use \"./relative\"` quoted-path" {
     defer tree.deinit();
     const s = tree.program.statements[0].use_decl;
     try std.testing.expect(s.quoted_path);
+}
+
+// ---------- references &T + &x ----------
+
+test "parse: `&T` reference type annotation" {
+    var tree = try parseClean("def foo(s: &Stats) end");
+    defer tree.deinit();
+    const params = tree.program.statements[0].def_decl.params;
+    try std.testing.expect(params[0].type_ann.?.* == .reference);
+}
+
+test "parse: `&x` prefix takes a reference" {
+    var tree = try parseClean("let r = &x");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .ref_of);
+    try std.testing.expect(init.ref_of.inner.* == .ident);
+}
+
+test "parse: `&` binds as unary prefix, tighter than `*`" {
+    var tree = try parseClean("let r = &a.field");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .ref_of);
+    // `&` consumed the whole call-chain expression `a.field`
+    try std.testing.expect(init.ref_of.inner.* == .field);
+}
+
+test "parse: `&T?` is reference-to-nullable (postfix `?` binds inside)" {
+    // `&` is a prefix that recursively parses a full type-ann,
+    // including the postfix `?`, so `&Stats?` resolves to
+    // `reference(nullable(Stats))`. References themselves are
+    // non-nullable; the inner type may be.
+    var tree = try parseClean("def foo(p: &Stats?) end");
+    defer tree.deinit();
+    const t = tree.program.statements[0].def_decl.params[0].type_ann.?;
+    try std.testing.expect(t.* == .reference);
+    try std.testing.expect(t.reference.inner.* == .nullable);
+}
+
+// ---------- bake def / bake do ----------
+
+test "parse: `bake def` sets is_bake on the DefDecl" {
+    var tree = try parseClean(
+        \\bake def make_table() -> i16
+        \\  let x = 1
+        \\  return x * 2
+        \\end
+    );
+    defer tree.deinit();
+    const s = tree.program.statements[0];
+    try std.testing.expect(s == .def_decl);
+    try std.testing.expect(s.def_decl.is_bake);
+}
+
+test "parse: `bake do` in const init sets is_bake on the DoExpr" {
+    var tree = try parseClean(
+        \\const SEED = bake do
+        \\  let x = 42
+        \\  x
+        \\end
+    );
+    defer tree.deinit();
+    const init = tree.program.statements[0].const_decl.init;
+    try std.testing.expect(init.* == .do_expr);
+    try std.testing.expect(init.do_expr.is_bake);
+}
+
+test "parse: `bake` without `def` or `do` is an error" {
+    var tree = try parseSource("bake 42");
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+}
+
+// ---------- varargs ----------
+
+test "parse: variadic last param `args: ...`" {
+    var tree = try parseClean(
+        \\def log(fmt: str, args: ...)
+        \\end
+    );
+    defer tree.deinit();
+    const params = tree.program.statements[0].def_decl.params;
+    try std.testing.expectEqual(@as(usize, 2), params.len);
+    try std.testing.expect(!params[0].variadic);
+    try std.testing.expect(params[1].variadic);
+    try std.testing.expect(params[1].type_ann == null);
+}
+
+test "parse: variadic with zero leading params" {
+    var tree = try parseClean(
+        \\def collect(args: ...)
+        \\end
+    );
+    defer tree.deinit();
+    const params = tree.program.statements[0].def_decl.params;
+    try std.testing.expectEqual(@as(usize, 1), params.len);
+    try std.testing.expect(params[0].variadic);
+}
+
+test "parse: variadic followed by another param is rejected" {
+    var tree = try parseSource(
+        \\def bad(a: ..., b: i16)
+        \\end
+    );
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
 }
 
 // ---------- type annotations ----------
