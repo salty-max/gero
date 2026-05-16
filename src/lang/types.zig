@@ -164,3 +164,96 @@ pub fn mkNamed(allocator: std.mem.Allocator, name: []const u8, span: ast.Span) !
     t.* = .{ .named = .{ .name = name, .span = span } };
     return t;
 }
+
+/// Map a type-name lexeme to its primitive variant. Returns `null`
+/// for unknown names — the caller treats those as user-defined types
+/// to resolve via the symbol table.
+///
+/// Per §3.1: `int` is the alias for `i16`, `uint` for `u16`. `char`
+/// is the single-byte type backing char literals (the lexer emits
+/// them as `int_lit` with value in 0..255, but the type for binding
+/// purposes is `char`).
+pub fn primitiveFromName(name: []const u8) ?Primitive {
+    const lookup = std.StaticStringMap(Primitive).initComptime(.{
+        .{ "i8", .i8 },
+        .{ "u8", .u8 },
+        .{ "i16", .i16 },
+        .{ "u16", .u16 },
+        .{ "int", .i16 },
+        .{ "uint", .u16 },
+        .{ "bool", .bool_ },
+        .{ "nil", .nil_ },
+        .{ "str", .str },
+        .{ "fixed", .fixed },
+        .{ "char", .char },
+    });
+    return lookup.get(name);
+}
+
+/// Human-readable form of a `Type`, used for diagnostic rendering.
+/// Allocates through the typechecker's arena and returns the byte
+/// slice — caller never frees.
+pub fn render(allocator: std.mem.Allocator, t: Type) std.mem.Allocator.Error![]const u8 {
+    return switch (t) {
+        .primitive => |p| try renderPrimitive(allocator, p),
+        .array => |a| {
+            const inner = try render(allocator, a.elem.*);
+            return try std.fmt.allocPrint(allocator, "[{s}; {d}]", .{ inner, a.len });
+        },
+        .vec => |e| {
+            const inner = try render(allocator, e.*);
+            return try std.fmt.allocPrint(allocator, "Vec({s})", .{inner});
+        },
+        .tuple => |xs| {
+            // Build `(T1, T2, …)` — small ArrayList suffices.
+            var buf: std.ArrayList(u8) = .empty;
+            errdefer buf.deinit(allocator);
+            try buf.append(allocator, '(');
+            for (xs, 0..) |elem, i| {
+                if (i > 0) try buf.appendSlice(allocator, ", ");
+                const elem_s = try render(allocator, elem.*);
+                try buf.appendSlice(allocator, elem_s);
+            }
+            try buf.append(allocator, ')');
+            return try buf.toOwnedSlice(allocator);
+        },
+        .function => |f| {
+            var buf: std.ArrayList(u8) = .empty;
+            errdefer buf.deinit(allocator);
+            try buf.appendSlice(allocator, "fn(");
+            for (f.params, 0..) |p, i| {
+                if (i > 0) try buf.appendSlice(allocator, ", ");
+                const ps = try render(allocator, p.*);
+                try buf.appendSlice(allocator, ps);
+            }
+            try buf.appendSlice(allocator, ") -> ");
+            const rs = try render(allocator, f.ret.*);
+            try buf.appendSlice(allocator, rs);
+            return try buf.toOwnedSlice(allocator);
+        },
+        .optional => |inner| {
+            const s = try render(allocator, inner.*);
+            return try std.fmt.allocPrint(allocator, "{s}?", .{s});
+        },
+        .reference => |inner| {
+            const s = try render(allocator, inner.*);
+            return try std.fmt.allocPrint(allocator, "&{s}", .{s});
+        },
+        .named => |n| try allocator.dupe(u8, n.name),
+    };
+}
+
+fn renderPrimitive(allocator: std.mem.Allocator, p: Primitive) std.mem.Allocator.Error![]const u8 {
+    const name: []const u8 = switch (p) {
+        .i8 => "i8",
+        .u8 => "u8",
+        .i16 => "i16",
+        .u16 => "u16",
+        .bool_ => "bool",
+        .nil_ => "nil",
+        .str => "str",
+        .fixed => "fixed",
+        .char => "char",
+    };
+    return allocator.dupe(u8, name);
+}
