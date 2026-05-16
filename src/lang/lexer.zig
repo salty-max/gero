@@ -118,6 +118,26 @@ pub const Token = struct {
 
         // -- assignment ---------------------------------------
         equals,
+        /// `+=` — compound add-assign.
+        plus_eq,
+        /// `-=` — compound sub-assign.
+        minus_eq,
+        /// `*=` — compound mul-assign.
+        star_eq,
+        /// `/=` — compound div-assign.
+        slash_eq,
+        /// `%=` — compound mod-assign.
+        percent_eq,
+        /// `&=` — compound bitwise-AND-assign.
+        amp_eq,
+        /// `|=` — compound bitwise-OR-assign.
+        pipe_eq,
+        /// `^=` — compound bitwise-XOR-assign.
+        caret_eq,
+        /// `<<=` — compound shift-left-assign.
+        shl_eq,
+        /// `>>=` — compound shift-right-assign.
+        shr_eq,
 
         // -- arithmetic ---------------------------------------
         plus,
@@ -753,6 +773,24 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
             try pushToken(&state, .gt_eq, start, state.index, 0);
             continue;
         }
+        // `<<=` / `>>=` — compound shift-assign. Longest match wins,
+        // so check the 3-byte form before `<<` / `>>` / `<=` / `>=`.
+        if (b == '<' and state.index + 2 < source.len and
+            source[state.index + 1] == '<' and source[state.index + 2] == '=')
+        {
+            const start = state.index;
+            state.index += 3;
+            try pushToken(&state, .shl_eq, start, state.index, 0);
+            continue;
+        }
+        if (b == '>' and state.index + 2 < source.len and
+            source[state.index + 1] == '>' and source[state.index + 2] == '=')
+        {
+            const start = state.index;
+            state.index += 3;
+            try pushToken(&state, .shr_eq, start, state.index, 0);
+            continue;
+        }
         if (b == '<' and state.index + 1 < source.len and source[state.index + 1] == '<') {
             const start = state.index;
             state.index += 2;
@@ -764,6 +802,30 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
             state.index += 2;
             try pushToken(&state, .shr, start, state.index, 0);
             continue;
+        }
+        // Compound-assign forms `<op>=` — single-char op followed
+        // by `=`. The `++` / `--` / `==` / `!=` / `<=` / `>=` /
+        // `<<` / `>>` cases above already short-circuit out, so by
+        // the time we reach here the `=` must be a compound-assign
+        // for one of the arithmetic / bitwise ops.
+        if (state.index + 1 < source.len and source[state.index + 1] == '=') {
+            const ck: ?Token.Kind = switch (b) {
+                '+' => .plus_eq,
+                '-' => .minus_eq,
+                '*' => .star_eq,
+                '/' => .slash_eq,
+                '%' => .percent_eq,
+                '&' => .amp_eq,
+                '|' => .pipe_eq,
+                '^' => .caret_eq,
+                else => null,
+            };
+            if (ck) |k| {
+                const start = state.index;
+                state.index += 2;
+                try pushToken(&state, k, start, state.index, 0);
+                continue;
+            }
         }
         if (b == '+' and state.index + 1 < source.len and source[state.index + 1] == '+') {
             const start = state.index;
