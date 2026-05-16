@@ -181,6 +181,14 @@ fn parseCallChain(p: *Parser) ParserError!*ast.Expr {
     errdefer ast.freeExpr(p.allocator, e);
 
     while (true) {
+        // Leading-dot line continuation (§4.6.1): a `.` at the
+        // start of the next line continues the postfix chain.
+        // `xs\n  .filter(p)\n  .map(f)` reads as a single chained
+        // expression. Only the dot triggers — bare newlines still
+        // terminate the expression for binary ops.
+        if (p.check(.newline) and p.peekAt(1).kind == .dot) {
+            p.pos += 1;
+        }
         switch (p.peek().kind) {
             .lparen => e = try parseCallArgs(p, e),
             .lbracket => e = try parseIndexAccess(p, e),
