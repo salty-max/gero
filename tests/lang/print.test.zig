@@ -1,14 +1,18 @@
 /// Tests for `gero.lang.print` — the canonical pretty-printer.
 ///
-/// Two flavors of coverage:
+/// Three flavors of coverage:
 ///   1. `expectPrint(source, expected)` — exact-output tests for
 ///      individual AST variants, calibrating the canonical shape.
 ///   2. `expectIdempotent(source)` — round-trip property tests
 ///      asserting `print(parse(print(parse(s)))) == print(parse(s))`.
 ///      Once a source canonicalizes, re-parsing + re-printing
 ///      yields byte-identical output.
+///   3. A fixture-driven loop over `print_fixtures.fixtures` so
+///      printer drift on a node variant is caught even when the
+///      variant only appears in the wider corpus.
 const std = @import("std");
 const gero = @import("gero");
+const fixtures_mod = @import("print_fixtures.zig");
 
 const alloc = std.testing.allocator;
 
@@ -514,4 +518,15 @@ test "print: idempotent on nested expressions" {
 
 test "print: idempotent on HOF chains" {
     try expectIdempotent("let r = xs.filter(|x| x > 0).map(|x| x * 2)");
+}
+
+// ---------- fixture-driven round-trip property ----------
+
+test "print: round-trip every fixture" {
+    for (fixtures_mod.fixtures) |src| {
+        expectIdempotent(src) catch |err| {
+            std.debug.print("round-trip failed on fixture:\n--- src ---\n{s}\n", .{src});
+            return err;
+        };
+    }
 }
