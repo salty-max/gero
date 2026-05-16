@@ -8,6 +8,9 @@ The language reads like Lua / BASIC, types at the variable + function
 boundary, integer-only arithmetic, compiles to gero bytecode. Designed
 for J-RPG-class games and similar carts; see §1 for the philosophy.
 
+Diagnostic format and error-code registry live in
+[`lang-diagnostics.md`](./lang-diagnostics.md).
+
 ---
 
 ## 1. Philosophy
