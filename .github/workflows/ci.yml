@@ -22,20 +22,8 @@ jobs:
       - run: zig version
       - name: Format check
         run: zig build fmt-check
-      - name: Imports
-        run: bash scripts/check-imports.sh
-      - name: Unused exports
-        run: bash scripts/check-unused.sh
-      - name: Strict (anyerror, *anyopaque, casts, debug.print)
-        run: bash scripts/check-strict.sh
-      - name: Mirror layout
-        run: bash scripts/check-mirror.sh
-      - name: Testing allocator
-        run: bash scripts/check-testing-allocator.sh
-      - name: Doc comments
-        run: bash scripts/check-docs.sh
-      - name: Naming convention
-        run: bash scripts/check-naming.sh
+      - name: Lint (strict / naming / imports / docs / unused / mirror / testing-allocator)
+        run: zig build lint
 
   test:
     name: Test (Linux, ${{ matrix.mode }})
