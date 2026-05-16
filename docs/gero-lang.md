@@ -39,14 +39,26 @@ goal.
 Spaces and tabs are insignificant within a line. **Newlines terminate
 statements** (no semicolons). Blank lines are allowed anywhere.
 
-To continue a long expression onto the next line, use parentheses or
-break inside a binary operator:
+To continue a long expression onto the next line, wrap it in
+parentheses:
 
 ```
-let total =
+let total = (
   player.hp +
   player.mp
+)
 ```
+
+Inside any open `( … )`, `[ … ]`, or `{ … }` group, newlines are
+ignored — so multi-line argument lists, array / struct / tuple
+literals, and parameter declarations wrap naturally. Outside those
+groups, a newline ends the current statement; trailing-operator
+continuation (`a +\n  b`) is **not** a line-continuation rule.
+
+The one exception lives outside the bracket families: a `.` at the
+start of the next line continues the postfix chain on the previous
+expression (§4.6.1). That's the only newline-significant carve-out
+in the otherwise strict newline-terminated grammar.
 
 ### 2.2 Comments
 
@@ -593,7 +605,7 @@ end
 
 | Annotation | Applies to | Effect |
 |------------|------------|--------|
-| `@inline` | `def`, `lambda` | Always inline at call sites. Compiler errors if the function is recursive or its body is too large. |
+| `@inline` | `def` | Always inline at call sites. Compiler errors if the function is recursive or its body is too large. |
 
 ```
 @inline
@@ -604,11 +616,17 @@ def fast_clamp(x: i16, min: i16, max: i16) -> i16
 end
 ```
 
+`@inline` attaches to named `def`s only. Lambdas already inline
+when they don't escape (their body folds into the caller); when
+they do escape they become first-class values and inlining would
+defeat that — there's no useful middle ground to expose via
+annotation.
+
 #### 3.7.3 Diverging functions
 
 | Annotation | Applies to | Effect |
 |------------|------------|--------|
-| `@noreturn` | `def`, `lambda` | Asserts the function never returns normally (it must `hlt`, infinite-loop, or call another `@noreturn`). The compiler treats calls as diverging — usable in `match` bail arms with otherwise non-exhaustive shape. The return type, if specified, must be `noreturn`. |
+| `@noreturn` | `def` | Asserts the function never returns normally (it must `hlt`, infinite-loop, or call another `@noreturn`). The compiler treats calls as diverging — usable in `match` bail arms with otherwise non-exhaustive shape. The return type, if specified, must be `noreturn`. |
 
 ```
 @noreturn
