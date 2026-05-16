@@ -937,6 +937,207 @@ test "typecheck: return &module_static accepts" {
     );
 }
 
+// ---------- slice 6: struct field resolution ----------
+
+test "typecheck: struct field access infers field type" {
+    try expectClean(
+        \\struct Stats
+        \\  hp: i16
+        \\end
+        \\
+        \\let s = Stats { hp: 0 }
+        \\let n: i16 = s.hp
+    );
+}
+
+test "typecheck: struct unknown field errors with E_TYPE_UNDEFINED_FIELD" {
+    try expectCode(
+        \\struct Stats
+        \\  hp: i16
+        \\end
+        \\
+        \\let s = Stats { hp: 0 }
+        \\let x = s.bogus
+    , "E_TYPE_UNDEFINED_FIELD");
+}
+
+test "typecheck: struct literal with all fields accepts" {
+    try expectClean(
+        \\struct Stats
+        \\  hp: i16
+        \\  mp: i16
+        \\end
+        \\
+        \\let s = Stats { hp: 10, mp: 5 }
+    );
+}
+
+test "typecheck: struct literal missing field errors with E_TYPE_MISSING_FIELD" {
+    try expectCode(
+        \\struct Stats
+        \\  hp: i16
+        \\  mp: i16
+        \\end
+        \\
+        \\let s = Stats { hp: 10 }
+    , "E_TYPE_MISSING_FIELD");
+}
+
+test "typecheck: struct literal unknown field errors with E_TYPE_UNDEFINED_FIELD" {
+    try expectCode(
+        \\struct Stats
+        \\  hp: i16
+        \\end
+        \\
+        \\let s = Stats { hp: 0, foo: 1 }
+    , "E_TYPE_UNDEFINED_FIELD");
+}
+
+test "typecheck: struct literal field type mismatch errors" {
+    try expectCode(
+        \\struct Stats
+        \\  hp: i16
+        \\end
+        \\
+        \\let s = Stats { hp: "hi" }
+    , "E_TYPE_MISMATCH");
+}
+
+// ---------- slice 6: class field + method resolution ----------
+
+test "typecheck: class field access infers field type" {
+    try expectClean(
+        \\class Player
+        \\  let hp: i16
+        \\end
+        \\
+        \\let p: Player = Player { hp: 0 }
+        \\let n: i16 = p.hp
+    );
+}
+
+test "typecheck: class method call accepts" {
+    try expectClean(
+        \\class Player
+        \\  let hp: i16
+        \\
+        \\  def greet(self)
+        \\    print "hi"
+        \\  end
+        \\end
+        \\
+        \\let p: Player = Player { hp: 0 }
+        \\p.greet()
+    );
+}
+
+test "typecheck: unknown method errors with E_TYPE_UNDEFINED_METHOD" {
+    try expectCode(
+        \\class Player
+        \\  let hp: i16
+        \\
+        \\  def greet(self)
+        \\    print "hi"
+        \\  end
+        \\end
+        \\
+        \\let p: Player = Player { hp: 0 }
+        \\p.bogus()
+    , "E_TYPE_UNDEFINED_METHOD");
+}
+
+test "typecheck: method-call argcount mismatch errors with E_TYPE_ARG_COUNT" {
+    try expectCode(
+        \\class Player
+        \\  let hp: i16
+        \\
+        \\  def heal(self, amount: i16)
+        \\    self.hp += amount
+        \\  end
+        \\end
+        \\
+        \\let p: Player = Player { hp: 0 }
+        \\p.heal(10, 20)
+    , "E_TYPE_ARG_COUNT");
+}
+
+test "typecheck: self.field resolves inside method body" {
+    try expectClean(
+        \\class Player
+        \\  let hp: i16
+        \\
+        \\  def get_hp(self) -> i16
+        \\    return self.hp
+        \\  end
+        \\end
+    );
+}
+
+test "typecheck: class with extends — inherited field resolves" {
+    try expectClean(
+        \\class Entity
+        \\  let hp: i16
+        \\end
+        \\
+        \\class Player extends Entity
+        \\  let mp: i16
+        \\
+        \\  def total(self) -> i16
+        \\    return self.hp + self.mp
+        \\  end
+        \\end
+    );
+}
+
+// ---------- slice 6: multi-return tuple destructuring + flow ----------
+
+test "typecheck: tuple destructure types each binding from init slots" {
+    try expectClean(
+        \\def parse() -> (i16, str?)
+        \\  return (0, nil)
+        \\end
+        \\
+        \\let (n, err) = parse()
+        \\let m: i16 = n
+    );
+}
+
+test "typecheck: tuple destructure arity mismatch errors with E_TYPE_TUPLE_ARITY" {
+    try expectCode(
+        \\def f() -> (i16, str?)
+        \\  return (0, nil)
+        \\end
+        \\
+        \\let (a, b, c) = f()
+    , "E_TYPE_TUPLE_ARITY");
+}
+
+test "typecheck: multi-return bail propagates non-nil to sibling slot" {
+    // After `if err != nil return end`, the value slot `p` becomes
+    // statically non-nil so `p.greet()` doesn't trigger E_NULL_DEREF.
+    try expectClean(
+        \\class Player
+        \\  let hp: i16
+        \\
+        \\  def greet(self)
+        \\    print "hi"
+        \\  end
+        \\end
+        \\
+        \\def make_player() -> (Player?, str?)
+        \\  return (nil, "boom")
+        \\end
+        \\
+        \\def use_it()
+        \\  let (p, err) = make_player()
+        \\  if err != nil
+        \\    return
+        \\  end
+        \\  p.greet()
+        \\end
+    );
+}
+
 // ---------- CheckedProgram surface ----------
 
 test "typecheck: CheckedProgram retains program pointer" {

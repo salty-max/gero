@@ -70,20 +70,34 @@ pub fn typecheck(
         .current_scope = &module_scope,
         .current_ret_ty = null,
         .current_class_extends = null,
+        .current_class_name = null,
         .non_nil = .{},
         .enum_registry = .{},
+        .struct_registry = .{},
+        .class_registry = .{},
         .fn_locals = null,
+        .tuple_correlations = .{},
     };
 
-    // Pre-pass: capture stable enum-decl pointers (slice elements
-    // have a stable address — the union variant payload sits in
-    // place). Match-exhaustiveness consults this map.
-    for (program.statements) |*stmt| {
-        if (stmt.* == .enum_decl) {
-            const name = source[stmt.enum_decl.name.start..stmt.enum_decl.name.end];
+    // Pre-pass: capture stable enum / struct / class decl pointers
+    // (slice elements have a stable address — the union variant
+    // payload sits in place). Field / method resolution and
+    // match-exhaustiveness consult these maps.
+    for (program.statements) |*stmt| switch (stmt.*) {
+        .enum_decl => |ed| {
+            const name = source[ed.name.start..ed.name.end];
             try c.enum_registry.put(a, name, &stmt.enum_decl);
-        }
-    }
+        },
+        .struct_decl => |sd| {
+            const name = source[sd.name.start..sd.name.end];
+            try c.struct_registry.put(a, name, &stmt.struct_decl);
+        },
+        .class_decl => |cd| {
+            const name = source[cd.name.start..cd.name.end];
+            try c.class_registry.put(a, name, &stmt.class_decl);
+        },
+        else => {},
+    };
 
     // Pass 1: register top-level decls so forward references resolve.
     for (program.statements) |stmt| try c.registerTopLevel(stmt);
@@ -121,6 +135,10 @@ const Checker = struct {
     /// the walker is inside a class method body. `null` everywhere
     /// else. Drives `super` resolution.
     current_class_extends: ?ast.Span,
+    /// Name of the enclosing class when the walker is inside a
+    /// class method body. `null` everywhere else. Drives `self`
+    /// type resolution.
+    current_class_name: ?[]const u8,
     /// Identifiers statically known non-nil in the current
     /// straight-line flow. Populated by simple nil-check pattern
     /// matching (`if x != nil` arm / `if x == nil then return end`
@@ -131,10 +149,22 @@ const Checker = struct {
     /// by `match` exhaustiveness to retrieve the variant list when
     /// the scrutinee resolves to a named-enum type.
     enum_registry: std.StringHashMapUnmanaged(*const ast.EnumDecl),
+    /// Struct-name → decl pointer map. Drives `.field` typing and
+    /// struct-literal validation.
+    struct_registry: std.StringHashMapUnmanaged(*const ast.StructDecl),
+    /// Class-name → decl pointer map. Drives `.field` / `.method()`
+    /// typing and `self` / `super` resolution.
+    class_registry: std.StringHashMapUnmanaged(*const ast.ClassDecl),
     /// Names declared inside the currently-walked function body
     /// (parameters + nested `let` / `const` / `def`). `null` at
     /// module scope. Drives `return &local` stack-lifetime checks.
     fn_locals: ?std.StringHashMapUnmanaged(void),
+    /// Tuple-destructuring sibling map: for a `let (a, b) = call()`
+    /// where slot `b` is nullable, `b` maps to `a` here. When a
+    /// bail-pattern fires on `b`, the sibling `a` is also promoted
+    /// to the `non_nil` set (the canonical multi-return idiom per
+    /// §3.4.1).
+    tuple_correlations: std.StringHashMapUnmanaged([]const u8),
 
     /// Mutually recursive walker fns need an explicit error set —
     /// Zig's inferred sets would deadlock the dependency graph.
@@ -413,9 +443,17 @@ const Checker = struct {
         }
     }
 
-    /// Detect the `if x == nil then return / break / continue end`
-    /// shape (single-arm `if`, no else, then-body unconditionally
-    /// exits). Returns the bound name on a match.
+    /// Detect a single-arm `if` whose body always exits — the
+    /// "bail pattern" used by both the simple nullable idiom and
+    /// the multi-return tuple idiom.
+    ///
+    ///   - `if x == nil return end`        → `x` is non-nil after.
+    ///   - `if err != nil return end`      → sibling slot of `err`
+    ///     (registered via `tuple_correlations`) is non-nil after;
+    ///     `err` itself is now nil, not pushed.
+    ///
+    /// Returns the name to push, or `null` when neither shape
+    /// applies.
     fn detectNilBailGain(self: *const Checker, s: ast.Statement) ?[]const u8 {
         if (s != .if_stmt) return null;
         const is_ = s.if_stmt;
@@ -423,8 +461,13 @@ const Checker = struct {
         const arm = is_.arms[0];
         const cond = arm.cond orelse return null;
         const nc = self.matchNilCheck(cond) orelse return null;
-        if (nc.is_neq) return null;
         if (!bodyAlwaysExits(arm.body)) return null;
+        if (nc.is_neq) {
+            // Multi-return: bail when err != nil. After the bail
+            // err is statically nil, so its correlated sibling
+            // (value slot of `let (n, err) = …`) is valid.
+            return self.tuple_correlations.get(nc.name);
+        }
         return nc.name;
     }
 
@@ -440,7 +483,7 @@ const Checker = struct {
         else
             null;
         if (ann_ty != null and init_ty != null) {
-            if (!ann_ty.?.eql(init_ty.?.*)) {
+            if (!assignable(init_ty.?.*, ann_ty.?.*)) {
                 try self.emitMismatch(d.init.?.span(), ann_ty.?, init_ty.?);
             }
         }
@@ -465,7 +508,64 @@ const Checker = struct {
                     }
                 }
             },
+            .tuple_pattern => try self.checkLetTupleDestructure(d.pattern, init_ty),
             else => try self.registerPatternBindings(d.pattern),
+        }
+    }
+
+    /// Type each binding of a `let (a, b, …) = call()` against the
+    /// init's tuple slots. Mismatched arity emits
+    /// `E_TYPE_TUPLE_ARITY`. When the pattern is exactly two idents
+    /// and the second slot is nullable, register a sibling
+    /// correlation so the bail-pattern flow lifts the non-err slot.
+    fn checkLetTupleDestructure(
+        self: *Checker,
+        pat: *const ast.Pattern,
+        init_ty: ?*const types.Type,
+    ) WalkError!void {
+        const tp = pat.tuple_pattern;
+        const it = init_ty orelse {
+            // Without a typed init, bind every element untyped.
+            try self.registerPatternBindings(pat);
+            return;
+        };
+        if (it.* != .tuple) {
+            try self.registerPatternBindings(pat);
+            return;
+        }
+        const slots = it.tuple;
+        if (slots.len != tp.elems.len) {
+            const suffix: []const u8 = if (tp.elems.len == 1) "" else "s";
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "tuple-destructuring pattern has {d} element{s}, init has {d}",
+                .{ tp.elems.len, suffix, slots.len },
+            );
+            try self.emit("E_TYPE_TUPLE_ARITY", tp.span.start, msg, null);
+            try self.registerPatternBindings(pat);
+            return;
+        }
+        for (tp.elems, slots) |elem_pat, slot_ty| {
+            switch (elem_pat.*) {
+                .ident => |i| try self.registerName(self.lexeme(i.name), .{
+                    .kind = .let_binding,
+                    .decl_span = i.name,
+                    .ty = slot_ty,
+                }),
+                else => try self.registerPatternBindings(elem_pat),
+            }
+        }
+        // Multi-return correlation: the canonical `(value, err)`
+        // shape. When the err slot is `T?` and both elements are
+        // plain idents, remember which name promotes which.
+        if (tp.elems.len == 2 and
+            tp.elems[0].* == .ident and
+            tp.elems[1].* == .ident and
+            slots[1].* == .optional)
+        {
+            const a_name = self.lexeme(tp.elems[0].ident.name);
+            const b_name = self.lexeme(tp.elems[1].ident.name);
+            _ = try self.tuple_correlations.put(self.arena, b_name, a_name);
         }
     }
 
@@ -476,7 +576,7 @@ const Checker = struct {
             null;
         const init_ty = try self.inferExpr(d.init, ann_ty);
         const final = ann_ty orelse init_ty;
-        if (ann_ty != null and init_ty != null and !ann_ty.?.eql(init_ty.?.*)) {
+        if (ann_ty != null and init_ty != null and !assignable(init_ty.?.*, ann_ty.?.*)) {
             try self.emitMismatch(d.init.span(), ann_ty.?, init_ty.?);
         }
         if (final) |t| {
@@ -505,7 +605,7 @@ const Checker = struct {
         // Compound `op=` is sugar for `target = target op value`; the
         // target's type is the hint for the rhs in either form.
         const val_ty = try self.inferExpr(a.value, tgt_ty);
-        if (tgt_ty != null and val_ty != null and !tgt_ty.?.eql(val_ty.?.*)) {
+        if (tgt_ty != null and val_ty != null and !assignable(val_ty.?.*, tgt_ty.?.*)) {
             try self.emitMismatch(a.value.span(), tgt_ty.?, val_ty.?);
         }
     }
@@ -754,7 +854,7 @@ const Checker = struct {
             try self.checkReturnStackLifetime(v);
             const v_ty = try self.inferExpr(v, self.current_ret_ty);
             if (self.current_ret_ty) |rt| if (v_ty) |vt| {
-                if (!rt.eql(vt.*) and !isNilType(rt.*)) {
+                if (!assignable(vt.*, rt.*) and !isNilType(rt.*)) {
                     try self.emitMismatch(v.span(), rt, vt);
                 }
             };
@@ -830,6 +930,10 @@ const Checker = struct {
         const saved_extends = self.current_class_extends;
         self.current_class_extends = d.extends;
         defer self.current_class_extends = saved_extends;
+
+        const saved_name = self.current_class_name;
+        self.current_class_name = self.lexeme(d.name);
+        defer self.current_class_name = saved_name;
 
         for (d.fields) |f| {
             const ty: ?*const types.Type = if (f.type_ann) |t|
@@ -1054,16 +1158,23 @@ const Checker = struct {
                 try self.emit("E_UNDEFINED_SYMBOL", i.span.start, msg, name);
                 return null;
             },
-            .self_expr => return null,
-            .super_expr => |se| {
-                if (self.current_class_extends == null) {
-                    try self.emit(
-                        "E_UNDEFINED_SYMBOL",
-                        se.span.start,
-                        "`super` is only valid inside a method of a class that extends a parent",
-                        "super",
-                    );
+            .self_expr => |se| {
+                if (self.current_class_name) |cn| {
+                    // `self` is a value of the enclosing class type.
+                    return try types.mkNamed(self.arena, cn, se.span);
                 }
+                return null;
+            },
+            .super_expr => |se| {
+                if (self.current_class_extends) |ext| {
+                    return try types.mkNamed(self.arena, self.lexeme(ext), ext);
+                }
+                try self.emit(
+                    "E_UNDEFINED_SYMBOL",
+                    se.span.start,
+                    "`super` is only valid inside a method of a class that extends a parent",
+                    "super",
+                );
                 return null;
             },
             .paren => |p| return try self.inferExpr(p.inner, hint),
@@ -1078,13 +1189,12 @@ const Checker = struct {
             .method_call => |m| {
                 const recv_ty = try self.inferExpr(m.receiver, null);
                 try self.checkNotNullableDeref(m.receiver, recv_ty, m.span);
-                for (m.args) |a| _ = try self.inferExpr(a, null);
-                return null;
+                return try self.checkMethodCall(m, recv_ty);
             },
             .field => |f| {
                 const recv_ty = try self.inferExpr(f.receiver, null);
                 try self.checkNotNullableDeref(f.receiver, recv_ty, f.span);
-                return null;
+                return try self.resolveFieldAccess(f, recv_ty);
             },
             .index => |ix| {
                 _ = try self.inferExpr(ix.receiver, null);
@@ -1120,15 +1230,20 @@ const Checker = struct {
             },
             .list_lit => |ll| return try self.inferListLit(ll, hint),
             .list_repeat => |lr| return try self.inferListRepeat(lr, hint),
-            .struct_lit => |sl| {
-                for (sl.fields) |f| _ = try self.inferExpr(f.value, null);
-                return try types.mkNamed(self.arena, self.lexeme(sl.type_name), sl.type_name);
-            },
+            .struct_lit => |sl| return try self.checkStructLit(sl),
             .tuple_lit => |tl| {
+                // Bidirectional: when the hint is a same-arity
+                // tuple, each element pins to its slot's expected
+                // type so `(0, nil)` against `(i16, str?)` works.
+                const slot_hints: ?[]const *const types.Type = if (hint) |h|
+                    if (h.* == .tuple and h.tuple.len == tl.elems.len) h.tuple else null
+                else
+                    null;
                 var elems: std.ArrayList(*const types.Type) = .empty;
                 errdefer elems.deinit(self.arena);
-                for (tl.elems) |x| {
-                    const t = try self.inferExpr(x, null) orelse return null;
+                for (tl.elems, 0..) |x, i| {
+                    const slot_hint: ?*const types.Type = if (slot_hints) |sh| sh[i] else null;
+                    const t = try self.inferExpr(x, slot_hint) orelse return null;
                     try elems.append(self.arena, t);
                 }
                 const out = try self.arena.create(types.Type);
@@ -1223,6 +1338,242 @@ const Checker = struct {
             return h;
         }
         return try self.primitive(.nil_);
+    }
+
+    // ---------- field / method resolution ----------
+
+    /// Look up `f.field` against the receiver's named-type decl.
+    /// Returns the field's declared type, or emits
+    /// `E_TYPE_UNDEFINED_FIELD` when the field is unknown. Returns
+    /// `null` when the receiver type isn't a resolvable named
+    /// struct / class — downstream callers treat that as "unknown
+    /// for now" rather than another error.
+    fn resolveFieldAccess(
+        self: *Checker,
+        f: ast.FieldExpr,
+        recv_ty: ?*const types.Type,
+    ) WalkError!?*const types.Type {
+        const rt = recv_ty orelse return null;
+        const named_name = namedNameOf(rt.*) orelse return null;
+        const field_name = self.lexeme(f.field);
+        if (self.struct_registry.get(named_name)) |sd| {
+            for (sd.fields) |fld| {
+                if (std.mem.eql(u8, self.lexeme(fld.name), field_name)) {
+                    return try self.resolveType(fld.type_ann);
+                }
+            }
+            try self.emitUndefinedField(named_name, field_name, f.field.start);
+            return null;
+        }
+        if (self.class_registry.get(named_name)) |cd| {
+            if (try self.lookupClassFieldType(cd, field_name)) |t| return t;
+            try self.emitUndefinedField(named_name, field_name, f.field.start);
+            return null;
+        }
+        return null;
+    }
+
+    /// Walk a class's inherited chain looking for a field named
+    /// `field_name`. Returns the resolved type when found.
+    fn lookupClassFieldType(
+        self: *Checker,
+        cd: *const ast.ClassDecl,
+        field_name: []const u8,
+    ) WalkError!?*const types.Type {
+        for (cd.fields) |fld| {
+            if (std.mem.eql(u8, self.lexeme(fld.name), field_name)) {
+                if (fld.type_ann) |t| return try self.resolveType(t);
+                return null;
+            }
+        }
+        if (cd.extends) |ext| if (self.class_registry.get(self.lexeme(ext))) |parent| {
+            return try self.lookupClassFieldType(parent, field_name);
+        };
+        return null;
+    }
+
+    fn emitUndefinedField(self: *Checker, type_name: []const u8, field_name: []const u8, at: u32) WalkError!void {
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "type `{s}` has no field `{s}`",
+            .{ type_name, field_name },
+        );
+        try self.emit("E_TYPE_UNDEFINED_FIELD", at, msg, field_name);
+    }
+
+    /// Type-check a method call against the class registry.
+    /// Walks args regardless so unrelated diagnostics still fire.
+    /// Emits `E_TYPE_UNDEFINED_METHOD` when the named method is
+    /// missing on the receiver class. Otherwise behaves like a
+    /// regular call: arity + per-arg type check against the method's
+    /// signature.
+    fn checkMethodCall(
+        self: *Checker,
+        m: ast.MethodCallExpr,
+        recv_ty: ?*const types.Type,
+    ) WalkError!?*const types.Type {
+        const rt = recv_ty orelse {
+            for (m.args) |a| _ = try self.inferExpr(a, null);
+            return null;
+        };
+        const named_name = namedNameOf(rt.*) orelse {
+            for (m.args) |a| _ = try self.inferExpr(a, null);
+            return null;
+        };
+        const cd = self.class_registry.get(named_name) orelse {
+            for (m.args) |a| _ = try self.inferExpr(a, null);
+            return null;
+        };
+        const method_name = self.lexeme(m.method);
+        const method = self.lookupClassMethod(cd, method_name) orelse {
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "class `{s}` has no method `{s}`",
+                .{ named_name, method_name },
+            );
+            try self.emit("E_TYPE_UNDEFINED_METHOD", m.method.start, msg, method_name);
+            for (m.args) |a| _ = try self.inferExpr(a, null);
+            return null;
+        };
+        // Build the method signature on the fly. Skip the `self`
+        // param when matching args.
+        var has_self = false;
+        if (method.params.len > 0 and std.mem.eql(u8, self.lexeme(method.params[0].name), "self")) has_self = true;
+        const skip_count: usize = if (has_self) 1 else 0;
+        const sig_params = method.params[skip_count..];
+        if (m.args.len != sig_params.len) {
+            const suffix: []const u8 = if (sig_params.len == 1) "" else "s";
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "method `{s}.{s}` takes {d} argument{s}, called with {d}",
+                .{ named_name, method_name, sig_params.len, suffix, m.args.len },
+            );
+            try self.emit("E_TYPE_ARG_COUNT", m.span.start, msg, null);
+            for (m.args) |a| _ = try self.inferExpr(a, null);
+        } else {
+            for (m.args, sig_params) |arg, p| {
+                const param_ty: ?*const types.Type = if (p.type_ann) |t|
+                    try self.resolveType(t)
+                else
+                    null;
+                const skip = if (param_ty) |pt| isNilType(pt.*) else true;
+                const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
+                if (!skip and param_ty != null and arg_ty != null and !assignable(arg_ty.?.*, param_ty.?.*)) {
+                    try self.emitMismatch(arg.span(), param_ty.?, arg_ty.?);
+                }
+            }
+        }
+        if (method.ret_type) |r| return try self.resolveType(r);
+        return try self.primitive(.nil_);
+    }
+
+    /// Validate a struct literal against its decl. Reports
+    /// unknown / missing / mistyped fields and returns the named
+    /// type so the surrounding expression continues to type-check.
+    fn checkStructLit(self: *Checker, sl: ast.StructLit) WalkError!?*const types.Type {
+        const type_name = self.lexeme(sl.type_name);
+        const named_ty = try types.mkNamed(self.arena, type_name, sl.type_name);
+
+        // Struct literals can be used to construct classes too
+        // (`Player { name: "Cecil" }` shorthand) — try both
+        // registries.
+        if (self.struct_registry.get(type_name)) |sd| {
+            try self.checkStructLitFields(sl, type_name, sd.fields);
+            return named_ty;
+        }
+        if (self.class_registry.get(type_name)) |cd| {
+            try self.checkClassLitFields(sl, type_name, cd);
+            return named_ty;
+        }
+        // Unknown type — emit the standard undefined-type code so
+        // the user gets one consistent diagnostic, then walk the
+        // values defensively to surface inner errors.
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "undefined type `{s}`",
+            .{type_name},
+        );
+        try self.emit("E_TYPE_UNDEFINED", sl.type_name.start, msg, type_name);
+        for (sl.fields) |f| _ = try self.inferExpr(f.value, null);
+        return named_ty;
+    }
+
+    fn checkStructLitFields(
+        self: *Checker,
+        sl: ast.StructLit,
+        type_name: []const u8,
+        decl_fields: []const ast.StructField,
+    ) WalkError!void {
+        var seen: std.StringHashMapUnmanaged(void) = .{};
+        defer seen.deinit(self.arena);
+        for (sl.fields) |lit_field| {
+            const field_name = self.lexeme(lit_field.name);
+            const decl_field = findStructField(self, decl_fields, field_name) orelse {
+                try self.emitUndefinedField(type_name, field_name, lit_field.name.start);
+                _ = try self.inferExpr(lit_field.value, null);
+                continue;
+            };
+            const expected_ty = try self.resolveType(decl_field.type_ann);
+            const actual_ty = try self.inferExpr(lit_field.value, expected_ty);
+            if (actual_ty) |at| if (!assignable(at.*, expected_ty.*)) {
+                try self.emitMismatch(lit_field.value.span(), expected_ty, at);
+            };
+            _ = try seen.put(self.arena, field_name, {});
+        }
+        // Missing fields.
+        for (decl_fields) |df| {
+            const dn = self.lexeme(df.name);
+            if (!seen.contains(dn)) {
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "missing field `{s}` in `{s}` literal",
+                    .{ dn, type_name },
+                );
+                try self.emit("E_TYPE_MISSING_FIELD", sl.span.start, msg, dn);
+            }
+        }
+    }
+
+    fn checkClassLitFields(
+        self: *Checker,
+        sl: ast.StructLit,
+        type_name: []const u8,
+        cd: *const ast.ClassDecl,
+    ) WalkError!void {
+        for (sl.fields) |lit_field| {
+            const field_name = self.lexeme(lit_field.name);
+            // Search the inheritance chain. Class fields are
+            // optional-typed, so an untyped field accepts anything.
+            const expected_ty: ?*const types.Type = try self.lookupClassFieldType(cd, field_name);
+            if (expected_ty == null and findClassField(self, cd, field_name) == null) {
+                try self.emitUndefinedField(type_name, field_name, lit_field.name.start);
+                _ = try self.inferExpr(lit_field.value, null);
+                continue;
+            }
+            const actual_ty = try self.inferExpr(lit_field.value, expected_ty);
+            if (expected_ty) |et| if (actual_ty) |at| if (!assignable(at.*, et.*)) {
+                try self.emitMismatch(lit_field.value.span(), et, at);
+            };
+        }
+        // Class literals don't require every field to be set
+        // (constructors fill defaults). Slice 7 may tighten this
+        // when annotation rules pin field requiredness.
+    }
+
+    /// Walk a class's inheritance chain looking for a method by
+    /// name. Returns the first match.
+    fn lookupClassMethod(
+        self: *const Checker,
+        cd: *const ast.ClassDecl,
+        method_name: []const u8,
+    ) ?*const ast.DefDecl {
+        for (cd.methods) |*method| {
+            if (std.mem.eql(u8, self.lexeme(method.name), method_name)) return method;
+        }
+        if (cd.extends) |ext| if (self.class_registry.get(self.lexeme(ext))) |parent| {
+            return self.lookupClassMethod(parent, method_name);
+        };
+        return null;
     }
 
     // ---------- literal inference with bidirectional hint ----------
@@ -1492,7 +1843,7 @@ const Checker = struct {
             // call-site inference for those lands in a later slice.
             const skip = isNilType(param_ty.*);
             const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
-            if (!skip and arg_ty != null and !param_ty.eql(arg_ty.?.*)) {
+            if (!skip and arg_ty != null and !assignable(arg_ty.?.*, param_ty.*)) {
                 try self.emitMismatch(arg.span(), param_ty, arg_ty.?);
             }
         }
@@ -1560,6 +1911,34 @@ fn bodyAlwaysExits(body: []const ast.Statement) bool {
         .return_stmt, .break_stmt, .continue_stmt => true,
         else => false,
     };
+}
+
+/// Lexeme of a `Named` type, or `null` for other type shapes.
+fn namedNameOf(t: types.Type) ?[]const u8 {
+    return switch (t) {
+        .named => |n| n.name,
+        else => null,
+    };
+}
+
+/// Locate a field on a struct decl by name.
+fn findStructField(c: *const Checker, fields: []const ast.StructField, name: []const u8) ?*const ast.StructField {
+    for (fields) |*f| {
+        if (std.mem.eql(u8, c.lexeme(f.name), name)) return f;
+    }
+    return null;
+}
+
+/// Locate a field on a class decl by name (walks the inheritance
+/// chain). Returns the first hit.
+fn findClassField(c: *const Checker, cd: *const ast.ClassDecl, name: []const u8) ?*const ast.ClassField {
+    for (cd.fields) |*f| {
+        if (std.mem.eql(u8, c.lexeme(f.name), name)) return f;
+    }
+    if (cd.extends) |ext| if (c.class_registry.get(c.lexeme(ext))) |parent| {
+        return findClassField(c, parent, name);
+    };
+    return null;
 }
 
 /// Split a dotted variant path lexeme (`Enum.Variant`) into head /
@@ -1673,6 +2052,28 @@ fn isPlaceExpr(e: *const ast.Expr) bool {
         .paren => |p| isPlaceExpr(p.inner),
         else => false,
     };
+}
+
+// ---------- assignability ----------
+
+/// `true` when an `actual` typed value can be stored / returned /
+/// passed into an `expected` slot. Wider than `Type.eql` — allows
+/// `T → T?` (non-nil to nullable) and recurses into tuples for
+/// per-slot assignability. Used by return / let-init / assignment
+/// / call-arg checks; operator arms keep strict equality.
+fn assignable(actual: types.Type, expected: types.Type) bool {
+    if (actual.eql(expected)) return true;
+    if (expected == .optional) {
+        if (actual == .primitive and actual.primitive == .nil_) return true;
+        if (assignable(actual, expected.optional.*)) return true;
+    }
+    if (expected == .tuple and actual == .tuple and expected.tuple.len == actual.tuple.len) {
+        for (expected.tuple, actual.tuple) |e, a| {
+            if (!assignable(a.*, e.*)) return false;
+        }
+        return true;
+    }
+    return false;
 }
 
 // ---------- cast convertibility (§3.5.1) ----------
