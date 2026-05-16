@@ -220,6 +220,7 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_UNDEFINED_METHOD` | Method name doesn't exist on the receiver's class (or any parent). |
 | `E_TYPE_MISSING_FIELD` | Struct literal omits a field declared by the type. |
 | `E_TYPE_TUPLE_ARITY` | Tuple-destructuring pattern's element count doesn't match the init's tuple arity. |
+| `E_TYPE_REDEFINED` | A name is declared twice in the same scope. |
 | `E_TYPE_ARG_COUNT` | Wrong number of args at a call site. |
 | `E_TYPE_AMBIGUOUS_INFER` | Inference can't pin a single type. |
 | `E_TYPE_RECURSIVE_NO_RET` | Recursive fn missing return annotation. |
@@ -657,6 +658,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_UNDEFINED_METHOD` | Typechecker | v0.3 |
 | `E_TYPE_MISSING_FIELD` | Typechecker | v0.3 |
 | `E_TYPE_TUPLE_ARITY` | Typechecker | v0.3 |
+| `E_TYPE_REDEFINED` | Typechecker | v0.3 |
 | `E_TYPE_ARG_COUNT` | Typechecker | v0.3 |
 | `E_TYPE_AMBIGUOUS_INFER` | Typechecker | v0.3 |
 | `E_TYPE_RECURSIVE_NO_RET` | Typechecker | v0.3 |
