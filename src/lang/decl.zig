@@ -112,15 +112,24 @@ pub fn parseDefDeclInner(p: *Parser, is_local: bool) ParserError!ast.DefDecl {
     }
     errdefer if (ret_type) |r| ast.freeTypeAnn(p.allocator, r);
 
-    p.skipNewlines();
+    // `@abstract` on a method (§3.7.6) declares the signature
+    // without a body — subclasses must implement it. Skip the body
+    // parse + `end` expectation in that case.
+    const is_abstract = hasAnnotationNamed(p, annotations, "abstract");
+
     var body: std.ArrayList(ast.Statement) = .empty;
     errdefer parser_mod.cleanupStatements(p.allocator, &body);
+    var end_byte: u32 = if (ret_type) |r| r.span().end else p.peek().start;
 
-    while (!p.atEnd() and !p.check(.kw_end)) {
-        try parser_mod.parseStatement(p, &body);
+    if (!is_abstract) {
         p.skipNewlines();
+        while (!p.atEnd() and !p.check(.kw_end)) {
+            try parser_mod.parseStatement(p, &body);
+            p.skipNewlines();
+        }
+        const end_tok = try p.expect(.kw_end, "end");
+        end_byte = end_tok.end;
     }
-    const end_tok = try p.expect(.kw_end, "end");
     try p.requireStatementBoundary();
 
     return .{
@@ -130,8 +139,22 @@ pub fn parseDefDeclInner(p: *Parser, is_local: bool) ParserError!ast.DefDecl {
         .ret_type = ret_type,
         .body = try body.toOwnedSlice(p.allocator),
         .is_local = is_local,
-        .span = .{ .start = start, .end = end_tok.end },
+        .span = .{ .start = start, .end = end_byte },
     };
+}
+
+/// True when `annotations` contains an entry whose name matches
+/// `name` exactly. Used by `parseDefDeclInner` for `@abstract`.
+fn hasAnnotationNamed(
+    p: *const Parser,
+    annotations: []const ast.Annotation,
+    name: []const u8,
+) bool {
+    for (annotations) |a| {
+        const lex = p.source[a.name.start..a.name.end];
+        if (std.mem.eql(u8, lex, name)) return true;
+    }
+    return false;
 }
 
 /// Parameter list following the opening `(`. Consumes the closing
