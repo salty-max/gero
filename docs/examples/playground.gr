@@ -1,0 +1,104 @@
+-- Small canonical sample exercising the gero-lang v1 surface.
+-- Round-trips through `gero fmt docs/examples/playground.gr --check`
+-- and produces zero diff.
+
+use math
+use input as keys from "./io"
+
+const MAX_HP = 100
+const SEED = $C0DE
+
+@addr $FE40
+@volatile
+let DISPCTL: u8 = 0
+
+enum Item
+  case Sword
+  case Potion(amount: i16)
+  case Key(name: str, count: u8)
+end
+
+struct Stats
+  hp: i16
+  mp: i16
+  atk: u8
+  defense: u8
+end
+
+class Player extends Entity
+  let hp: i16
+  let mp: i16
+
+  def init(self, name: str)
+    self.hp = MAX_HP
+    self.mp = 50
+  end
+
+  def take_damage(self, amount: i16)
+    self.hp -= amount
+    if self.hp <= 0
+      self.die()
+    end
+  end
+
+  @final
+  def die(self)
+    print "you died"
+  end
+end
+
+@inline
+def clamp(x: i16, lo: i16, hi: i16) -> i16
+  if x < lo
+    return lo
+  end
+  if x > hi
+    return hi
+  end
+  return x
+end
+
+def handle(item: Item)
+  match item
+    case Item.Sword => equip_basic()
+    case Item.Potion(n) when n > 50 => big_heal(n)
+    case Item.Potion(n) => small_heal(n)
+    case Item.Key(name, _) => unlock(name)
+  end
+end
+
+bake def make_sin_table() -> [i16; 256]
+  let t: [i16; 256] = [0; 256]
+  for i in 0..256
+    t[i] = i
+  end
+  return t
+end
+
+const SIN_TABLE = make_sin_table()
+
+def render_loop(state: &GameState)
+  while true :main
+    let frame = state.next_frame()
+    defer release(frame)
+    for sprite in state.sprites
+      if sprite.hidden
+        continue
+      end
+      draw(sprite)
+    end
+    repeat
+      let evt = poll_event()
+      if evt == nil
+        break :main
+      end
+    until evt.is_terminal()
+  end
+end
+
+def main()
+  let xs = [1, 2, 3, 4]
+  let doubled = xs.map(|x| x * 2)
+  let total = doubled.fold(0, |acc, x| acc + x)
+  print total
+end

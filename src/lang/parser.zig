@@ -320,10 +320,12 @@ fn parseBakeStatement(p: *Parser) ParserError!ast.Statement {
 
     switch (p.peek().kind) {
         .kw_def => {
+            // `parseDefDeclInner` already calls `requireStatementBoundary`
+            // after consuming the closing `end` — don't double-call it
+            // here or the parser trips on the next statement.
             var decl = try decl_mod.parseDefDeclInner(p, false);
             decl.is_bake = true;
             decl.span = .{ .start = bake_tok.start, .end = decl.span.end };
-            try p.requireStatementBoundary();
             return .{ .def_decl = decl };
         },
         .kw_do => {
