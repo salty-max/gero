@@ -16,6 +16,34 @@ const Parser = parser_mod.Parser;
 const ParserError = parser_mod.ParserError;
 const Kind = lexer.Token.Kind;
 
+/// Friendly diagnostic when a stray `then` appears at a head-end
+/// position (after an `if` / `elif` condition). `then` was removed
+/// as a syntactic separator (§4.4) but kept reserved so the parser
+/// can flag the migration path instead of emitting a cryptic error.
+fn rejectStrandedThen(p: *Parser, context: []const u8) ParserError!void {
+    if (p.check(.kw_then)) {
+        try p.recordError(
+            "`then` is not a syntactic separator — the head ends at the newline",
+            context,
+        );
+        return error.ParseFailed;
+    }
+}
+
+/// Friendly diagnostic when a stray `do` appears at a head-end
+/// position (after a `while` / `for` head). `do` remains a keyword
+/// because it opens `do…end` blocks (§4.3), but it's not a loop-head
+/// separator (§4.5).
+fn rejectStrandedDo(p: *Parser, context: []const u8) ParserError!void {
+    if (p.check(.kw_do)) {
+        try p.recordError(
+            "`do` is not a loop-head separator — the head ends at the newline (`do…end` is the block form only)",
+            context,
+        );
+        return error.ParseFailed;
+    }
+}
+
 // ---------- if / elif / else ----------
 
 /// `if cond then ... [elif ...] [else ...] end` — statement form.
@@ -104,7 +132,8 @@ fn parseIfArm(
     errdefer if (let_expr) |e| ast.freeExpr(p.allocator, e);
     errdefer if (let_guard) |g| ast.freeExpr(p.allocator, g);
 
-    // `if let pat = expr [when guard] then ...` — §4.4.1.
+    // `if let pat = expr [when guard]` — §4.4.1. No `then` separator
+    // (§4.4) — the head expression ends at the newline.
     if (p.accept(.kw_let)) |_| {
         let_pattern = try pattern_mod.parsePattern(p);
         _ = try p.expect(.equals, "=");
@@ -115,7 +144,7 @@ fn parseIfArm(
     } else {
         cond = try expr_mod.parseExpression(p, 0);
     }
-    _ = try p.expect(.kw_then, "then");
+    try rejectStrandedThen(p, "if");
     p.skipNewlines();
 
     var body: std.ArrayList(ast.Statement) = .empty;
@@ -153,7 +182,8 @@ fn cleanupIfArms(
 
 // ---------- while (incl. while let) ----------
 
-/// `while cond do ... end` and `while let pat = expr [when guard] do ... end`.
+/// `while cond ... end` and `while let pat = expr [when guard] ... end`.
+/// Head ends at the newline — no `do` separator (§4.5).
 pub fn parseWhileStatement(p: *Parser) ParserError!ast.Statement {
     const while_tok = p.peek();
     p.pos += 1;
@@ -175,7 +205,8 @@ pub fn parseWhileStatement(p: *Parser) ParserError!ast.Statement {
         cond = try expr_mod.parseExpression(p, 0);
     }
 
-    _ = try p.expect(.kw_do, "do");
+    try rejectStrandedDo(p, "while");
+    const label = try parser_mod.parseOptionalJumpLabel(p);
     p.skipNewlines();
 
     var body: std.ArrayList(ast.Statement) = .empty;
@@ -192,6 +223,7 @@ pub fn parseWhileStatement(p: *Parser) ParserError!ast.Statement {
         .let_pattern = let_pattern,
         .let_expr = let_expr,
         .let_guard = let_guard,
+        .label = label,
         .body = try body.toOwnedSlice(p.allocator),
         .span = .{ .start = start, .end = end_tok.end },
     } };
@@ -199,7 +231,8 @@ pub fn parseWhileStatement(p: *Parser) ParserError!ast.Statement {
 
 // ---------- for-in ----------
 
-/// `for x in iter [step N] do ... end`.
+/// `for x in iter [step N] ... end`. Head ends at the newline — no
+/// `do` separator (§4.5).
 pub fn parseForStatement(p: *Parser) ParserError!ast.Statement {
     const for_tok = p.peek();
     p.pos += 1;
@@ -217,7 +250,8 @@ pub fn parseForStatement(p: *Parser) ParserError!ast.Statement {
     }
     errdefer if (step) |s| ast.freeExpr(p.allocator, s);
 
-    _ = try p.expect(.kw_do, "do");
+    try rejectStrandedDo(p, "for");
+    const label = try parser_mod.parseOptionalJumpLabel(p);
     p.skipNewlines();
 
     var body: std.ArrayList(ast.Statement) = .empty;
@@ -233,6 +267,7 @@ pub fn parseForStatement(p: *Parser) ParserError!ast.Statement {
         .binding = ast.Span.fromToken(binding_tok),
         .iter = iter,
         .step = step,
+        .label = label,
         .body = try body.toOwnedSlice(p.allocator),
         .span = .{ .start = start, .end = end_tok.end },
     } };
@@ -240,7 +275,7 @@ pub fn parseForStatement(p: *Parser) ParserError!ast.Statement {
 
 // ---------- match ----------
 
-/// `match scrutinee case pat [when guard] then body ... end`.
+/// `match scrutinee case pat [when guard] => body ... end` (§4.8).
 pub fn parseMatchStatement(p: *Parser) ParserError!ast.Statement {
     const match_tok = p.peek();
     p.pos += 1;
@@ -264,7 +299,16 @@ pub fn parseMatchStatement(p: *Parser) ParserError!ast.Statement {
         }
         errdefer if (guard) |g| ast.freeExpr(p.allocator, g);
 
-        _ = try p.expect(.kw_then, "then");
+        // Match arms use `=>` (§4.8). Friendly hint if the user wrote
+        // the old `then` separator.
+        if (p.check(.kw_then)) {
+            try p.recordError(
+                "match arms use `=>`, not `then`",
+                "=>",
+            );
+            return error.ParseFailed;
+        }
+        _ = try p.expect(.fat_arrow, "=>");
         p.skipNewlines();
 
         var body: std.ArrayList(ast.Statement) = .empty;

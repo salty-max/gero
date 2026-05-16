@@ -39,6 +39,7 @@ test "ast: Expr.span() returns the variant's span field" {
 
 test "ast: Statement.span() returns the variant's span field" {
     const s: ast.Statement = .{ .break_stmt = .{
+        .label = null,
         .span = .{ .start = 3, .end = 8 },
     } };
     const sp = s.span();
