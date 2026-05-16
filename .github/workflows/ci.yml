@@ -20,6 +20,15 @@ jobs:
         with:
           version: 0.16.0
       - run: zig version
+      - name: Restore Zig cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            zig-out
+          key: zig-${{ runner.os }}-lint-${{ hashFiles('build.zig', 'build.zig.zon', 'tools/lint/**', 'src/**', 'apps/**', 'tests/**') }}
+          restore-keys: |
+            zig-${{ runner.os }}-lint-
       - name: Format check
         run: zig build fmt-check
       - name: Lint (strict / naming / imports / docs / unused / mirror / testing-allocator)
@@ -43,10 +52,22 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - name: Build
-        run: zig build -Doptimize=${{ matrix.mode }} -freference-trace
-      - name: Test
-        run: zig build test -Doptimize=${{ matrix.mode }} -freference-trace
+      - name: Restore Zig cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            zig-out
+          # One cache slot per release mode — each optimization level
+          # produces distinct artifacts that can't share the cache.
+          key: zig-${{ runner.os }}-test-${{ matrix.mode }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'apps/**', 'tests/**') }}
+          restore-keys: |
+            zig-${{ runner.os }}-test-${{ matrix.mode }}-
+      # `install` builds the CLI (`zig-out/bin/gero`); `test` builds +
+      # runs the test artifacts. Chaining in one invocation amortizes
+      # the build-graph evaluation cost across both targets.
+      - name: Build + test
+        run: zig build install test -Doptimize=${{ matrix.mode }} -freference-trace
 
   cross-targets:
     name: Cross-target compile
@@ -56,6 +77,15 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - name: Restore Zig cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            zig-out
+          key: zig-${{ runner.os }}-cross-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'apps/**', 'tests/**') }}
+          restore-keys: |
+            zig-${{ runner.os }}-cross-
       - name: test-all (compile-only on extra targets)
         run: zig build test-all -freference-trace
 
@@ -67,6 +97,18 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - name: Restore Zig cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            zig-out
+          # `examples` runs with the default (Debug) build, so share
+          # the cache slot with the Debug test cell.
+          key: zig-${{ runner.os }}-test-Debug-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'apps/**', 'tests/**') }}
+          restore-keys: |
+            zig-${{ runner.os }}-test-Debug-
+            zig-${{ runner.os }}-examples-
       - name: check-examples (parse + codegen-validate each example)
         run: zig build check-examples -freference-trace
       - name: check-broken (assert intentionally-bad fixtures fail)
