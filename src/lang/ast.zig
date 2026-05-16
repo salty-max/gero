@@ -362,6 +362,11 @@ pub const Expr = union(enum) {
     /// `value is Enum.Variant` — variant-tag test. Rhs is a span over
     /// the qualified variant path.
     is_test: IsTestExpr,
+    /// `value as T` — explicit type conversion (§3.8). The runtime
+    /// shape depends on the source / target types (truncation,
+    /// sign / zero extension, fixed↔int rounding); the parser just
+    /// captures the inner expression + target type annotation.
+    cast: CastExpr,
 
     /// Smallest `Span` covering the whole expression.
     pub fn span(self: Expr) Span {
@@ -388,6 +393,7 @@ pub const Expr = union(enum) {
             .struct_lit => |e| e.span,
             .tuple_lit => |e| e.span,
             .is_test => |e| e.span,
+            .cast => |e| e.span,
         };
     }
 };
@@ -642,6 +648,13 @@ pub const IsTestExpr = struct {
     lhs: *Expr,
     /// Variant path span — typically `EnumType.Variant`.
     variant_path: Span,
+    span: Span,
+};
+
+/// `inner as T` — explicit type conversion.
+pub const CastExpr = struct {
+    inner: *Expr,
+    target_type: *TypeAnn,
     span: Span,
 };
 
@@ -1243,6 +1256,10 @@ pub fn freeExpr(allocator: std.mem.Allocator, e: *Expr) void {
             allocator.free(tl.elems);
         },
         .is_test => |it| freeExpr(allocator, it.lhs),
+        .cast => |c| {
+            freeExpr(allocator, c.inner);
+            freeTypeAnn(allocator, c.target_type);
+        },
     }
     allocator.destroy(e);
 }

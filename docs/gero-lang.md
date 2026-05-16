@@ -519,6 +519,45 @@ Style convention: annotate functions in stdlib, public modules, and
 anywhere the type's intent matters more than terseness. Skip in
 private helpers and obvious cases.
 
+#### 3.5.1 Type casts
+
+When inference can't bridge a type gap — narrowing, widening, or
+crossing the integer / `fixed` boundary — use `as` to force the
+conversion:
+
+```
+let small: u8 = (raw & 0xFF) as u8
+let wide:  i16 = byte_count as i16
+let pixel: u8 = palette[i] as u8
+let dx:    fixed = velocity as fixed     -- top byte = velocity, frac = 0
+let vx:    i16 = (player.vx_fixed) as i16  -- truncate frac toward zero
+```
+
+**Conversion rules:**
+
+| From → To | Behavior |
+|-----------|----------|
+| Narrower integer (`i16` → `u8`) | Two's-complement truncation — keep the low byte. |
+| Signed wider (`i8` → `i16`) | Sign extension. |
+| Unsigned wider (`u8` → `u16`) | Zero extension. |
+| `bool` → integer | `false=0`, `true=1`. |
+| Integer → `bool` | `0 → false`, anything-else → `true`. |
+| `fixed` → integer | Round toward zero — truncate the fractional byte. |
+| Integer → `fixed` | Top byte = integer value, fraction byte = 0. |
+| `u8` ↔ char | No-op — same byte, just the type changes. |
+
+**Not supported** (no syntax to express, compile error):
+
+- Reference-type casts (`str` ↔ class, `Vec(i16)` ↔ `Vec(u16)`).
+- Class ↔ class downcasts. Use `match` with the enum / class
+  tag instead.
+- Function-pointer reinterpret. Function types are opaque.
+
+**Precedence** (§3.3): `as` binds tighter than `is` but looser than
+unary prefix. `x + y as u8` parses as `x + (y as u8)`. `x as u8 + 1`
+parses as `(x as u8) + 1`. Use parentheses when in doubt — the spec
+won't get less surprising the longer you stare at it.
+
 ### 3.6 Enums (tagged unions)
 
 Sum types — a value is exactly one of N variants, each variant
