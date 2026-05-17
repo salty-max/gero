@@ -185,6 +185,7 @@ pub fn compile(
         .enum_decls = .{},
         .class_decls = .{},
         .class_layouts = .{},
+        .current_class_name = null,
         .vtable_patches = .empty,
         .block_stack = .empty,
         .loop_stack = .empty,
@@ -425,6 +426,10 @@ pub const Emitter = struct {
     /// per-method vtable slot, and the vtable's resolved address
     /// (populated after `class.emitVtables`).
     class_layouts: std.StringHashMapUnmanaged(class.ClassLayout),
+    /// Name of the class whose method body we're currently
+    /// emitting — drives `super` resolution. `null` outside any
+    /// method body. Saved + restored per `emitMethodAsDef` call.
+    current_class_name: ?[]const u8,
     /// Unresolved vtable-address slots emitted by class
     /// constructors — the constructor emits `mov 0, r2` as a
     /// placeholder when it runs (vtables don't have addresses
@@ -865,9 +870,11 @@ pub const Emitter = struct {
         // lookups during expr / pattern emission resolve cheaply.
         try self.collectEnumDecls(program);
         // Pre-pass 0b: index top-level class decls + compute
-        // per-class layouts. Vtables are emitted later (after
-        // method addresses are known).
+        // per-class layouts (with parent-chain resolution for
+        // inherited fields + methods). Vtables emit later, once
+        // method addresses exist.
         try class.collectClassDecls(self, program);
+        try class.computeLayouts(self);
         // Pre-pass 1: register globals (top-level let/const).
         try self.registerGlobals(program);
         // Pre-pass 2: collect each def's bank so `emitCall` can
@@ -1251,8 +1258,14 @@ pub const Emitter = struct {
 
     /// Emit a method as a plain def under a mangled label
     /// (`ClassName.methodName`). The bytecode shape is identical to
-    /// a free fn; only the `fn_addresses` map key differs.
-    pub fn emitMethodAsDef(self: *Emitter, def: *const ast.DefDecl, label: []const u8) !void {
+    /// a free fn; only the `fn_addresses` map key differs. Saves +
+    /// restores `current_class_name` around the body emit so
+    /// `super` lookups inside the body resolve to the right
+    /// class's parent.
+    pub fn emitMethodAsDef(self: *Emitter, def: *const ast.DefDecl, class_name: []const u8, label: []const u8) !void {
+        const saved = self.current_class_name;
+        self.current_class_name = class_name;
+        defer self.current_class_name = saved;
         return self.emitDefWithLabel(def, .regular, label);
     }
 

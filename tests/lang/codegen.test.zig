@@ -1912,3 +1912,277 @@ test "codegen/class: method returning a value propagates through `acu`" {
 
     try std.testing.expectEqualStrings("99\n", writer.written());
 }
+
+// ---------- M3b chunk 2: inheritance + super ----------
+
+test "codegen/class: child inherits parent method (no override)" {
+    var compiled = try compileSource(
+        \\class Parent
+        \\  def greet(self)
+        \\    print "parent"
+        \\  end
+        \\end
+        \\
+        \\class Child extends Parent
+        \\end
+        \\
+        \\def main()
+        \\  let c = Child()
+        \\  c.greet()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("parent\n", writer.written());
+}
+
+test "codegen/class: child override dispatches to child via vtable" {
+    var compiled = try compileSource(
+        \\class Parent
+        \\  def speak(self)
+        \\    print "parent"
+        \\  end
+        \\end
+        \\
+        \\class Child extends Parent
+        \\  def speak(self)
+        \\    print "child"
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let c = Child()
+        \\  c.speak()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("child\n", writer.written());
+}
+
+test "codegen/class: super.method bypasses the vtable" {
+    var compiled = try compileSource(
+        \\class Parent
+        \\  def speak(self)
+        \\    print "parent"
+        \\  end
+        \\end
+        \\
+        \\class Child extends Parent
+        \\  def speak(self)
+        \\    super.speak()
+        \\    print "child"
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let c = Child()
+        \\  c.speak()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // super.speak runs parent's body ("parent"), then child's
+    // body resumes and prints "child".
+    try std.testing.expectEqualStrings("parent\nchild\n", writer.written());
+}
+
+test "codegen/class: child inherits parent fields and reads them via self" {
+    var compiled = try compileSource(
+        \\class Parent
+        \\  let n: i16
+        \\
+        \\  def init(self, x: i16)
+        \\    self.n = x
+        \\  end
+        \\end
+        \\
+        \\class Child extends Parent
+        \\end
+        \\
+        \\def main()
+        \\  let c = Child(42)
+        \\  print c.n
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("42\n", writer.written());
+}
+
+test "codegen/class: shadowed field — self.X reads child's, super.X reads parent's" {
+    var compiled = try compileSource(
+        \\class Parent
+        \\  let value: i16
+        \\
+        \\  def init(self)
+        \\    self.value = 10
+        \\  end
+        \\end
+        \\
+        \\class Child extends Parent
+        \\  let value: i16
+        \\
+        \\  def init(self)
+        \\    super.init()
+        \\    self.value = 20
+        \\  end
+        \\
+        \\  def report(self)
+        \\    print self.value
+        \\    print super.value
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let c = Child()
+        \\  c.report()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("20\n10\n", writer.written());
+}
+
+test "codegen/class: child without init reuses parent's init via inheritance" {
+    var compiled = try compileSource(
+        \\class Parent
+        \\  let n: i16
+        \\
+        \\  def init(self)
+        \\    self.n = 99
+        \\  end
+        \\end
+        \\
+        \\class Child extends Parent
+        \\end
+        \\
+        \\def main()
+        \\  let c = Child()
+        \\  print c.n
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("99\n", writer.written());
+}
+
+test "codegen/class: vtable dispatch is dynamic — same slot, different bodies" {
+    // The vtable copy + override mechanism gives polymorphism for
+    // free: two classes that share a method slot dispatch to their
+    // own override at runtime. This test allocates a Parent and a
+    // Child, calls speak() on each, and checks each prints its own
+    // body — not whichever class was syntactically named at the
+    // call site.
+    var compiled = try compileSource(
+        \\class Parent
+        \\  def speak(self)
+        \\    print "P"
+        \\  end
+        \\end
+        \\
+        \\class Child extends Parent
+        \\  def speak(self)
+        \\    print "C"
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let p = Parent()
+        \\  let c = Child()
+        \\  p.speak()
+        \\  c.speak()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("P\nC\n", writer.written());
+}
+
+test "codegen/class: three-level inheritance — Grandparent ← Parent ← Child" {
+    var compiled = try compileSource(
+        \\class Grandparent
+        \\  def name(self)
+        \\    print "G"
+        \\  end
+        \\end
+        \\
+        \\class Parent extends Grandparent
+        \\end
+        \\
+        \\class Child extends Parent
+        \\end
+        \\
+        \\def main()
+        \\  let c = Child()
+        \\  c.name()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("G\n", writer.written());
+}
