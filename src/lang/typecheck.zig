@@ -81,6 +81,8 @@ pub fn typecheck(
         .fn_locals = null,
         .tuple_correlations = .{},
         .in_bake = false,
+        .in_no_capture = false,
+        .lambda_locals = null,
     };
 
     // Pre-pass: capture stable enum / struct / class / def decl
@@ -187,6 +189,15 @@ const Checker = struct {
     /// Bake-context restrictions (no asm, no MMIO, no non-bake
     /// calls) gate on this flag.
     in_bake: bool,
+    /// `true` when walking the body of a `@no_capture` def. Inner
+    /// lambdas that mutate a captured binding emit
+    /// `E_ANN_CAPTURE_VIOLATION` per spec §3.7.2.
+    in_no_capture: bool,
+    /// Names declared inside the currently-walked lambda body
+    /// (params + nested `let` / `const`). `null` outside a
+    /// `@no_capture`-tracked lambda. Drives the capture-mutation
+    /// check on assignments and `++` / `--`.
+    lambda_locals: ?std.StringHashMapUnmanaged(void),
     /// Names declared inside the currently-walked function body
     /// (parameters + nested `let` / `const` / `def`). `null` at
     /// module scope. Drives `return &local` stack-lifetime checks.
@@ -506,6 +517,11 @@ const Checker = struct {
         if (self.fn_locals) |*set| {
             _ = try set.put(self.arena, name, {});
         }
+        // Track lambda-body locals for the `@no_capture`
+        // capture-mutation check. `null` outside a tracked lambda.
+        if (self.lambda_locals) |*set| {
+            _ = try set.put(self.arena, name, {});
+        }
     }
 
     /// Build the function-pointer type for a `def` from its
@@ -750,6 +766,7 @@ const Checker = struct {
             _ = try self.inferExpr(a.value, null);
             return;
         }
+        try self.checkNoCaptureMutation(a.target);
         const tgt_ty = try self.inferExpr(a.target, null);
         // Compound `op=` is sugar for `target = target op value`; the
         // target's type is the hint for the rhs in either form.
@@ -764,6 +781,7 @@ const Checker = struct {
             try self.emitSpan("E_TYPE_MISMATCH", id.target.span(), "`++` / `--` target must be a place expression (ident, field, or index)");
             return;
         }
+        try self.checkNoCaptureMutation(id.target);
         const tgt_ty = try self.inferExpr(id.target, null);
         if (tgt_ty) |t| {
             if (!isIntegerType(t.*)) {
@@ -776,6 +794,23 @@ const Checker = struct {
                 try self.emitSpan("E_TYPE_MISMATCH", id.target.span(), msg);
             }
         }
+    }
+
+    /// `@no_capture` enforcement (§3.7.2): when the walker is
+    /// inside a lambda body of a `@no_capture` def, mutating a
+    /// binding that wasn't declared locally (param or `let` inside
+    /// this lambda) is `E_ANN_CAPTURE_VIOLATION`.
+    fn checkNoCaptureMutation(self: *Checker, target: *const ast.Expr) WalkError!void {
+        if (!self.in_no_capture) return;
+        const locals = self.lambda_locals orelse return;
+        const name = identName(self, target) orelse return;
+        if (locals.contains(name)) return;
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "closure mutates captured binding `{s}` — forbidden by `@no_capture` on the enclosing function (§3.7.2)",
+            .{name},
+        );
+        try self.emitSpan("E_ANN_CAPTURE_VIOLATION", target.span(), msg);
     }
 
     fn checkIfChain(
@@ -1040,6 +1075,13 @@ const Checker = struct {
         const saved_bake = self.in_bake;
         self.in_bake = d.is_bake;
         defer self.in_bake = saved_bake;
+
+        // `@no_capture` context: inner lambdas in this fn's body
+        // must not mutate captured bindings. Nested `def`s inherit
+        // the flag so a closure two levels deep still flags.
+        const saved_nc = self.in_no_capture;
+        self.in_no_capture = saved_nc or defHasNoCapture(self, d);
+        defer self.in_no_capture = saved_nc;
 
         // Bake fn return type must be bakeable. `Vec(T)` and `&T`
         // are runtime-only.
@@ -1395,6 +1437,15 @@ const Checker = struct {
                 var lambda_scope: Scope = .init(self.arena, saved);
                 self.current_scope = &lambda_scope;
                 defer self.current_scope = saved;
+
+                // `@no_capture` tracking: when the enclosing fn is
+                // marked, collect THIS lambda's local names so
+                // `checkAssign` / `checkIncDec` can flag captured-
+                // and-mutated bindings.
+                const saved_locals = self.lambda_locals;
+                if (self.in_no_capture) self.lambda_locals = .{};
+                defer self.lambda_locals = saved_locals;
+
                 for (l.params) |p| {
                     const pt: ?*const types.Type = if (p.type_ann) |t|
                         try self.resolveType(t)
@@ -2297,6 +2348,14 @@ fn isStrType(t: types.Type) bool {
         .primitive => |p| p == .str,
         else => false,
     };
+}
+
+/// `true` when `d` carries a `@no_capture` annotation.
+fn defHasNoCapture(c: *const Checker, d: ast.DefDecl) bool {
+    for (d.annotations) |ann| {
+        if (std.mem.eql(u8, c.lexeme(ann.name), "no_capture")) return true;
+    }
+    return false;
 }
 
 fn isNilType(t: types.Type) bool {
