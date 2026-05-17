@@ -54,6 +54,7 @@ const strings = @import("codegen/strings.zig");
 const pattern = @import("codegen/pattern.zig");
 const expr_emit = @import("codegen/expr.zig");
 const control_flow = @import("codegen/control_flow.zig");
+const class = @import("codegen/class.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const CheckedProgram = typecheck_mod.CheckedProgram;
@@ -182,12 +183,16 @@ pub fn compile(
         .string_patches = .empty,
         .checked = checked,
         .enum_decls = .{},
+        .class_decls = .{},
+        .class_layouts = .{},
+        .vtable_patches = .empty,
         .block_stack = .empty,
         .loop_stack = .empty,
         .diagnostics = &diagnostics,
     };
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
+    defer emitter.vtable_patches.deinit(allocator);
     defer emitter.strings.deinit(allocator);
     defer emitter.string_patches.deinit(allocator);
     defer emitter.block_stack.deinit(allocator);
@@ -314,6 +319,17 @@ const Global = struct {
     placement: enum { addr, zero_page, data },
 };
 
+/// Unresolved vtable-address site — the constructor for
+/// `class_name` left an imm16 slot at `code_offset` (inside the
+/// `bank` buffer or base code) for the class's vtable address.
+/// `patchVtableSlots` rewrites every slot once `emitVtables`
+/// has resolved each class's `vtable_addr`.
+pub const VtablePatch = struct {
+    bank: ?u8,
+    code_offset: usize,
+    class_name: []const u8,
+};
+
 /// Per-fn codegen state — owns the working bytecode buffer, the
 /// local-slot table, and the diagnostic sink. The entry-def
 /// emission path owns one Emitter; later M1 commits will create
@@ -400,6 +416,22 @@ pub const Emitter = struct {
     /// emitting `EnumName.Variant` constructors, `is` tests, and
     /// `match` arm patterns.
     enum_decls: std.StringHashMapUnmanaged(*const ast.EnumDecl),
+    /// Top-level `class Foo … end` declarations indexed by name.
+    /// Backs constructor detection in `emitCall`, vtable + layout
+    /// lookup in field / method access, and the vtable emission
+    /// pass.
+    class_decls: std.StringHashMapUnmanaged(*const ast.ClassDecl),
+    /// Per-class layout — instance size, per-field byte offsets,
+    /// per-method vtable slot, and the vtable's resolved address
+    /// (populated after `class.emitVtables`).
+    class_layouts: std.StringHashMapUnmanaged(class.ClassLayout),
+    /// Unresolved vtable-address slots emitted by class
+    /// constructors — the constructor emits `mov 0, r2` as a
+    /// placeholder when it runs (vtables don't have addresses
+    /// yet). After `class.emitVtables` resolves each layout's
+    /// `vtable_addr`, `patchVtableSlots` rewrites every recorded
+    /// imm16 slot with the right address.
+    vtable_patches: std.ArrayList(VtablePatch),
     /// Stack of lexical blocks active at the current emit cursor.
     /// The function body opens the bottom block; nested `do…end`,
     /// loop bodies, `if` arms, etc. push more on top. Each block
@@ -832,6 +864,10 @@ pub const Emitter = struct {
         // Pre-pass 0: index top-level enum decls so variant-tag
         // lookups during expr / pattern emission resolve cheaply.
         try self.collectEnumDecls(program);
+        // Pre-pass 0b: index top-level class decls + compute
+        // per-class layouts. Vtables are emitted later (after
+        // method addresses are known).
+        try class.collectClassDecls(self, program);
         // Pre-pass 1: register globals (top-level let/const).
         try self.registerGlobals(program);
         // Pre-pass 2: collect each def's bank so `emitCall` can
@@ -845,6 +881,8 @@ pub const Emitter = struct {
             .def_decl => |*dd| if (dd != entry) try self.emitDef(dd, .regular),
             else => {},
         };
+        // Emit class methods as plain defs with mangled labels.
+        try class.emitClassMethods(self, program);
 
         // Emit the `__call_bank` trampoline only if at least one
         // cross-bank call site asked for it (saves 10 bytes when
@@ -854,6 +892,13 @@ pub const Emitter = struct {
         // Append the interned string pool to the base image so all
         // recorded `StringPatch`es can resolve to real addresses.
         try self.emitStringPool();
+        // Append per-class vtables (u16 method-address tables) to
+        // the base image. Must run after all methods have emitted
+        // so `fn_addresses` contains the resolved addresses.
+        try class.emitVtables(self);
+        // Resolve constructor-side placeholder slots now that each
+        // class's vtable lives at a known address.
+        try class.patchVtableSlots(self);
 
         try self.patchCalls();
         try self.patchStrings();
@@ -1171,7 +1216,13 @@ pub const Emitter = struct {
         }
     }
 
-    fn widthOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) u8 {
+    /// Byte width inferred from a type annotation — 1 for the
+    /// byte-wide primitives (`i8`/`u8`/`bool`/`char`), 2 for
+    /// everything else (the 16-bit primitives, references, named
+    /// types, aggregates). Public so the class-layout pass in
+    /// `codegen/class.zig` can size class fields with the same
+    /// rule the global-placement path uses.
+    pub fn widthOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) u8 {
         return switch (t) {
             .named => |n| blk: {
                 const name = self.source[n.name.start..n.name.end];
@@ -1194,6 +1245,18 @@ pub const Emitter = struct {
     /// state (locals / params / frame_bytes / is_entry) so each
     /// def gets a fresh frame view.
     fn emitDef(self: *Emitter, def: *const ast.DefDecl, kind: DefKind) !void {
+        const name = self.source[def.name.start..def.name.end];
+        return self.emitDefWithLabel(def, kind, name);
+    }
+
+    /// Emit a method as a plain def under a mangled label
+    /// (`ClassName.methodName`). The bytecode shape is identical to
+    /// a free fn; only the `fn_addresses` map key differs.
+    pub fn emitMethodAsDef(self: *Emitter, def: *const ast.DefDecl, label: []const u8) !void {
+        return self.emitDefWithLabel(def, .regular, label);
+    }
+
+    fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, label: []const u8) !void {
         // Detect `@bank N` annotation — drives bank routing for
         // this def's body bytes + the fn's resolved address.
         var bank_target: ?u8 = null;
@@ -1224,8 +1287,7 @@ pub const Emitter = struct {
             self.current_bank = saved_bank;
         }
 
-        const name = self.source[def.name.start..def.name.end];
-        const dup_name = try self.arena.dupe(u8, name);
+        const dup_name = try self.arena.dupe(u8, label);
         // @as: narrow usize code offset to u16; per-buffer offset stays ≤ 64 KiB.
         const code_offset: u16 = @intCast(try self.currentOffset());
         const addr: u16 = if (bank_target) |_|
@@ -1423,10 +1485,31 @@ pub const Emitter = struct {
     /// Lower `target = value`. The target must be an ident that
     /// resolves to a local, param, or global. Compound `op=`
     /// forms are not yet supported.
+    /// Return the class name when `e`'s inferred type is a
+    /// registered class; otherwise `null`. Used by the field
+    /// access + method dispatch paths to decide between the
+    /// class-typed lowering and the existing free-fn / enum paths.
+    pub fn classNameOf(self: *const Emitter, e: *const ast.Expr) ?[]const u8 {
+        const ty = self.typeOf(e) orelse return null;
+        if (ty.* != .named) return null;
+        const name = ty.named.name;
+        if (!self.class_decls.contains(name)) return null;
+        return name;
+    }
+
     fn emitAssign(self: *Emitter, a: ast.AssignStmt) !void {
         if (a.op != .set) {
             try self.unsupported(a.span, "compound `op=` assignments — only plain `=` is supported");
             return;
+        }
+        // Field-target assignment — `recv.field = value` on a class
+        // receiver routes to the class field-store path.
+        if (a.target.* == .field) {
+            if (self.classNameOf(a.target.field.receiver)) |cname| {
+                const fname = self.source[a.target.field.field.start..a.target.field.field.end];
+                try class.emitFieldStore(self, a.target.field.receiver, cname, fname, a.value, a.target.field.span);
+                return;
+            }
         }
         if (a.target.* != .ident) {
             try self.unsupported(a.span, "non-ident assignment targets (field / index)");
