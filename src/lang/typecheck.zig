@@ -75,14 +75,19 @@ pub fn typecheck(
         .enum_registry = .{},
         .struct_registry = .{},
         .class_registry = .{},
+        .def_registry = .{},
+        .mmio_names = .{},
         .fn_locals = null,
         .tuple_correlations = .{},
+        .in_bake = false,
     };
 
-    // Pre-pass: capture stable enum / struct / class decl pointers
-    // (slice elements have a stable address — the union variant
-    // payload sits in place). Field / method resolution and
-    // match-exhaustiveness consult these maps.
+    // Pre-pass: capture stable enum / struct / class / def decl
+    // pointers (slice elements have a stable address — the union
+    // variant payload sits in place). Field / method resolution,
+    // match-exhaustiveness, bake-call rules, and MMIO checks all
+    // consult these maps. The MMIO name set is built here too
+    // (any `let` annotated `@addr` lands in it).
     for (program.statements) |*stmt| switch (stmt.*) {
         .enum_decl => |ed| {
             const name = source[ed.name.start..ed.name.end];
@@ -95,6 +100,21 @@ pub fn typecheck(
         .class_decl => |cd| {
             const name = source[cd.name.start..cd.name.end];
             try c.class_registry.put(a, name, &stmt.class_decl);
+        },
+        .def_decl => |dd| {
+            const name = source[dd.name.start..dd.name.end];
+            try c.def_registry.put(a, name, &stmt.def_decl);
+        },
+        .let_decl => |ld| {
+            for (ld.annotations) |ann| {
+                if (std.mem.eql(u8, source[ann.name.start..ann.name.end], "addr")) {
+                    if (ld.pattern.* == .ident) {
+                        const lname = source[ld.pattern.ident.name.start..ld.pattern.ident.name.end];
+                        try c.mmio_names.put(a, lname, {});
+                    }
+                    break;
+                }
+            }
         },
         else => {},
     };
@@ -155,6 +175,17 @@ const Checker = struct {
     /// Class-name → decl pointer map. Drives `.field` / `.method()`
     /// typing and `self` / `super` resolution.
     class_registry: std.StringHashMapUnmanaged(*const ast.ClassDecl),
+    /// Top-level `def` name → decl pointer map. Drives bake-call
+    /// rules (only bake fns may be called from a bake context) and
+    /// variadic-arity detection at call sites.
+    def_registry: std.StringHashMapUnmanaged(*const ast.DefDecl),
+    /// Module-level `let` names annotated `@addr` — touching one
+    /// from inside a bake context is `E_BAKE_MMIO_ACCESS`.
+    mmio_names: std.StringHashMapUnmanaged(void),
+    /// `true` when walking the body of a `bake def` / `bake do`.
+    /// Bake-context restrictions (no asm, no MMIO, no non-bake
+    /// calls) gate on this flag.
+    in_bake: bool,
     /// Names declared inside the currently-walked function body
     /// (parameters + nested `let` / `const` / `def`). `null` at
     /// module scope. Drives `return &local` stack-lifetime checks.
@@ -244,6 +275,101 @@ const Checker = struct {
 
     fn lexeme(self: *const Checker, span: ast.Span) []const u8 {
         return self.source[span.start..span.end];
+    }
+
+    // ---------- annotation validation (§3.7) ----------
+
+    /// Validate every annotation attached to a decl. `target` is
+    /// the decl's target bit (see the `T` namespace). Emits
+    /// `E_ANN_UNKNOWN` / `E_ANN_BAD_TARGET` / `E_ANN_BAD_ARG` /
+    /// `E_ANN_CONFLICT` per the rules in the annotation spec
+    /// table.
+    fn validateAnnotations(self: *Checker, anns: []const ast.Annotation, target: u32) WalkError!void {
+        for (anns) |ann| {
+            const name = self.lexeme(ann.name);
+            const spec = findAnnotationSpec(name) orelse {
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "unknown annotation `@{s}`",
+                    .{name},
+                );
+                try self.emit("E_ANN_UNKNOWN", ann.name.start, msg, name);
+                continue;
+            };
+            if ((spec.targets & target) == 0) {
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "annotation `@{s}` cannot be applied to a {s}",
+                    .{ name, targetLabel(target) },
+                );
+                try self.emit("E_ANN_BAD_TARGET", ann.name.start, msg, name);
+            }
+            try self.validateAnnotationArgs(ann, spec);
+        }
+        // Conflict pairs — second loop so we only emit each conflict
+        // once and so we don't false-positive when an earlier
+        // annotation was already rejected.
+        for (anns, 0..) |a, i| {
+            const a_spec = findAnnotationSpec(self.lexeme(a.name)) orelse continue;
+            for (anns[i + 1 ..]) |b| {
+                const b_name = self.lexeme(b.name);
+                for (a_spec.conflicts_with) |c| {
+                    if (std.mem.eql(u8, c, b_name)) {
+                        const msg = try std.fmt.allocPrint(
+                            self.arena,
+                            "annotations `@{s}` and `@{s}` cannot be combined",
+                            .{ self.lexeme(a.name), b_name },
+                        );
+                        try self.emit("E_ANN_CONFLICT", b.name.start, msg, null);
+                    }
+                }
+            }
+        }
+    }
+
+    fn validateAnnotationArgs(self: *Checker, ann: ast.Annotation, spec: *const AnnotationSpec) WalkError!void {
+        switch (spec.args) {
+            .none => {
+                if (ann.args.len != 0) {
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "annotation `@{s}` does not take arguments",
+                        .{spec.name},
+                    );
+                    try self.emit("E_ANN_BAD_ARG", ann.span.start, msg, null);
+                }
+            },
+            .int_lit => {
+                if (ann.args.len != 1 or ann.args[0].* != .int_lit) {
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "annotation `@{s}` expects a single integer literal",
+                        .{spec.name},
+                    );
+                    try self.emit("E_ANN_BAD_ARG", ann.span.start, msg, null);
+                }
+            },
+            .int_lit_pow2 => {
+                if (ann.args.len != 1 or ann.args[0].* != .int_lit) {
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "annotation `@{s}` expects a single integer literal",
+                        .{spec.name},
+                    );
+                    try self.emit("E_ANN_BAD_ARG", ann.span.start, msg, null);
+                    return;
+                }
+                const v = ann.args[0].int_lit.value;
+                if (v <= 0 or (v & (v - 1)) != 0) {
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "annotation `@{s}` requires a power-of-two value, got {d}",
+                        .{ spec.name, v },
+                    );
+                    try self.emit("E_ANN_BAD_ARG", ann.span.start, msg, null);
+                }
+            },
+        }
     }
 
     // ---------- Pass 1: top-level decl registration ----------
@@ -410,7 +536,17 @@ const Checker = struct {
             },
             .def_decl => |d| try self.checkDefDecl(d),
             .class_decl => |c| try self.checkClassDecl(c),
-            .struct_decl, .enum_decl, .use_decl, .local_decl, .asm_stmt => {},
+            .struct_decl => |sd| try self.validateAnnotations(sd.annotations, T.STRUCT),
+            .enum_decl => |ed| try self.validateAnnotations(ed.annotations, T.ENUM),
+            .use_decl, .local_decl => {},
+            .asm_stmt => |as_| if (self.in_bake) {
+                try self.emit(
+                    "E_BAKE_ASM_INSIDE",
+                    as_.span.start,
+                    "`asm` is not allowed inside a `bake` context — compile-time interpretation cannot run host bytecode",
+                    null,
+                );
+            },
             .defer_stmt => |ds| try self.walkStatement(ds.body.*),
             .unknown => {},
         }
@@ -472,6 +608,7 @@ const Checker = struct {
     }
 
     fn checkLetDecl(self: *Checker, d: ast.LetDecl) WalkError!void {
+        try self.validateAnnotations(d.annotations, T.LET);
         const ann_ty: ?*const types.Type = if (d.type_ann) |t|
             try self.resolveType(t)
         else
@@ -570,6 +707,7 @@ const Checker = struct {
     }
 
     fn checkConstDecl(self: *Checker, d: ast.ConstDecl) WalkError!void {
+        try self.validateAnnotations(d.annotations, T.CONST);
         const ann_ty: ?*const types.Type = if (d.type_ann) |t|
             try self.resolveType(t)
         else
@@ -880,6 +1018,8 @@ const Checker = struct {
     }
 
     fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
+        try self.validateAnnotations(d.annotations, T.DEF);
+        try self.checkVariadicPosition(d);
         const saved_scope = self.current_scope;
         var fn_scope: Scope = .init(self.arena, saved_scope);
         self.current_scope = &fn_scope;
@@ -891,6 +1031,29 @@ const Checker = struct {
         const saved_locals = self.fn_locals;
         self.fn_locals = .{};
         defer self.fn_locals = saved_locals;
+
+        // Bake context: `bake def` body must satisfy bake rules.
+        // Nested non-bake defs reset the flag (a bake fn calling a
+        // non-bake-defined inner fn isn't itself in a bake context
+        // for the inner body — but the call itself still checks).
+        const saved_bake = self.in_bake;
+        self.in_bake = d.is_bake;
+        defer self.in_bake = saved_bake;
+
+        // Bake fn return type must be bakeable. `Vec(T)` and `&T`
+        // are runtime-only.
+        if (d.is_bake) if (d.ret_type) |r| {
+            const rt = try self.resolveType(r);
+            if (!isBakeableType(rt.*)) {
+                const ty_s = try types.render(self.arena, rt.*);
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "`bake def` cannot return `{s}` — only types representable as static data are bakeable",
+                    .{ty_s},
+                );
+                try self.emit("E_BAKE_NON_BAKEABLE_VALUE", r.span().start, msg, null);
+            }
+        };
 
         for (d.params) |p| {
             const pt: ?*const types.Type = if (p.type_ann) |t|
@@ -922,6 +1085,7 @@ const Checker = struct {
     }
 
     fn checkClassDecl(self: *Checker, d: ast.ClassDecl) WalkError!void {
+        try self.validateAnnotations(d.annotations, T.CLASS);
         const saved = self.current_scope;
         var class_scope: Scope = .init(self.arena, saved);
         self.current_scope = &class_scope;
@@ -936,6 +1100,7 @@ const Checker = struct {
         defer self.current_class_name = saved_name;
 
         for (d.fields) |f| {
+            try self.validateAnnotations(f.annotations, T.CLASS_FIELD);
             const ty: ?*const types.Type = if (f.type_ann) |t|
                 try self.resolveType(t)
             else
@@ -1150,6 +1315,15 @@ const Checker = struct {
             .ident => |i| {
                 const name = self.lexeme(i.span);
                 if (self.current_scope.lookup(name)) |info| {
+                    // Bake context cannot touch MMIO-bound globals.
+                    if (self.in_bake and self.mmio_names.contains(name)) {
+                        const msg = try std.fmt.allocPrint(
+                            self.arena,
+                            "binding `{s}` is `@addr`-pinned MMIO — not accessible from a `bake` context",
+                            .{name},
+                        );
+                        try self.emit("E_BAKE_MMIO_ACCESS", i.span.start, msg, name);
+                    }
                     // Class names in expression position act as
                     // constructors — synthesize `fn(init.params) ->
                     // Named(Class)` so call sites type-check via
@@ -1853,6 +2027,8 @@ const Checker = struct {
     fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
         _ = hint;
         const callee_ty = try self.inferExpr(c.callee, null);
+        // Bake-context rule: only `bake def` fns may be called.
+        if (self.in_bake) try self.checkBakeCall(c);
         if (callee_ty == null) {
             for (c.args) |a| _ = try self.inferExpr(a, null);
             return null;
@@ -1869,6 +2045,15 @@ const Checker = struct {
             return null;
         }
         const f = callee_ty.?.function;
+
+        // Variadic call: when the callee resolves to a `def` whose
+        // last param is variadic, the arity / per-arg checks pivot
+        // on the leading fixed params; the trailing args must share
+        // a single type.
+        if (variadicCalleeDecl(self, c.callee)) |decl| {
+            return try self.checkVariadicCall(c, decl, f);
+        }
+
         if (c.args.len != f.params.len) {
             const suffix: []const u8 = if (f.params.len == 1) "" else "s";
             const msg = try std.fmt.allocPrint(
@@ -1892,6 +2077,93 @@ const Checker = struct {
             }
         }
         return f.ret;
+    }
+
+    // ---------- variadic (§4.6.2) ----------
+
+    /// Verify a `def`'s param list places the (optional) variadic
+    /// param last. Parser may already enforce; this check routes
+    /// any out-of-place variadic through `E_VAR_NOT_LAST`.
+    fn checkVariadicPosition(self: *Checker, d: ast.DefDecl) WalkError!void {
+        for (d.params, 0..) |p, i| {
+            if (p.variadic and i != d.params.len - 1) {
+                try self.emit(
+                    "E_VAR_NOT_LAST",
+                    p.span.start,
+                    "variadic parameter must be the last in the parameter list",
+                    null,
+                );
+                return;
+            }
+        }
+    }
+
+    /// Type-check a call whose callee has a trailing variadic
+    /// param. The leading fixed params match positionally; every
+    /// arg passed into the variadic slot must share a single type.
+    fn checkVariadicCall(
+        self: *Checker,
+        c: ast.CallExpr,
+        decl: *const ast.DefDecl,
+        f: types.Function,
+    ) WalkError!?*const types.Type {
+        const fixed_count = decl.params.len - 1;
+        if (c.args.len < fixed_count) {
+            const suffix: []const u8 = if (fixed_count == 1) "" else "s";
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "variadic function requires at least {d} fixed argument{s}, called with {d}",
+                .{ fixed_count, suffix, c.args.len },
+            );
+            try self.emit("E_TYPE_ARG_COUNT", c.span.start, msg, null);
+            for (c.args) |a| _ = try self.inferExpr(a, null);
+            return f.ret;
+        }
+        // Fixed params: standard per-arg type check.
+        for (c.args[0..fixed_count], 0..) |arg, i| {
+            const param_ty = f.params[i];
+            const skip = isNilType(param_ty.*);
+            const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
+            if (!skip and arg_ty != null and !assignable(arg_ty.?.*, param_ty.*)) {
+                try self.emitMismatch(arg.span(), param_ty, arg_ty.?);
+            }
+        }
+        // Variadic slot: all trailing args must share a type.
+        var pivot: ?*const types.Type = null;
+        for (c.args[fixed_count..]) |arg| {
+            const arg_ty = try self.inferExpr(arg, pivot);
+            const at = arg_ty orelse continue;
+            if (pivot) |p| {
+                if (!assignable(at.*, p.*)) {
+                    const exp_s = try types.render(self.arena, p.*);
+                    const got_s = try types.render(self.arena, at.*);
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "variadic argument has type `{s}` but earlier variadic arg was `{s}` — all variadic args must share a single type",
+                        .{ got_s, exp_s },
+                    );
+                    try self.emit("E_VAR_HETEROGENEOUS", arg.span().start, msg, null);
+                }
+            } else {
+                pivot = at;
+            }
+        }
+        return f.ret;
+    }
+
+    // ---------- bake-context rules (§3.8) ----------
+
+    fn checkBakeCall(self: *Checker, c: ast.CallExpr) WalkError!void {
+        const callee_name = directCalleeName(self, c.callee) orelse return;
+        const decl = self.def_registry.get(callee_name) orelse return;
+        if (!decl.is_bake) {
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "cannot call non-`bake` function `{s}` from inside a `bake` context",
+                .{callee_name},
+            );
+            try self.emit("E_BAKE_FORBIDDEN_CALL", c.callee.span().start, msg, callee_name);
+        }
     }
 };
 
@@ -1930,6 +2202,26 @@ fn anyExprMentions(c: *const Checker, exprs: []const *ast.Expr, name: []const u8
 fn structLitMentions(c: *const Checker, fields: []const ast.StructLitField, name: []const u8) bool {
     for (fields) |f| if (c.exprMentions(f.value, name)) return true;
     return false;
+}
+
+// ---------- callee resolution helpers ----------
+
+/// Extract the lexeme of a callee that is a bare ident (possibly
+/// wrapped in `paren`). Used by call-site rules that need to find
+/// the underlying decl (bake-call check, variadic detection).
+fn directCalleeName(c: *const Checker, callee: *const ast.Expr) ?[]const u8 {
+    return identName(c, callee);
+}
+
+/// When `callee` resolves to a `def` decl whose last param is
+/// variadic, return that decl. Returns `null` otherwise — callers
+/// fall back to the regular fixed-arity path.
+fn variadicCalleeDecl(c: *const Checker, callee: *const ast.Expr) ?*const ast.DefDecl {
+    const name = identName(c, callee) orelse return null;
+    const decl = c.def_registry.get(name) orelse return null;
+    if (decl.params.len == 0) return null;
+    if (!decl.params[decl.params.len - 1].variadic) return null;
+    return decl;
 }
 
 // ---------- flow-analysis helpers ----------
@@ -2038,6 +2330,24 @@ fn isNilType(t: types.Type) bool {
     };
 }
 
+/// `true` when a type is representable as static data — i.e. safe
+/// as the return type or output of a `bake` context. `Vec(T)` and
+/// references live in the runtime allocator / borrow domain and
+/// therefore can't be baked.
+fn isBakeableType(t: types.Type) bool {
+    return switch (t) {
+        .primitive => true,
+        .array => |a| isBakeableType(a.elem.*),
+        .tuple => |xs| blk: {
+            for (xs) |e| if (!isBakeableType(e.*)) break :blk false;
+            break :blk true;
+        },
+        .optional => |inner| isBakeableType(inner.*),
+        .named => true,
+        .vec, .reference, .function => false,
+    };
+}
+
 fn primitiveName(p: types.Primitive) []const u8 {
     return switch (p) {
         .i8 => "i8",
@@ -2095,6 +2405,101 @@ fn isPlaceExpr(e: *const ast.Expr) bool {
         .ident, .field, .index => true,
         .paren => |p| isPlaceExpr(p.inner),
         else => false,
+    };
+}
+
+// ---------- annotation validation (§3.7) ----------
+
+/// Bit flags for annotation `targets:` — which decl kinds an
+/// annotation may attach to.
+const T = struct {
+    const LET: u32 = 1 << 0;
+    const CONST: u32 = 1 << 1;
+    const DEF: u32 = 1 << 2;
+    const CLASS: u32 = 1 << 3;
+    const STRUCT: u32 = 1 << 4;
+    const ENUM: u32 = 1 << 5;
+    const CLASS_FIELD: u32 = 1 << 6;
+};
+
+/// Shape an annotation's args must take.
+const ArgRule = enum {
+    none, // no args (marker)
+    int_lit, // single int literal
+    int_lit_pow2, // single int literal, power of two
+};
+
+const AnnotationSpec = struct {
+    name: []const u8,
+    targets: u32,
+    args: ArgRule,
+    /// Annotation names that conflict with this one when both are
+    /// applied to the same decl.
+    conflicts_with: []const []const u8 = &.{},
+};
+
+/// Spec inventory per `docs/gero-lang.md` §3.7.
+const annotation_specs = [_]AnnotationSpec{
+    // Memory placement (§3.7.1)
+    .{ .name = "bank", .targets = T.DEF | T.LET | T.CONST, .args = .int_lit },
+    .{ .name = "zero_page", .targets = T.LET, .args = .none },
+    .{ .name = "addr", .targets = T.LET, .args = .int_lit },
+    .{ .name = "volatile", .targets = T.LET, .args = .none },
+    .{ .name = "align", .targets = T.LET | T.CONST | T.STRUCT, .args = .int_lit_pow2 },
+    // Codegen control (§3.7.2)
+    .{ .name = "inline", .targets = T.DEF, .args = .none },
+    .{ .name = "cold", .targets = T.DEF, .args = .none },
+    .{ .name = "no_capture", .targets = T.DEF, .args = .none },
+    // Misc
+    .{ .name = "noreturn", .targets = T.DEF, .args = .none },
+    .{ .name = "interrupt", .targets = T.DEF, .args = .int_lit },
+    .{ .name = "test", .targets = T.DEF, .args = .none },
+    .{ .name = "bench", .targets = T.DEF, .args = .none },
+    // OOP (§6)
+    .{
+        .name = "override",
+        .targets = T.DEF,
+        .args = .none,
+        .conflicts_with = &.{ "final", "abstract" },
+    },
+    .{
+        .name = "final",
+        .targets = T.DEF | T.CLASS,
+        .args = .none,
+        .conflicts_with = &.{ "override", "abstract" },
+    },
+    .{
+        .name = "abstract",
+        .targets = T.DEF | T.CLASS,
+        .args = .none,
+        .conflicts_with = &.{ "override", "final", "static" },
+    },
+    .{
+        .name = "static",
+        .targets = T.DEF,
+        .args = .none,
+        .conflicts_with = &.{ "abstract", "override" },
+    },
+    .{ .name = "private", .targets = T.DEF | T.LET | T.CLASS_FIELD, .args = .none },
+};
+
+fn findAnnotationSpec(name: []const u8) ?*const AnnotationSpec {
+    for (&annotation_specs) |*s| {
+        if (std.mem.eql(u8, s.name, name)) return s;
+    }
+    return null;
+}
+
+fn targetLabel(target: u32) []const u8 {
+    return switch (target) {
+        T.LET => "let",
+        T.CONST => "const",
+        T.DEF => "def",
+        T.CLASS => "class",
+        T.STRUCT => "struct",
+        T.ENUM => "enum",
+        T.CLASS_FIELD => "class field",
+        else => "decl",
     };
 }
 
