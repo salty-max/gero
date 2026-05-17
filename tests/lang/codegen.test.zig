@@ -90,6 +90,197 @@ test "codegen: produced .gx decodes cleanly through the disassembler" {
     try std.testing.expect(reroll.len > 0);
 }
 
+// ---------- instruction selection (M1 chunk 1) ----------
+
+/// Boot the compiled image on the VM, install the given
+/// capturing writer as the host stdout sink, and run until halt.
+/// Returns the VM so the caller can inspect register / memory
+/// state. The writer's `written()` slice holds whatever the
+/// program printed.
+fn runWith(
+    image: []const u8,
+    writer: *std.Io.Writer.Allocating,
+) !gero.vm.VM {
+    var vm = gero.vm.VM.init(alloc);
+    errdefer vm.deinit();
+    const loaded = try gero.vm.parseGx(image);
+    try vm.boot(alloc, loaded);
+    vm.host = .{ .out = &writer.writer };
+    _ = gero.vm.run(&vm);
+    return vm;
+}
+
+test "codegen: let with int-literal initializer stores into fp-relative slot" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let x: i16 = 42
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // x lives at [fp - 2] = mem[0xFFFC..0xFFFE].
+    const slot = vm.mmap.readWord(0xFFFC);
+    try std.testing.expectEqual(@as(u16, 42), slot);
+}
+
+test "codegen: binary add of two literals computes 5 + 3 = 8" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let x: i16 = 5 + 3
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    const slot = vm.mmap.readWord(0xFFFC);
+    try std.testing.expectEqual(@as(u16, 8), slot);
+}
+
+test "codegen: binary sub respects operand order (10 - 3 = 7)" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let x: i16 = 10 - 3
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqual(@as(u16, 7), vm.mmap.readWord(0xFFFC));
+}
+
+test "codegen: unary neg flips sign" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let x: i16 = -7
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // -7 as u16 = 0xFFF9
+    try std.testing.expectEqual(@as(u16, 0xFFF9), vm.mmap.readWord(0xFFFC));
+}
+
+test "codegen: ident load + arithmetic across slots (x + y = 8)" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let x: i16 = 5
+        \\  let y: i16 = 3
+        \\  let z: i16 = x + y
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqual(@as(u16, 5), vm.mmap.readWord(0xFFFC)); // x
+    try std.testing.expectEqual(@as(u16, 3), vm.mmap.readWord(0xFFFA)); // y
+    try std.testing.expectEqual(@as(u16, 8), vm.mmap.readWord(0xFFF8)); // z
+}
+
+test "codegen: mul + nested precedence (2 * (3 + 4) = 14)" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let r: i16 = 2 * (3 + 4)
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqual(@as(u16, 14), vm.mmap.readWord(0xFFFC));
+}
+
+test "codegen: print of int literal writes decimal + newline" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  print 42
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("42\n", writer.written());
+}
+
+test "codegen: print of multiple args separates with spaces" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  print 1, 2, 3
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("1 2 3\n", writer.written());
+}
+
+test "codegen: print of let-bound value (1 + 2 = 3)" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let x: i16 = 1 + 2
+        \\  print x
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("3\n", writer.written());
+}
+
 test "codegen: custom entry_name resolves" {
     const source = "def boot() end";
     var stream = try gero.lang.tokenize(alloc, source);
