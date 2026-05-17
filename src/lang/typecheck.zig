@@ -1,4 +1,6 @@
-/// Gero-lang typechecker — checking slice.
+/// Gero-lang typechecker — resolves identifiers, infers types,
+/// checks calls / assignments / patterns, and surfaces every
+/// rule violation as a `Diagnostic` for the caller.
 ///
 /// Two passes over the AST:
 ///   1. Top-level decl registration — every module-scope `let` /
@@ -587,7 +589,8 @@ const Checker = struct {
     /// Build the function-pointer type for a `def` from its
     /// annotations. Params without an explicit type produce a `nil`
     /// placeholder slot — `checkCall` treats those as "skip arg-type
-    /// check" pending the parameter-from-call-site inference slice.
+    /// check" since the parameter type can't be inferred without
+    /// a concrete call site.
     fn signatureFromDef(self: *Checker, d: ast.DefDecl) WalkError!*const types.Type {
         var param_types: std.ArrayList(*const types.Type) = .empty;
         errdefer param_types.deinit(self.arena);
@@ -880,8 +883,7 @@ const Checker = struct {
     ) WalkError!void {
         // Flow analysis is applied only when there is exactly one
         // arm — the simple `if cond then BODY [else …] end` shape.
-        // Multi-arm `elif` chains skip the bookkeeping (slice 5+
-        // can refine if it proves useful).
+        // Multi-arm `elif` chains skip the bookkeeping.
         const flow: ?NilCheck = if (arms.len == 1 and arms[0].cond != null)
             self.matchNilCheck(arms[0].cond.?)
         else
@@ -2370,7 +2372,7 @@ const Checker = struct {
             const param_ty = f.params[i];
             // Skip the type check when the param's type is the
             // `nil_` placeholder used for unannotated `def` params —
-            // call-site inference for those lands in a later slice.
+            // those params accept any caller-supplied type.
             const skip = isNilType(param_ty.*);
             const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
             if (!skip and arg_ty != null and !assignable(arg_ty.?.*, param_ty.*)) {

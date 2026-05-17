@@ -4,45 +4,44 @@
 /// the `CheckedProgram` from `typecheck.zig` and produces a `.gx`
 /// archive ready for the VM loader (`gero.vm.parseGx`) per ISA §7.
 ///
-/// **M1 surface** (instruction selection + free-fn calling
-/// convention + memory-placement annotations):
-///   - Statements: `let` / `const` / `return` / `print` /
-///     `target = value` / discard / expression statements.
-///   - Expressions: literals, idents (local + param + global),
-///     unary neg, binary `+ - * /`, direct calls.
-///   - Stack frames: locals at `[fp - 2*N]`, params at
-///     `[fp + 4 + 2*i]`; the VM's `call` / `ret` handle the
-///     ret_ip + fp push / pop.
-///   - Globals: top-level `let` / `const` with optional
-///     `@addr` / `@volatile` / `@zero_page` / `@align(N)`
-///     placement annotations. Byte-width globals use `movl`.
-///   - Banks: `@bank N` routes defs into per-bank buffers;
-///     cross-bank calls go through a `__call_bank` trampoline
-///     in the base image.
+/// **Statements** — `let` / `const` / `return` / `print` /
+/// `target = value` / discard / expression statements; `do…end`
+/// blocks; `if` / `else if` / `else` (incl. `if let` ident-binder
+/// form); `while` (incl. `while let`); `for x in start..end
+/// [step N]`; `repeat body until cond`; `match`; `break [:label]`;
+/// `continue [:label]`; `defer stmt`.
 ///
-/// **M2 surface** (control flow + match + defer):
-///   - Statements: `do…end` blocks, `if / else if / else`
-///     (incl. `if let` ident-binder form), `while` (incl.
-///     `while let`), `for x in start..end [step N]`, `repeat
-///     body until cond`, `match`, `break [:label]`,
-///     `continue [:label]`, `defer stmt`.
-///   - Expressions: comparison ops (`== != < <= > >=`), logical
-///     `and` / `or` (short-circuit), `not`, bitwise `& | ^ ~`,
-///     shifts `<< >>`, `%` (mod via `divs` remainder).
-///   - Flag-driven lowering: `cmp` + `jeq/jne/jlt/jle/jgt/jge`
-///     for comparisons; condition fast-path skips the 0/1
-///     materialization when the cmp drives a branch directly.
-///   - Loop frames carry per-loop break / continue patch lists
-///     so labeled jumps resolve at loop teardown.
-///   - Match: sequential cmp+branch decision tree. OR-patterns
-///     collapse onto one shared body label; range patterns emit
-///     a single low+high cmp pair; `when` guards run after the
-///     pattern bind. Enum-variant patterns + jump-table
-///     dispatch wait on M3's enum tag codegen.
-///   - Defer: per-block LIFO list of statements; cleanup emits
-///     inline at every exit path (normal block end, `return`,
-///     `break`, `continue`). `acu` is preserved across the
-///     cleanup so the caller's return value survives.
+/// **Expressions** — literals (int / fixed / bool / nil / char /
+/// string with single-literal + multi-part interpolation); idents
+/// (local + param + global); unary `- / not / ~`; binary `+ - *
+/// / % == != < <= > >= and or & | ^ << >>`; direct calls; nullary
+/// enum variant constructors (`EnumName.Variant`); `is`
+/// tag-tests; `&x` reference taking; `as` cast (no-op for
+/// same-width primitives); `mem.*` stdlib builtins.
+///
+/// **Stack frames** — locals at `[fp - 2*N]`, params at
+/// `[fp + 4 + 2*i]`; the VM's `call` / `ret` handle the
+/// `ret_ip` + `fp` push / pop. `countLocalsInBody` reserves the
+/// frame up front.
+///
+/// **Globals + placement annotations** — top-level `let` /
+/// `const` with optional `@addr` / `@volatile` / `@zero_page` /
+/// `@align(N)`. Byte-width globals use `movl`.
+///
+/// **Banks** — `@bank N` routes defs into per-bank buffers;
+/// cross-bank calls go through a `__call_bank` trampoline in
+/// the base image.
+///
+/// **Match** — sequential `cmp` + branch decision tree.
+/// OR-patterns collapse onto one shared body label; range
+/// patterns emit one low+high cmp pair; `when` guards run after
+/// the pattern bind. Variant patterns dispatch on the variant
+/// tag.
+///
+/// **Defer** — per-block LIFO list of statements; cleanup emits
+/// inline at every exit path (normal block end, `return`,
+/// `break`, `continue`). `acu` is preserved across the cleanup
+/// so the caller's return value survives.
 const std = @import("std");
 const ast = @import("ast.zig");
 const types_mod = @import("types.zig");
@@ -893,7 +892,6 @@ const Emitter = struct {
             },
             // Range-based `for` reserves 1 hidden slot for the
             // `end` bound (the iteration variable uses its own slot).
-            // User-iterator support lands in M3 with method calls.
             .for_stmt => |fs| 1 + 1 + self.countLocalsInBody(fs.body),
             .repeat_stmt => |rs| self.countLocalsInBody(rs.body),
             .match_stmt => |ms| blk: {
@@ -911,8 +909,8 @@ const Emitter = struct {
         };
     }
 
-    /// Count the local-slot bindings a pattern introduces. Only the
-    /// ident pattern binds at M2; or-patterns reject inner binders
+    /// Count the local-slot bindings a pattern introduces. Only
+    /// the ident pattern binds; or-patterns reject inner binders
     /// (parser already enforces this).
     fn countBindingsInPattern(pat: ast.Pattern) usize {
         return switch (pat) {
@@ -1240,11 +1238,10 @@ const Emitter = struct {
         self.data_cursor += width;
     }
 
-    /// 1 for `i8` / `u8` / `bool` / `char`, 2 otherwise (the slice-
-    /// M1 type universe for globals). Type-name resolution is
-    /// purely lexical against the type annotation; the typechecker
-    /// has already validated that the name refers to a primitive
-    /// or a registered user-type.
+    /// 1 for `i8` / `u8` / `bool` / `char`, 2 otherwise. Type-name
+    /// resolution is purely lexical against the type annotation;
+    /// the typechecker has already validated that the name refers
+    /// to a primitive or a registered user-type.
     fn widthOfLetDecl(self: *const Emitter, d: *const ast.LetDecl) u8 {
         if (d.type_ann) |t| return self.widthOfTypeAnn(t.*);
         // No annotation — default to the widest primitive (2 bytes).
@@ -1510,8 +1507,8 @@ const Emitter = struct {
     ///
     /// The `if let pat = expr [when guard]` form binds a fresh local
     /// for the pattern and guards the arm on the bind + the optional
-    /// `when` predicate. Slice M2 supports ident binders only —
-    /// destructuring patterns land in M3 alongside enums.
+    /// `when` predicate. Only the ident-binder form is supported;
+    /// destructuring patterns are unsupported.
     fn emitIfStmt(self: *Emitter, is_: ast.IfStmt) !void {
         // Patches that need to jump to the end of the whole chain
         // once the chain finishes emitting (one per arm body fall-
@@ -1558,7 +1555,7 @@ const Emitter = struct {
             // cond is falsy. We use jeq (skip body on zero).
             return try self.emitJumpPlaceholder(Op.jeq_addr);
         }
-        // `if let pat = expr [when guard]` — M2 ident-binder form.
+        // `if let pat = expr [when guard]` — ident-binder form.
         const pat = arm.let_pattern.?.*;
         const expr = arm.let_expr.?;
         // Evaluate the RHS into acu.
@@ -1593,7 +1590,7 @@ const Emitter = struct {
                 return try self.emitJumpPlaceholder(Op.jeq_addr);
             },
             else => {
-                try self.unsupported(arm.span, "`if let` patterns other than a bare ident (M3 brings destructuring)");
+                try self.unsupported(arm.span, "`if let` patterns other than a bare ident");
                 // Emit a placeholder anyway so the caller doesn't
                 // walk the patches list into a hole.
                 return try self.emitJumpPlaceholder(Op.jeq_addr);
@@ -1849,16 +1846,12 @@ const Emitter = struct {
         frame.continue_patches.deinit(self.allocator);
     }
 
-    /// Lower `for x in start..end [step S] body end`. M2 ships the
-    /// range-special-case per spec §4.5.3; user-defined iterators
-    /// (objects with `next(self) -> T?`) land in M3 alongside method
-    /// calls + class codegen.
+    /// Lower `for x in start..end [step S] body end` — the range
+    /// special case per spec §4.5.3. User-defined iterables
+    /// (`next(self) -> T?`) are not yet supported.
     fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
-        // Only handle the range special case for M2 — the spec
-        // designates ranges + arrays + strings as compiler-known
-        // iterables; method-call iteration lands in M3.
         if (fs.iter.* != .range) {
-            try self.unsupported(fs.span, "`for` over non-range iterables (M3 brings user-iterator support via method calls)");
+            try self.unsupported(fs.span, "`for` over non-range iterables");
             return;
         }
         const range = fs.iter.range;
@@ -1914,8 +1907,8 @@ const Emitter = struct {
         try self.movRegOffsetToReg(Reg.fp, var_ofs, Reg.acu);
         if (step_expr) |se| {
             // Evaluate step expression — typechecker has already
-            // confirmed it's an integer expression. For M2 we accept
-            // an int_lit fast-path; arbitrary exprs fall through to
+            // confirmed it's an integer expression. Int-literal
+            // fast-path emits `add imm`; arbitrary exprs go through
             // the general eval-and-add path.
             if (se.* == .int_lit) {
                 // @as: parser stores int_lit as i32; range steps fit i16 per spec §4.5.1.
@@ -1967,10 +1960,8 @@ const Emitter = struct {
         }
     }
 
-    /// Lower `match scrutinee case … end`. Pure decision-tree for
-    /// M2 (sequential cmp + branch per arm); a jump-table optimizer
-    /// for tag-dispatch enums can slot in once enum codegen lands
-    /// (M3). The compiler handles the common shapes:
+    /// Lower `match scrutinee case … end` as a sequential
+    /// cmp + branch decision tree. The compiler handles:
     ///
     /// - Wildcard `_` and ident binders (always match).
     /// - Integer / char / bool / nil literal patterns.
@@ -1978,11 +1969,12 @@ const Emitter = struct {
     ///   then all alts jump to one shared body label).
     /// - Range patterns (`a..b` / `a..=b`) — one cmp + cond branch
     ///   pair instead of a per-element chain.
+    /// - Nullary enum-variant patterns — dispatch on the variant tag.
     /// - `when guard` clauses — evaluated after the pattern match.
     ///
-    /// Slice M2 leaves enum-variant / tuple / struct destructuring
-    /// patterns on the M3 boundary (they require enum-tag layout
-    /// + field offsets, which arrive with the class / struct codegen).
+    /// Payload-bearing variant patterns, tuple patterns, and struct
+    /// patterns are not yet supported (require enum-tag payload
+    /// layout + field-offset codegen).
     fn emitMatchStmt(self: *Emitter, ms: ast.MatchStmt) !void {
         // Bind the scrutinee to a slot so subsequent arms can re-test
         // it without re-evaluating side effects. Skip the bind if
@@ -2095,10 +2087,10 @@ const Emitter = struct {
             .range_pattern => |rp| {
                 // Lower `start..end` as: cmp acu, start; jlt skip;
                 //                       cmp acu, end;   j(g[te]) skip.
-                // We need the start / end as immediates — only
-                // handle the int_lit fast-path in M2.
+                // Endpoints must be compile-time integer literals
+                // so they emit as immediate operands.
                 if (rp.start.* != .int_lit or rp.end.* != .int_lit) {
-                    try self.unsupported(rp.span, "non-literal range pattern endpoints (compile-time literals only in M2)");
+                    try self.unsupported(rp.span, "non-literal range pattern endpoints");
                     return;
                 }
                 // @as: parser holds int_lit.value as i32; range bounds fit i16 by spec.
@@ -2145,7 +2137,7 @@ const Emitter = struct {
             },
             .variant_pattern => |vp| {
                 if (vp.args.len > 0) {
-                    try self.unsupported(vp.span, "enum-variant patterns with payload binders (M3b brings the payload destructuring)");
+                    try self.unsupported(vp.span, "enum-variant patterns with payload binders");
                     return;
                 }
                 const path = self.source[vp.path.start..vp.path.end];
@@ -2162,16 +2154,16 @@ const Emitter = struct {
                 try self.cmpRegImm(Reg.acu, tag);
                 try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
             },
-            else => try self.unsupported(pat.span(), "this pattern shape (M3b brings struct / tuple destructuring)"),
+            else => try self.unsupported(pat.span(), "this pattern shape"),
         }
     }
 
-    /// Lower `target = value` (and compound `op=` forms — slice M1
-    /// only handles plain `=` for now). The target must be an
-    /// ident that resolves to a local, param, or global.
+    /// Lower `target = value`. The target must be an ident that
+    /// resolves to a local, param, or global. Compound `op=`
+    /// forms are not yet supported.
     fn emitAssign(self: *Emitter, a: ast.AssignStmt) !void {
         if (a.op != .set) {
-            try self.unsupported(a.span, "compound `op=` assignments (only plain `=` is lowered in M1)");
+            try self.unsupported(a.span, "compound `op=` assignments — only plain `=` is supported");
             return;
         }
         if (a.target.* != .ident) {
@@ -2208,8 +2200,7 @@ const Emitter = struct {
             try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
         }
         // Uninitialized let leaves the slot at whatever the prologue
-        // memset gave it (sub_imm pads sp downward without zeroing —
-        // M2 may want a defensive zero-fill).
+        // memset gave it (sub_imm pads sp downward without zeroing).
     }
 
     fn emitConstDecl(self: *Emitter, d: ast.ConstDecl) !void {
@@ -2359,7 +2350,7 @@ const Emitter = struct {
             },
             .interp => |ip| {
                 if (ip.format_spec != null) {
-                    try self.unsupported(ip.span, "`$(expr:fmt)` format specs (M3 brings the parameterized formatter)");
+                    try self.unsupported(ip.span, "`$(expr:fmt)` format specs");
                     return;
                 }
                 // Save the cursor — the interp-expression eval may
@@ -2398,7 +2389,7 @@ const Emitter = struct {
             },
             .interp => |ip| {
                 if (ip.format_spec != null) {
-                    try self.unsupported(ip.span, "`$(expr:fmt)` format specs (M3 brings the parameterized formatter)");
+                    try self.unsupported(ip.span, "`$(expr:fmt)` format specs");
                     return;
                 }
                 if (self.isPrimitiveType(ip.expr, .char)) {
@@ -2476,7 +2467,7 @@ const Emitter = struct {
             .field => |f| try self.emitFieldExpr(f, e),
             .is_test => |it| try self.emitIsTest(it),
             .ref_of => |r| try self.emitAddrOf(r.inner),
-            .cast => |c| try self.emitExpr(c.inner), // primitives are bit-pattern-identical at the M3a width set
+            .cast => |c| try self.emitExpr(c.inner), // same-width primitives share a bit pattern, so the cast is a no-op
             else => try self.unsupported(e.span(), "this expression form"),
         }
     }
@@ -2485,7 +2476,7 @@ const Emitter = struct {
     /// enum-variant constructor. Loads the variant's tag byte
     /// into `acu` (the runtime representation of the variant).
     /// Field access on non-enum receivers (struct / class fields)
-    /// lands in M3b alongside the class layout work.
+    /// is not yet supported.
     fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void {
         if (f.receiver.* == .ident) {
             const recv_name = self.source[f.receiver.ident.span.start..f.receiver.ident.span.end];
@@ -2495,18 +2486,15 @@ const Emitter = struct {
                     try self.diagFatal(f.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant");
                     return;
                 };
-                // Payload-bearing constructor (`Item.Potion(20)`)
-                // lands as a `CallExpr` whose callee is a
-                // `FieldExpr` — that path is M3b. A bare
-                // `Item.Potion` reference at expression position
-                // (without a call) needs the payload to be empty.
-                if (ed.variants.len > 0) {
-                    for (ed.variants) |v| {
-                        if (std.mem.eql(u8, self.source[v.name.start..v.name.end], variant_name)) {
-                            if (v.payload.len != 0) {
-                                try self.unsupported(f.span, "payload-bearing enum-variant constructors (call form lands with M3b's enum layout)");
-                                return;
-                            }
+                // A bare `Item.Potion` reference at expression
+                // position (without a call) requires the payload to
+                // be empty — payload-bearing constructors come
+                // through the `CallExpr` path with field-callee.
+                for (ed.variants) |v| {
+                    if (std.mem.eql(u8, self.source[v.name.start..v.name.end], variant_name)) {
+                        if (v.payload.len != 0) {
+                            try self.unsupported(f.span, "payload-bearing enum-variant constructors");
+                            return;
                         }
                     }
                 }
@@ -2514,7 +2502,7 @@ const Emitter = struct {
                 return;
             }
         }
-        try self.unsupported(e.span(), "non-enum field access (struct / class fields land with M3b)");
+        try self.unsupported(e.span(), "non-enum field access");
     }
 
     /// Lower `expr is EnumName.Variant`. Evaluates `expr` into
@@ -2621,8 +2609,8 @@ const Emitter = struct {
                     try self.movRegToReg(Reg.r2, Reg.acu);
                 } else {
                     // Signed 32÷16 divide. Dividend lives in acu:dst
-                    // (high:low); the dividend assumed to fit in 16
-                    // bits (sign-extension lands in a later commit).
+                    // (high:low); the dividend is assumed to fit in
+                    // 16 bits — sign-extension is not yet emitted.
                     try self.movRegToReg(Reg.acu, Reg.r2); // r2 = low half
                     try self.movImmToReg(0, Reg.acu); // high half = 0
                     try self.divsRegReg(Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
@@ -2661,7 +2649,7 @@ const Emitter = struct {
     ///
     /// Slice M1 only handles direct calls — the callee must be a
     /// bare ident referencing a top-level `def`. Method calls /
-    /// closure invocations / fn-pointer calls land in M3.
+    /// Closure invocations and fn-pointer calls are not yet supported.
     fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         // Intercept compiler-known builtins before the regular
         // direct-call path so they emit specialized opcode
@@ -2833,9 +2821,10 @@ const Emitter = struct {
         return null;
     }
 
-    /// Lower a `receiver.method(args)` expression. M3a handles the
-    /// stdlib `mem.X(...)` shape; other receivers (class instance
-    /// method calls) land with M3b's vtable lowering.
+    /// Lower a `receiver.method(args)` expression. The stdlib
+    /// `mem.X(...)` shape dispatches through the builtin lookup.
+    /// Other receivers (class instance method calls) are not yet
+    /// supported.
     fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr) !void {
         if (m.receiver.* == .ident) {
             const recv = self.source[m.receiver.ident.span.start..m.receiver.ident.span.end];
@@ -2857,7 +2846,7 @@ const Emitter = struct {
                 return;
             }
         }
-        try self.unsupported(e.span(), "method calls (class instance methods land with M3b's vtable lowering)");
+        try self.unsupported(e.span(), "method calls on non-stdlib receivers");
     }
 
     // ---------- mem stdlib builtins ----------
@@ -3004,12 +2993,11 @@ const Emitter = struct {
 
     /// Compute the address of an addressable expression and leave
     /// it in `acu`. Backs `mem.addr_of(x)` and the typed `&x`
-    /// reference operator. Slice M3a supports plain idents (locals,
-    /// params, globals); field / index targets land with M3b's
-    /// struct + class layout.
+    /// reference operator. Plain idents (locals, params, globals)
+    /// are supported; field / index targets are not yet supported.
     fn emitAddrOf(self: *Emitter, e: *const ast.Expr) !void {
         if (e.* != .ident) {
-            try self.unsupported(e.span(), "`addr_of` on non-ident expression (M3b brings field / index targets)");
+            try self.unsupported(e.span(), "`addr_of` on non-ident expression");
             return;
         }
         const name = self.source[e.ident.span.start..e.ident.span.end];
