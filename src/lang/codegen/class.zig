@@ -220,11 +220,12 @@ pub fn emitConstructor(
         // @as: widen usize args.len to u16 — practical method arity caps well below 32k.
         const drop_bytes: u16 = 2 + @as(u16, @intCast(c.args.len * 2));
         try self.addImmToReg(drop_bytes, Reg.sp);
+        // init may have clobbered acu — restore the instance ptr
+        // from r1 so the caller's let-bind reads the right value.
+        try self.movRegToReg(Reg.r1, Reg.acu);
     }
-
-    // 5. Result in acu = instance pointer. Always restore from r1
-    //    in case init's epilogue or its arg-drop touched acu.
-    try self.movRegToReg(Reg.r1, Reg.acu);
+    // No-init path leaves acu holding the instance ptr from the
+    // `sys alloc` above — none of the intervening ops touched it.
 }
 
 /// `true` when the class declares an `init` method.
