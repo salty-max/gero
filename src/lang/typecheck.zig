@@ -173,6 +173,9 @@ pub const annotations = @import("typecheck/annotations.zig");
 /// Type-to-type relations — assignability (return / let-init /
 /// assignment / call-arg) and cast convertibility (§3.5.1).
 pub const relations = @import("typecheck/relations.zig");
+/// Flow-sensitive helpers — ident-name extraction, body-exits
+/// check, named-type lookup, struct/class field finders.
+pub const flow = @import("typecheck/flow.zig");
 
 /// Re-export: target bit-flag namespace used by every decl-walker
 /// that calls into `annotations.validateAnnotations`.
@@ -291,8 +294,8 @@ pub const Checker = struct {
         if (cond.* != .binary) return null;
         const b = cond.binary;
         if (b.op != .eq and b.op != .neq) return null;
-        const lhs_ident = identName(self, b.lhs);
-        const rhs_ident = identName(self, b.rhs);
+        const lhs_ident = flow.identName(self, b.lhs);
+        const rhs_ident = flow.identName(self, b.rhs);
         const lhs_nil = b.lhs.* == .nil_lit;
         const rhs_nil = b.rhs.* == .nil_lit;
         if (lhs_ident) |n| if (rhs_nil) return .{ .name = n, .is_neq = b.op == .neq };
@@ -592,7 +595,7 @@ pub const Checker = struct {
         const arm = is_.arms[0];
         const cond = arm.cond orelse return null;
         const nc = self.matchNilCheck(cond) orelse return null;
-        if (!bodyAlwaysExits(arm.body)) return null;
+        if (!flow.bodyAlwaysExits(arm.body)) return null;
         if (nc.is_neq) {
             // Multi-return: bail when err != nil. After the bail
             // err is statically nil, so its correlated sibling
@@ -766,7 +769,7 @@ pub const Checker = struct {
     fn checkNoCaptureMutation(self: *Checker, target: *const ast.Expr) WalkError!void {
         if (!self.in_no_capture) return;
         const locals = self.lambda_locals orelse return;
-        const name = identName(self, target) orelse return;
+        const name = flow.identName(self, target) orelse return;
         if (locals.contains(name)) return;
         const msg = try std.fmt.allocPrint(
             self.arena,
@@ -784,7 +787,7 @@ pub const Checker = struct {
         // Flow analysis is applied only when there is exactly one
         // arm — the simple `if cond then BODY [else …] end` shape.
         // Multi-arm `elif` chains skip the bookkeeping.
-        const flow: ?NilCheck = if (arms.len == 1 and arms[0].cond != null)
+        const nil_flow: ?NilCheck = if (arms.len == 1 and arms[0].cond != null)
             self.matchNilCheck(arms[0].cond.?)
         else
             null;
@@ -794,8 +797,8 @@ pub const Checker = struct {
             if (arm.let_expr) |e| _ = try self.inferExpr(e, null);
             if (arm.let_guard) |g| _ = try self.inferExpr(g, null);
 
-            const arm_gain: ?[]const u8 = if (i == 0 and flow != null and flow.?.is_neq)
-                flow.?.name
+            const arm_gain: ?[]const u8 = if (i == 0 and nil_flow != null and nil_flow.?.is_neq)
+                nil_flow.?.name
             else
                 null;
             const added = if (arm_gain) |n| try self.pushNonNil(n) else false;
@@ -806,8 +809,8 @@ pub const Checker = struct {
         if (else_body) |eb| {
             // The else-arm fires when the `if` cond was false, so
             // `x == nil` confers non-nil in the else.
-            const else_gain: ?[]const u8 = if (flow != null and !flow.?.is_neq)
-                flow.?.name
+            const else_gain: ?[]const u8 = if (nil_flow != null and !nil_flow.?.is_neq)
+                nil_flow.?.name
             else
                 null;
             const added = if (else_gain) |n| try self.pushNonNil(n) else false;
@@ -898,7 +901,7 @@ pub const Checker = struct {
     fn checkReturnStackLifetime(self: *Checker, v: *const ast.Expr) WalkError!void {
         if (v.* != .ref_of) return;
         const inner = v.ref_of.inner;
-        const name = identName(self, inner) orelse return;
+        const name = flow.identName(self, inner) orelse return;
         const locals = self.fn_locals orelse return;
         if (!locals.contains(name)) return;
         const msg = try std.fmt.allocPrint(
@@ -1398,7 +1401,7 @@ pub const Checker = struct {
     ) WalkError!void {
         const rt = recv_ty orelse return;
         if (rt.* != .optional) return;
-        if (identName(self, receiver)) |name| {
+        if (flow.identName(self, receiver)) |name| {
             if (self.non_nil.contains(name)) return;
         }
         const ty_s = try types.render(self.arena, rt.*);
@@ -1525,7 +1528,7 @@ pub const Checker = struct {
         recv_ty: ?*const types.Type,
     ) WalkError!?*const types.Type {
         const rt = recv_ty orelse return null;
-        const named_name = namedNameOf(rt.*) orelse return null;
+        const named_name = flow.namedNameOf(rt.*) orelse return null;
         const field_name = self.lexeme(f.field);
         if (self.struct_registry.get(named_name)) |sd| {
             for (sd.fields) |fld| {
@@ -1587,7 +1590,7 @@ pub const Checker = struct {
             for (m.args) |a| _ = try self.inferExpr(a, null);
             return null;
         };
-        const named_name = namedNameOf(rt.*) orelse {
+        const named_name = flow.namedNameOf(rt.*) orelse {
             for (m.args) |a| _ = try self.inferExpr(a, null);
             return null;
         };
@@ -1679,7 +1682,7 @@ pub const Checker = struct {
         defer seen.deinit(self.arena);
         for (sl.fields) |lit_field| {
             const field_name = self.lexeme(lit_field.name);
-            const decl_field = findStructField(self, decl_fields, field_name) orelse {
+            const decl_field = flow.findStructField(self, decl_fields, field_name) orelse {
                 try self.emitUndefinedField(type_name, field_name, lit_field.name);
                 _ = try self.inferExpr(lit_field.value, null);
                 continue;
@@ -1716,7 +1719,7 @@ pub const Checker = struct {
             // Search the inheritance chain. Class fields are
             // optional-typed, so an untyped field accepts anything.
             const expected_ty: ?*const types.Type = try self.lookupClassFieldType(cd, field_name);
-            if (expected_ty == null and findClassField(self, cd, field_name) == null) {
+            if (expected_ty == null and flow.findClassField(self, cd, field_name) == null) {
                 try self.emitUndefinedField(type_name, field_name, lit_field.name);
                 _ = try self.inferExpr(lit_field.value, null);
                 continue;
@@ -2191,71 +2194,18 @@ fn structLitMentions(c: *const Checker, fields: []const ast.StructLitField, name
 /// wrapped in `paren`). Used by call-site rules that need to find
 /// the underlying decl (bake-call check, variadic detection).
 fn directCalleeName(c: *const Checker, callee: *const ast.Expr) ?[]const u8 {
-    return identName(c, callee);
+    return flow.identName(c, callee);
 }
 
 /// When `callee` resolves to a `def` decl whose last param is
 /// variadic, return that decl. Returns `null` otherwise — callers
 /// fall back to the regular fixed-arity path.
 fn variadicCalleeDecl(c: *const Checker, callee: *const ast.Expr) ?*const ast.DefDecl {
-    const name = identName(c, callee) orelse return null;
+    const name = flow.identName(c, callee) orelse return null;
     const decl = c.def_registry.get(name) orelse return null;
     if (decl.params.len == 0) return null;
     if (!decl.params[decl.params.len - 1].variadic) return null;
     return decl;
-}
-
-// ---------- flow-analysis helpers ----------
-
-/// Extract the source-buffer lexeme when `e` is a bare ident
-/// (possibly wrapped in `paren`). Returns `null` otherwise — used
-/// by nil-check pattern matching and by flow-sensitive deref
-/// lookups.
-fn identName(c: *const Checker, e: *const ast.Expr) ?[]const u8 {
-    return switch (e.*) {
-        .ident => |i| c.lexeme(i.span),
-        .paren => |p| identName(c, p.inner),
-        else => null,
-    };
-}
-
-/// `true` when the last statement of `body` is `return` / `break` /
-/// `continue` — used by the `if x == nil then return end`
-/// fall-through detector.
-fn bodyAlwaysExits(body: []const ast.Statement) bool {
-    if (body.len == 0) return false;
-    return switch (body[body.len - 1]) {
-        .return_stmt, .break_stmt, .continue_stmt => true,
-        else => false,
-    };
-}
-
-/// Lexeme of a `Named` type, or `null` for other type shapes.
-fn namedNameOf(t: types.Type) ?[]const u8 {
-    return switch (t) {
-        .named => |n| n.name,
-        else => null,
-    };
-}
-
-/// Locate a field on a struct decl by name.
-fn findStructField(c: *const Checker, fields: []const ast.StructField, name: []const u8) ?*const ast.StructField {
-    for (fields) |*f| {
-        if (std.mem.eql(u8, c.lexeme(f.name), name)) return f;
-    }
-    return null;
-}
-
-/// Locate a field on a class decl by name (walks the inheritance
-/// chain). Returns the first hit.
-fn findClassField(c: *const Checker, cd: *const ast.ClassDecl, name: []const u8) ?*const ast.ClassField {
-    for (cd.fields) |*f| {
-        if (std.mem.eql(u8, c.lexeme(f.name), name)) return f;
-    }
-    if (cd.extends) |ext| if (c.class_registry.get(c.lexeme(ext))) |parent| {
-        return findClassField(c, parent, name);
-    };
-    return null;
 }
 
 // ---------- place expression check ----------
