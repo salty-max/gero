@@ -209,7 +209,7 @@ pub fn compile(
     @memset(base_image, 0);
     @memcpy(base_image[code_base..][0..emitter.code.items.len], emitter.code.items);
 
-    const image = try buildArchive(allocator, base_image, code_base, &emitter.banks);
+    const image = try buildArchive(allocator, base_image, code_base, emitter.data_cursor, &emitter.banks);
     allocator.free(base_image);
 
     return .{

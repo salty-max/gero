@@ -169,4 +169,9 @@ pub const Sys = struct {
     /// `format_terminate_buf` — write a trailing null byte at the
     /// current cursor of the buffer pointed to by `r1`.
     pub const format_terminate_buf: u8 = 0x14;
+
+    /// `alloc` — bump-allocate `acu` bytes on the heap. Returns
+    /// the freshly-allocated address in `acu`; faults
+    /// `heap_exhausted` (vector `0x04`) on out-of-heap.
+    pub const alloc: u8 = 0x20;
 };
