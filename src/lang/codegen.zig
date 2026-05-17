@@ -56,6 +56,10 @@ pub const archive = @import("codegen/archive.zig");
 /// `mem.*` stdlib builtin lowering — typed peek / poke,
 /// memcpy / memset, addr-of.
 pub const mem_builtin = @import("codegen/mem_builtin.zig");
+/// String literal pool + interpolation lowering — `InternedString`,
+/// `StringPatch`, the interp buffer reservation, and the per-part
+/// fill helpers.
+pub const strings = @import("codegen/strings.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const CheckedProgram = typecheck_mod.CheckedProgram;
@@ -80,13 +84,8 @@ pub const data_base: u16 = 0x2000;
 
 const bank_window_base = archive.bank_window_base;
 
-/// Bytes reserved per interpolated-string buffer in the data
-/// region. Sized for the worst common case (a few interp values
-/// + surrounding literal text). Programs that need larger
-/// interpolations should compose with explicit concatenation —
-/// the codegen rejects the formatted result at runtime if it
-/// overflows (the VM doesn't bounds-check the buffer writes).
-const interp_buffer_size: u16 = 64;
+const InternedString = strings.InternedString;
+const StringPatch = strings.StringPatch;
 
 // ---------- public surface ----------
 
@@ -269,25 +268,6 @@ const CallPatch = struct {
     };
 };
 
-/// One interned string literal — emitted as a null-terminated byte
-/// run at the end of the base image. Multiple call sites that
-/// reference the same byte content share one entry; the `address`
-/// field carries the resolved RAM address after the pool emits.
-const InternedString = struct {
-    bytes: []const u8,
-    address: u16,
-};
-
-/// Forward reference to a string literal — recorded when an emit
-/// site needs to load the string's address into a register but the
-/// pool hasn't been laid out yet. The `code_offset` is the 2-byte
-/// `mov imm16, reg` operand slot waiting for the resolved address.
-const StringPatch = struct {
-    bank: ?u8,
-    code_offset: usize,
-    string_id: usize,
-};
-
 /// One lexical block tracked at codegen time. Owns the LIFO list of
 /// `defer` statements registered within the block so the codegen can
 /// re-emit them at every exit path (fall-through, `return`, `break`,
@@ -459,7 +439,9 @@ pub const Emitter = struct {
     /// Byte offset of the next emission within the current code
     /// buffer. Used to record `fn_addresses` + `call_patches` at
     /// the right position.
-    fn currentOffset(self: *Emitter) !usize {
+    /// Current byte cursor inside the active code buffer — used
+    /// by sub-modules to record patch sites.
+    pub fn currentOffset(self: *Emitter) !usize {
         const buf = try self.currentCode();
         return buf.items.len;
     }
@@ -747,7 +729,9 @@ pub const Emitter = struct {
     }
 
     /// `sys imm8` (0xFB).
-    fn sys(self: *Emitter, id: u8) !void {
+    /// `sys imm8` (0xFB) — host-callback syscall, identifier in
+    /// the immediate operand byte.
+    pub fn sys(self: *Emitter, id: u8) !void {
         try self.emitByte(Op.sys);
         try self.emitByte(id);
     }
@@ -866,69 +850,24 @@ pub const Emitter = struct {
         try self.patchStrings();
     }
 
-    /// Lay out every interned string at the end of the base buffer.
-    /// Each entry gets its bytes plus a trailing null terminator (the
-    /// VM's `print_str` syscall reads until `\0`). Records the
-    /// resolved address into the pool entry.
+    /// Delegated to `codegen/strings.zig`.
     fn emitStringPool(self: *Emitter) !void {
-        // Strings live in the base image so banked code can still
-        // address them (banks only cover `0xC000..0xFEFF`). Save +
-        // restore the buffer-routing so callers in a banked def
-        // still emit into the base buffer here.
-        const saved_bank = self.current_bank;
-        self.current_bank = null;
-        defer self.current_bank = saved_bank;
-
-        for (self.strings.items) |*s| {
-            // @as: usize → u16; base image fits in 16-bit address space.
-            const offset: u16 = @intCast(try self.currentOffset());
-            s.address = code_base +% offset;
-            for (s.bytes) |b| try self.emitByte(b);
-            try self.emitByte(0);
-        }
+        return strings.emitStringPool(self);
     }
 
-    /// Rewrite each `StringPatch`'s 2-byte LE address slot with the
-    /// resolved string address.
+    /// Delegated to `codegen/strings.zig`.
     fn patchStrings(self: *Emitter) !void {
-        for (self.string_patches.items) |p| {
-            const addr = self.strings.items[p.string_id].address;
-            const buf: []u8 = if (p.bank) |b|
-                if (self.banks.getPtr(b)) |bl| bl.items else continue
-            else
-                self.code.items;
-            // safety: u16 → 2 bytes by definition; byte-mask casts.
-            buf[p.code_offset] = @intCast(addr & 0xFF);
-            buf[p.code_offset + 1] = @intCast(addr >> 8);
-        }
+        return strings.patchStrings(self);
     }
 
-    /// Intern a byte string by content. Returns the index into
-    /// `strings`. Callers that need the address use a `StringPatch`
-    /// since the pool isn't laid out until the end of `emitProgram`.
+    /// Delegated to `codegen/strings.zig`.
     fn internString(self: *Emitter, bytes: []const u8) !usize {
-        for (self.strings.items, 0..) |s, i| {
-            if (std.mem.eql(u8, s.bytes, bytes)) return i;
-        }
-        const owned = try self.arena.dupe(u8, bytes);
-        try self.strings.append(self.allocator, .{ .bytes = owned, .address = 0 });
-        return self.strings.items.len - 1;
+        return strings.internString(self, bytes);
     }
 
-    /// Emit a `mov imm16, reg` whose imm is the resolved address of
-    /// the interned string with index `string_id`. The imm slot is
-    /// recorded as a `StringPatch` and back-patched after the pool
-    /// lays out.
+    /// Delegated to `codegen/strings.zig`.
     fn emitMovStringAddrToReg(self: *Emitter, string_id: usize, reg: u8) !void {
-        try self.emitByte(Op.mov_imm16_reg);
-        const slot = try self.currentOffset();
-        try self.emitU16Le(0); // placeholder
-        try self.emitByte(reg);
-        try self.string_patches.append(self.allocator, .{
-            .bank = self.current_bank,
-            .code_offset = slot,
-            .string_id = string_id,
-        });
+        return strings.emitMovStringAddrToReg(self, string_id, reg);
     }
 
     /// Look up the typechecker's inferred type for an expression.
@@ -940,7 +879,9 @@ pub const Emitter = struct {
 
     /// `true` when the expression's inferred type is the named
     /// primitive `p`. Returns `false` for missing types.
-    fn isPrimitiveType(self: *const Emitter, e: *const ast.Expr, p: types_mod.Primitive) bool {
+    /// `true` when the expression's inferred type is the named
+    /// primitive `p`. Returns `false` for missing types.
+    pub fn isPrimitiveType(self: *const Emitter, e: *const ast.Expr, p: types_mod.Primitive) bool {
         const t = self.typeOf(e) orelse return false;
         return t.* == .primitive and t.primitive == p;
     }
@@ -2188,135 +2129,14 @@ pub const Emitter = struct {
         try self.sys(Sys.print_int);
     }
 
-    /// Lower a `str_lit` at expression position. Single-literal
-    /// strings load the pooled address directly into `acu`.
-    /// Interpolated strings allocate a fixed-size buffer in the
-    /// data region (per-site, lives for the program's lifetime
-    /// per spec §3.2.2 "single-buffer allocation") and emit the
-    /// `format_*_to_buf` syscall sequence that fills it. The
-    /// buffer's base address lands in `acu` as the string value.
+    /// Delegated to `codegen/strings.zig`.
     fn emitStrLitExpr(self: *Emitter, sl: ast.StrLitExpr) !void {
-        if (sl.parts.len == 1 and sl.parts[0] == .lit) {
-            const span = sl.parts[0].lit.span;
-            const raw = self.source[span.start..span.end];
-            const decoded = try decodeStringEscapes(self.arena, raw);
-            const id = try self.internString(decoded);
-            try self.emitMovStringAddrToReg(id, Reg.acu);
-            return;
-        }
-
-        const buf_addr = self.reserveInterpBuffer(sl.span) orelse {
-            // Diagnostic already emitted; produce a valid placeholder
-            // so downstream codegen doesn't see a bad acu shape.
-            try self.movImmToReg(0, Reg.acu);
-            return;
-        };
-
-        // r1 holds the moving write cursor. Initialize it to the
-        // buffer's base address.
-        try self.movImmToReg(buf_addr, Reg.r1);
-        try self.emitInterpFill(sl);
-        try self.sys(Sys.format_terminate_buf);
-        try self.movImmToReg(buf_addr, Reg.acu);
+        return strings.emitStrLitExpr(self, sl);
     }
 
-    /// Reserve `interp_buffer_size` bytes at the top of the data
-    /// region for one interpolated-string site. Returns the
-    /// buffer's base address. Emits `E_CODEGEN_DATA_OVERFLOW` and
-    /// `null` when the data region (capped at the MMIO line) would
-    /// overflow.
-    fn reserveInterpBuffer(self: *Emitter, site_span: ast.Span) ?u16 {
-        const base = self.data_cursor;
-        // @as: widen u16 → u32 so the overflow check doesn't itself wrap.
-        const next: u32 = @as(u32, self.data_cursor) + interp_buffer_size;
-        if (next > 0xFE40) {
-            self.diagFatal(site_span, "E_CODEGEN_DATA_OVERFLOW", "static-data region exhausted — too many interpolated string sites") catch return null;
-            return null;
-        }
-        // @as: bounded by the > 0xFE40 check above; result fits u16.
-        self.data_cursor = @intCast(next);
-        return base;
-    }
-
-    /// Emit one `format_*_to_buf` syscall per `sl.parts` entry —
-    /// shared between non-print interpolation and the buffered
-    /// equivalent. `r1` must hold the buffer cursor on entry and
-    /// holds the post-write cursor on exit. Saves / restores `r1`
-    /// around interp-expression evaluation so the stack-machine
-    /// pattern's scratch use of `r1` doesn't trash the cursor.
-    fn emitInterpFill(self: *Emitter, sl: ast.StrLitExpr) !void {
-        for (sl.parts) |part| switch (part) {
-            .lit => |lp| {
-                const raw = self.source[lp.span.start..lp.span.end];
-                if (raw.len == 0) continue;
-                const decoded = try decodeStringEscapes(self.arena, raw);
-                const id = try self.internString(decoded);
-                // Save cursor across the lit-address load (the
-                // `mov imm16, acu` itself only touches acu, but
-                // emitting it via the patching helper is cleaner if
-                // we treat `r1` as untouched here).
-                try self.emitMovStringAddrToReg(id, Reg.acu);
-                try self.sys(Sys.format_str_to_buf);
-            },
-            .interp => |ip| {
-                if (ip.format_spec != null) {
-                    try self.unsupported(ip.span, "`$(expr:fmt)` format specs");
-                    return;
-                }
-                // Save the cursor — the interp-expression eval may
-                // pop into r1 as scratch.
-                try self.pushReg(Reg.r1);
-                try self.emitExpr(ip.expr);
-                try self.popReg(Reg.r1);
-
-                if (self.isPrimitiveType(ip.expr, .char)) {
-                    try self.sys(Sys.format_char_to_buf);
-                } else if (self.isPrimitiveType(ip.expr, .fixed)) {
-                    try self.sys(Sys.format_fixed_to_buf);
-                } else if (self.isPrimitiveType(ip.expr, .str)) {
-                    try self.sys(Sys.format_str_to_buf);
-                } else {
-                    try self.sys(Sys.format_int_to_buf);
-                }
-            },
-        };
-    }
-
-    /// Walk a string literal's parts inside `print`, emitting the
-    /// per-part syscall for each. Zero-alloc per spec §4.9: no
-    /// runtime buffer materializes — each part writes to `host.out`
-    /// directly. The interpolated value's type drives the syscall
-    /// pick (same dispatch as `emitPrintArg` for non-literal args).
+    /// Delegated to `codegen/strings.zig`.
     fn emitPrintStrLit(self: *Emitter, sl: ast.StrLitExpr) !void {
-        for (sl.parts) |part| switch (part) {
-            .lit => |lp| {
-                const raw = self.source[lp.span.start..lp.span.end];
-                if (raw.len == 0) continue;
-                const decoded = try decodeStringEscapes(self.arena, raw);
-                const id = try self.internString(decoded);
-                try self.emitMovStringAddrToReg(id, Reg.acu);
-                try self.sys(Sys.print_str);
-            },
-            .interp => |ip| {
-                if (ip.format_spec != null) {
-                    try self.unsupported(ip.span, "`$(expr:fmt)` format specs");
-                    return;
-                }
-                if (self.isPrimitiveType(ip.expr, .char)) {
-                    try self.emitExpr(ip.expr);
-                    try self.sys(Sys.print_char);
-                } else if (self.isPrimitiveType(ip.expr, .fixed)) {
-                    try self.emitExpr(ip.expr);
-                    try self.sys(Sys.print_fixed);
-                } else if (self.isPrimitiveType(ip.expr, .str)) {
-                    try self.emitExpr(ip.expr);
-                    try self.sys(Sys.print_str);
-                } else {
-                    try self.emitExpr(ip.expr);
-                    try self.sys(Sys.print_int);
-                }
-            },
-        };
+        return strings.emitPrintStrLit(self, sl);
     }
 
     fn emitExprDiscard(self: *Emitter, e: *const ast.Expr) !void {
