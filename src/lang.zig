@@ -30,6 +30,7 @@ const cg_pattern = @import("lang/codegen/pattern.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 const cg_class = @import("lang/codegen/class.zig");
+const cg_lambda = @import("lang/codegen/lambda.zig");
 
 // ---------- lexer ----------
 
@@ -157,5 +158,8 @@ pub const internal = struct {
         /// Internal — class lowering (vtable + constructor +
         /// field rw + method dispatch).
         pub const class = cg_class;
+        /// Internal — closure lowering (capture analysis, heap
+        /// promotion, lambda body emission, dispatch).
+        pub const lambda = cg_lambda;
     };
 };
