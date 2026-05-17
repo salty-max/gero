@@ -76,6 +76,19 @@ pub const fp_boot: u16 = 0xFFFE;
 /// Boot-state default for `im` — every maskable vector enabled.
 pub const im_boot: u16 = 0xFFFF;
 
+/// Host-side I/O hookup. The `sys` opcode reads from / writes to
+/// these handles instead of touching real OS state directly, so
+/// the VM stays embeddable + testable (the host can install a
+/// captured buffer instead of stdout).
+///
+/// `null` slots mean "the syscall is a silent no-op" — useful for
+/// CI / tests that don't care about output.
+pub const Host = struct {
+    /// Sink for `sys` output syscalls (`print_str` / `print_int` /
+    /// `print_char` / `print_newline`).
+    out: ?*std.Io.Writer = null,
+};
+
 /// The VM. Owns the register file, the memory mapper (which
 /// holds the 64KB RAM and the host device registry), and the
 /// optional bank pool that backs the `0xC000..0xFEFF` window.
@@ -89,6 +102,11 @@ pub const VM = struct {
     /// by one per dispatch (faulting instructions counted too —
     /// they still consumed a cycle).
     cycles: u64,
+    /// Host-side I/O hooks consulted by the `sys` opcode. Default
+    /// (`.{}`) leaves every sink `null` so `sys` syscalls become
+    /// silent no-ops — fine for tests / headless smoke runs that
+    /// don't care about output.
+    host: Host,
 
     /// Construct a fresh VM with default boot state. `ip` is left
     /// at 0; the loader sets it to the program's entry point. The
@@ -100,6 +118,7 @@ pub const VM = struct {
             .mmap = MemoryMapper.init(allocator),
             .banks = null,
             .cycles = 0,
+            .host = .{},
         };
         vm.bootInitRegisters();
         return vm;

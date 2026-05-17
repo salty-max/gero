@@ -32,12 +32,12 @@ test "opcodes: OpcodeInfo.size sums opcode + operands" {
     try std.testing.expectEqual(@as(u8, 5), movix.size());
 }
 
-test "opcodes: table holds exactly 105 named entries" {
+test "opcodes: table holds exactly 106 named entries" {
     var count: usize = 0;
     for (table) |entry| if (entry != null) {
         count += 1;
     };
-    try std.testing.expectEqual(@as(usize, 105), count);
+    try std.testing.expectEqual(@as(usize, 106), count);
 }
 
 test "opcodes: every named entry has a non-empty mnemonic" {
@@ -115,7 +115,7 @@ test "opcodes: unused byte values are null" {
     try std.testing.expect(table[0x6A] == null); // 0x6X bitwise gap
     try std.testing.expect(table[0x7A] == null); // 0x7X shifts gap
     try std.testing.expect(table[0xD0] == null); // reserved page
-    try std.testing.expect(table[0xFB] == null); // pre-system gap
+    try std.testing.expect(table[0xFA] == null); // pre-system gap
 }
 
 test "opcodes: schema sizes never overflow a u8 instruction" {

@@ -193,6 +193,7 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0xC1] = .{ .mnemonic = "nop", .operands = &.{} };
 
     // 0xFX — system
+    t[0xFB] = .{ .mnemonic = "sys", .operands = &.{.imm8} };
     t[0xFC] = .{ .mnemonic = "int", .operands = &.{.imm8} };
     t[0xFD] = .{ .mnemonic = "rti", .operands = &.{} };
     t[0xFE] = .{ .mnemonic = "brk", .operands = &.{} };
