@@ -598,6 +598,64 @@ test "codegen: @bank N routes a def's bytecode into bank N's buffer" {
     try std.testing.expectEqual(@as(u8, 0), bank2[2]); // high byte
 }
 
+test "codegen: cross-bank call goes through __call_bank trampoline + executes correctly" {
+    var compiled = try compileSource(
+        \\@bank 2
+        \\def town() -> i16
+        \\  return 42
+        \\end
+        \\
+        \\def main()
+        \\  let r: i16 = town()
+        \\  print r
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    // The full pipeline must boot, switch into bank 2 via the
+    // trampoline, fetch the literal, return to main, and print
+    // `42\n`.
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("42\n", writer.written());
+}
+
+test "codegen: byte-store to @addr global uses movl (does not clobber adjacent byte)" {
+    var compiled = try compileSource(
+        \\@addr $FE40
+        \\let DISPCTL: u8 = 0
+        \\
+        \\def main()
+        \\  DISPCTL = 1
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+
+    var vm = gero.vm.VM.init(alloc);
+    defer vm.deinit();
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try vm.boot(alloc, loaded);
+    vm.host = .{ .out = &writer.writer };
+    // Pre-seed $FE41 with a sentinel — the byte store must NOT
+    // overwrite it (that would mean we emitted the 16-bit mov).
+    vm.mmap.writeByte(0xFE41, 0xAB);
+    _ = gero.vm.run(&vm);
+
+    try std.testing.expectEqual(@as(u8, 1), vm.mmap.readByte(0xFE40));
+    try std.testing.expectEqual(@as(u8, 0xAB), vm.mmap.readByte(0xFE41));
+}
+
 test "codegen: custom entry_name resolves" {
     const source = "def boot() end";
     var stream = try gero.lang.tokenize(alloc, source);
