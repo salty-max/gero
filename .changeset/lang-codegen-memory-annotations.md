@@ -33,9 +33,31 @@ on top-level `let` / `const` / `def`.
 - **`@bank N`** — routes the annotated `def`'s bytecode into a
   per-bank emit buffer. The `.gx` archive layout grows: header
   declares `bank_count = max_bank + 1` with the `banked` flag bit
-  set, and each bank's 16 KiB buffer follows the base image (zero-
-  padded for banks the user didn't touch). Call patches that live
-  in a bank get their address slot rewritten in the right buffer.
+  set, and each bank's 16 KiB buffer follows the base image
+  (zero-padded for banks the user didn't touch). Cross-bank calls
+  route through a `__call_bank` trampoline that the codegen emits
+  at the end of the base image when needed:
+  ```
+  __call_bank:
+    push mb         ; save caller's bank
+    mov r2, mb      ; switch to target bank
+    call r1         ; jump to target
+    pop mb          ; restore caller's bank
+    ret
+  ```
+  Same-bank calls keep the direct-call shape (3 bytes vs the
+  trampoline's 11). Pre-pass over `program.statements` populates
+  `fn_banks` so `emitCall` decides direct vs trampoline without
+  needing the target's address yet (forward-ref-safe).
+
+**Byte-width global stores use `movl`**
+
+A `@addr`-pinned `let DISPCTL: u8 = 0; DISPCTL = 1` lowers to
+`movl acu, $FE40` (0x27) — a 1-byte store that leaves the
+neighboring byte untouched. Critical for MMIO where adjacent
+addresses are independent registers. Word-width globals keep the
+`mov reg, addr` (0x12) shape. The `mov_reg_to_zp` companion
+(`movl reg, zp`, 0x2B) covers zero-page byte stores symmetrically.
 
 **Assignment statement lowering**
 
@@ -44,20 +66,6 @@ targets resolving to a local, param, or global. Compound `op=`
 forms (`+=`, etc.) stay on the unsupported path — they're sugar
 that lowers via the binary-op chain and lands in M2 alongside the
 rest of control flow.
-
-**Limitations carried forward** (documented, not regressions):
-
-- `@bank N` routes bytes correctly but **does NOT** emit
-  cross-bank trampolines. Cross-bank calls require the user to
-  set `mb` to the target bank before the call; otherwise the call
-  faults at runtime. Auto-trampoline emission lands when codegen
-  has the calling-convention surface for it (M3 alongside class
-  vtables).
-- `@addr` byte stores go through the 16-bit `mov reg, addr`
-  opcode (clobbers the trailing byte). M1 doesn't need a 1-byte
-  store path because adjacent globals are placement-disjoint
-  (each binding owns its bytes); cleaner emit lands when struct
-  layout needs it.
 
 **Public surface**
 
@@ -70,7 +78,7 @@ flows them.
 
 **Tests**
 
-8 new codegen tests (19 → 27, +8):
+10 new codegen tests (19 → 29, +10):
 
 - `@addr` read + write + read-modify-write (MMIO loop).
 - `@volatile` accepted as no-op.
@@ -79,3 +87,7 @@ flows them.
 - `@align(16)` pads placement to a 16-byte boundary.
 - `@bank N` routes bytecode into bank N (verified via .gx header
   flags + the bank buffer's first bytes).
+- Cross-bank call through `__call_bank` trampoline executes end
+  to end and returns the right value.
+- Byte-store through `@addr` (via `movl`) leaves the neighboring
+  byte untouched (sentinel-check on adjacent address).

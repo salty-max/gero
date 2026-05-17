@@ -133,6 +133,52 @@ points, failure semantics: all decided up front.
 Implementation can stage across PRs; the **spec** describes the
 final shape from day one.
 
+### No half-features, no "David GoodEnough"
+
+When an issue is scoped, **finish it.** A feature is either fully
+implemented or explicitly cut from scope at the start — not half-
+implemented and shipped under a "Limitations carried forward"
+section in the changeset / PR.
+
+Specifically forbidden:
+
+- ❌ "It mostly works but doesn't handle case X — that's a follow-
+  up." If case X is in the issue's AC, do it. If it shouldn't be,
+  argue for cutting it from the AC before starting work.
+- ❌ "There's a VM gap, so I emit suboptimal bytecode. Documented."
+  If the VM gap blocks a clean implementation, extend the VM in
+  the same PR (or split honestly with the user's go-ahead).
+- ❌ "Trampolines are complex — the user can manually set
+  the register before calling." If the spec promises automatic
+  behavior, deliver it.
+
+The instinct to ship something almost-complete is paved with the
+phrase "good enough." It isn't. Ship complete or scope down
+honestly with explicit user approval.
+
+### Stop and ask, don't assume
+
+When you hit an open question — scope, design choice, whether a
+limitation is acceptable, whether to defer something — **stop and
+ask.** Do not silently choose the path of least effort and ship a
+half-feature.
+
+- ❌ "I'll just defer this caveat to a follow-up and document it
+  in the changeset." That's unilateral scope reduction without
+  permission.
+- ❌ "The VM doesn't have this opcode, so I'll work around it."
+  Surface the gap, ask whether to extend the VM.
+- ❌ Pretending a half-fix is complete in the PR description while
+  burying the limitation in a "carried forward" footnote.
+- ✅ "I see two ways to do X: A or B. A costs N lines, B costs M.
+  Which one?"
+- ✅ "Issue says Y, but the VM lacks the primitive for Y. Do I
+  extend the VM in this PR or scope Y out?"
+
+The cost of a 30-second clarifying question is much smaller than
+the cost of an architecturally-wrong implementation that ships and
+has to be unwound later.
+
 ## Imports
 
 - **Single-level relative imports** — `../foo.zig` or `./foo.zig`.
