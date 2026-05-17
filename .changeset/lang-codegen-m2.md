@@ -98,10 +98,10 @@ block. `popBlockWithDefers` (normal fall-through),
 `continue`) all re-emit the body in LIFO order at the
 appropriate offset. The cleanup sequence is wrapped in
 `push acu` / `pop acu` so the return value survives the
-defer body. Spec §4.10 rejections — `defer return`,
-`defer break`, `defer continue`, `defer defer` — fire as
-fatal codegen diagnostics (`E_DEFER_RETURN` /
-`_BREAK` / `_CONTINUE` / `_DEFER`).
+defer body. Spec §4.10 rejections fire in the typechecker
+per the codes registered in `docs/lang-diagnostics.md`
+§5.11: `defer return / break / continue` →
+`E_DEFER_CONTROL_FLOW`, `defer defer …` → `E_DEFER_NESTED`.
 
 **Operator extensions**
 
@@ -140,7 +140,9 @@ stack space up front. The pre-pass counts:
 
 **Tests**
 
-29 new codegen tests (29 → 58, +29):
+25 new codegen tests (29 → 54, +25) + 4 new typecheck tests:
+
+Codegen:
 
 - if-then / if-else / if-elif-else chain.
 - All six comparison ops (`== != < <= > >=`) drive the right
@@ -158,5 +160,13 @@ stack space up front. The pre-pass counts:
 - Defer LIFO order at normal block end.
 - Defer fires on early `return` (cross-fn cleanup).
 - Defer fires on `break` (one per surviving iteration).
+- Defer fires on `continue` before the next iteration.
 - Defer in nested `do…end` fires inner-first.
-- `defer return` is rejected with `E_DEFER_RETURN`.
+
+Typecheck (defer-shape rejections per spec §4.10 +
+`docs/lang-diagnostics.md` §5.11):
+
+- `defer return` → `E_DEFER_CONTROL_FLOW`.
+- `defer break` → `E_DEFER_CONTROL_FLOW`.
+- `defer continue` → `E_DEFER_CONTROL_FLOW`.
+- `defer defer` → `E_DEFER_NESTED`.

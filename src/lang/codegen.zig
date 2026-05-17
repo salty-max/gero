@@ -1258,28 +1258,9 @@ const Emitter = struct {
             try self.diagFatal(ds.span, "E_CODEGEN_DEFER_NO_BLOCK", "codegen: `defer` outside a block — likely a frontend bug");
             return;
         }
-        // Reject the immediate forbidden shapes per spec §4.10. The
-        // typechecker should also catch these but the codegen check
-        // keeps the lowering defensive against frontend changes.
-        switch (ds.body.*) {
-            .return_stmt => {
-                try self.diagFatal(ds.span, "E_DEFER_RETURN", "codegen: `defer return` is not allowed — defers may not redirect control flow");
-                return;
-            },
-            .break_stmt => {
-                try self.diagFatal(ds.span, "E_DEFER_BREAK", "codegen: `defer break` is not allowed — defers may not redirect control flow");
-                return;
-            },
-            .continue_stmt => {
-                try self.diagFatal(ds.span, "E_DEFER_CONTINUE", "codegen: `defer continue` is not allowed — defers may not redirect control flow");
-                return;
-            },
-            .defer_stmt => {
-                try self.diagFatal(ds.span, "E_DEFER_DEFER", "codegen: `defer defer` is not allowed — wrap the body in `do … end` if you need a multi-statement defer");
-                return;
-            },
-            else => {},
-        }
+        // Forbidden defer shapes (`defer return / break / continue
+        // / defer`) are rejected by the typechecker; the codegen
+        // trusts that gate.
         const top = self.block_stack.items.len - 1;
         try self.block_stack.items[top].defers.append(self.allocator, ds.body);
     }

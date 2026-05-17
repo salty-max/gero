@@ -579,7 +579,7 @@ const Checker = struct {
             .asm_stmt => |as_| if (self.in_bake) {
                 try self.emitSpan("E_BAKE_ASM_INSIDE", as_.span, "`asm` is not allowed inside a `bake` context — compile-time interpretation cannot run host bytecode");
             },
-            .defer_stmt => |ds| try self.walkStatement(ds.body.*),
+            .defer_stmt => |ds| try self.checkDeferStmt(ds),
             .unknown => {},
         }
     }
@@ -1021,6 +1021,27 @@ const Checker = struct {
             .{ self.lexeme(ed.name), suffix, buf.items },
         );
         try self.emitSpan("E_MATCH_NON_EXHAUSTIVE", match_span, msg);
+    }
+
+    /// Defer bodies may not redirect control flow (per spec §4.10
+    /// — see `docs/lang-diagnostics.md` §5.11). Reject the immediate
+    /// `return` / `break` / `continue` shapes as
+    /// `E_DEFER_CONTROL_FLOW` and `defer defer` as `E_DEFER_NESTED`;
+    /// legitimate bodies fall through to the regular statement walk.
+    fn checkDeferStmt(self: *Checker, ds: ast.DeferStmt) WalkError!void {
+        switch (ds.body.*) {
+            .return_stmt, .break_stmt, .continue_stmt => try self.emitSpan(
+                "E_DEFER_CONTROL_FLOW",
+                ds.span,
+                "`defer` body cannot use control flow — defers may not `return`, `break`, or `continue` (wrap the body in `do … end` if you need a multi-statement cleanup)",
+            ),
+            .defer_stmt => try self.emitSpan(
+                "E_DEFER_NESTED",
+                ds.span,
+                "`defer defer` doesn't compose — drop the inner `defer`",
+            ),
+            else => try self.walkStatement(ds.body.*),
+        }
     }
 
     fn checkReturn(self: *Checker, rs: ast.ReturnStmt) WalkError!void {

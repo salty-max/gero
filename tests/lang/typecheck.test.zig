@@ -1436,6 +1436,43 @@ test "typecheck: bake def returning Vec errors with E_BAKE_NON_BAKEABLE_VALUE" {
     , "E_BAKE_NON_BAKEABLE_VALUE");
 }
 
+test "typecheck: `defer return` is rejected with E_DEFER_CONTROL_FLOW" {
+    try expectCode(
+        \\def main()
+        \\  defer return
+        \\  print 1
+        \\end
+    , "E_DEFER_CONTROL_FLOW");
+}
+
+test "typecheck: `defer break` is rejected with E_DEFER_CONTROL_FLOW" {
+    try expectCode(
+        \\def main()
+        \\  while true
+        \\    defer break
+        \\  end
+        \\end
+    , "E_DEFER_CONTROL_FLOW");
+}
+
+test "typecheck: `defer continue` is rejected with E_DEFER_CONTROL_FLOW" {
+    try expectCode(
+        \\def main()
+        \\  while true
+        \\    defer continue
+        \\  end
+        \\end
+    , "E_DEFER_CONTROL_FLOW");
+}
+
+test "typecheck: `defer defer` is rejected with E_DEFER_NESTED" {
+    try expectCode(
+        \\def main()
+        \\  defer defer print 1
+        \\end
+    , "E_DEFER_NESTED");
+}
+
 test "typecheck: bake def with asm inside errors with E_BAKE_ASM_INSIDE" {
     try expectCode(
         \\bake def f() -> i16
