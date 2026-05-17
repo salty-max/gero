@@ -170,6 +170,9 @@ pub const predicates = @import("typecheck/predicates.zig");
 /// Annotation validation (§3.7) — target bit-flags, spec table,
 /// per-decl walker, and the `@no_capture` predicate.
 pub const annotations = @import("typecheck/annotations.zig");
+/// Type-to-type relations — assignability (return / let-init /
+/// assignment / call-arg) and cast convertibility (§3.5.1).
+pub const relations = @import("typecheck/relations.zig");
 
 /// Re-export: target bit-flag namespace used by every decl-walker
 /// that calls into `annotations.validateAnnotations`.
@@ -612,7 +615,7 @@ pub const Checker = struct {
         else
             null;
         if (ann_ty != null and init_ty != null) {
-            if (!assignable(init_ty.?.*, ann_ty.?.*)) {
+            if (!relations.assignable(init_ty.?.*, ann_ty.?.*)) {
                 try self.emitMismatch(d.init.?.span(), ann_ty.?, init_ty.?);
             }
         }
@@ -706,7 +709,7 @@ pub const Checker = struct {
             null;
         const init_ty = try self.inferExpr(d.init, ann_ty);
         const final = ann_ty orelse init_ty;
-        if (ann_ty != null and init_ty != null and !assignable(init_ty.?.*, ann_ty.?.*)) {
+        if (ann_ty != null and init_ty != null and !relations.assignable(init_ty.?.*, ann_ty.?.*)) {
             try self.emitMismatch(d.init.span(), ann_ty.?, init_ty.?);
         }
         if (final) |t| {
@@ -731,7 +734,7 @@ pub const Checker = struct {
         // Compound `op=` is sugar for `target = target op value`; the
         // target's type is the hint for the rhs in either form.
         const val_ty = try self.inferExpr(a.value, tgt_ty);
-        if (tgt_ty != null and val_ty != null and !assignable(val_ty.?.*, tgt_ty.?.*)) {
+        if (tgt_ty != null and val_ty != null and !relations.assignable(val_ty.?.*, tgt_ty.?.*)) {
             try self.emitMismatch(a.value.span(), tgt_ty.?, val_ty.?);
         }
     }
@@ -881,7 +884,7 @@ pub const Checker = struct {
             try self.checkReturnStackLifetime(v);
             const v_ty = try self.inferExpr(v, self.current_ret_ty);
             if (self.current_ret_ty) |rt| if (v_ty) |vt| {
-                if (!assignable(vt.*, rt.*) and !predicates.isNilType(rt.*)) {
+                if (!relations.assignable(vt.*, rt.*) and !predicates.isNilType(rt.*)) {
                     try self.emitMismatch(v.span(), rt, vt);
                 }
             };
@@ -1626,7 +1629,7 @@ pub const Checker = struct {
                     null;
                 const skip = if (param_ty) |pt| predicates.isNilType(pt.*) else true;
                 const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
-                if (!skip and param_ty != null and arg_ty != null and !assignable(arg_ty.?.*, param_ty.?.*)) {
+                if (!skip and param_ty != null and arg_ty != null and !relations.assignable(arg_ty.?.*, param_ty.?.*)) {
                     try self.emitMismatch(arg.span(), param_ty.?, arg_ty.?);
                 }
             }
@@ -1683,7 +1686,7 @@ pub const Checker = struct {
             };
             const expected_ty = try self.resolveType(decl_field.type_ann);
             const actual_ty = try self.inferExpr(lit_field.value, expected_ty);
-            if (actual_ty) |at| if (!assignable(at.*, expected_ty.*)) {
+            if (actual_ty) |at| if (!relations.assignable(at.*, expected_ty.*)) {
                 try self.emitMismatch(lit_field.value.span(), expected_ty, at);
             };
             _ = try seen.put(self.arena, field_name, {});
@@ -1719,7 +1722,7 @@ pub const Checker = struct {
                 continue;
             }
             const actual_ty = try self.inferExpr(lit_field.value, expected_ty);
-            if (expected_ty) |et| if (actual_ty) |at| if (!assignable(at.*, et.*)) {
+            if (expected_ty) |et| if (actual_ty) |at| if (!relations.assignable(at.*, et.*)) {
                 try self.emitMismatch(lit_field.value.span(), et, at);
             };
         }
@@ -1991,7 +1994,7 @@ pub const Checker = struct {
         const inner_ty = try self.inferExpr(c.inner, null);
         const target_ty = try self.resolveType(c.target_type);
         if (inner_ty) |it| {
-            if (!canCast(it.*, target_ty.*)) {
+            if (!relations.canCast(it.*, target_ty.*)) {
                 const from_s = try types.render(self.arena, it.*);
                 const to_s = try types.render(self.arena, target_ty.*);
                 const msg = try std.fmt.allocPrint(
@@ -2055,7 +2058,7 @@ pub const Checker = struct {
             // those params accept any caller-supplied type.
             const skip = predicates.isNilType(param_ty.*);
             const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
-            if (!skip and arg_ty != null and !assignable(arg_ty.?.*, param_ty.*)) {
+            if (!skip and arg_ty != null and !relations.assignable(arg_ty.?.*, param_ty.*)) {
                 try self.emitMismatch(arg.span(), param_ty, arg_ty.?);
             }
         }
@@ -2102,7 +2105,7 @@ pub const Checker = struct {
             const param_ty = f.params[i];
             const skip = predicates.isNilType(param_ty.*);
             const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
-            if (!skip and arg_ty != null and !assignable(arg_ty.?.*, param_ty.*)) {
+            if (!skip and arg_ty != null and !relations.assignable(arg_ty.?.*, param_ty.*)) {
                 try self.emitMismatch(arg.span(), param_ty, arg_ty.?);
             }
         }
@@ -2112,7 +2115,7 @@ pub const Checker = struct {
             const arg_ty = try self.inferExpr(arg, pivot);
             const at = arg_ty orelse continue;
             if (pivot) |p| {
-                if (!assignable(at.*, p.*)) {
+                if (!relations.assignable(at.*, p.*)) {
                     const exp_s = try types.render(self.arena, p.*);
                     const got_s = try types.render(self.arena, at.*);
                     const msg = try std.fmt.allocPrint(
@@ -2266,48 +2269,4 @@ fn isPlaceExpr(e: *const ast.Expr) bool {
         .paren => |p| isPlaceExpr(p.inner),
         else => false,
     };
-}
-
-// ---------- assignability ----------
-
-/// `true` when an `actual` typed value can be stored / returned /
-/// passed into an `expected` slot. Wider than `Type.eql` — allows
-/// `T → T?` (non-nil to nullable) and recurses into tuples for
-/// per-slot assignability. Used by return / let-init / assignment
-/// / call-arg checks; operator arms keep strict equality.
-fn assignable(actual: types.Type, expected: types.Type) bool {
-    if (actual.eql(expected)) return true;
-    if (expected == .optional) {
-        if (actual == .primitive and actual.primitive == .nil_) return true;
-        if (assignable(actual, expected.optional.*)) return true;
-    }
-    if (expected == .tuple and actual == .tuple and expected.tuple.len == actual.tuple.len) {
-        for (expected.tuple, actual.tuple) |e, a| {
-            if (!assignable(a.*, e.*)) return false;
-        }
-        return true;
-    }
-    return false;
-}
-
-// ---------- cast convertibility (§3.5.1) ----------
-
-/// Spec §3.5.1 conversion table. Allows integer ↔ integer (any
-/// width / sign), bool ↔ integer, fixed ↔ integer, u8 ↔ char, and
-/// any same-primitive identity cast. Rejects everything else
-/// (class casts, function-pointer reinterpret, reference casts).
-fn canCast(from: types.Type, to: types.Type) bool {
-    if (from != .primitive or to != .primitive) return false;
-    const f = from.primitive;
-    const t = to.primitive;
-    if (f == t) return true;
-    const f_int = predicates.isIntegerPrimitive(f);
-    const t_int = predicates.isIntegerPrimitive(t);
-    if (f_int and t_int) return true;
-    if (f == .bool_ and t_int) return true;
-    if (f_int and t == .bool_) return true;
-    if (f == .fixed and t_int) return true;
-    if (f_int and t == .fixed) return true;
-    if ((f == .u8 and t == .char) or (f == .char and t == .u8)) return true;
-    return false;
 }
