@@ -10,7 +10,7 @@ const std = @import("std");
 /// 4-byte ASCII magic at the top of every `.gx` archive.
 pub const gx_magic = [4]u8{ 'G', 'E', 'R', 'O' };
 /// Format version stored in bytes 4-5 of the header.
-pub const gx_version: u16 = 0x0001;
+pub const gx_version: u16 = 0x0002;
 /// Fixed header size in bytes — every archive starts with this
 /// many bytes before the base image.
 pub const gx_header_size: usize = 16;
@@ -36,6 +36,7 @@ pub fn buildArchive(
     allocator: std.mem.Allocator,
     base_image: []const u8,
     entry_point: u16,
+    heap_base: u16,
     banks: *const std.AutoHashMapUnmanaged(u8, std.ArrayList(u8)),
 ) ![]u8 {
     // Bank count = max bank index + 1 (banks are 0-indexed). 0 if
@@ -67,7 +68,7 @@ pub fn buildArchive(
     // safety: bank_count ≤ 256 by construction.
     out[12] = @intCast(bank_count);
     out[13] = 0; // sram_bank_count
-    writeU16Le(out[14..16], 0); // reserved
+    writeU16Le(out[14..16], heap_base);
 
     @memcpy(out[gx_header_size..][0..base_image.len], base_image);
 

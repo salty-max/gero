@@ -37,6 +37,29 @@ test "codegen: empty `def main() end` compiles to a valid .gx" {
     try std.testing.expectEqual(@as(u8, 0xFF), loaded.image[gero.lang.codegen.code_base]);
 }
 
+test "codegen: emitted .gx header carries heap_base = end of data region" {
+    // Source with no globals — data region empty, so heap_base sits
+    // at data_base (the start of the dynamic data area).
+    var compiled = try compileSource(
+        \\def main() end
+    );
+    defer compiled.deinit();
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try std.testing.expectEqual(gero.lang.codegen.data_base, loaded.header.heap_base);
+}
+
+test "codegen: heap_base advances past static globals" {
+    // Two u16 globals in the data region → heap_base = data_base + 4.
+    var compiled = try compileSource(
+        \\let a: u16 = 0
+        \\let b: u16 = 0
+        \\def main() end
+    );
+    defer compiled.deinit();
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try std.testing.expectEqual(@as(u16, gero.lang.codegen.data_base + 4), loaded.header.heap_base);
+}
+
 test "codegen: produced .gx boots and halts on the VM" {
     var compiled = try compileSource(
         \\def main() end
