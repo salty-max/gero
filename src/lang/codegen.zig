@@ -64,8 +64,8 @@ const Op = struct {
     const mov_zp_to_reg: u8 = 0x1A; // load:  reg ← [zp] (word)
     const mov8_addr_to_reg: u8 = 0x22; // load:  reg ← byte [addr]
     const mov8_zp_to_reg: u8 = 0x29; // load:  reg ← byte [zp]
-    const mov8_imm_to_zp: u8 = 0x28; // store: byte at [zp] ← imm
-    const mov8_imm_to_addr: u8 = 0x20; // store: byte at [addr] ← imm
+    const movl_reg_to_addr: u8 = 0x27; // store: [addr] ← reg.lo  (byte store)
+    const movl_reg_to_zp: u8 = 0x2B; // store: [zp]   ← reg.lo  (byte store)
 
     const push_reg: u8 = 0x31;
     const pop_reg: u8 = 0x32;
@@ -79,6 +79,7 @@ const Op = struct {
     const divs_reg_reg: u8 = 0x4E; // dst ← dst / src (signed)
 
     const call_addr: u8 = 0xA0;
+    const call_reg: u8 = 0xA1;
     const ret_op: u8 = 0xA2;
 
     const sys: u8 = 0xFB;
@@ -92,6 +93,7 @@ const Reg = struct {
     const r2: u8 = 0x03;
     const sp: u8 = 0x0A;
     const fp: u8 = 0x0B;
+    const mb: u8 = 0x0C;
 };
 
 /// `sys` syscall ids per `src/vm/handlers/system.zig::SyscallId`.
@@ -177,6 +179,8 @@ pub fn compile(
         .frame_bytes = 0,
         .is_entry = false,
         .fn_addresses = .{},
+        .fn_banks = .{},
+        .trampoline_addr = null,
         .call_patches = .empty,
         .globals = .{},
         .data_cursor = data_base,
@@ -235,17 +239,25 @@ fn findEntryDef(source: []const u8, program: *const ast.Program, entry_name: []c
 /// `code` is overwritten with the resolved callee address.
 const CallPatch = struct {
     /// Which buffer the patch lives in — `null` = base code,
-    /// non-null = bank N's buffer. The patcher uses this to
-    /// find the right ArrayList.
+    /// non-null = bank N's buffer.
     bank: ?u8,
     /// Byte offset into the resolved buffer where the 2-byte LE
-    /// address slot lives (right after the `0xA0` opcode).
+    /// address slot lives.
     code_offset: usize,
-    /// Callee fn name to resolve via `fn_addresses`.
-    callee_name: []const u8,
+    /// What address to write into the slot at patch time.
+    target: Target,
     /// Span of the original call expression — used to anchor the
     /// `E_CODEGEN_UNDEFINED_FN` diagnostic on resolve failure.
     span: ast.Span,
+
+    /// Patch-target kinds:
+    /// - `fn_name`: resolve via the codegen's `fn_addresses` map.
+    /// - `trampoline`: resolve to the `__call_bank` trampoline's
+    ///   address, recorded after the trampoline emits.
+    const Target = union(enum) {
+        fn_name: []const u8,
+        trampoline,
+    };
 };
 
 /// One top-level `let` / `const` global. Address is decided during
@@ -294,10 +306,21 @@ const Emitter = struct {
     /// `push fp` / `mov sp, fp` parts of the prologue (the VM
     /// boots with `fp == sp`).
     is_entry: bool,
-    /// Top-level `def` name → absolute address in the base image
-    /// (`code_base + offset`). Populated as defs are emitted in
-    /// source order so calls patch correctly.
+    /// Top-level `def` name → absolute address. Populated as defs
+    /// are emitted in source order so calls patch correctly. For
+    /// banked defs, the recorded address sits in the bank window
+    /// (`bank_window_base + offset`); for un-banked defs, it sits
+    /// in the base image (`code_base + offset`).
     fn_addresses: std.StringHashMapUnmanaged(u16),
+    /// Top-level `def` name → the bank it lives in (or `null`
+    /// for the base image). Populated in a pre-pass over
+    /// `program.statements` BEFORE emission, so `emitCall` knows
+    /// the target's bank when deciding direct-call vs trampoline.
+    fn_banks: std.StringHashMapUnmanaged(?u8),
+    /// Address of the `__call_bank` trampoline in the base image
+    /// after emission. `null` until the trampoline is emitted —
+    /// trampoline-target call patches resolve against this.
+    trampoline_addr: ?u16,
     /// Unresolved `call addr` sites — recorded when the callee's
     /// address isn't known yet (forward references). Rewritten at
     /// the end of `emitProgram`.
@@ -437,6 +460,22 @@ const Emitter = struct {
         try self.emitByte(dst);
     }
 
+    /// `movl reg, [addr]` (0x27) — store reg's low byte to addr.
+    /// Used for 1-byte global stores so neighboring bytes stay
+    /// untouched (critical for MMIO).
+    fn movlRegToAddr(self: *Emitter, src: u8, addr: u16) !void {
+        try self.emitByte(Op.movl_reg_to_addr);
+        try self.emitByte(src);
+        try self.emitU16Le(addr);
+    }
+
+    /// `movl reg, [zp]` (0x2B) — store reg's low byte to zp slot.
+    fn movlRegToZp(self: *Emitter, src: u8, zp: u8) !void {
+        try self.emitByte(Op.movl_reg_to_zp);
+        try self.emitByte(src);
+        try self.emitByte(zp);
+    }
+
     /// `push reg` (0x31).
     fn pushReg(self: *Emitter, reg: u8) !void {
         try self.emitByte(Op.push_reg);
@@ -540,11 +579,12 @@ const Emitter = struct {
     /// header `entry_point`), then every other top-level `def` in
     /// source order, then patch unresolved call sites.
     fn emitProgram(self: *Emitter, program: *const ast.Program, entry_name: []const u8) !void {
-        // Pre-pass: register every top-level `let` / `const` with
-        // its resolved address. `@addr` literal wins, then
-        // `@zero_page` (bumps `zp_cursor`), else dynamic data
-        // region (bumps `data_cursor`).
+        // Pre-pass 1: register globals (top-level let/const).
         try self.registerGlobals(program);
+        // Pre-pass 2: collect each def's bank so `emitCall` can
+        // decide direct-call vs trampoline without needing the
+        // target's address yet.
+        try self.collectDefBanks(program);
 
         const entry = findEntryDef(self.source, program, entry_name).?;
         try self.emitDef(entry, .entry);
@@ -552,7 +592,85 @@ const Emitter = struct {
             .def_decl => |*dd| if (dd != entry) try self.emitDef(dd, .regular),
             else => {},
         };
+
+        // Emit the `__call_bank` trampoline only if at least one
+        // cross-bank call site asked for it (saves 10 bytes when
+        // the program is entirely un-banked or single-bank).
+        if (self.needsTrampoline()) try self.emitCallBankTrampoline();
+
         try self.patchCalls();
+    }
+
+    /// Scan top-level `def`s, recording each name → its `@bank N`
+    /// annotation (or `null` for base-image defs).
+    fn collectDefBanks(self: *Emitter, program: *const ast.Program) !void {
+        for (program.statements) |*stmt| switch (stmt.*) {
+            .def_decl => |*dd| {
+                const name = self.source[dd.name.start..dd.name.end];
+                const dup = try self.arena.dupe(u8, name);
+                var bank: ?u8 = null;
+                for (dd.annotations) |ann| {
+                    const ann_name = self.source[ann.name.start..ann.name.end];
+                    if (std.mem.eql(u8, ann_name, "bank") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
+                        // @as: typechecker enforces u8 range on `@bank N`.
+                        bank = @intCast(ann.args[0].int_lit.value & 0xFF);
+                    }
+                }
+                try self.fn_banks.put(self.arena, dup, bank);
+            },
+            else => {},
+        };
+    }
+
+    /// `true` when any unresolved call patch targets the
+    /// trampoline. We only emit the trampoline body when at least
+    /// one call site needs it — keeps single-bank programs lean.
+    fn needsTrampoline(self: *const Emitter) bool {
+        for (self.call_patches.items) |p| switch (p.target) {
+            .trampoline => return true,
+            else => {},
+        };
+        return false;
+    }
+
+    /// Emit the `__call_bank` trampoline at the current base-
+    /// image cursor. Caller sets up `r1 = target_addr`,
+    /// `r2 = target_bank`, then `call __call_bank`. The trampoline
+    /// saves the caller's `mb`, switches to the target bank, calls
+    /// through `r1`, restores `mb`, and `ret`s back.
+    ///
+    /// Layout (10 bytes):
+    ///   push mb         ; 31 0C
+    ///   mov r2, mb      ; 11 03 0C
+    ///   call r1         ; A1 02
+    ///   pop mb          ; 32 0C
+    ///   ret             ; A2
+    fn emitCallBankTrampoline(self: *Emitter) !void {
+        // The trampoline must live in the base image (always
+        // reachable regardless of `mb`). Save / restore the
+        // bank-routing state explicitly even though we expect the
+        // caller to be in the base buffer already.
+        const saved_bank = self.current_bank;
+        self.current_bank = null;
+        defer self.current_bank = saved_bank;
+
+        // @as: narrow usize → u16; base image fits in 64 KiB.
+        const tramp_offset: u16 = @intCast(self.code.items.len);
+        self.trampoline_addr = code_base + tramp_offset;
+
+        // push mb
+        try self.emitByte(Op.push_reg);
+        try self.emitByte(Reg.mb);
+        // mov r2, mb
+        try self.movRegToReg(Reg.r2, Reg.mb);
+        // call r1
+        try self.emitByte(Op.call_reg);
+        try self.emitByte(Reg.r1);
+        // pop mb
+        try self.emitByte(Op.pop_reg);
+        try self.emitByte(Reg.mb);
+        // ret
+        try self.emitByte(Op.ret_op);
     }
 
     /// Pre-pass over top-level statements that registers every
@@ -695,19 +813,27 @@ const Emitter = struct {
         }
     }
 
-    /// Emit a store of `src` reg's value into `g`'s slot. Only the
-    /// 16-bit `mov` opcodes are exposed today; 1-byte stores fall
-    /// back to the 16-bit form which clobbers the trailing byte —
-    /// acceptable for slice M1 since the byte's neighbor is also
-    /// part of `g`'s slot (the allocator places adjacent bindings
-    /// with their own widths).
+    /// Emit a store of `src` reg's value into `g`'s slot. Byte-
+    /// width globals use `movl` (low-byte store) so the
+    /// neighboring byte stays untouched — critical for MMIO where
+    /// adjacent addresses are distinct registers.
     fn emitGlobalStore(self: *Emitter, src: u8, g: Global) !void {
         switch (g.placement) {
-            .addr, .data => try self.movRegToAddr(src, g.address),
+            .addr, .data => {
+                if (g.width == 1) {
+                    try self.movlRegToAddr(src, g.address);
+                } else {
+                    try self.movRegToAddr(src, g.address);
+                }
+            },
             .zero_page => {
                 // @as: zero-page address fits in u8; placement.zero_page guarantees address ≤ 0xFF.
                 const zp: u8 = @intCast(g.address);
-                try self.movRegToZp(src, zp);
+                if (g.width == 1) {
+                    try self.movlRegToZp(src, zp);
+                } else {
+                    try self.movRegToZp(src, zp);
+                }
             },
         }
     }
@@ -817,19 +943,22 @@ const Emitter = struct {
     /// first) but the check keeps the codegen defensive.
     fn patchCalls(self: *Emitter) !void {
         for (self.call_patches.items) |p| {
-            const target = self.fn_addresses.get(p.callee_name) orelse {
-                const msg = try std.fmt.allocPrint(
-                    self.arena,
-                    "codegen: call target `{s}` is not a known top-level def",
-                    .{p.callee_name},
-                );
-                try self.diagnostics.append(self.allocator, .{
-                    .severity = .fatal,
-                    .code = "E_CODEGEN_UNDEFINED_FN",
-                    .message = msg,
-                    .span = p.span,
-                });
-                continue;
+            const target_addr: u16 = switch (p.target) {
+                .fn_name => |name| self.fn_addresses.get(name) orelse {
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "codegen: call target `{s}` is not a known top-level def",
+                        .{name},
+                    );
+                    try self.diagnostics.append(self.allocator, .{
+                        .severity = .fatal,
+                        .code = "E_CODEGEN_UNDEFINED_FN",
+                        .message = msg,
+                        .span = p.span,
+                    });
+                    continue;
+                },
+                .trampoline => self.trampoline_addr orelse continue,
             };
             // Resolve which buffer holds this patch — base or
             // one of the bank ArrayLists.
@@ -839,8 +968,8 @@ const Emitter = struct {
                 self.code.items;
             // Overwrite the 2-byte LE address slot.
             // safety: u16 → 2 bytes by definition; both casts are byte-masks.
-            buf[p.code_offset] = @intCast(target & 0xFF);
-            buf[p.code_offset + 1] = @intCast(target >> 8);
+            buf[p.code_offset] = @intCast(target_addr & 0xFF);
+            buf[p.code_offset + 1] = @intCast(target_addr >> 8);
         }
     }
 
@@ -1064,7 +1193,16 @@ const Emitter = struct {
             try self.unsupported(c.span, "non-ident callee");
             return;
         }
-        // Push args right-to-left.
+        const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
+        const dup = try self.arena.dupe(u8, callee_name);
+
+        // Decide direct call vs trampoline by comparing the
+        // caller's bank with the target's. The pre-pass populated
+        // `fn_banks` so this resolves without needing the address.
+        const target_bank: ?u8 = self.fn_banks.get(callee_name) orelse null;
+        const cross_bank = !banksEqual(self.current_bank, target_bank);
+
+        // Push args right-to-left (caller-cleans-up).
         var i: usize = c.args.len;
         while (i > 0) {
             i -= 1;
@@ -1072,24 +1210,50 @@ const Emitter = struct {
             try self.pushReg(Reg.acu);
         }
 
-        // Emit `call <addr>` with a placeholder address; the
-        // patching pass rewrites it once every def's address is
-        // known.
-        try self.emitByte(Op.call_addr);
-        const patch_offset = try self.currentOffset();
-        try self.emitU16Le(0); // placeholder
-        const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
-        const dup = try self.arena.dupe(u8, callee_name);
-        try self.call_patches.append(self.allocator, .{
-            .bank = self.current_bank,
-            .code_offset = patch_offset,
-            .callee_name = dup,
-            .span = c.span,
-        });
+        if (cross_bank) {
+            // Trampoline path:
+            //   mov <target_addr>, r1   ; patched at end
+            //   mov <target_bank>,  r2  ; literal at emit time
+            //   call __call_bank        ; patched at end
+            try self.emitByte(Op.mov_imm16_reg);
+            const addr_patch_offset = try self.currentOffset();
+            try self.emitU16Le(0); // placeholder
+            try self.emitByte(Reg.r1);
+            // mov <bank>, r2  — bank known at emit time (null → 0).
+            const target_bank_byte: u8 = target_bank orelse 0;
+            try self.movImmToReg(target_bank_byte, Reg.r2);
+            // call __call_bank  (patched at end)
+            try self.emitByte(Op.call_addr);
+            const tramp_patch_offset = try self.currentOffset();
+            try self.emitU16Le(0);
 
-        // Caller-cleans-up the pushed args.
+            try self.call_patches.append(self.allocator, .{
+                .bank = self.current_bank,
+                .code_offset = addr_patch_offset,
+                .target = .{ .fn_name = dup },
+                .span = c.span,
+            });
+            try self.call_patches.append(self.allocator, .{
+                .bank = self.current_bank,
+                .code_offset = tramp_patch_offset,
+                .target = .trampoline,
+                .span = c.span,
+            });
+        } else {
+            // Direct same-bank call.
+            try self.emitByte(Op.call_addr);
+            const patch_offset = try self.currentOffset();
+            try self.emitU16Le(0); // placeholder
+            try self.call_patches.append(self.allocator, .{
+                .bank = self.current_bank,
+                .code_offset = patch_offset,
+                .target = .{ .fn_name = dup },
+                .span = c.span,
+            });
+        }
+
         if (c.args.len > 0) {
-            // @as: each arg is one 16-bit word.
+            // @as: each arg is one 16-bit word; arg count capped by parser.
             const drop_bytes: u16 = @intCast(c.args.len * 2);
             try self.addImmToReg(drop_bytes, Reg.sp);
         }
@@ -1198,4 +1362,13 @@ fn alignUpU16(value: u16, align_n: u16) u16 {
     if (align_n <= 1) return value;
     const mask: u16 = align_n - 1;
     return (value + mask) & ~mask;
+}
+
+/// `true` when two optional bank tags refer to the same code
+/// location — both `null` (base image) or both wrapping the same
+/// bank index.
+fn banksEqual(a: ?u8, b: ?u8) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    return a.? == b.?;
 }
