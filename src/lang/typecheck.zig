@@ -157,36 +157,14 @@ pub fn typecheck(
     };
 }
 
-/// `mem.*` stdlib builtin lowering — signatures, lookup, and
-/// the two typechecker dispatch entry points.
-pub const mem_builtin = @import("typecheck/mem_builtin.zig");
-/// `match` typechecking — pattern walks, exhaustiveness +
-/// reachability checks, variant-path utilities.
-pub const match = @import("typecheck/match.zig");
-/// Pure predicates over `types.Type` / `types.Primitive` /
-/// `ast.BinaryOp` — integer / numeric / bool / nil / bakeable
-/// checks plus diagnostic-string formatters.
-pub const predicates = @import("typecheck/predicates.zig");
-/// Annotation validation (§3.7) — target bit-flags, spec table,
-/// per-decl walker, and the `@no_capture` predicate.
-pub const annotations = @import("typecheck/annotations.zig");
-/// Type-to-type relations — assignability (return / let-init /
-/// assignment / call-arg) and cast convertibility (§3.5.1).
-pub const relations = @import("typecheck/relations.zig");
-/// Flow-sensitive helpers — ident-name extraction, body-exits
-/// check, named-type lookup, struct/class field finders.
-pub const flow = @import("typecheck/flow.zig");
+const mem_builtin = @import("typecheck/mem_builtin.zig");
+const match = @import("typecheck/match.zig");
+const predicates = @import("typecheck/predicates.zig");
+const annotations = @import("typecheck/annotations.zig");
+const relations = @import("typecheck/relations.zig");
+const flow = @import("typecheck/flow.zig");
 
-/// Re-export: target bit-flag namespace used by every decl-walker
-/// that calls into `annotations.validateAnnotations`.
 const T = annotations.T;
-
-/// `mem.*` stdlib builtin signature (re-exported from the
-/// sub-module for callers that just want the lookup type).
-pub const MemBuiltinSig = mem_builtin.MemBuiltinSig;
-
-/// `mem.X` lookup (re-exported convenience).
-pub const lookupMemBuiltin = mem_builtin.lookupMemBuiltin;
 
 /// Stateful walker that runs resolution + inference + checking
 /// across the program. Sub-modules under `typecheck/` take a
