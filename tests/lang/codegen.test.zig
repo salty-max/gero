@@ -1252,6 +1252,90 @@ test "codegen: zero-page overflow emits E_CODEGEN_ZP_OVERFLOW" {
     try std.testing.expect(found);
 }
 
+// ---------- M3a: enum codegen (nullary variants) ----------
+
+test "codegen: nullary enum constructor loads tag byte into acu" {
+    try runAndExpect(
+        \\enum Color
+        \\  case Red
+        \\  case Green
+        \\  case Blue
+        \\end
+        \\def main()
+        \\  let c: Color = Color.Green
+        \\  print c
+        \\end
+    ,
+        // Green is the second declared variant → tag = 1.
+        "1\n");
+}
+
+test "codegen: `is` test on enum returns true on the right variant" {
+    try runAndExpect(
+        \\enum Color
+        \\  case Red
+        \\  case Green
+        \\end
+        \\def main()
+        \\  let c: Color = Color.Green
+        \\  if c is Color.Green
+        \\    print 1
+        \\  end
+        \\  if c is Color.Red
+        \\    print 99
+        \\  end
+        \\end
+    , "1\n");
+}
+
+test "codegen: match on nullary enum dispatches per variant tag" {
+    try runAndExpect(
+        \\enum Color
+        \\  case Red
+        \\  case Green
+        \\  case Blue
+        \\end
+        \\def main()
+        \\  let c: Color = Color.Blue
+        \\  match c
+        \\    case Color.Red => print 1
+        \\    case Color.Green => print 2
+        \\    case Color.Blue => print 3
+        \\  end
+        \\end
+    , "3\n");
+}
+
+test "codegen: undefined enum variant in `is` rhs is rejected" {
+    const source =
+        \\enum Color
+        \\  case Red
+        \\end
+        \\def main()
+        \\  let c: Color = Color.Red
+        \\  if c is Color.NoSuchVariant
+        \\    print 1
+        \\  end
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_UNDEFINED_VARIANT")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
 test "codegen: custom entry_name resolves" {
     const source = "def boot() end";
     var stream = try gero.lang.tokenize(alloc, source);
