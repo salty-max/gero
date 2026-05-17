@@ -206,3 +206,116 @@ test "run: exits on brk, but resuming continues to hlt" {
     // Host resumes.
     try std.testing.expectEqual(gero.vm.StepResult.halted, gero.vm.run(&vm));
 }
+
+// ---------- sys 0xFB — host-callback syscalls ----------
+
+fn captureWriter(buf: *std.ArrayList(u8)) std.Io.Writer.Allocating {
+    return std.Io.Writer.Allocating.fromArrayList(std.testing.allocator, buf);
+}
+
+test "sys 0xFB: print_int writes decimal of acu" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    var writer = captureWriter(&buf);
+    defer writer.deinit();
+    vm.host = .{ .out = &writer.writer };
+
+    vm.regs.write(.acu, 42);
+    loadProgram(&vm, &.{ 0xFB, 0x02 }); // sys print_int
+    try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
+    try std.testing.expectEqualStrings("42", writer.written());
+    try std.testing.expectEqual(@as(u16, 0x1102), vm.regs.read(.ip));
+}
+
+test "sys 0xFB: print_int formats negative as signed decimal" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    var writer = captureWriter(&buf);
+    defer writer.deinit();
+    vm.host = .{ .out = &writer.writer };
+
+    // -7 as u16 = 0xFFF9
+    vm.regs.write(.acu, 0xFFF9);
+    loadProgram(&vm, &.{ 0xFB, 0x02 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqualStrings("-7", writer.written());
+}
+
+test "sys 0xFB: print_str walks memory from acu until null" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    var writer = captureWriter(&buf);
+    defer writer.deinit();
+    vm.host = .{ .out = &writer.writer };
+
+    // Stash "hi!\0" at 0x2000.
+    vm.mmap.writeByte(0x2000, 'h');
+    vm.mmap.writeByte(0x2001, 'i');
+    vm.mmap.writeByte(0x2002, '!');
+    vm.mmap.writeByte(0x2003, 0);
+    vm.regs.write(.acu, 0x2000);
+    loadProgram(&vm, &.{ 0xFB, 0x01 }); // sys print_str
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqualStrings("hi!", writer.written());
+}
+
+test "sys 0xFB: print_char writes low byte of acu" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    var writer = captureWriter(&buf);
+    defer writer.deinit();
+    vm.host = .{ .out = &writer.writer };
+
+    vm.regs.write(.acu, 0x4142); // low byte = 0x42 = 'B'
+    loadProgram(&vm, &.{ 0xFB, 0x03 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqualStrings("B", writer.written());
+}
+
+test "sys 0xFB: print_newline writes a single \\n" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    var writer = captureWriter(&buf);
+    defer writer.deinit();
+    vm.host = .{ .out = &writer.writer };
+
+    loadProgram(&vm, &.{ 0xFB, 0x04 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqualStrings("\n", writer.written());
+}
+
+test "sys 0xFB: unknown syscall id raises invalid_opcode fault" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    var writer = captureWriter(&buf);
+    defer writer.deinit();
+    vm.host = .{ .out = &writer.writer };
+
+    vm.mmap.writeWord(gero.vm.ivtSlot(.invalid_opcode), 0x5000);
+    loadProgram(&vm, &.{ 0xFB, 0xEE });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+    try std.testing.expectEqual(@as(usize, 0), writer.written().len);
+}
+
+test "sys 0xFB: with host.out = null, output syscalls are silent no-ops" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    // host.out is null by default — no writer installed.
+    vm.regs.write(.acu, 42);
+    loadProgram(&vm, &.{ 0xFB, 0x02 });
+    try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
+    try std.testing.expectEqual(@as(u16, 0x1102), vm.regs.read(.ip));
+}

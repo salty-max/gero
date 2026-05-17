@@ -199,6 +199,7 @@ pub const handler_table: [256]Handler = blk: {
     t[0xC1] = system_handlers.nop;
 
     // 0xFX — system
+    t[0xFB] = system_handlers.sys;
     t[0xFC] = system_handlers.intImm8;
     t[0xFD] = system_handlers.rti;
     t[0xFE] = system_handlers.brk;

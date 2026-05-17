@@ -524,10 +524,31 @@ sequences.
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
+| `0xFB` | `sys`    | `Imm8` | host-callback syscall — dispatches to a fixed handler in the VM (not user bytecode). See §5.13.1 for the registered syscall numbers and register conventions. |
 | `0xFC` | `int`    | `Imm8` | software interrupt — push state, jump via vector table at `0x1000 + 2 * imm`. By convention `int 0x21` = "flush SRAM to disk now" (§3.2.1). |
 | `0xFD` | `rti`    | (none) | return from interrupt — restore state, resume |
 | `0xFE` | `brk`    | (none) | breakpoint — VM raises `Break` event for the host (debugger). Distinct from `hlt`: execution can resume. |
 | `0xFF` | `hlt`    | (none) | halt — VM raises `Halt` event for the host. Execution does not resume; program is done. |
+
+#### 5.13.1 `sys` syscalls
+
+`sys` dispatches the `Imm8` operand to a fixed VM handler. Output
+syscalls write to the host-provided `Host.out` writer (see VM
+embedding API); when no writer is installed the syscalls become
+silent no-ops. Unknown syscall numbers raise the
+**invalid-opcode** fault.
+
+| ID    | Name            | Register convention                            |
+|-------|-----------------|------------------------------------------------|
+| `0x01`| `print_str`     | `acu` = address of a null-terminated byte string in memory. Bytes (without the trailing `\0`) are written to `Host.out`. |
+| `0x02`| `print_int`     | `acu` = signed 16-bit value. Written as decimal to `Host.out`. |
+| `0x03`| `print_char`    | low byte of `acu` written directly. |
+| `0x04`| `print_newline` | writes a single `\n` byte. |
+
+Writer failures (host stdout closed, OOM in the writer's buffer)
+raise the **invalid-opcode** fault as well. The `sys` mechanism is
+intentionally narrow — it's the embedding boundary, not a general
+syscall surface. Add new syscall numbers conservatively.
 
 ---
 

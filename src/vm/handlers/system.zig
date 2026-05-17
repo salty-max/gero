@@ -107,3 +107,68 @@ pub fn hlt(vm: *VM) StepResult {
     _ = vm;
     return .halted;
 }
+
+// ---------- syscall (host-callback) ----------
+
+/// Host-callback syscall identifiers. The `sys imm8` opcode
+/// dispatches on this number; unknown ids raise the
+/// `invalid_opcode` fault. See `gero.vm.VM.host` for the sinks
+/// these syscalls write to.
+pub const SyscallId = enum(u8) {
+    /// `acu` = address in memory of a null-terminated byte string;
+    /// the bytes (excluding the trailing `\0`) get written to
+    /// `host.out`.
+    print_str = 0x01,
+    /// `acu` = signed 16-bit value, formatted as decimal into
+    /// `host.out`.
+    print_int = 0x02,
+    /// `acu` low byte → `host.out` as a raw character.
+    print_char = 0x03,
+    /// Writes a single `\n` byte to `host.out`. No args.
+    print_newline = 0x04,
+    /// Open-enum tail — unknown syscall ids coerce here and the
+    /// `sys` handler routes them to the `invalid_opcode` fault.
+    _,
+};
+
+/// `0xFB` — `sys imm8` → host-callback syscall. Reads the
+/// syscall id from the operand byte, dispatches to a fixed
+/// handler. Output syscalls are silent no-ops when
+/// `vm.host.out` is `null`. Writer failures and unknown
+/// syscall ids both raise the `invalid_opcode` fault.
+pub fn sys(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const id_byte = vm.readByte(ip +% 1);
+    // safety: enum payload is u8 — every value round-trips, even
+    // unrecognized ones via the `else` arm below.
+    const id: SyscallId = @enumFromInt(id_byte);
+    const writer = vm.host.out orelse return ok;
+    switch (id) {
+        .print_str => printStr(vm, writer) catch return fault(vm, .invalid_opcode),
+        .print_int => {
+            // safety: r0 is u16; bit-cast to i16 for signed-decimal output.
+            const v: i16 = @bitCast(vm.regs.read(.acu));
+            writer.print("{d}", .{v}) catch return fault(vm, .invalid_opcode);
+        },
+        .print_char => {
+            // safety: r0 is u16; the print_char syscall writes the low byte only.
+            const byte: u8 = @intCast(vm.regs.read(.acu) & 0xFF);
+            writer.writeByte(byte) catch return fault(vm, .invalid_opcode);
+        },
+        .print_newline => writer.writeByte('\n') catch return fault(vm, .invalid_opcode),
+        // Unknown id — open-enum coercion picks this up; future
+        // syscall ids should add an arm above.
+        _ => return fault(vm, .invalid_opcode),
+    }
+    return ok;
+}
+
+fn printStr(vm: *VM, writer: *@import("std").Io.Writer) !void {
+    var addr: u16 = vm.regs.read(.acu);
+    while (true) {
+        const b = vm.readByte(addr);
+        if (b == 0) break;
+        try writer.writeByte(b);
+        addr +%= 1;
+    }
+}
