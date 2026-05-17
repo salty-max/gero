@@ -998,29 +998,24 @@ test "codegen: defer in nested block fires before outer defers" {
     , "0\n3\n2\n4\n1\n");
 }
 
-test "codegen: defer return is rejected by codegen" {
-    const source =
+test "codegen: defer fires on continue path before going to next iteration" {
+    try runAndExpect(
         \\def main()
-        \\  defer return
-        \\  print 1
+        \\  let i: i16 = 0
+        \\  while i < 3
+        \\    defer print 9
+        \\    i = i + 1
+        \\    if i == 2
+        \\      continue
+        \\    end
+        \\    print i
+        \\  end
         \\end
-    ;
-    var stream = try gero.lang.tokenize(alloc, source);
-    defer stream.deinit();
-    var tree = try gero.lang.parse(alloc, source, stream);
-    defer tree.deinit();
-    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
-    defer checked.deinit();
-
-    var compiled = try gero.lang.compile(alloc, source, &checked, .{});
-    defer compiled.deinit();
-    try std.testing.expect(compiled.hasErrors());
-
-    var found = false;
-    for (compiled.diagnostics) |d| {
-        if (std.mem.eql(u8, d.code, "E_DEFER_RETURN")) found = true;
-    }
-    try std.testing.expect(found);
+    ,
+        // Iteration 1: i becomes 1, print 1, fall-through defer → 9.
+        // Iteration 2: i becomes 2, continue → defer fires (9).
+        // Iteration 3: i becomes 3, print 3, fall-through defer → 9.
+        "1\n9\n9\n3\n9\n");
 }
 
 test "codegen: custom entry_name resolves" {
