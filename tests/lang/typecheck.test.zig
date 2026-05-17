@@ -63,11 +63,11 @@ fn expectCode(source: []const u8, code: []const u8) !void {
     defer checked.deinit();
 
     for (checked.diagnostics) |d| {
-        if (d.expected) |exp| if (std.mem.eql(u8, exp, code)) return;
+        if (std.mem.eql(u8, d.code, code)) return;
     }
     std.debug.print("missing diagnostic code `{s}` for `{s}`; got:\n", .{ code, source });
     for (checked.diagnostics) |d| {
-        std.debug.print("  - {s}: {s}\n", .{ d.expected orelse "?", d.message });
+        std.debug.print("  - {s}: {s}\n", .{ d.code, d.message });
     }
     return error.MissingDiagnosticCode;
 }

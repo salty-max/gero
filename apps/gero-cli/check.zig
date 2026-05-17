@@ -60,16 +60,12 @@ pub fn execute(
         }
     } else {
         for (positionals) |path| {
-            if (std.mem.endsWith(u8, path, ".gr")) {
-                try term.err("gero check: .gr support is not yet implemented (waits on the gero-lang front-end)", .{});
-                return 1;
-            }
-            try collectGasFiles(io, arena, term, path, &files);
+            try collectSourceFiles(io, arena, term, path, &files);
         }
     }
 
     if (files.items.len == 0) {
-        try term.err("gero check: no .gas files found in the given paths", .{});
+        try term.err("gero check: no .gas or .gr files found in the given paths", .{});
         return 1;
     }
 
@@ -92,7 +88,24 @@ pub fn execute(
     var read_errors: std.ArrayList(diagnostics.ReadErrorEntry) = .empty;
     var pass: usize = 0;
     var failures: std.ArrayList(FileEntry) = .empty;
+    var gr_failures: std.ArrayList(GrFailure) = .empty;
     for (files.items) |path| {
+        // `.gr` files route through the gero-lang pipeline. Failures
+        // collect into `gr_failures` and render via
+        // `gero.lang.render.pretty` after the loop.
+        if (std.mem.endsWith(u8, path, ".gr")) {
+            const res = try checkOneGr(io, arena, path);
+            if (res.diagnostics.len == 0 and res.parse_errors.len == 0 and !res.read_error) {
+                pass += 1;
+                if (!opts.quiet and !json_mode) try printPassGr(stdout, style, path, single);
+            } else if (res.read_error) {
+                if (!json_mode) try term.err("gero check: cannot read {s}", .{path});
+                try failures.append(arena, .{ .path = path, .info = .read_error });
+            } else {
+                try gr_failures.append(arena, .{ .path = path, .source = res.source, .parse_errors = res.parse_errors, .diagnostics = res.diagnostics });
+            }
+            continue;
+        }
         const t_phase_start_include = std.Io.Timestamp.now(io, .awake);
         const fused = gero.asm_.resolveIncludes(io, arena, path) catch |err| {
             const err_name = @errorName(err);
@@ -149,7 +162,7 @@ pub fn execute(
         }
     }
 
-    const fail = failures.items.len;
+    const fail = failures.items.len + gr_failures.items.len;
 
     // JSON mode emits one object covering every diagnostic + read
     // error, then exits. No human-readable header / summary / footer.
@@ -160,7 +173,18 @@ pub fn execute(
             .from_pipeline => |pf| try pipeline_failures.append(arena, pf),
         };
         try diagnostics.printJsonReport(stdout, pipeline_failures.items, read_errors.items, files.items.len, fail);
-        return if (fail > 0) 4 else 0;
+        // Append lang diagnostics as ndjson lines on the same
+        // stdout — consumers parse line-by-line.
+        if (gr_failures.items.len > 0) {
+            var lang_files: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
+            for (gr_failures.items) |gf| try lang_files.append(arena, .{
+                .path = gf.path,
+                .source = gf.source,
+                .diagnostics = gf.diagnostics,
+            });
+            try gero.lang.render.json(stdout, lang_files.items);
+        }
+        return if (fail > 0 or gr_failures.items.len > 0) 4 else 0;
     }
 
     // Pass 2: render the merged diagnostic report (if any failure).
@@ -178,6 +202,19 @@ pub fn execute(
             if (!single and !opts.quiet and pass > 0) try stdout.writeByte('\n');
             try diagnostics.printAllFailures(arena, stdout, style, pipeline_failures.items);
         }
+    }
+
+    // Pass 2b: render lang-side diagnostics.
+    if (gr_failures.items.len > 0) {
+        if (!single and !opts.quiet and (pass > 0 or failures.items.len > 0)) try stdout.writeByte('\n');
+        var lang_files: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
+        for (gr_failures.items) |gf| try lang_files.append(arena, .{
+            .path = gf.path,
+            .source = gf.source,
+            .diagnostics = gf.diagnostics,
+        });
+        const lang_style: gero.lang.render.Style = if (term.color) .ansi else .none;
+        try gero.lang.render.pretty(stdout, lang_files.items, lang_style);
     }
 
     if (!single and !opts.quiet) {
@@ -204,6 +241,88 @@ const FileEntry = struct {
         from_pipeline: diagnostics.FileFailure,
     },
 };
+
+/// One `.gr` file's diagnostic context — source bytes + combined
+/// parser + typechecker diagnostics, ready for
+/// `gero.lang.render.pretty` / `.json`.
+const GrFailure = struct {
+    path: []const u8,
+    source: []const u8,
+    parse_errors: []const u8 = "", // placeholder field — kept for symmetry
+    diagnostics: []gero.lang.Diagnostic,
+};
+
+/// Result of running parse + typecheck on one `.gr` source.
+const GrCheckResult = struct {
+    source: []const u8,
+    parse_errors: []const u8 = "",
+    diagnostics: []gero.lang.Diagnostic,
+    read_error: bool = false,
+};
+
+/// Read + tokenize + parse + typecheck one `.gr` file. Parser
+/// diagnostics are folded into the returned slice as lang
+/// `Diagnostic`s with `E_SYNTAX_GENERIC` codes (the parser code
+/// retrofit lands as a follow-up).
+fn checkOneGr(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    path: []const u8,
+) !GrCheckResult {
+    const src = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch {
+        return .{ .source = "", .diagnostics = &.{}, .read_error = true };
+    };
+
+    const stream = try gero.lang.tokenize(arena, src);
+    // Tokenizer / parser errors travel through the same lang.Diagnostic
+    // shape so the renderer surfaces them in the canonical layout.
+    var combined: std.ArrayList(gero.lang.Diagnostic) = .empty;
+    for (stream.errors) |e| {
+        try combined.append(arena, .{
+            .severity = .fatal,
+            .code = "E_SYNTAX_GENERIC",
+            // safety: ParseError.index fits in u32 — bounded by file size.
+            .message = try arena.dupe(u8, e.message),
+            .span = .{ .start = @intCast(e.index), .end = @intCast(e.index) },
+        });
+    }
+
+    const tree = try gero.lang.parse(arena, src, stream);
+    for (tree.errors) |e| {
+        try combined.append(arena, .{
+            .severity = .fatal,
+            .code = "E_SYNTAX_GENERIC",
+            // safety: ParseError.index fits in u32 — bounded by file size.
+            .message = try arena.dupe(u8, e.message),
+            .span = .{ .start = @intCast(e.index), .end = @intCast(e.index) },
+        });
+    }
+
+    // Only typecheck when parsing succeeded — otherwise the AST
+    // shape can't carry semantic information.
+    if (tree.errors.len == 0) {
+        const checked = try gero.lang.typecheck(arena, src, &tree.program);
+        for (checked.diagnostics) |d| try combined.append(arena, d);
+    }
+
+    return .{
+        .source = src,
+        .diagnostics = try combined.toOwnedSlice(arena),
+    };
+}
+
+fn printPassGr(
+    stdout: *std.Io.Writer,
+    style: gero.asm_.Style,
+    src_path: []const u8,
+    single_mode: bool,
+) std.Io.Writer.Error!void {
+    if (single_mode) {
+        try stdout.print("{s}✓ {s}{s}\n", .{ style.location, src_path, style.reset });
+    } else {
+        try stdout.print("{s}✓{s} {s}\n", .{ style.location, style.reset, src_path });
+    }
+}
 
 const PhaseTimings = struct {
     include: i96,
@@ -241,11 +360,11 @@ fn printPass(
     }
 }
 
-/// Resolve `path` into 0+ `.gas` entries appended to `out`. A
-/// directory is walked recursively; a regular file is appended as-
-/// is. Anything else (broken link, special file) emits a host IO
-/// error and propagates up.
-fn collectGasFiles(
+/// Resolve `path` into 0+ source entries appended to `out`. A
+/// directory is walked recursively; both `.gas` and `.gr` files are
+/// collected. A regular file is appended as-is. Anything else
+/// (broken link, special file) emits a host IO error.
+fn collectSourceFiles(
     io: std.Io,
     arena: std.mem.Allocator,
     term: *term_mod.Term,
@@ -266,7 +385,8 @@ fn collectGasFiles(
         defer walker.deinit();
         while (try walker.next(io)) |entry| {
             if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.path, ".gas")) continue;
+            if (!std.mem.endsWith(u8, entry.path, ".gas") and
+                !std.mem.endsWith(u8, entry.path, ".gr")) continue;
             const full = try std.fs.path.join(arena, &.{ path, entry.path });
             try out.append(arena, full);
         }
