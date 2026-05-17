@@ -835,6 +835,31 @@ test "parse: match with 3 malformed arms emits multiple diagnostics" {
     try std.testing.expect(tree.errors.len >= 2);
 }
 
+test "parse: error codes flow through expected slot" {
+    var tree = try parseSource("let x: i16 =\n");
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+    // Parser uses the stable E_SYNTAX_* codes from
+    // `docs/lang-diagnostics.md` in `expected`.
+    try std.testing.expect(tree.errors[0].expected != null);
+    try std.testing.expect(std.mem.startsWith(u8, tree.errors[0].expected.?, "E_SYNTAX_"));
+}
+
+test "parse: hex `0x` prefix emits E_SYNTAX_HEX_PREFIX" {
+    var tree = try parseSource("let x = 0x123\n");
+    defer tree.deinit();
+    var found = false;
+    for (tree.errors) |e| {
+        if (e.expected) |code| {
+            if (std.mem.eql(u8, code, "E_SYNTAX_HEX_PREFIX")) {
+                found = true;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(found);
+}
+
 test "parse: `case PAT then BODY` (legacy) does not parse as a clean arm" {
     // After the syntax patches (#215), `then` is no longer the
     // arm-body separator. Source with the old `then` keyword must

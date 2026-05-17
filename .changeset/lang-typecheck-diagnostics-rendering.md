@@ -61,15 +61,29 @@ New `src/lang/render.zig` exposes:
 - Mixed-extension input is handled: asm and lang diagnostics
   render in separate sections.
 
-**Parser-side diagnostics (interim shape)**
+**Parser + lexer code retrofit**
 
-The parser still emits human-prose messages via
-`core.ParseError`. The CLI converts them to `Diagnostic` with
-`code = "E_SYNTAX_GENERIC"` at the rendering boundary so the
-output is uniform. Per-error stable codes
-(`E_SYNTAX_UNEXPECTED_TOKEN` / `…_MISSING_TOKEN` / etc.) stay a
-follow-up — the rendering pipeline is the load-bearing piece and
-codes can be wired through later without changing the renderer.
+Every parser / lexer error emission site now passes a stable
+`E_SYNTAX_*` code in the `expected` slot of `core.ParseError`:
+
+- `E_SYNTAX_UNEXPECTED_TOKEN` — wrong token in a position where the
+  grammar accepts something else (e.g. `bake` outside def/do).
+- `E_SYNTAX_MISSING_TOKEN` — required token missing (every
+  `expect()` failure plus "expected pattern / type / expression").
+  `expect()` allocPrint's a contextual message
+  (`"expected )"`); the parser tracks these via
+  `ParseTree.allocated_messages` so deinit frees them cleanly.
+- `E_SYNTAX_MALFORMED_LITERAL` — bad numeric / string / char
+  literal (every lexer literal-validation site).
+- `E_SYNTAX_HEX_PREFIX` — `0x…` rejected (use `$…` per
+  spec §2.4).
+- `E_SYNTAX_ANNOTATION_PLACEMENT` — annotation in wrong position
+  (EOF without decl, deprecated `@asm(...)` form).
+
+The CLI converter reads `e.expected.?` and uses it directly as
+the lang `Diagnostic.code` — no more `E_SYNTAX_GENERIC` placeholder
+in steady state. The fallback stays for forward-compat with any
+future emission site that hasn't been wired through.
 
 **Public surface**
 
@@ -96,8 +110,6 @@ that scanned `d.expected` now scan `d.code`.
 
 **Out of scope (future work)**
 
-- Parser-side `E_SYNTAX_*` code retrofit — separate follow-up
-  issue.
 - Multi-span diagnostics (the spec mockup has secondary spans
   with their own labels — "expected because of this annotation"
   etc.). The current renderer prints one span per diagnostic.

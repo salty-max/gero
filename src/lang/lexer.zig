@@ -393,13 +393,13 @@ fn pushToken(state: *State, kind: Token.Kind, start: u32, end: u32, value: i32) 
     state.last_kind = kind;
 }
 
-fn pushError(state: *State, index: u32, message: []const u8, actual: []const u8) !void {
+fn pushError(state: *State, index: u32, message: []const u8, code: []const u8) !void {
     try state.errors.append(state.allocator, .{
         .parser = "lang_lexer",
         .index = index,
         .message = message,
-        .expected = "",
-        .actual = actual,
+        .expected = code,
+        .actual = null,
         .kind = .syntactic,
     });
 }
@@ -445,7 +445,7 @@ fn lexAnnotation(state: *State) !void {
     const start = state.index;
     state.index += 1; // consume `@`
     if (state.index >= state.source.len or !isIdentStart(state.source[state.index])) {
-        try pushError(state, start, "expected identifier after `@`", "annotation");
+        try pushError(state, start, "expected identifier after `@`", "E_SYNTAX_ANNOTATION_PLACEMENT");
         // Best-effort: emit the bare `@` with zero-width ident so
         // the parser sees something it can skip.
         try pushToken(state, .annotation, start, state.index, 0);
@@ -471,7 +471,7 @@ fn lexInteger(state: *State, negative: bool) !void {
             if (b == '_') continue;
             if (!isHexDigit(b)) break;
         }
-        try pushError(state, start, "hex literals use `$` (e.g. `$FE40`); `0x` is not accepted", state.source[start..state.index]);
+        try pushError(state, start, "hex literals use `$` (e.g. `$FE40`); `0x` is not accepted", "E_SYNTAX_HEX_PREFIX");
     } else if (state.index + 1 < state.source.len and state.source[state.index] == '0' and
         (state.source[state.index + 1] == 'b' or state.source[state.index + 1] == 'B'))
     {
@@ -485,7 +485,7 @@ fn lexInteger(state: *State, negative: bool) !void {
             value = value * 2 + (b - '0');
         }
         if (state.index == digits_start) {
-            try pushError(state, start, "expected binary digit after `0b`", "0b");
+            try pushError(state, start, "expected binary digit after `0b`", "E_SYNTAX_MALFORMED_LITERAL");
         }
     } else {
         // Decimal form.
@@ -584,13 +584,13 @@ fn lexCharLit(state: *State) !void {
     const start = state.index;
     state.index += 1; // consume opening `'`
     if (state.index >= state.source.len) {
-        try pushError(state, start, "unterminated char literal", "'");
+        try pushError(state, start, "unterminated char literal", "E_SYNTAX_MALFORMED_LITERAL");
         try pushToken(state, .int_lit, start, state.index, 0);
         return;
     }
     const byte_opt = decodeOneByte(state);
     if (byte_opt == null) {
-        try pushError(state, start, "malformed escape in char literal", "");
+        try pushError(state, start, "malformed escape in char literal", "E_SYNTAX_MALFORMED_LITERAL");
         // Recover by skipping to the next `'` or newline.
         while (state.index < state.source.len and state.source[state.index] != '\'' and
             state.source[state.index] != '\n') : (state.index += 1)
@@ -600,7 +600,7 @@ fn lexCharLit(state: *State) !void {
         return;
     }
     if (state.index >= state.source.len or state.source[state.index] != '\'') {
-        try pushError(state, start, "unterminated char literal — expected closing `'`", "");
+        try pushError(state, start, "unterminated char literal — expected closing `'`", "E_SYNTAX_MALFORMED_LITERAL");
         try pushToken(state, .int_lit, start, state.index, byte_opt.?);
         return;
     }
@@ -681,7 +681,7 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
                 // Unterminated literal — surface as an error,
                 // close the frame so the rest of the stream
                 // tokenizes sanely, and exit the loop.
-                try pushError(&state, state.index, "unterminated string literal", "");
+                try pushError(&state, state.index, "unterminated string literal", "E_SYNTAX_MALFORMED_LITERAL");
                 _ = state.str_stack.pop();
                 break;
             }
@@ -987,7 +987,7 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
         }
 
         // Unknown byte — record and advance one.
-        try pushError(&state, state.index, "unknown byte in source", source[state.index .. state.index + 1]);
+        try pushError(&state, state.index, "unknown byte in source", "E_SYNTAX_UNEXPECTED_TOKEN");
         state.index += 1;
     }
 

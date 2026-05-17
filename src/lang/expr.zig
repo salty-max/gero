@@ -386,7 +386,7 @@ fn parsePrimary(p: *Parser) ParserError!*ast.Expr {
         // primary position.
         .pipe => return try parseShortLambda(p),
         else => {
-            try p.recordError("expected expression", "expression");
+            try p.recordError("expected expression", "E_SYNTAX_MISSING_TOKEN");
             return error.ParseFailed;
         },
     }
@@ -491,7 +491,7 @@ fn parseStringLit(p: *Parser) ParserError!*ast.Expr {
                 break;
             },
             else => {
-                try p.recordError("malformed string literal", "string part");
+                try p.recordError("malformed string literal", "E_SYNTAX_MALFORMED_LITERAL");
                 return error.ParseFailed;
             },
         }
@@ -637,7 +637,7 @@ fn parseBakeExpr(p: *Parser) ParserError!*ast.Expr {
     if (!p.check(.kw_do)) {
         try p.recordError(
             "in expression position `bake` must prefix a `do` block",
-            "bake do",
+            "E_SYNTAX_UNEXPECTED_TOKEN",
         );
         return error.ParseFailed;
     }

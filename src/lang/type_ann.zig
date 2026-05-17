@@ -37,7 +37,7 @@ fn parseTypeBase(p: *Parser) ParserError!*ast.TypeAnn {
         .amp => return try parseReferenceType(p),
         .ident => return try parseNamedOrVecType(p),
         else => {
-            try p.recordError("expected type annotation", "type");
+            try p.recordError("expected type annotation", "E_SYNTAX_MISSING_TOKEN");
             return error.ParseFailed;
         },
     }

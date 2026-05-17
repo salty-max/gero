@@ -276,11 +276,15 @@ fn checkOneGr(
     const stream = try gero.lang.tokenize(arena, src);
     // Tokenizer / parser errors travel through the same lang.Diagnostic
     // shape so the renderer surfaces them in the canonical layout.
+    // The lexer + parser populate `expected` with the stable
+    // `E_SYNTAX_*` code (see `docs/lang-diagnostics.md`); we fall
+    // back to a generic code only when an emission site predates
+    // the retrofit.
     var combined: std.ArrayList(gero.lang.Diagnostic) = .empty;
     for (stream.errors) |e| {
         try combined.append(arena, .{
             .severity = .fatal,
-            .code = "E_SYNTAX_GENERIC",
+            .code = e.expected orelse "E_SYNTAX_GENERIC",
             // safety: ParseError.index fits in u32 — bounded by file size.
             .message = try arena.dupe(u8, e.message),
             .span = .{ .start = @intCast(e.index), .end = @intCast(e.index) },
@@ -291,7 +295,7 @@ fn checkOneGr(
     for (tree.errors) |e| {
         try combined.append(arena, .{
             .severity = .fatal,
-            .code = "E_SYNTAX_GENERIC",
+            .code = e.expected orelse "E_SYNTAX_GENERIC",
             // safety: ParseError.index fits in u32 — bounded by file size.
             .message = try arena.dupe(u8, e.message),
             .span = .{ .start = @intCast(e.index), .end = @intCast(e.index) },
