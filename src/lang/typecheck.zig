@@ -163,6 +163,10 @@ pub const mem_builtin = @import("typecheck/mem_builtin.zig");
 /// `match` typechecking — pattern walks, exhaustiveness +
 /// reachability checks, variant-path utilities.
 pub const match = @import("typecheck/match.zig");
+/// Pure predicates over `types.Type` / `types.Primitive` /
+/// `ast.BinaryOp` — integer / numeric / bool / nil / bakeable
+/// checks plus diagnostic-string formatters.
+pub const predicates = @import("typecheck/predicates.zig");
 
 /// `mem.*` stdlib builtin signature (re-exported from the
 /// sub-module for callers that just want the lookup type).
@@ -828,7 +832,7 @@ pub const Checker = struct {
         try self.checkNoCaptureMutation(id.target);
         const tgt_ty = try self.inferExpr(id.target, null);
         if (tgt_ty) |t| {
-            if (!isIntegerType(t.*)) {
+            if (!predicates.isIntegerType(t.*)) {
                 const ty_s = try types.render(self.arena, t.*);
                 const msg = try std.fmt.allocPrint(
                     self.arena,
@@ -965,7 +969,7 @@ pub const Checker = struct {
             try self.checkReturnStackLifetime(v);
             const v_ty = try self.inferExpr(v, self.current_ret_ty);
             if (self.current_ret_ty) |rt| if (v_ty) |vt| {
-                if (!assignable(vt.*, rt.*) and !isNilType(rt.*)) {
+                if (!assignable(vt.*, rt.*) and !predicates.isNilType(rt.*)) {
                     try self.emitMismatch(v.span(), rt, vt);
                 }
             };
@@ -1024,7 +1028,7 @@ pub const Checker = struct {
         // are runtime-only.
         if (d.is_bake) if (d.ret_type) |r| {
             const rt = try self.resolveType(r);
-            if (!isBakeableType(rt.*)) {
+            if (!predicates.isBakeableType(rt.*)) {
                 const ty_s = try types.render(self.arena, rt.*);
                 const msg = try std.fmt.allocPrint(
                     self.arena,
@@ -1708,7 +1712,7 @@ pub const Checker = struct {
                     try self.resolveType(t)
                 else
                     null;
-                const skip = if (param_ty) |pt| isNilType(pt.*) else true;
+                const skip = if (param_ty) |pt| predicates.isNilType(pt.*) else true;
                 const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
                 if (!skip and param_ty != null and arg_ty != null and !assignable(arg_ty.?.*, param_ty.?.*)) {
                     try self.emitMismatch(arg.span(), param_ty.?, arg_ty.?);
@@ -1868,12 +1872,12 @@ pub const Checker = struct {
         // primitive. Range-check the literal against the pinned width.
         if (hint) |h| if (h.* == .primitive) {
             const p = h.primitive;
-            if (isIntegerPrimitive(p)) {
-                if (!intLitFits(lit.value, p)) {
+            if (predicates.isIntegerPrimitive(p)) {
+                if (!predicates.intLitFits(lit.value, p)) {
                     const msg = try std.fmt.allocPrint(
                         self.arena,
                         "literal `{d}` does not fit in `{s}`",
-                        .{ lit.value, primitiveName(p) },
+                        .{ lit.value, predicates.primitiveName(p) },
                     );
                     try self.emitSpan("E_TYPE_MISMATCH", lit.span, msg);
                 }
@@ -1933,21 +1937,21 @@ pub const Checker = struct {
         const ot = operand_ty.?;
         switch (u.op) {
             .neg => {
-                if (!isNumericType(ot.*)) {
+                if (!predicates.isNumericType(ot.*)) {
                     try self.emitOperatorRequires(u.span, "negation `-`", "a numeric type", ot);
                     return null;
                 }
                 return ot;
             },
             .log_not => {
-                if (!isBoolType(ot.*)) {
+                if (!predicates.isBoolType(ot.*)) {
                     try self.emitOperatorRequires(u.span, "logical `not`", "`bool`", ot);
                     return null;
                 }
                 return try self.primitive(.bool_);
             },
             .bit_not => {
-                if (!isIntegerType(ot.*)) {
+                if (!predicates.isIntegerType(ot.*)) {
                     try self.emitOperatorRequires(u.span, "bitwise `~`", "an integer type", ot);
                     return null;
                 }
@@ -1973,15 +1977,15 @@ pub const Checker = struct {
         const rhs_ty = try self.inferExpr(b.rhs, rhs_hint);
         if (lhs_ty == null or rhs_ty == null) return lhs_ty orelse rhs_ty;
         // String concatenation: only `+`, both sides `str`.
-        if (b.op == .add and isStrType(lhs_ty.?.*) and isStrType(rhs_ty.?.*)) {
+        if (b.op == .add and predicates.isStrType(lhs_ty.?.*) and predicates.isStrType(rhs_ty.?.*)) {
             return try self.primitive(.str);
         }
-        if (!isNumericType(lhs_ty.?.*)) {
-            try self.emitOperatorRequires(b.span, opLexeme(b.op), "a numeric type", lhs_ty.?);
+        if (!predicates.isNumericType(lhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, predicates.opLexeme(b.op), "a numeric type", lhs_ty.?);
             return null;
         }
-        if (!isNumericType(rhs_ty.?.*)) {
-            try self.emitOperatorRequires(b.span, opLexeme(b.op), "a numeric type", rhs_ty.?);
+        if (!predicates.isNumericType(rhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, predicates.opLexeme(b.op), "a numeric type", rhs_ty.?);
             return null;
         }
         if (!lhs_ty.?.eql(rhs_ty.?.*)) {
@@ -1995,12 +1999,12 @@ pub const Checker = struct {
         // Shift count is itself an integer; default to u8-ish via i16 (no specific hint).
         const rhs_ty = try self.inferExpr(b.rhs, null);
         if (lhs_ty == null or rhs_ty == null) return lhs_ty;
-        if (!isIntegerType(lhs_ty.?.*)) {
-            try self.emitOperatorRequires(b.span, opLexeme(b.op), "an integer type", lhs_ty.?);
+        if (!predicates.isIntegerType(lhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, predicates.opLexeme(b.op), "an integer type", lhs_ty.?);
             return null;
         }
-        if (!isIntegerType(rhs_ty.?.*)) {
-            try self.emitOperatorRequires(b.span, opLexeme(b.op), "an integer shift count", rhs_ty.?);
+        if (!predicates.isIntegerType(rhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, predicates.opLexeme(b.op), "an integer shift count", rhs_ty.?);
             return null;
         }
         return lhs_ty;
@@ -2011,12 +2015,12 @@ pub const Checker = struct {
         const rhs_hint = lhs_ty orelse hint;
         const rhs_ty = try self.inferExpr(b.rhs, rhs_hint);
         if (lhs_ty == null or rhs_ty == null) return lhs_ty orelse rhs_ty;
-        if (!isIntegerType(lhs_ty.?.*)) {
-            try self.emitOperatorRequires(b.span, opLexeme(b.op), "an integer type", lhs_ty.?);
+        if (!predicates.isIntegerType(lhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, predicates.opLexeme(b.op), "an integer type", lhs_ty.?);
             return null;
         }
-        if (!isIntegerType(rhs_ty.?.*)) {
-            try self.emitOperatorRequires(b.span, opLexeme(b.op), "an integer type", rhs_ty.?);
+        if (!predicates.isIntegerType(rhs_ty.?.*)) {
+            try self.emitOperatorRequires(b.span, predicates.opLexeme(b.op), "an integer type", rhs_ty.?);
             return null;
         }
         if (!lhs_ty.?.eql(rhs_ty.?.*)) {
@@ -2032,7 +2036,7 @@ pub const Checker = struct {
             // Allow nil-comparison (`x != nil` / `nil == p`) — the
             // canonical nullable idiom per §3.4.1. Strict-equality
             // only when neither side is the nil literal.
-            const either_is_nil = isNilType(lhs_ty.?.*) or isNilType(rhs_ty.?.*);
+            const either_is_nil = predicates.isNilType(lhs_ty.?.*) or predicates.isNilType(rhs_ty.?.*);
             if (!either_is_nil and !lhs_ty.?.eql(rhs_ty.?.*)) {
                 try self.emitMismatch(b.rhs.span(), lhs_ty.?, rhs_ty.?);
             }
@@ -2044,11 +2048,11 @@ pub const Checker = struct {
         const bool_ty = try self.primitive(.bool_);
         const lhs_ty = try self.inferExpr(b.lhs, bool_ty);
         const rhs_ty = try self.inferExpr(b.rhs, bool_ty);
-        if (lhs_ty) |t| if (!isBoolType(t.*)) {
-            try self.emitOperatorRequires(b.span, opLexeme(b.op), "`bool`", t);
+        if (lhs_ty) |t| if (!predicates.isBoolType(t.*)) {
+            try self.emitOperatorRequires(b.span, predicates.opLexeme(b.op), "`bool`", t);
         };
-        if (rhs_ty) |t| if (!isBoolType(t.*)) {
-            try self.emitOperatorRequires(b.span, opLexeme(b.op), "`bool`", t);
+        if (rhs_ty) |t| if (!predicates.isBoolType(t.*)) {
+            try self.emitOperatorRequires(b.span, predicates.opLexeme(b.op), "`bool`", t);
         };
         return bool_ty;
     }
@@ -2137,7 +2141,7 @@ pub const Checker = struct {
             // Skip the type check when the param's type is the
             // `nil_` placeholder used for unannotated `def` params —
             // those params accept any caller-supplied type.
-            const skip = isNilType(param_ty.*);
+            const skip = predicates.isNilType(param_ty.*);
             const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
             if (!skip and arg_ty != null and !assignable(arg_ty.?.*, param_ty.*)) {
                 try self.emitMismatch(arg.span(), param_ty, arg_ty.?);
@@ -2184,7 +2188,7 @@ pub const Checker = struct {
         // Fixed params: standard per-arg type check.
         for (c.args[0..fixed_count], 0..) |arg, i| {
             const param_ty = f.params[i];
-            const skip = isNilType(param_ty.*);
+            const skip = predicates.isNilType(param_ty.*);
             const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
             if (!skip and arg_ty != null and !assignable(arg_ty.?.*, param_ty.*)) {
                 try self.emitMismatch(arg.span(), param_ty, arg_ty.?);
@@ -2339,121 +2343,12 @@ fn findClassField(c: *const Checker, cd: *const ast.ClassDecl, name: []const u8)
     return null;
 }
 
-// ---------- type predicates ----------
-
-fn isIntegerPrimitive(p: types.Primitive) bool {
-    return switch (p) {
-        .i8, .u8, .i16, .u16 => true,
-        else => false,
-    };
-}
-
-fn isIntegerType(t: types.Type) bool {
-    return switch (t) {
-        .primitive => |p| isIntegerPrimitive(p),
-        else => false,
-    };
-}
-
-fn isNumericType(t: types.Type) bool {
-    return switch (t) {
-        .primitive => |p| isIntegerPrimitive(p) or p == .fixed,
-        else => false,
-    };
-}
-
-fn isBoolType(t: types.Type) bool {
-    return switch (t) {
-        .primitive => |p| p == .bool_,
-        else => false,
-    };
-}
-
-fn isStrType(t: types.Type) bool {
-    return switch (t) {
-        .primitive => |p| p == .str,
-        else => false,
-    };
-}
-
 /// `true` when `d` carries a `@no_capture` annotation.
 fn defHasNoCapture(c: *const Checker, d: ast.DefDecl) bool {
     for (d.annotations) |ann| {
         if (std.mem.eql(u8, c.lexeme(ann.name), "no_capture")) return true;
     }
     return false;
-}
-
-fn isNilType(t: types.Type) bool {
-    return switch (t) {
-        .primitive => |p| p == .nil_,
-        else => false,
-    };
-}
-
-/// `true` when a type is representable as static data — i.e. safe
-/// as the return type or output of a `bake` context. `Vec(T)` and
-/// references live in the runtime allocator / borrow domain and
-/// therefore can't be baked.
-fn isBakeableType(t: types.Type) bool {
-    return switch (t) {
-        .primitive => true,
-        .array => |a| isBakeableType(a.elem.*),
-        .tuple => |xs| blk: {
-            for (xs) |e| if (!isBakeableType(e.*)) break :blk false;
-            break :blk true;
-        },
-        .optional => |inner| isBakeableType(inner.*),
-        .named => true,
-        .vec, .reference, .function => false,
-    };
-}
-
-fn primitiveName(p: types.Primitive) []const u8 {
-    return switch (p) {
-        .i8 => "i8",
-        .u8 => "u8",
-        .i16 => "i16",
-        .u16 => "u16",
-        .bool_ => "bool",
-        .nil_ => "nil",
-        .str => "str",
-        .fixed => "fixed",
-        .char => "char",
-    };
-}
-
-fn intLitFits(value: i32, p: types.Primitive) bool {
-    return switch (p) {
-        .i8 => value >= -128 and value <= 127,
-        .u8 => value >= 0 and value <= 255,
-        .i16 => value >= -32768 and value <= 32767,
-        .u16 => value >= 0 and value <= 65535,
-        else => false,
-    };
-}
-
-fn opLexeme(op: ast.BinaryOp) []const u8 {
-    return switch (op) {
-        .add => "`+`",
-        .sub => "`-`",
-        .mul => "`*`",
-        .div => "`/`",
-        .mod => "`%`",
-        .shl => "`<<`",
-        .shr => "`>>`",
-        .bit_and => "`&`",
-        .bit_or => "`|`",
-        .bit_xor => "`^`",
-        .eq => "`==`",
-        .neq => "`!=`",
-        .lt => "`<`",
-        .lte => "`<=`",
-        .gt => "`>`",
-        .gte => "`>=`",
-        .log_and => "`and`",
-        .log_or => "`or`",
-    };
 }
 
 // ---------- place expression check ----------
@@ -2597,8 +2492,8 @@ fn canCast(from: types.Type, to: types.Type) bool {
     const f = from.primitive;
     const t = to.primitive;
     if (f == t) return true;
-    const f_int = isIntegerPrimitive(f);
-    const t_int = isIntegerPrimitive(t);
+    const f_int = predicates.isIntegerPrimitive(f);
+    const t_int = predicates.isIntegerPrimitive(t);
     if (f_int and t_int) return true;
     if (f == .bool_ and t_int) return true;
     if (f_int and t == .bool_) return true;
