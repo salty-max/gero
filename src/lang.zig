@@ -15,6 +15,24 @@ const diag_mod = @import("lang/diagnostic.zig");
 const render_mod = @import("lang/render.zig");
 const codegen_mod = @import("lang/codegen.zig");
 
+// Direct submodule imports for the `internal` namespaces below —
+// the parent `typecheck.zig` / `codegen.zig` files don't re-export
+// these (the aliases are private), so the barrel pulls them
+// straight from disk.
+const tc_mem_builtin = @import("lang/typecheck/mem_builtin.zig");
+const tc_match = @import("lang/typecheck/match.zig");
+const tc_predicates = @import("lang/typecheck/predicates.zig");
+const tc_annotations = @import("lang/typecheck/annotations.zig");
+const tc_relations = @import("lang/typecheck/relations.zig");
+const tc_flow = @import("lang/typecheck/flow.zig");
+const cg_opcodes = @import("lang/codegen/opcodes.zig");
+const cg_archive = @import("lang/codegen/archive.zig");
+const cg_mem_builtin = @import("lang/codegen/mem_builtin.zig");
+const cg_strings = @import("lang/codegen/strings.zig");
+const cg_pattern = @import("lang/codegen/pattern.zig");
+const cg_expr_emit = @import("lang/codegen/expr.zig");
+const cg_control_flow = @import("lang/codegen/control_flow.zig");
+
 /// Re-export: lexer token.
 pub const Token = lexer_mod.Token;
 /// Re-export: lexer output stream.
@@ -51,9 +69,9 @@ pub const typechecker = struct {
     /// Walk an `ast.Program` through the typechecker.
     pub const typecheck = typecheck_mod.typecheck;
     /// `mem.*` stdlib builtin signature (lookup return type).
-    pub const MemBuiltinSig = typecheck_mod.MemBuiltinSig;
+    pub const MemBuiltinSig = tc_mem_builtin.MemBuiltinSig;
     /// `mem.X` lookup by builtin name.
-    pub const lookupMemBuiltin = typecheck_mod.lookupMemBuiltin;
+    pub const lookupMemBuiltin = tc_mem_builtin.lookupMemBuiltin;
 
     /// Internal — submodule seams exposed for mirror-layout test
     /// reachability. Members under `internal` are **not** stable
@@ -62,18 +80,18 @@ pub const typechecker = struct {
         /// Internal — stateful resolution + inference walker.
         pub const Checker = typecheck_mod.Checker;
         /// Internal — pure predicates over `types.Type`.
-        pub const predicates = typecheck_mod.predicates;
+        pub const predicates = tc_predicates;
         /// Internal — §3.7 annotation validation pipeline.
-        pub const annotations = typecheck_mod.annotations;
+        pub const annotations = tc_annotations;
         /// Internal — assignability + cast convertibility relations.
-        pub const relations = typecheck_mod.relations;
+        pub const relations = tc_relations;
         /// Internal — flow-sensitive helpers (ident name, body
         /// exits, named-type / field finders).
-        pub const flow = typecheck_mod.flow;
+        pub const flow = tc_flow;
         /// Internal — `match` exhaustiveness + reachability checks.
-        pub const match = typecheck_mod.match;
+        pub const match = tc_match;
         /// Internal — `mem.*` stdlib typecheck dispatch.
-        pub const mem_builtin = typecheck_mod.mem_builtin;
+        pub const mem_builtin = tc_mem_builtin;
     };
 };
 
@@ -124,21 +142,21 @@ pub const codegen = struct {
         pub const LoopFrame = codegen_mod.LoopFrame;
         /// Internal — opcode / register / syscall byte tables
         /// (mirror of `src/vm/opcodes.zig`).
-        pub const opcodes = codegen_mod.opcodes;
+        pub const opcodes = cg_opcodes;
         /// Internal — `.gx` archive layout + small pure helpers.
-        pub const archive = codegen_mod.archive;
+        pub const archive = cg_archive;
         /// Internal — `mem.*` stdlib codegen lowering.
-        pub const mem_builtin = codegen_mod.mem_builtin;
+        pub const mem_builtin = cg_mem_builtin;
         /// Internal — string literal pool + interpolation
         /// lowering.
-        pub const strings = codegen_mod.strings;
+        pub const strings = cg_strings;
         /// Internal — `match` pattern-arm test emission.
-        pub const pattern = codegen_mod.pattern;
+        pub const pattern = cg_pattern;
         /// Internal — expression lowering helpers.
-        pub const expr_emit = codegen_mod.expr_emit;
+        pub const expr_emit = cg_expr_emit;
         /// Internal — control-flow lowering (if / while / for /
         /// match / break / continue / defer).
-        pub const control_flow = codegen_mod.control_flow;
+        pub const control_flow = cg_control_flow;
     };
 };
 /// Re-export: codegen output (`.gx` image + diagnostics).

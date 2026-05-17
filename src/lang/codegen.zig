@@ -47,27 +47,13 @@ const ast = @import("ast.zig");
 const types_mod = @import("types.zig");
 const typecheck_mod = @import("typecheck.zig");
 const diag_mod = @import("diagnostic.zig");
-/// Re-exported codegen sub-modules — tests reach internal files
-/// through the public barrel so the lint mirror rule resolves.
-pub const opcodes = @import("codegen/opcodes.zig");
-/// `.gx` archive layout + small pure helpers (escape decode,
-/// power-of-two alignment, bank-tag comparison).
-pub const archive = @import("codegen/archive.zig");
-/// `mem.*` stdlib builtin lowering — typed peek / poke,
-/// memcpy / memset, addr-of.
-pub const mem_builtin = @import("codegen/mem_builtin.zig");
-/// String literal pool + interpolation lowering — `InternedString`,
-/// `StringPatch`, the interp buffer reservation, and the per-part
-/// fill helpers.
-pub const strings = @import("codegen/strings.zig");
-/// `match` pattern-arm test emission.
-pub const pattern = @import("codegen/pattern.zig");
-/// Expression lowering — `emitExpr` and the per-shape helpers.
-pub const expr_emit = @import("codegen/expr.zig");
-/// Control-flow lowering — if / while / for / repeat / match /
-/// break / continue / defer + the block / loop-frame stack
-/// helpers.
-pub const control_flow = @import("codegen/control_flow.zig");
+const opcodes = @import("codegen/opcodes.zig");
+const archive = @import("codegen/archive.zig");
+const mem_builtin = @import("codegen/mem_builtin.zig");
+const strings = @import("codegen/strings.zig");
+const pattern = @import("codegen/pattern.zig");
+const expr_emit = @import("codegen/expr.zig");
+const control_flow = @import("codegen/control_flow.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const CheckedProgram = typecheck_mod.CheckedProgram;
