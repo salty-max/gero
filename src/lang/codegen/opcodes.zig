@@ -8,134 +8,134 @@
 /// the matching instruction; subsequent bytes carry operands per
 /// ISA §5.
 pub const Op = struct {
-    // allow-strict: byte-table mirror of VM opcodes — trailing-comment commentary is the canonical doc.
-    pub const mov_imm16_reg: u8 = 0x10; // mov imm16, reg
-    // allow-strict: byte-table mirror.
-    pub const mov_reg_reg: u8 = 0x11; // mov src, dst
-    // allow-strict: byte-table mirror.
-    pub const mov_reg_offset_reg: u8 = 0x1C; // load:  reg ← [base + ofs]
-    // allow-strict: byte-table mirror.
-    pub const mov_reg_reg_offset: u8 = 0x1D; // store: [base + ofs] ← reg
-    // allow-strict: byte-table mirror.
-    pub const mov_reg_to_addr: u8 = 0x12; // store: [addr] ← reg (word)
-    // allow-strict: byte-table mirror.
-    pub const mov_addr_to_reg: u8 = 0x13; // load:  reg ← [addr] (word)
-    // allow-strict: byte-table mirror.
-    pub const mov_reg_to_zp: u8 = 0x19; // store: [zp] ← reg (word)
-    // allow-strict: byte-table mirror.
-    pub const mov_zp_to_reg: u8 = 0x1A; // load:  reg ← [zp] (word)
-    // allow-strict: byte-table mirror.
-    pub const mov_ptr_to_reg: u8 = 0x15; // load:  reg ← [ptr_reg] (word)
-    // allow-strict: byte-table mirror.
-    pub const mov_reg_to_ptr: u8 = 0x16; // store: [ptr_reg] ← reg (word)
-    // allow-strict: byte-table mirror.
-    pub const mov8_addr_to_reg: u8 = 0x22; // load:  reg ← byte [addr]
-    // allow-strict: byte-table mirror.
-    pub const mov8_reg_to_ptr: u8 = 0x23; // store: [ptr_reg] ← reg.lo (byte)
-    // allow-strict: byte-table mirror.
-    pub const mov8_ptr_to_reg: u8 = 0x24; // load:  reg ← byte [ptr_reg]
-    // allow-strict: byte-table mirror.
-    pub const mov8_zp_to_reg: u8 = 0x29; // load:  reg ← byte [zp]
-    // allow-strict: byte-table mirror.
-    pub const movl_reg_to_addr: u8 = 0x27; // store: [addr] ← reg.lo  (byte store)
-    // allow-strict: byte-table mirror.
-    pub const movl_reg_to_zp: u8 = 0x2B; // store: [zp]   ← reg.lo  (byte store)
+    /// `mov imm16, reg` — load 16-bit immediate into reg.
+    pub const mov_imm16_reg: u8 = 0x10;
+    /// `mov src, dst` — copy register.
+    pub const mov_reg_reg: u8 = 0x11;
+    /// load: reg ← [base + ofs] (word).
+    pub const mov_reg_offset_reg: u8 = 0x1C;
+    /// store: [base + ofs] ← reg (word).
+    pub const mov_reg_reg_offset: u8 = 0x1D;
+    /// store: [addr] ← reg (word).
+    pub const mov_reg_to_addr: u8 = 0x12;
+    /// load: reg ← [addr] (word).
+    pub const mov_addr_to_reg: u8 = 0x13;
+    /// store: [zp] ← reg (word).
+    pub const mov_reg_to_zp: u8 = 0x19;
+    /// load: reg ← [zp] (word).
+    pub const mov_zp_to_reg: u8 = 0x1A;
+    /// load: reg ← [ptr_reg] (word).
+    pub const mov_ptr_to_reg: u8 = 0x15;
+    /// store: [ptr_reg] ← reg (word).
+    pub const mov_reg_to_ptr: u8 = 0x16;
+    /// load: reg ← byte [addr].
+    pub const mov8_addr_to_reg: u8 = 0x22;
+    /// store: [ptr_reg] ← reg.lo (byte).
+    pub const mov8_reg_to_ptr: u8 = 0x23;
+    /// load: reg ← byte [ptr_reg].
+    pub const mov8_ptr_to_reg: u8 = 0x24;
+    /// load: reg ← byte [zp].
+    pub const mov8_zp_to_reg: u8 = 0x29;
+    /// store: [addr] ← reg.lo (byte store).
+    pub const movl_reg_to_addr: u8 = 0x27;
+    /// store: [zp] ← reg.lo (byte store).
+    pub const movl_reg_to_zp: u8 = 0x2B;
 
-    // allow-strict: byte-table mirror.
-    pub const push_reg: u8 = 0x31; // push reg
-    // allow-strict: byte-table mirror.
-    pub const pop_reg: u8 = 0x32; // pop reg
+    /// `push reg` — push register onto the stack.
+    pub const push_reg: u8 = 0x31;
+    /// `pop reg` — pop top of stack into register.
+    pub const pop_reg: u8 = 0x32;
 
-    // allow-strict: byte-table mirror.
-    pub const add_imm16_reg: u8 = 0x40; // add imm, reg
-    // allow-strict: byte-table mirror.
-    pub const add_reg_acu: u8 = 0x42; // acu ← acu + reg
-    // allow-strict: byte-table mirror.
-    pub const sub_imm16_reg: u8 = 0x43; // sub imm, reg
-    // allow-strict: byte-table mirror.
-    pub const sub_reg_acu: u8 = 0x45; // acu ← acu - reg
-    // allow-strict: byte-table mirror.
-    pub const mul_reg_reg: u8 = 0x47; // dst ← dst * src
-    // allow-strict: byte-table mirror.
-    pub const neg_reg: u8 = 0x4A; // reg ← -reg
-    // allow-strict: byte-table mirror.
-    pub const divs_reg_reg: u8 = 0x4E; // dst ← dst / src (signed)
+    /// `add imm, reg` — reg ← reg + imm.
+    pub const add_imm16_reg: u8 = 0x40;
+    /// `add reg, acu` — acu ← acu + reg.
+    pub const add_reg_acu: u8 = 0x42;
+    /// `sub imm, reg` — reg ← reg - imm.
+    pub const sub_imm16_reg: u8 = 0x43;
+    /// `sub reg, acu` — acu ← acu - reg.
+    pub const sub_reg_acu: u8 = 0x45;
+    /// `mul dst, src` — dst ← dst * src.
+    pub const mul_reg_reg: u8 = 0x47;
+    /// `neg reg` — reg ← -reg.
+    pub const neg_reg: u8 = 0x4A;
+    /// `divs dst, src` — dst ← dst / src (signed).
+    pub const divs_reg_reg: u8 = 0x4E;
 
-    // allow-strict: byte-table mirror.
-    pub const and_reg_reg: u8 = 0x61; // dst ← dst & src
-    // allow-strict: byte-table mirror.
-    pub const or_reg_reg: u8 = 0x63; // dst ← dst | src
-    // allow-strict: byte-table mirror.
-    pub const xor_reg_reg: u8 = 0x65; // dst ← dst ^ src
-    // allow-strict: byte-table mirror.
-    pub const not_reg: u8 = 0x66; // reg ← ~reg
-    // allow-strict: byte-table mirror.
-    pub const shl_reg_reg: u8 = 0x71; // dst ← dst << src
-    // allow-strict: byte-table mirror.
-    pub const shr_reg_reg: u8 = 0x73; // dst ← dst >> src
+    /// `and dst, src` — dst ← dst & src.
+    pub const and_reg_reg: u8 = 0x61;
+    /// `or dst, src` — dst ← dst | src.
+    pub const or_reg_reg: u8 = 0x63;
+    /// `xor dst, src` — dst ← dst ^ src.
+    pub const xor_reg_reg: u8 = 0x65;
+    /// `not reg` — reg ← ~reg.
+    pub const not_reg: u8 = 0x66;
+    /// `shl dst, src` — dst ← dst << src.
+    pub const shl_reg_reg: u8 = 0x71;
+    /// `shr dst, src` — dst ← dst >> src (logical).
+    pub const shr_reg_reg: u8 = 0x73;
 
-    // allow-strict: byte-table mirror.
-    pub const shl_reg_imm8: u8 = 0x70; // reg ← reg << imm
-    // allow-strict: byte-table mirror.
-    pub const shr_reg_imm8: u8 = 0x72; // reg ← reg >> imm (logical / unsigned)
-    // allow-strict: byte-table mirror.
-    pub const asr_reg_imm8: u8 = 0x74; // reg ← reg >>a imm (arithmetic / signed)
+    /// `shl reg, imm` — reg ← reg << imm.
+    pub const shl_reg_imm8: u8 = 0x70;
+    /// `shr reg, imm` — reg ← reg >> imm (logical / unsigned).
+    pub const shr_reg_imm8: u8 = 0x72;
+    /// `asr reg, imm` — reg ← reg >>a imm (arithmetic / signed).
+    pub const asr_reg_imm8: u8 = 0x74;
 
-    // allow-strict: byte-table mirror.
-    pub const cmp_reg_imm16: u8 = 0x80; // flags ← reg - imm
-    // allow-strict: byte-table mirror.
-    pub const cmp_reg_reg: u8 = 0x81; // flags ← dst - src
+    /// `cmp reg, imm` — flags ← reg - imm.
+    pub const cmp_reg_imm16: u8 = 0x80;
+    /// `cmp dst, src` — flags ← dst - src.
+    pub const cmp_reg_reg: u8 = 0x81;
 
-    // allow-strict: byte-table mirror.
-    pub const jmp_addr: u8 = 0x90; // unconditional jump
-    // allow-strict: byte-table mirror.
-    pub const jeq_addr: u8 = 0x92; // jump on Z = 1
-    // allow-strict: byte-table mirror.
-    pub const jne_addr: u8 = 0x93; // jump on Z = 0
-    // allow-strict: byte-table mirror.
-    pub const jlt_addr: u8 = 0x94; // signed less
-    // allow-strict: byte-table mirror.
-    pub const jle_addr: u8 = 0x95; // signed ≤
-    // allow-strict: byte-table mirror.
-    pub const jgt_addr: u8 = 0x96; // signed >
-    // allow-strict: byte-table mirror.
-    pub const jge_addr: u8 = 0x97; // signed ≥
+    /// `jmp addr` — unconditional jump.
+    pub const jmp_addr: u8 = 0x90;
+    /// `jeq addr` — jump on Z = 1.
+    pub const jeq_addr: u8 = 0x92;
+    /// `jne addr` — jump on Z = 0.
+    pub const jne_addr: u8 = 0x93;
+    /// `jlt addr` — signed less-than.
+    pub const jlt_addr: u8 = 0x94;
+    /// `jle addr` — signed ≤.
+    pub const jle_addr: u8 = 0x95;
+    /// `jgt addr` — signed greater-than.
+    pub const jgt_addr: u8 = 0x96;
+    /// `jge addr` — signed ≥.
+    pub const jge_addr: u8 = 0x97;
 
-    // allow-strict: byte-table mirror.
-    pub const bcpy: u8 = 0x2C; // bcpy dst, src, len — memcpy via 3 regs
-    // allow-strict: byte-table mirror.
-    pub const bfill: u8 = 0x2D; // bfill addr, len, val — memset via 3 regs
+    /// `bcpy dst, src, len` — memcpy via 3 regs.
+    pub const bcpy: u8 = 0x2C;
+    /// `bfill addr, len, val` — memset via 3 regs.
+    pub const bfill: u8 = 0x2D;
 
-    // allow-strict: byte-table mirror.
-    pub const call_addr: u8 = 0xA0; // call abs addr
-    // allow-strict: byte-table mirror.
-    pub const call_reg: u8 = 0xA1; // call [reg]
-    // allow-strict: byte-table mirror.
-    pub const ret_op: u8 = 0xA2; // ret
+    /// `call addr` — call absolute address.
+    pub const call_addr: u8 = 0xA0;
+    /// `call [reg]` — call via register.
+    pub const call_reg: u8 = 0xA1;
+    /// `ret` — return from call.
+    pub const ret_op: u8 = 0xA2;
 
-    // allow-strict: byte-table mirror.
-    pub const sys: u8 = 0xFB; // host-callback syscall
-    // allow-strict: byte-table mirror.
-    pub const hlt: u8 = 0xFF; // terminal halt
+    /// `sys id` — host-callback syscall.
+    pub const sys: u8 = 0xFB;
+    /// `hlt` — terminal halt.
+    pub const hlt: u8 = 0xFF;
 };
 
 /// VM register byte values per `src/vm/registers.zig`. The
 /// codegen reads / writes through these indices in operand
 /// positions that expect a `Reg`.
 pub const Reg = struct {
-    // allow-strict: register-index mirror.
+    /// Accumulator — return-value and host-syscall arg register.
     pub const acu: u8 = 0x01;
-    // allow-strict: register-index mirror.
+    /// General-purpose register 1.
     pub const r1: u8 = 0x02;
-    // allow-strict: register-index mirror.
+    /// General-purpose register 2.
     pub const r2: u8 = 0x03;
-    // allow-strict: register-index mirror.
+    /// General-purpose register 3.
     pub const r3: u8 = 0x04;
-    // allow-strict: register-index mirror.
+    /// Stack pointer.
     pub const sp: u8 = 0x0A;
-    // allow-strict: register-index mirror.
+    /// Frame pointer.
     pub const fp: u8 = 0x0B;
-    // allow-strict: register-index mirror.
+    /// Memory-bank selector — selects the active SRAM bank window.
     pub const mb: u8 = 0x0C;
 };
 
@@ -143,25 +143,30 @@ pub const Reg = struct {
 /// The `sys` opcode reads one of these as its immediate operand
 /// and routes to the matching host-callback handler.
 pub const Sys = struct {
-    // allow-strict: syscall-id mirror.
+    /// `print_str` — write a null-terminated string from `[acu]`.
     pub const print_str: u8 = 0x01;
-    // allow-strict: syscall-id mirror.
+    /// `print_int` — write `acu` as decimal.
     pub const print_int: u8 = 0x02;
-    // allow-strict: syscall-id mirror.
+    /// `print_char` — write `acu.lo` as a single byte.
     pub const print_char: u8 = 0x03;
-    // allow-strict: syscall-id mirror.
+    /// `print_newline` — write `\n`.
     pub const print_newline: u8 = 0x04;
-    // allow-strict: syscall-id mirror.
+    /// `print_fixed` — write `acu` as Q-format fixed-point.
     pub const print_fixed: u8 = 0x05;
 
-    // allow-strict: syscall-id mirror.
+    /// `format_str_to_buf` — append `[acu]` (null-terminated str)
+    /// to the buffer pointed to by `r1`.
     pub const format_str_to_buf: u8 = 0x10;
-    // allow-strict: syscall-id mirror.
+    /// `format_int_to_buf` — append `acu` as decimal to the buffer
+    /// pointed to by `r1`.
     pub const format_int_to_buf: u8 = 0x11;
-    // allow-strict: syscall-id mirror.
+    /// `format_char_to_buf` — append `acu.lo` as a single byte to
+    /// the buffer pointed to by `r1`.
     pub const format_char_to_buf: u8 = 0x12;
-    // allow-strict: syscall-id mirror.
+    /// `format_fixed_to_buf` — append `acu` as Q-format fixed-
+    /// point to the buffer pointed to by `r1`.
     pub const format_fixed_to_buf: u8 = 0x13;
-    // allow-strict: syscall-id mirror.
+    /// `format_terminate_buf` — write a trailing null byte at the
+    /// current cursor of the buffer pointed to by `r1`.
     pub const format_terminate_buf: u8 = 0x14;
 };
