@@ -1222,6 +1222,40 @@ test "codegen: format-spec `$(x:d)` is rejected with E_CODEGEN_UNSUPPORTED" {
     try std.testing.expect(found);
 }
 
+test "codegen: diagnostic message slices outlive `compile`" {
+    // Regression: `Diagnostic.message` strings allocated by
+    // `Emitter.unsupported` live on `Compiled.diag_arena`. A prior
+    // shape kept them on a scratch arena that deinit'd before
+    // `compile` returned, leaving the slices dangling. This test
+    // reads `.message` AFTER `compile` returns to prove the arena
+    // outlives the call.
+    const source =
+        \\def main()
+        \\  let x: i16 = 1
+        \\  let s: str = "$(x:d)"
+        \\  print s
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{});
+    defer compiled.deinit();
+
+    var checked_message = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_UNSUPPORTED")) {
+            try std.testing.expect(std.mem.indexOf(u8, d.message, "format specs") != null);
+            checked_message = true;
+        }
+    }
+    try std.testing.expect(checked_message);
+}
+
 test "codegen: zero-page overflow emits E_CODEGEN_ZP_OVERFLOW" {
     // 130 `@zero_page` u16 globals = 260 bytes — exceeds the 256-byte
     // zero-page budget at the 129th binding (which would push the
