@@ -62,6 +62,8 @@ pub const mem_builtin = @import("codegen/mem_builtin.zig");
 pub const strings = @import("codegen/strings.zig");
 /// `match` pattern-arm test emission.
 pub const pattern = @import("codegen/pattern.zig");
+/// Expression lowering — `emitExpr` and the per-shape helpers.
+pub const expr_emit = @import("codegen/expr.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const CheckedProgram = typecheck_mod.CheckedProgram;
@@ -247,7 +249,7 @@ fn findEntryDef(source: []const u8, program: *const ast.Program, entry_name: []c
 /// when the callee's address wasn't yet known (forward refs). At
 /// the end of emission, every patch's 2-byte address-slot in
 /// `code` is overwritten with the resolved callee address.
-const CallPatch = struct {
+pub const CallPatch = struct {
     /// Which buffer the patch lives in — `null` = base code,
     /// non-null = bank N's buffer.
     bank: ?u8,
@@ -264,7 +266,7 @@ const CallPatch = struct {
     /// - `fn_name`: resolve via the codegen's `fn_addresses` map.
     /// - `trampoline`: resolve to the `__call_bank` trampoline's
     ///   address, recorded after the trampoline emits.
-    const Target = union(enum) {
+    pub const Target = union(enum) {
         fn_name: []const u8,
         trampoline,
     };
@@ -479,7 +481,7 @@ pub const Emitter = struct {
     }
 
     /// `mov [base + ofs], dst` (0x1C) — load fp-relative into reg.
-    fn movRegOffsetToReg(self: *Emitter, base: u8, ofs: i8, dst: u8) !void {
+    pub fn movRegOffsetToReg(self: *Emitter, base: u8, ofs: i8, dst: u8) !void {
         try self.emitByte(Op.mov_reg_offset_reg);
         try self.emitByte(base);
         // safety: i8 → u8 bit pattern; reg_offset is signed byte per ISA §5.1.
@@ -583,33 +585,33 @@ pub const Emitter = struct {
     }
 
     /// `add reg` (0x42) — `acu ← acu + reg`.
-    fn addRegToAcu(self: *Emitter, reg: u8) !void {
+    pub fn addRegToAcu(self: *Emitter, reg: u8) !void {
         try self.emitByte(Op.add_reg_acu);
         try self.emitByte(reg);
     }
 
     /// `sub reg` (0x45) — `acu ← acu - reg`.
-    fn subRegFromAcu(self: *Emitter, reg: u8) !void {
+    pub fn subRegFromAcu(self: *Emitter, reg: u8) !void {
         try self.emitByte(Op.sub_reg_acu);
         try self.emitByte(reg);
     }
 
     /// `mul src, dst` (0x47) — `dst ← dst * src`.
-    fn mulRegReg(self: *Emitter, src: u8, dst: u8) !void {
+    pub fn mulRegReg(self: *Emitter, src: u8, dst: u8) !void {
         try self.emitByte(Op.mul_reg_reg);
         try self.emitByte(src);
         try self.emitByte(dst);
     }
 
     /// `divs src, dst` (0x4E) — signed `dst ← dst / src`.
-    fn divsRegReg(self: *Emitter, src: u8, dst: u8) !void {
+    pub fn divsRegReg(self: *Emitter, src: u8, dst: u8) !void {
         try self.emitByte(Op.divs_reg_reg);
         try self.emitByte(src);
         try self.emitByte(dst);
     }
 
     /// `neg reg` (0x4A) — `reg ← -reg` (two's complement).
-    fn negReg(self: *Emitter, reg: u8) !void {
+    pub fn negReg(self: *Emitter, reg: u8) !void {
         try self.emitByte(Op.neg_reg);
         try self.emitByte(reg);
     }
@@ -623,7 +625,7 @@ pub const Emitter = struct {
     }
 
     /// `cmp dst, src` (0x81) — flags ← dst - src.
-    fn cmpRegReg(self: *Emitter, dst: u8, src: u8) !void {
+    pub fn cmpRegReg(self: *Emitter, dst: u8, src: u8) !void {
         try self.emitByte(Op.cmp_reg_reg);
         try self.emitByte(dst);
         try self.emitByte(src);
@@ -631,41 +633,41 @@ pub const Emitter = struct {
 
     /// `and src, dst` (0x61) — `dst ← dst & src`. Source-first byte
     /// per `bitwise.andRegReg` decode.
-    fn andRegReg(self: *Emitter, dst: u8, src: u8) !void {
+    pub fn andRegReg(self: *Emitter, dst: u8, src: u8) !void {
         try self.emitByte(Op.and_reg_reg);
         try self.emitByte(src);
         try self.emitByte(dst);
     }
 
     /// `or src, dst` (0x63).
-    fn orRegReg(self: *Emitter, dst: u8, src: u8) !void {
+    pub fn orRegReg(self: *Emitter, dst: u8, src: u8) !void {
         try self.emitByte(Op.or_reg_reg);
         try self.emitByte(src);
         try self.emitByte(dst);
     }
 
     /// `xor src, dst` (0x65).
-    fn xorRegReg(self: *Emitter, dst: u8, src: u8) !void {
+    pub fn xorRegReg(self: *Emitter, dst: u8, src: u8) !void {
         try self.emitByte(Op.xor_reg_reg);
         try self.emitByte(src);
         try self.emitByte(dst);
     }
 
     /// `not reg` (0x66) — `reg ← ~reg`.
-    fn notRegOp(self: *Emitter, reg: u8) !void {
+    pub fn notRegOp(self: *Emitter, reg: u8) !void {
         try self.emitByte(Op.not_reg);
         try self.emitByte(reg);
     }
 
     /// `shl dst, src` (0x71). Source register holds the shift count.
-    fn shlRegReg(self: *Emitter, dst: u8, src: u8) !void {
+    pub fn shlRegReg(self: *Emitter, dst: u8, src: u8) !void {
         try self.emitByte(Op.shl_reg_reg);
         try self.emitByte(dst);
         try self.emitByte(src);
     }
 
     /// `shr dst, src` (0x73).
-    fn shrRegReg(self: *Emitter, dst: u8, src: u8) !void {
+    pub fn shrRegReg(self: *Emitter, dst: u8, src: u8) !void {
         try self.emitByte(Op.shr_reg_reg);
         try self.emitByte(dst);
         try self.emitByte(src);
@@ -679,7 +681,7 @@ pub const Emitter = struct {
     }
 
     /// `shr reg, imm8` (0x72) — `reg ← reg >> imm` (zero-fill).
-    fn shrRegImm(self: *Emitter, reg: u8, imm: u8) !void {
+    pub fn shrRegImm(self: *Emitter, reg: u8, imm: u8) !void {
         try self.emitByte(Op.shr_reg_imm8);
         try self.emitByte(reg);
         try self.emitByte(imm);
@@ -1122,7 +1124,7 @@ pub const Emitter = struct {
 
     /// Emit a load of `g`'s value into `acu`. The instruction
     /// shape depends on the placement family + byte width.
-    fn emitGlobalLoad(self: *Emitter, g: Global) !void {
+    pub fn emitGlobalLoad(self: *Emitter, g: Global) !void {
         switch (g.placement) {
             .addr => {
                 if (g.width == 1) {
@@ -1465,135 +1467,19 @@ pub const Emitter = struct {
         }
     }
 
-    /// Evaluate a boolean-valued expression and leave a 0 / 1 in
-    /// `acu`, then `cmp acu, 0` so the caller can pick a conditional
-    /// jump (typically `jeq` to skip on false, `jne` to fall through
-    /// on true). When the expression is a direct comparison or
-    /// boolean literal the codegen folds the materialization step,
-    /// emitting just the cmp.
+    /// Delegated to `codegen/expr.zig`.
     fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
-        // Fast-path: a top-level comparison or logical-not can drive
-        // the flags directly without going through a 0/1 materialize.
-        if (e.* == .binary) {
-            const b = e.binary;
-            switch (b.op) {
-                .eq, .neq, .lt, .lte, .gt, .gte => {
-                    // Eval LHS into acu, eval RHS into r1, cmp acu, r1.
-                    try self.emitExpr(b.rhs);
-                    try self.pushReg(Reg.acu);
-                    try self.emitExpr(b.lhs);
-                    try self.popReg(Reg.r1);
-                    try self.cmpRegReg(Reg.acu, Reg.r1);
-                    // We always emit a jeq below to skip the body on
-                    // `false`; turn the comparison's flag-test
-                    // accordingly. For `==`, `false` means Z=0 (so
-                    // jne skips). We can't easily change the op the
-                    // caller emits without a callback, so we
-                    // materialize a synthetic acu-vs-0 result by
-                    // flipping with a small sequence:
-                    //
-                    //   <cmp>
-                    //   mov 0, acu
-                    //   <set acu = 1 if cond>
-                    //   cmp acu, 0
-                    //
-                    // That's more bytes than needed. Cleaner: do
-                    // the full materialization path and let the
-                    // caller's jeq do the right thing on the 0/1.
-                    try self.materializeBoolFromFlags(b.op);
-                    try self.cmpRegImm(Reg.acu, 0);
-                    return;
-                },
-                .log_and, .log_or => {
-                    try self.emitShortCircuitBool(b);
-                    try self.cmpRegImm(Reg.acu, 0);
-                    return;
-                },
-                else => {},
-            }
-        }
-        if (e.* == .unary and e.unary.op == .log_not) {
-            try self.emitExpr(e.unary.operand);
-            // Logical NOT — invert acu: acu = (acu == 0) ? 1 : 0.
-            try self.cmpRegImm(Reg.acu, 0);
-            try self.materializeBoolFromFlags(.eq);
-            try self.cmpRegImm(Reg.acu, 0);
-            return;
-        }
-        // Generic path — evaluate to acu, then test against 0.
-        try self.emitExpr(e);
-        try self.cmpRegImm(Reg.acu, 0);
+        return expr_emit.emitCondBranch(self, e);
     }
 
-    /// Materialize a 0 / 1 boolean in `acu` from the current flag
-    /// state set by a preceding `cmp`. Picks the right conditional
-    /// jump per comparison kind.
+    /// Delegated to `codegen/expr.zig`.
     fn materializeBoolFromFlags(self: *Emitter, op: ast.BinaryOp) !void {
-        const taken_op: u8 = switch (op) {
-            .eq => Op.jeq_addr,
-            .neq => Op.jne_addr,
-            .lt => Op.jlt_addr,
-            .lte => Op.jle_addr,
-            .gt => Op.jgt_addr,
-            .gte => Op.jge_addr,
-            // allow-strict: emitCondBranch filters to comparison ops before calling here.
-            else => unreachable,
-        };
-        // Pattern:
-        //   <prior cmp>
-        //   jXX true_label
-        //   mov 0, acu
-        //   jmp end
-        // true_label:
-        //   mov 1, acu
-        // end:
-        const true_patch = try self.emitJumpPlaceholder(taken_op);
-        try self.movImmToReg(0, Reg.acu);
-        const end_patch = try self.emitJumpPlaceholder(Op.jmp_addr);
-        const true_offset = try self.currentOffset();
-        try self.movImmToReg(1, Reg.acu);
-        const end_offset = try self.currentOffset();
-        try self.patchJumpTo(true_patch, true_offset);
-        try self.patchJumpTo(end_patch, end_offset);
+        return expr_emit.materializeBoolFromFlags(self, op);
     }
 
-    /// Lower a short-circuiting `and` / `or` into a chain of
-    /// conditional jumps that leaves a 0 / 1 in `acu`.
+    /// Delegated to `codegen/expr.zig`.
     fn emitShortCircuitBool(self: *Emitter, b: ast.BinaryExpr) !void {
-        switch (b.op) {
-            .log_and => {
-                // acu = lhs; if acu == 0 -> short-circuit false.
-                try self.emitExpr(b.lhs);
-                try self.cmpRegImm(Reg.acu, 0);
-                const short_patch = try self.emitJumpPlaceholder(Op.jeq_addr);
-                try self.emitExpr(b.rhs);
-                // Normalize rhs to 0/1.
-                try self.cmpRegImm(Reg.acu, 0);
-                try self.materializeBoolFromFlags(.neq);
-                const end_patch = try self.emitJumpPlaceholder(Op.jmp_addr);
-                const short_offset = try self.currentOffset();
-                try self.movImmToReg(0, Reg.acu);
-                const end_offset = try self.currentOffset();
-                try self.patchJumpTo(short_patch, short_offset);
-                try self.patchJumpTo(end_patch, end_offset);
-            },
-            .log_or => {
-                try self.emitExpr(b.lhs);
-                try self.cmpRegImm(Reg.acu, 0);
-                const short_patch = try self.emitJumpPlaceholder(Op.jne_addr);
-                try self.emitExpr(b.rhs);
-                try self.cmpRegImm(Reg.acu, 0);
-                try self.materializeBoolFromFlags(.neq);
-                const end_patch = try self.emitJumpPlaceholder(Op.jmp_addr);
-                const short_offset = try self.currentOffset();
-                try self.movImmToReg(1, Reg.acu);
-                const end_offset = try self.currentOffset();
-                try self.patchJumpTo(short_patch, short_offset);
-                try self.patchJumpTo(end_patch, end_offset);
-            },
-            // allow-strict: caller filters to log_and / log_or before invoking this helper.
-            else => unreachable,
-        }
+        return expr_emit.emitShortCircuitBool(self, b);
     }
 
     /// Lower `while cond ... end`. Standard top-test loop:
@@ -2044,7 +1930,8 @@ pub const Emitter = struct {
     }
 
     /// Delegated to `codegen/strings.zig`.
-    fn emitStrLitExpr(self: *Emitter, sl: ast.StrLitExpr) !void {
+    /// Delegated to `codegen/strings.zig`.
+    pub fn emitStrLitExpr(self: *Emitter, sl: ast.StrLitExpr) !void {
         return strings.emitStrLitExpr(self, sl);
     }
 
@@ -2053,332 +1940,40 @@ pub const Emitter = struct {
         return strings.emitPrintStrLit(self, sl);
     }
 
+    /// Delegated to `codegen/expr.zig`.
     fn emitExprDiscard(self: *Emitter, e: *const ast.Expr) !void {
-        try self.emitExpr(e);
-        // Result lands in acu; we just don't use it.
+        return expr_emit.emitExprDiscard(self, e);
     }
 
-    // ---------- expression emission (result → acu) ----------
-
-    /// Lower one expression — result lands in `acu`. Branches on
-    /// the AST variant; sub-modules (`mem_builtin`, etc.) call
-    /// back into this through the method dispatch.
+    /// Lower one expression — result lands in `acu`. Sub-modules
+    /// call back into this through the method dispatch.
     pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
-        switch (e.*) {
-            .int_lit => |lit| {
-                // @as: truncate i32 → i16; safety: typechecker already verified the literal fits in the target primitive's width.
-                const trimmed: i16 = @truncate(lit.value);
-                // safety: i16 → u16 bit pattern; the two's-complement encoding is preserved.
-                const v: u16 = @bitCast(trimmed);
-                try self.movImmToReg(v, Reg.acu);
-            },
-            .fixed_lit => |lit| {
-                // Q8.8 — the parser pre-encodes the value as `int *
-                // 256 + round(frac * 256)`. The low 16 bits are the
-                // canonical bit pattern.
-                // @as: i32 → i16; spec §3.3 pins fixed-point to Q8.8 (i16-shaped).
-                const trimmed: i16 = @truncate(lit.value);
-                // safety: i16 → u16 bit pattern preserved (two's complement).
-                const v: u16 = @bitCast(trimmed);
-                try self.movImmToReg(v, Reg.acu);
-            },
-            .str_lit => |sl| try self.emitStrLitExpr(sl),
-            .bool_lit => |b| {
-                const v: u16 = if (b.value) 1 else 0;
-                try self.movImmToReg(v, Reg.acu);
-            },
-            .nil_lit => try self.movImmToReg(0, Reg.acu),
-            .char_lit => |c| try self.movImmToReg(c.value, Reg.acu),
-            .paren => |p| try self.emitExpr(p.inner),
-            .ident => |i| {
-                const name = self.source[i.span.start..i.span.end];
-                // Lookup order: locals → params → globals.
-                if (self.locals.get(name)) |ofs| {
-                    try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
-                    return;
-                }
-                if (self.params.get(name)) |ofs| {
-                    try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
-                    return;
-                }
-                if (self.globals.get(name)) |g| {
-                    try self.emitGlobalLoad(g);
-                    return;
-                }
-                try self.unsupported(i.span, "ident not in current frame");
-            },
-            .unary => |u| try self.emitUnary(u),
-            .binary => |b| try self.emitBinary(b),
-            .call => |c| try self.emitCall(c),
-            .method_call => |m| try self.emitMethodCall(m, e),
-            .field => |f| try self.emitFieldExpr(f, e),
-            .is_test => |it| try self.emitIsTest(it),
-            .ref_of => |r| try self.emitAddrOf(r.inner),
-            .cast => |c| try self.emitExpr(c.inner), // same-width primitives share a bit pattern, so the cast is a no-op
-            else => try self.unsupported(e.span(), "this expression form"),
-        }
+        return expr_emit.emitExpr(self, e);
     }
 
-    /// Lower an `EnumName.Variant` field expression — a nullary
-    /// enum-variant constructor. Loads the variant's tag byte
-    /// into `acu` (the runtime representation of the variant).
-    /// Field access on non-enum receivers (struct / class fields)
-    /// is not yet supported.
+    /// Delegated to `codegen/expr.zig`.
     fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void {
-        if (f.receiver.* == .ident) {
-            const recv_name = self.source[f.receiver.ident.span.start..f.receiver.ident.span.end];
-            if (self.enum_decls.get(recv_name)) |ed| {
-                const variant_name = self.source[f.field.start..f.field.end];
-                const tag = self.variantTag(recv_name, variant_name) orelse {
-                    try self.diagFatal(f.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant");
-                    return;
-                };
-                // A bare `Item.Potion` reference at expression
-                // position (without a call) requires the payload to
-                // be empty — payload-bearing constructors come
-                // through the `CallExpr` path with field-callee.
-                for (ed.variants) |v| {
-                    if (std.mem.eql(u8, self.source[v.name.start..v.name.end], variant_name)) {
-                        if (v.payload.len != 0) {
-                            try self.unsupported(f.span, "payload-bearing enum-variant constructors");
-                            return;
-                        }
-                    }
-                }
-                try self.movImmToReg(tag, Reg.acu);
-                return;
-            }
-        }
-        try self.unsupported(e.span(), "non-enum field access");
+        return expr_emit.emitFieldExpr(self, f, e);
     }
 
-    /// Lower `expr is EnumName.Variant`. Evaluates `expr` into
-    /// `acu`, compares against the variant's tag, materializes a
-    /// `0` / `1` bool. The typechecker validates that the variant
-    /// path matches the LHS's enum type.
+    /// Delegated to `codegen/expr.zig`.
     fn emitIsTest(self: *Emitter, it: ast.IsTestExpr) !void {
-        const path = self.source[it.variant_path.start..it.variant_path.end];
-        const dot = std.mem.indexOfScalar(u8, path, '.') orelse {
-            try self.diagFatal(it.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: `is` rhs must be `EnumName.Variant`");
-            return;
-        };
-        const enum_name = path[0..dot];
-        const variant_name = path[dot + 1 ..];
-        const tag = self.variantTag(enum_name, variant_name) orelse {
-            try self.diagFatal(it.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant in `is` test");
-            return;
-        };
-        try self.emitExpr(it.lhs);
-        try self.cmpRegImm(Reg.acu, tag);
-        try self.materializeBoolFromFlags(.eq);
+        return expr_emit.emitIsTest(self, it);
     }
 
+    /// Delegated to `codegen/expr.zig`.
     fn emitUnary(self: *Emitter, u: ast.UnaryExpr) !void {
-        try self.emitExpr(u.operand);
-        switch (u.op) {
-            .neg => try self.negReg(Reg.acu),
-            .bit_not => try self.notRegOp(Reg.acu),
-            .log_not => {
-                // acu = (acu == 0) ? 1 : 0
-                try self.cmpRegImm(Reg.acu, 0);
-                try self.materializeBoolFromFlags(.eq);
-            },
-        }
+        return expr_emit.emitUnary(self, u);
     }
 
+    /// Delegated to `codegen/expr.zig`.
     fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
-        // Short-circuit operators need to not evaluate their RHS
-        // unconditionally — split them out before the standard
-        // stack-machine pattern.
-        switch (b.op) {
-            .log_and, .log_or => {
-                try self.emitShortCircuitBool(b);
-                return;
-            },
-            else => {},
-        }
-
-        // Fixed-point arithmetic (Q8.8) needs a scaling pass on top
-        // of the integer mul / div — `mul + asr 8` for multiply,
-        // `shl 8 + divs` for divide (per ISA §5.4.1). Type info
-        // drives the dispatch: both operands must be fixed-point.
-        const fixed_op = self.isPrimitiveType(b.lhs, .fixed) and
-            self.isPrimitiveType(b.rhs, .fixed) and
-            (b.op == .mul or b.op == .div);
-
-        // Standard stack-machine pattern: eval RHS, push, eval LHS,
-        // pop RHS into r1, apply op (acu = acu OP r1).
-        try self.emitExpr(b.rhs);
-        try self.pushReg(Reg.acu);
-        try self.emitExpr(b.lhs);
-        try self.popReg(Reg.r1);
-        switch (b.op) {
-            .add => try self.addRegToAcu(Reg.r1),
-            .sub => try self.subRegFromAcu(Reg.r1),
-            .mul => {
-                // `mul src, dst` writes low(product) → dst AND
-                // high(product) → acu. If dst == acu the high
-                // half clobbers the low half — so we land the
-                // result in `r2`, then move it back to acu.
-                try self.movRegToReg(Reg.acu, Reg.r2);
-                try self.mulRegReg(Reg.r1, Reg.r2);
-                if (fixed_op) {
-                    // Q8.8 * Q8.8 — the conceptual Q16.16 product
-                    // straddles acu:r2 (acu = high half, r2 = low
-                    // half). The Q8.8 result is bits 8..23 of that
-                    // 32-bit value:
-                    //   acu (high << 8) | (r2 unsigned >> 8)
-                    // ISA §5.4.1 — products whose real magnitude
-                    // exceeds 127.99… wrap silently because the
-                    // result no longer fits in 16 bits.
-                    try self.shrRegImm(Reg.r2, 8);
-                    try self.shlRegImm(Reg.acu, 8);
-                    try self.orRegReg(Reg.acu, Reg.r2);
-                } else {
-                    // Integer mul — drop the high half.
-                    try self.movRegToReg(Reg.r2, Reg.acu);
-                }
-            },
-            .div => {
-                if (fixed_op) {
-                    // Q8.8 / Q8.8 — scale the dividend up by 2^8
-                    // before the signed divide so the quotient lands
-                    // back in Q8.8. The 24-bit pre-shifted dividend
-                    // straddles acu:r2:
-                    //   r2  = acu << 8           (low half)
-                    //   acu = acu >>arith 8      (sign-extended top byte)
-                    // Then `divs r1, r2` performs the 32÷16 signed
-                    // divide and the quotient ends up in r2.
-                    try self.movRegToReg(Reg.acu, Reg.r2);
-                    try self.shlRegImm(Reg.r2, 8); // r2 = lhs << 8 (low)
-                    try self.asrRegImm(Reg.acu, 8); // acu = lhs >>a 8 (high)
-                    try self.divsRegReg(Reg.r1, Reg.r2);
-                    try self.movRegToReg(Reg.r2, Reg.acu);
-                } else {
-                    // Signed 32÷16 divide. Dividend lives in acu:dst
-                    // (high:low); the dividend is assumed to fit in
-                    // 16 bits — sign-extension is not yet emitted.
-                    try self.movRegToReg(Reg.acu, Reg.r2); // r2 = low half
-                    try self.movImmToReg(0, Reg.acu); // high half = 0
-                    try self.divsRegReg(Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
-                    try self.movRegToReg(Reg.r2, Reg.acu);
-                }
-            },
-            .mod => {
-                // Same divs pattern as `div`, but keep `acu` (the
-                // remainder is exactly what `mod` wants).
-                try self.movRegToReg(Reg.acu, Reg.r2); // r2 = low half
-                try self.movImmToReg(0, Reg.acu); // high half = 0
-                try self.divsRegReg(Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
-            },
-            .bit_and => try self.andRegReg(Reg.acu, Reg.r1),
-            .bit_or => try self.orRegReg(Reg.acu, Reg.r1),
-            .bit_xor => try self.xorRegReg(Reg.acu, Reg.r1),
-            .shl => try self.shlRegReg(Reg.acu, Reg.r1),
-            .shr => try self.shrRegReg(Reg.acu, Reg.r1),
-            .eq, .neq, .lt, .lte, .gt, .gte => {
-                try self.cmpRegReg(Reg.acu, Reg.r1);
-                try self.materializeBoolFromFlags(b.op);
-            },
-            // allow-strict: handled by the short-circuit branch above; emitBinary never falls through here for these ops.
-            .log_and, .log_or => unreachable,
-        }
+        return expr_emit.emitBinary(self, b);
     }
 
-    /// Lower `callee(args...)` per the free-fn calling convention:
-    ///
-    ///   - Push args **right-to-left** (so callee sees param 0 at
-    ///     `[fp + 4]`, param 1 at `[fp + 6]`, ...).
-    ///   - `call <addr>` — the VM enters: push fp, push ret_ip,
-    ///     fp ← sp, ip ← target.
-    ///   - On return, `add <N*2>, sp` to drop the args. The
-    ///     callee's return value lives in `acu`.
-    ///
-    /// Slice M1 only handles direct calls — the callee must be a
-    /// bare ident referencing a top-level `def`. Method calls /
-    /// Closure invocations and fn-pointer calls are not yet supported.
+    /// Delegated to `codegen/expr.zig`.
     fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
-        // Intercept compiler-known builtins before the regular
-        // direct-call path so they emit specialized opcode
-        // sequences instead of going through a `call addr` site.
-        if (c.callee.* == .field) {
-            const fe = c.callee.field;
-            if (fe.receiver.* == .ident) {
-                const recv = self.source[fe.receiver.ident.span.start..fe.receiver.ident.span.end];
-                if (std.mem.eql(u8, recv, "mem")) {
-                    try self.emitMemCall(fe, c);
-                    return;
-                }
-            }
-        }
-        if (c.callee.* != .ident) {
-            try self.unsupported(c.span, "non-ident callee");
-            return;
-        }
-        const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
-        const dup = try self.arena.dupe(u8, callee_name);
-
-        // Decide direct call vs trampoline by comparing the
-        // caller's bank with the target's. The pre-pass populated
-        // `fn_banks` so this resolves without needing the address.
-        const target_bank: ?u8 = self.fn_banks.get(callee_name) orelse null;
-        const cross_bank = !banksEqual(self.current_bank, target_bank);
-
-        // Push args right-to-left (caller-cleans-up).
-        var i: usize = c.args.len;
-        while (i > 0) {
-            i -= 1;
-            try self.emitExpr(c.args[i]);
-            try self.pushReg(Reg.acu);
-        }
-
-        if (cross_bank) {
-            // Trampoline path:
-            //   mov <target_addr>, r1   ; patched at end
-            //   mov <target_bank>,  r2  ; literal at emit time
-            //   call __call_bank        ; patched at end
-            try self.emitByte(Op.mov_imm16_reg);
-            const addr_patch_offset = try self.currentOffset();
-            try self.emitU16Le(0); // placeholder
-            try self.emitByte(Reg.r1);
-            // mov <bank>, r2  — bank known at emit time (null → 0).
-            const target_bank_byte: u8 = target_bank orelse 0;
-            try self.movImmToReg(target_bank_byte, Reg.r2);
-            // call __call_bank  (patched at end)
-            try self.emitByte(Op.call_addr);
-            const tramp_patch_offset = try self.currentOffset();
-            try self.emitU16Le(0);
-
-            try self.call_patches.append(self.allocator, .{
-                .bank = self.current_bank,
-                .code_offset = addr_patch_offset,
-                .target = .{ .fn_name = dup },
-                .span = c.span,
-            });
-            try self.call_patches.append(self.allocator, .{
-                .bank = self.current_bank,
-                .code_offset = tramp_patch_offset,
-                .target = .trampoline,
-                .span = c.span,
-            });
-        } else {
-            // Direct same-bank call.
-            try self.emitByte(Op.call_addr);
-            const patch_offset = try self.currentOffset();
-            try self.emitU16Le(0); // placeholder
-            try self.call_patches.append(self.allocator, .{
-                .bank = self.current_bank,
-                .code_offset = patch_offset,
-                .target = .{ .fn_name = dup },
-                .span = c.span,
-            });
-        }
-
-        if (c.args.len > 0) {
-            // @as: each arg is one 16-bit word; arg count capped by parser.
-            const drop_bytes: u16 = @intCast(c.args.len * 2);
-            try self.addImmToReg(drop_bytes, Reg.sp);
-        }
+        return expr_emit.emitCall(self, c);
     }
 
     // ---------- block + defer infrastructure ----------
@@ -2468,46 +2063,23 @@ pub const Emitter = struct {
         return null;
     }
 
-    /// Lower a `receiver.method(args)` expression. The stdlib
-    /// `mem.X(...)` shape dispatches through the builtin lookup.
-    /// Other receivers (class instance method calls) are not yet
-    /// supported.
+    /// Delegated to `codegen/expr.zig`.
     fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr) !void {
-        if (m.receiver.* == .ident) {
-            const recv = self.source[m.receiver.ident.span.start..m.receiver.ident.span.end];
-            if (std.mem.eql(u8, recv, "mem")) {
-                // Build a synthetic `FieldExpr` + `CallExpr` shape
-                // so the existing `emitMemCall` can dispatch without
-                // duplicating the per-builtin emit code.
-                const synth_field: ast.FieldExpr = .{
-                    .receiver = m.receiver,
-                    .field = m.method,
-                    .span = m.span,
-                };
-                const synth_call: ast.CallExpr = .{
-                    .callee = m.receiver, // unused by emitMemCall
-                    .args = m.args,
-                    .span = m.span,
-                };
-                try self.emitMemCall(synth_field, synth_call);
-                return;
-            }
-        }
-        try self.unsupported(e.span(), "method calls on non-stdlib receivers");
+        return expr_emit.emitMethodCall(self, m, e);
     }
 
     // ---------- mem stdlib builtins (delegated) ----------
 
     /// Dispatch a `mem.X(args)` call to the matching emitter in
     /// `codegen/mem_builtin.zig`.
-    fn emitMemCall(self: *Emitter, fe: ast.FieldExpr, c: ast.CallExpr) !void {
+    pub fn emitMemCall(self: *Emitter, fe: ast.FieldExpr, c: ast.CallExpr) !void {
         return mem_builtin.emitMemCall(self, fe, c);
     }
 
     /// Compute the address of an addressable expression into
     /// `acu`. Backs `mem.addr_of(x)` and the `&x` reference
     /// operator.
-    fn emitAddrOf(self: *Emitter, e: *const ast.Expr) !void {
+    pub fn emitAddrOf(self: *Emitter, e: *const ast.Expr) !void {
         return mem_builtin.emitAddrOf(self, e);
     }
 
