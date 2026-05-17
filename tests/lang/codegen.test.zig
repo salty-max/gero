@@ -656,6 +656,373 @@ test "codegen: byte-store to @addr global uses movl (does not clobber adjacent b
     try std.testing.expectEqual(@as(u8, 0xAB), vm.mmap.readByte(0xFE41));
 }
 
+// ---------- M2: control flow (if / while / for / repeat / match) ----------
+
+/// Shorthand: compile, boot, run until halt, assert on printed output.
+fn runAndExpect(source: []const u8, expected: []const u8) !void {
+    var compiled = try compileSource(source);
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings(expected, writer.written());
+}
+
+test "codegen: if-then with truthy cond runs the body" {
+    try runAndExpect(
+        \\def main()
+        \\  if 1 < 2
+        \\    print 1
+        \\  end
+        \\end
+    , "1\n");
+}
+
+test "codegen: if-else with falsy cond runs the else branch" {
+    try runAndExpect(
+        \\def main()
+        \\  if 1 > 2
+        \\    print 1
+        \\  else
+        \\    print 0
+        \\  end
+        \\end
+    , "0\n");
+}
+
+test "codegen: if-elif-else chain selects the matching arm" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 2
+        \\  if x == 1
+        \\    print 1
+        \\  else if x == 2
+        \\    print 2
+        \\  else
+        \\    print 3
+        \\  end
+        \\end
+    , "2\n");
+}
+
+test "codegen: comparison operators (eq / neq / lt / lte / gt / gte) all branch correctly" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: i16 = 5
+        \\  let b: i16 = 5
+        \\  if a == b
+        \\    print 1
+        \\  end
+        \\  if a != b
+        \\    print 99
+        \\  end
+        \\  if a >= b
+        \\    print 2
+        \\  end
+        \\  if a <= b
+        \\    print 3
+        \\  end
+        \\  if a < 10
+        \\    print 4
+        \\  end
+        \\  if a > 0
+        \\    print 5
+        \\  end
+        \\end
+    , "1\n2\n3\n4\n5\n");
+}
+
+test "codegen: logical and/or short-circuit correctly" {
+    try runAndExpect(
+        \\def main()
+        \\  if 1 == 1 and 2 == 2
+        \\    print 1
+        \\  end
+        \\  if 1 == 1 or 2 == 99
+        \\    print 2
+        \\  end
+        \\  if 1 == 2 and 0 == 0
+        \\    print 99
+        \\  end
+        \\end
+    , "1\n2\n");
+}
+
+test "codegen: logical not inverts truthiness" {
+    try runAndExpect(
+        \\def main()
+        \\  if not (1 == 2)
+        \\    print 1
+        \\  end
+        \\end
+    , "1\n");
+}
+
+test "codegen: while loop iterates until cond false" {
+    try runAndExpect(
+        \\def main()
+        \\  let i: i16 = 0
+        \\  while i < 3
+        \\    print i
+        \\    i = i + 1
+        \\  end
+        \\end
+    , "0\n1\n2\n");
+}
+
+test "codegen: break exits the innermost loop" {
+    try runAndExpect(
+        \\def main()
+        \\  let i: i16 = 0
+        \\  while i < 10
+        \\    if i == 3
+        \\      break
+        \\    end
+        \\    print i
+        \\    i = i + 1
+        \\  end
+        \\end
+    , "0\n1\n2\n");
+}
+
+test "codegen: continue skips the rest of the iteration" {
+    try runAndExpect(
+        \\def main()
+        \\  let i: i16 = 0
+        \\  while i < 5
+        \\    i = i + 1
+        \\    if i == 3
+        \\      continue
+        \\    end
+        \\    print i
+        \\  end
+        \\end
+    , "1\n2\n4\n5\n");
+}
+
+test "codegen: nested while with labeled break exits the outer loop" {
+    try runAndExpect(
+        \\def main()
+        \\  let i: i16 = 0
+        \\  while i < 5 :outer
+        \\    let j: i16 = 0
+        \\    while j < 5
+        \\      if j == 2
+        \\        break :outer
+        \\      end
+        \\      print j
+        \\      j = j + 1
+        \\    end
+        \\    i = i + 1
+        \\  end
+        \\end
+    , "0\n1\n");
+}
+
+test "codegen: for-range exclusive iterates start to end-1" {
+    try runAndExpect(
+        \\def main()
+        \\  for i in 0..3
+        \\    print i
+        \\  end
+        \\end
+    , "0\n1\n2\n");
+}
+
+test "codegen: for-range inclusive iterates start to end" {
+    try runAndExpect(
+        \\def main()
+        \\  for i in 1..=3
+        \\    print i
+        \\  end
+        \\end
+    , "1\n2\n3\n");
+}
+
+test "codegen: for-range with explicit step skips by N" {
+    try runAndExpect(
+        \\def main()
+        \\  for i in 0..=10 step 5
+        \\    print i
+        \\  end
+        \\end
+    , "0\n5\n10\n");
+}
+
+test "codegen: for-range respects break" {
+    try runAndExpect(
+        \\def main()
+        \\  for i in 0..=10
+        \\    if i == 4
+        \\      break
+        \\    end
+        \\    print i
+        \\  end
+        \\end
+    , "0\n1\n2\n3\n");
+}
+
+test "codegen: repeat-until runs body at least once then exits when cond is true" {
+    try runAndExpect(
+        \\def main()
+        \\  let i: i16 = 0
+        \\  repeat
+        \\    print i
+        \\    i = i + 1
+        \\  until i == 3
+        \\end
+    , "0\n1\n2\n");
+}
+
+test "codegen: match with literal patterns dispatches the right arm" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 2
+        \\  match x
+        \\    case 1 => print 10
+        \\    case 2 => print 20
+        \\    case 3 => print 30
+        \\    case _ => print 99
+        \\  end
+        \\end
+    , "20\n");
+}
+
+test "codegen: match with wildcard arm catches all" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 42
+        \\  match x
+        \\    case 1 => print 10
+        \\    case _ => print 0
+        \\  end
+        \\end
+    , "0\n");
+}
+
+test "codegen: match with OR pattern collapses three alts to one body" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 3
+        \\  match x
+        \\    case 1 | 2 | 3 => print 100
+        \\    case _ => print 0
+        \\  end
+        \\end
+    , "100\n");
+}
+
+test "codegen: match with range pattern matches inclusive bounds" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 7
+        \\  match x
+        \\    case 0..=5 => print 1
+        \\    case 6..=10 => print 2
+        \\    case _ => print 3
+        \\  end
+        \\end
+    , "2\n");
+}
+
+test "codegen: match with guard skips arm when guard is false" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 10
+        \\  match x
+        \\    case n when n > 100 => print 1
+        \\    case n when n > 5 => print 2
+        \\    case _ => print 3
+        \\  end
+        \\end
+    , "2\n");
+}
+
+test "codegen: defer fires at end of block (LIFO order)" {
+    try runAndExpect(
+        \\def main()
+        \\  defer print 1
+        \\  defer print 2
+        \\  defer print 3
+        \\  print 0
+        \\end
+    , "0\n3\n2\n1\n");
+}
+
+test "codegen: defer runs on early return" {
+    try runAndExpect(
+        \\def cleanup_demo()
+        \\  defer print 99
+        \\  print 1
+        \\  return
+        \\end
+        \\def main()
+        \\  cleanup_demo()
+        \\end
+    , "1\n99\n");
+}
+
+test "codegen: defer runs on break path" {
+    try runAndExpect(
+        \\def main()
+        \\  let i: i16 = 0
+        \\  while i < 5
+        \\    defer print 9
+        \\    if i == 1
+        \\      break
+        \\    end
+        \\    print i
+        \\    i = i + 1
+        \\  end
+        \\end
+    , "0\n9\n9\n");
+}
+
+test "codegen: defer in nested block fires before outer defers" {
+    try runAndExpect(
+        \\def main()
+        \\  defer print 1
+        \\  do
+        \\    defer print 2
+        \\    defer print 3
+        \\    print 0
+        \\  end
+        \\  print 4
+        \\end
+    , "0\n3\n2\n4\n1\n");
+}
+
+test "codegen: defer return is rejected by codegen" {
+    const source =
+        \\def main()
+        \\  defer return
+        \\  print 1
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_DEFER_RETURN")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
 test "codegen: custom entry_name resolves" {
     const source = "def boot() end";
     var stream = try gero.lang.tokenize(alloc, source);
