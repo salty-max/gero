@@ -15,10 +15,7 @@ const diag_mod = @import("lang/diagnostic.zig");
 const render_mod = @import("lang/render.zig");
 const codegen_mod = @import("lang/codegen.zig");
 
-// Direct submodule imports for the `internal` namespaces below —
-// the parent `typecheck.zig` / `codegen.zig` files don't re-export
-// these (the aliases are private), so the barrel pulls them
-// straight from disk.
+// Direct submodule imports for the `internal` namespace below.
 const tc_mem_builtin = @import("lang/typecheck/mem_builtin.zig");
 const tc_match = @import("lang/typecheck/match.zig");
 const tc_predicates = @import("lang/typecheck/predicates.zig");
@@ -33,12 +30,16 @@ const cg_pattern = @import("lang/codegen/pattern.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 
+// ---------- lexer ----------
+
 /// Re-export: lexer token.
 pub const Token = lexer_mod.Token;
 /// Re-export: lexer output stream.
 pub const TokenStream = lexer_mod.TokenStream;
 /// Re-export: `.gr` tokenizer.
 pub const tokenize = lexer_mod.tokenize;
+
+// ---------- parser ----------
 
 /// Re-export: AST node types.
 pub const ast = ast_mod;
@@ -51,6 +52,8 @@ pub const parse = parser_mod.parse;
 /// Round-trip safe: `parse(print(parse(s))) == parse(s)`.
 pub const print = print_mod.print;
 
+// ---------- typechecker ----------
+
 /// Re-export: typechecker type representation (`Type`, `Primitive`,
 /// `Array`, etc.).
 pub const types = types_mod;
@@ -60,23 +63,50 @@ pub const scope = scope_mod;
 pub const CheckedProgram = typecheck_mod.CheckedProgram;
 /// Re-export: walk an `ast.Program` through the typechecker.
 pub const typecheck = typecheck_mod.typecheck;
+/// Re-export: `mem.*` stdlib builtin signature (lookup return type).
+pub const MemBuiltinSig = tc_mem_builtin.MemBuiltinSig;
+/// Re-export: `mem.X` lookup by builtin name.
+pub const lookupMemBuiltin = tc_mem_builtin.lookupMemBuiltin;
+/// Re-export: rich diagnostic shape carried by `CheckedProgram`.
+pub const Diagnostic = diag_mod.Diagnostic;
+/// Re-export: severity classification on a `Diagnostic`.
+pub const Severity = diag_mod.Severity;
+/// Re-export: diagnostic-rendering primitives (pretty + JSON).
+/// Per `docs/lang-diagnostics.md`.
+pub const render = render_mod;
 
-/// Typechecker barrel — intentional consumer surface plus an
-/// `internal` namespace for the submodule seams.
-pub const typechecker = struct {
-    /// Typechecker output (program + diagnostics).
-    pub const CheckedProgram = typecheck_mod.CheckedProgram;
-    /// Walk an `ast.Program` through the typechecker.
-    pub const typecheck = typecheck_mod.typecheck;
-    /// `mem.*` stdlib builtin signature (lookup return type).
-    pub const MemBuiltinSig = tc_mem_builtin.MemBuiltinSig;
-    /// `mem.X` lookup by builtin name.
-    pub const lookupMemBuiltin = tc_mem_builtin.lookupMemBuiltin;
+// ---------- codegen ----------
 
-    /// Internal — submodule seams exposed for mirror-layout test
-    /// reachability. Members under `internal` are **not** stable
-    /// consumer API and may change in any minor bump.
-    pub const internal = struct {
+/// Re-export: codegen output (`.gx` image + diagnostics).
+pub const Compiled = codegen_mod.Compiled;
+/// Re-export: codegen knobs (`entry_name`, `debug_symbols`).
+pub const CompileOptions = codegen_mod.Options;
+/// Re-export: errors `compile` can return (host-failure family —
+/// semantic errors land in `Compiled.diagnostics`).
+pub const CompileError = codegen_mod.CompileError;
+/// Re-export: walk a `CheckedProgram` through codegen to a `.gx`
+/// image.
+pub const compile = codegen_mod.compile;
+
+/// Codegen-namespaced boot-layout constants per ISA §7.
+pub const codegen = struct {
+    /// IVT base address — first IVT slot.
+    pub const ivt_base = codegen_mod.ivt_base;
+    /// First byte of code emission (above the IVT + low-RAM
+    /// scratch).
+    pub const code_base = codegen_mod.code_base;
+    /// First byte of static-data emission.
+    pub const data_base = codegen_mod.data_base;
+};
+
+// ---------- internal ----------
+
+/// Submodule seams exposed for mirror-layout test reachability.
+/// **Not** stable consumer API — members under `internal` may
+/// change in any minor bump.
+pub const internal = struct {
+    /// Internal — typecheck submodule seams.
+    pub const typechecker = struct {
         /// Internal — stateful resolution + inference walker.
         pub const Checker = typecheck_mod.Checker;
         /// Internal — pure predicates over `types.Type`.
@@ -93,42 +123,9 @@ pub const typechecker = struct {
         /// Internal — `mem.*` stdlib typecheck dispatch.
         pub const mem_builtin = tc_mem_builtin;
     };
-};
 
-/// Re-export: rich diagnostic shape carried by `CheckedProgram`.
-pub const Diagnostic = diag_mod.Diagnostic;
-/// Re-export: severity classification on a `Diagnostic`.
-pub const Severity = diag_mod.Severity;
-/// Re-export: diagnostic-rendering primitives (pretty + JSON).
-/// Per `docs/lang-diagnostics.md`.
-pub const render = render_mod;
-
-/// Codegen barrel — intentional consumer surface (constants
-/// `ivt_base` / `code_base` / `data_base`, the `compile` entry,
-/// the `Compiled` / `Options` / `CompileError` types) plus an
-/// `internal` namespace for the submodule seams.
-pub const codegen = struct {
-    /// Codegen output (`.gx` image + diagnostics).
-    pub const Compiled = codegen_mod.Compiled;
-    /// Codegen knobs (`entry_name`, `debug_symbols`).
-    pub const Options = codegen_mod.Options;
-    /// Errors `compile` can return (host-failure family — semantic
-    /// errors land in `Compiled.diagnostics`).
-    pub const CompileError = codegen_mod.CompileError;
-    /// Walk a `CheckedProgram` through codegen to a `.gx` image.
-    pub const compile = codegen_mod.compile;
-    /// IVT base address (first IVT slot per ISA §7).
-    pub const ivt_base = codegen_mod.ivt_base;
-    /// First byte of code emission (above the IVT + low-RAM
-    /// scratch).
-    pub const code_base = codegen_mod.code_base;
-    /// First byte of static-data emission.
-    pub const data_base = codegen_mod.data_base;
-
-    /// Internal — submodule seams exposed for mirror-layout test
-    /// reachability. Members under `internal` are **not** stable
-    /// consumer API and may change in any minor bump.
-    pub const internal = struct {
+    /// Internal — codegen submodule seams.
+    pub const codegen = struct {
         /// Internal — per-fn codegen state (bytecode buffer,
         /// locals, diagnostic sink).
         pub const Emitter = codegen_mod.Emitter;
@@ -147,8 +144,7 @@ pub const codegen = struct {
         pub const archive = cg_archive;
         /// Internal — `mem.*` stdlib codegen lowering.
         pub const mem_builtin = cg_mem_builtin;
-        /// Internal — string literal pool + interpolation
-        /// lowering.
+        /// Internal — string literal pool + interpolation lowering.
         pub const strings = cg_strings;
         /// Internal — `match` pattern-arm test emission.
         pub const pattern = cg_pattern;
@@ -159,10 +155,3 @@ pub const codegen = struct {
         pub const control_flow = cg_control_flow;
     };
 };
-/// Re-export: codegen output (`.gx` image + diagnostics).
-pub const Compiled = codegen_mod.Compiled;
-/// Re-export: codegen knobs (`entry_name`, `debug_symbols`).
-pub const CompileOptions = codegen_mod.Options;
-/// Re-export: walk a `CheckedProgram` through codegen to a `.gx`
-/// image.
-pub const compile = codegen_mod.compile;

@@ -1,6 +1,6 @@
 const std = @import("std");
 const gero = @import("gero");
-const archive = gero.lang.codegen.internal.archive;
+const archive = gero.lang.internal.codegen.archive;
 
 test "archive: alignUpU16 rounds to the next power-of-two multiple" {
     try std.testing.expectEqual(@as(u16, 0), archive.alignUpU16(0, 16));

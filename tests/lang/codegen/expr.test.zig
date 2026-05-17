@@ -5,5 +5,5 @@ const std = @import("std");
 const gero = @import("gero");
 
 test "codegen/expr: module compiles through the barrel" {
-    _ = gero.lang.codegen.internal.expr_emit;
+    _ = gero.lang.internal.codegen.expr_emit;
 }

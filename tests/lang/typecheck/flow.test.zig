@@ -8,7 +8,7 @@
 const std = @import("std");
 const gero = @import("gero");
 
-const flow = gero.lang.typechecker.internal.flow;
+const flow = gero.lang.internal.typechecker.flow;
 const ast = gero.lang.ast;
 const types = gero.lang.types;
 
