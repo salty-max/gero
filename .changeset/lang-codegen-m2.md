@@ -125,8 +125,40 @@ stack space up front. The pre-pass counts:
 - A hidden `__match` slot per `match` with a non-ident
   scrutinee.
 
+**M1 self-review backfill**
+
+Re-reading the closed M1 issue ACs (#194 / #258 / #261) surfaced
+gaps that this PR also closes:
+
+- **`print "hi"`** (M1 #194 AC) — codegen now lays out an interned
+  string pool at the end of the base image. `print "hi"` resolves
+  to `mov str_addr, acu; sys print_str`. Dedups on byte content.
+  Single-literal strings are supported; interpolation
+  (`"$(expr)"`) waits on a VM-side format syscall and emits
+  `E_CODEGEN_UNSUPPORTED` until that lands.
+- **Fixed-point arithmetic** (M1 #194 AC) — `fixed_lit` lowers to
+  the Q8.8 immediate, `fixed * fixed` to `mul + shr 8` /
+  `shl 8 + or` (combine the 32-bit product back into Q8.8),
+  `fixed / fixed` to `shl 8 + asr 8 + divs` per ISA §5.4.1.
+  Type-driven dispatch via the new `CheckedProgram.expr_types`
+  map — the typechecker now records every inferred expression
+  type so codegen can pick the right lowering. Pure-positive
+  Q8.8 round-trip `(a * b) / c` matches the expected result.
+- **`print` dispatch by type** (M1 #194 AC) — `print` now picks
+  `print_char` / `print_str` / `print_int` from the inferred
+  type instead of the AST shape, so `let s = "hi"; print s`
+  works as well as `print "hi"`.
+- **Zero-page overflow diagnostic** (M1 #261 AC) — `zp_cursor`
+  widens to u16 so the bounds check fires cleanly on the 257th
+  byte without a safe-mode integer-overflow panic. Test covers
+  130 `@zero_page u16` globals → `E_CODEGEN_ZP_OVERFLOW`.
+
 **Not yet (M3 follow-ups)**
 
+- **String interpolation** — needs a VM-side format syscall
+  (printf-style `%d / %s / %c` from a template + args) that
+  doesn't ship yet. Single-literal strings work; `"$(expr)"`
+  emits `E_CODEGEN_UNSUPPORTED` until the syscall lands.
 - Enum-variant patterns + jump-table dispatch in `match`
   (need M3 enum tag layout — the codegen emits
   `E_CODEGEN_UNSUPPORTED` on a variant pattern today; the
@@ -140,7 +172,7 @@ stack space up front. The pre-pass counts:
 
 **Tests**
 
-25 new codegen tests (29 → 54, +25) + 4 new typecheck tests:
+37 new codegen tests (29 → 66, +37) + 4 new typecheck tests:
 
 Codegen:
 
@@ -162,6 +194,24 @@ Codegen:
 - Defer fires on `break` (one per surviving iteration).
 - Defer fires on `continue` before the next iteration.
 - Defer in nested `do…end` fires inner-first.
+
+M1 backfill (this PR's self-review pass on M1 ACs):
+
+- `print "hi"` outputs `hi` via the string pool + `print_str`.
+- Dedup: two `print "hi"` sites share one pool entry.
+- String escape sequences decode at codegen time (`\t`, `\n`,
+  `\\`, `\"`, `\0`).
+- Fixed-point `a * b` round-trips through `mul + shr 8 +
+  shl 8 + or` (Q8.8 → Q8.8 within 16-bit range).
+- Fixed-point `a / b` round-trips through `shl 8 + asr 8 +
+  divs` (24-bit scaled dividend).
+- `(a * b) / c` over Q8.8 matches expected.
+- Recursive `fib(10) == 55`.
+- Nullary call returning a literal.
+- 3-arg + 4-arg call shapes preserve param order.
+- Caller-saves invariant — local survives a clobbering call.
+- Zero-page overflow at the 257th `@zero_page` byte →
+  `E_CODEGEN_ZP_OVERFLOW`.
 
 Typecheck (defer-shape rejections per spec §4.10 +
 `docs/lang-diagnostics.md` §5.11):

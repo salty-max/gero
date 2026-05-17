@@ -45,11 +45,13 @@
 ///     cleanup so the caller's return value survives.
 const std = @import("std");
 const ast = @import("ast.zig");
+const types_mod = @import("types.zig");
 const typecheck_mod = @import("typecheck.zig");
 const diag_mod = @import("diagnostic.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const CheckedProgram = typecheck_mod.CheckedProgram;
+const Type = types_mod.Type;
 
 // ---------- public constants (boot layout per ISA §7) ----------
 
@@ -115,6 +117,10 @@ const Op = struct {
     const not_reg: u8 = 0x66; // reg ← ~reg
     const shl_reg_reg: u8 = 0x71; // dst ← dst << src
     const shr_reg_reg: u8 = 0x73; // dst ← dst >> src
+
+    const shl_reg_imm8: u8 = 0x70; // reg ← reg << imm
+    const shr_reg_imm8: u8 = 0x72; // reg ← reg >> imm (logical / unsigned)
+    const asr_reg_imm8: u8 = 0x74; // reg ← reg >>a imm (arithmetic / signed)
 
     const cmp_reg_imm16: u8 = 0x80; // flags ← reg - imm
     const cmp_reg_reg: u8 = 0x81; // flags ← dst - src
@@ -236,12 +242,17 @@ pub fn compile(
         .zp_cursor = 0,
         .banks = .{},
         .current_bank = null,
+        .strings = .empty,
+        .string_patches = .empty,
+        .checked = checked,
         .block_stack = .empty,
         .loop_stack = .empty,
         .diagnostics = &diagnostics,
     };
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
+    defer emitter.strings.deinit(allocator);
+    defer emitter.string_patches.deinit(allocator);
     defer emitter.block_stack.deinit(allocator);
     defer emitter.loop_stack.deinit(allocator);
     defer {
@@ -311,6 +322,25 @@ const CallPatch = struct {
         fn_name: []const u8,
         trampoline,
     };
+};
+
+/// One interned string literal — emitted as a null-terminated byte
+/// run at the end of the base image. Multiple call sites that
+/// reference the same byte content share one entry; the `address`
+/// field carries the resolved RAM address after the pool emits.
+const InternedString = struct {
+    bytes: []const u8,
+    address: u16,
+};
+
+/// Forward reference to a string literal — recorded when an emit
+/// site needs to load the string's address into a register but the
+/// pool hasn't been laid out yet. The `code_offset` is the 2-byte
+/// `mov imm16, reg` operand slot waiting for the resolved address.
+const StringPatch = struct {
+    bank: ?u8,
+    code_offset: usize,
+    string_id: usize,
 };
 
 /// One lexical block tracked at codegen time. Owns the LIFO list of
@@ -421,8 +451,11 @@ const Emitter = struct {
     /// upward). Used for unannotated globals.
     data_cursor: u16,
     /// Next free zero-page byte (0x0000 upward). Used for
-    /// `@zero_page` globals.
-    zp_cursor: u8,
+    /// `@zero_page` globals. Tracked as u16 so the cursor can
+    /// legitimately reach `0x100` after the last byte fills — the
+    /// `placeGlobal` check rejects allocations that would use a
+    /// byte at index ≥ `0x100`.
+    zp_cursor: u16,
     /// Per-bank emit buffers — `@bank N` defs land here instead of
     /// the base `code` buffer. The base image gets the un-banked
     /// bytes; `buildArchive` appends each bank window after.
@@ -430,6 +463,15 @@ const Emitter = struct {
     /// Active bank for the current def (`@bank N` on the decl).
     /// `null` means the base image. Saved + restored per `emitDef`.
     current_bank: ?u8,
+    /// String pool + outstanding patches. Each unique byte content
+    /// gets one `InternedString` entry; references at emit time push
+    /// `StringPatch` records resolved at end-of-codegen.
+    strings: std.ArrayList(InternedString),
+    string_patches: std.ArrayList(StringPatch),
+    /// View into the typechecker's per-expression type map (read-
+    /// only). Drives type-aware lowering — fixed-point arithmetic,
+    /// `print` dispatch between `print_int` / `print_str`, etc.
+    checked: *const CheckedProgram,
     /// Stack of lexical blocks active at the current emit cursor.
     /// The function body opens the bottom block; nested `do…end`,
     /// loop bodies, `if` arms, etc. push more on top. Each block
@@ -686,6 +728,27 @@ const Emitter = struct {
         try self.emitByte(src);
     }
 
+    /// `shl reg, imm8` (0x70) — `reg ← reg << imm`.
+    fn shlRegImm(self: *Emitter, reg: u8, imm: u8) !void {
+        try self.emitByte(Op.shl_reg_imm8);
+        try self.emitByte(reg);
+        try self.emitByte(imm);
+    }
+
+    /// `shr reg, imm8` (0x72) — `reg ← reg >> imm` (zero-fill).
+    fn shrRegImm(self: *Emitter, reg: u8, imm: u8) !void {
+        try self.emitByte(Op.shr_reg_imm8);
+        try self.emitByte(reg);
+        try self.emitByte(imm);
+    }
+
+    /// `asr reg, imm8` (0x74) — `reg ← reg >>arith imm` (sign-fill).
+    fn asrRegImm(self: *Emitter, reg: u8, imm: u8) !void {
+        try self.emitByte(Op.asr_reg_imm8);
+        try self.emitByte(reg);
+        try self.emitByte(imm);
+    }
+
     /// Emit a forward jump with a placeholder address slot. Returns
     /// the offset of the 2-byte slot inside the current code buffer —
     /// pass it to `patchJumpTo` once the target offset is known.
@@ -836,7 +899,91 @@ const Emitter = struct {
         // the program is entirely un-banked or single-bank).
         if (self.needsTrampoline()) try self.emitCallBankTrampoline();
 
+        // Append the interned string pool to the base image so all
+        // recorded `StringPatch`es can resolve to real addresses.
+        try self.emitStringPool();
+
         try self.patchCalls();
+        try self.patchStrings();
+    }
+
+    /// Lay out every interned string at the end of the base buffer.
+    /// Each entry gets its bytes plus a trailing null terminator (the
+    /// VM's `print_str` syscall reads until `\0`). Records the
+    /// resolved address into the pool entry.
+    fn emitStringPool(self: *Emitter) !void {
+        // Strings live in the base image so banked code can still
+        // address them (banks only cover `0xC000..0xFEFF`). Save +
+        // restore the buffer-routing so callers in a banked def
+        // still emit into the base buffer here.
+        const saved_bank = self.current_bank;
+        self.current_bank = null;
+        defer self.current_bank = saved_bank;
+
+        for (self.strings.items) |*s| {
+            // @as: usize → u16; base image fits in 16-bit address space.
+            const offset: u16 = @intCast(try self.currentOffset());
+            s.address = code_base +% offset;
+            for (s.bytes) |b| try self.emitByte(b);
+            try self.emitByte(0);
+        }
+    }
+
+    /// Rewrite each `StringPatch`'s 2-byte LE address slot with the
+    /// resolved string address.
+    fn patchStrings(self: *Emitter) !void {
+        for (self.string_patches.items) |p| {
+            const addr = self.strings.items[p.string_id].address;
+            const buf: []u8 = if (p.bank) |b|
+                if (self.banks.getPtr(b)) |bl| bl.items else continue
+            else
+                self.code.items;
+            // safety: u16 → 2 bytes by definition; byte-mask casts.
+            buf[p.code_offset] = @intCast(addr & 0xFF);
+            buf[p.code_offset + 1] = @intCast(addr >> 8);
+        }
+    }
+
+    /// Intern a byte string by content. Returns the index into
+    /// `strings`. Callers that need the address use a `StringPatch`
+    /// since the pool isn't laid out until the end of `emitProgram`.
+    fn internString(self: *Emitter, bytes: []const u8) !usize {
+        for (self.strings.items, 0..) |s, i| {
+            if (std.mem.eql(u8, s.bytes, bytes)) return i;
+        }
+        const owned = try self.arena.dupe(u8, bytes);
+        try self.strings.append(self.allocator, .{ .bytes = owned, .address = 0 });
+        return self.strings.items.len - 1;
+    }
+
+    /// Emit a `mov imm16, reg` whose imm is the resolved address of
+    /// the interned string with index `string_id`. The imm slot is
+    /// recorded as a `StringPatch` and back-patched after the pool
+    /// lays out.
+    fn emitMovStringAddrToReg(self: *Emitter, string_id: usize, reg: u8) !void {
+        try self.emitByte(Op.mov_imm16_reg);
+        const slot = try self.currentOffset();
+        try self.emitU16Le(0); // placeholder
+        try self.emitByte(reg);
+        try self.string_patches.append(self.allocator, .{
+            .bank = self.current_bank,
+            .code_offset = slot,
+            .string_id = string_id,
+        });
+    }
+
+    /// Look up the typechecker's inferred type for an expression.
+    /// Returns `null` when the typechecker couldn't infer a type
+    /// (callers must fall back to a less-specific lowering).
+    fn typeOf(self: *const Emitter, e: *const ast.Expr) ?*const Type {
+        return self.checked.typeOf(e);
+    }
+
+    /// `true` when the expression's inferred type is the named
+    /// primitive `p`. Returns `false` for missing types.
+    fn isPrimitiveType(self: *const Emitter, e: *const ast.Expr, p: types_mod.Primitive) bool {
+        const t = self.typeOf(e) orelse return false;
+        return t.* == .primitive and t.primitive == p;
     }
 
     /// Scan top-level `def`s, recording each name → its `@bank N`
@@ -980,9 +1127,8 @@ const Emitter = struct {
             return;
         }
         if (zero_page) {
-            if (align_n) |n| self.zp_cursor = alignUpU8(self.zp_cursor, @intCast(n));
-            // @as: widen u8 zp_cursor to u16 so the bounds-check arithmetic doesn't wrap.
-            const zp_end: u16 = @as(u16, self.zp_cursor) + width;
+            if (align_n) |n| self.zp_cursor = alignUpU16(self.zp_cursor, n);
+            const zp_end: u16 = self.zp_cursor + width;
             if (zp_end > 0x100) {
                 try self.diagFatal(decl_span, "E_CODEGEN_ZP_OVERFLOW", "zero-page region exhausted — too many `@zero_page` globals");
                 return;
@@ -1993,24 +2139,30 @@ const Emitter = struct {
         try self.sys(Sys.print_newline);
     }
 
-    /// One `print` argument — dispatches on the expression's syntactic
-    /// shape (string literal → print_str path, everything else →
-    /// print_int / print_char). The typechecker already validated
-    /// the arg's static type; we only need to pick the syscall.
+    /// One `print` argument — picks the syscall family from the
+    /// argument's inferred type (per spec §4.9):
+    ///
+    /// - `char` → `print_char` (low byte of `acu`).
+    /// - `str` → `print_str` (address in `acu` to a null-terminated
+    ///   byte run laid out in the string pool).
+    /// - everything else → `print_int` (signed decimal).
+    ///
+    /// Falls back to `print_int` when the typechecker didn't record
+    /// a type — the M1 surface guarantees a type for any
+    /// well-checked print arg.
     fn emitPrintArg(self: *Emitter, arg: *const ast.Expr) !void {
-        switch (arg.*) {
-            .char_lit => |c| {
-                try self.movImmToReg(c.value, Reg.acu);
-                try self.sys(Sys.print_char);
-            },
-            else => {
-                // Default: evaluate as int, print as signed decimal.
-                // String-literal lowering (`print_str`) wants a
-                // static-data emission path that M3 / M4 brings.
-                try self.emitExpr(arg);
-                try self.sys(Sys.print_int);
-            },
+        if (self.isPrimitiveType(arg, .char)) {
+            try self.emitExpr(arg);
+            try self.sys(Sys.print_char);
+            return;
         }
+        if (self.isPrimitiveType(arg, .str)) {
+            try self.emitExpr(arg);
+            try self.sys(Sys.print_str);
+            return;
+        }
+        try self.emitExpr(arg);
+        try self.sys(Sys.print_int);
     }
 
     fn emitExprDiscard(self: *Emitter, e: *const ast.Expr) !void {
@@ -2028,6 +2180,27 @@ const Emitter = struct {
                 // safety: i16 → u16 bit pattern; the two's-complement encoding is preserved.
                 const v: u16 = @bitCast(trimmed);
                 try self.movImmToReg(v, Reg.acu);
+            },
+            .fixed_lit => |lit| {
+                // Q8.8 — the parser pre-encodes the value as `int *
+                // 256 + round(frac * 256)`. The low 16 bits are the
+                // canonical bit pattern.
+                // @as: i32 → i16; spec §3.3 pins fixed-point to Q8.8 (i16-shaped).
+                const trimmed: i16 = @truncate(lit.value);
+                // safety: i16 → u16 bit pattern preserved (two's complement).
+                const v: u16 = @bitCast(trimmed);
+                try self.movImmToReg(v, Reg.acu);
+            },
+            .str_lit => |sl| {
+                if (sl.parts.len == 1 and sl.parts[0] == .lit) {
+                    const span = sl.parts[0].lit.span;
+                    const raw = self.source[span.start..span.end];
+                    const decoded = try decodeStringEscapes(self.arena, raw);
+                    const id = try self.internString(decoded);
+                    try self.emitMovStringAddrToReg(id, Reg.acu);
+                } else {
+                    try self.unsupported(sl.span, "string interpolation `\"...$(...)...\"` (the runtime format syscall lands later — single-literal strings are supported)");
+                }
             },
             .bool_lit => |b| {
                 const v: u16 = if (b.value) 1 else 0;
@@ -2085,6 +2258,14 @@ const Emitter = struct {
             else => {},
         }
 
+        // Fixed-point arithmetic (Q8.8) needs a scaling pass on top
+        // of the integer mul / div — `mul + asr 8` for multiply,
+        // `shl 8 + divs` for divide (per ISA §5.4.1). Type info
+        // drives the dispatch: both operands must be fixed-point.
+        const fixed_op = self.isPrimitiveType(b.lhs, .fixed) and
+            self.isPrimitiveType(b.rhs, .fixed) and
+            (b.op == .mul or b.op == .div);
+
         // Standard stack-machine pattern: eval RHS, push, eval LHS,
         // pop RHS into r1, apply op (acu = acu OP r1).
         try self.emitExpr(b.rhs);
@@ -2101,16 +2282,47 @@ const Emitter = struct {
                 // result in `r2`, then move it back to acu.
                 try self.movRegToReg(Reg.acu, Reg.r2);
                 try self.mulRegReg(Reg.r1, Reg.r2);
-                try self.movRegToReg(Reg.r2, Reg.acu);
+                if (fixed_op) {
+                    // Q8.8 * Q8.8 — the conceptual Q16.16 product
+                    // straddles acu:r2 (acu = high half, r2 = low
+                    // half). The Q8.8 result is bits 8..23 of that
+                    // 32-bit value:
+                    //   acu (high << 8) | (r2 unsigned >> 8)
+                    // ISA §5.4.1 — products whose real magnitude
+                    // exceeds 127.99… wrap silently because the
+                    // result no longer fits in 16 bits.
+                    try self.shrRegImm(Reg.r2, 8);
+                    try self.shlRegImm(Reg.acu, 8);
+                    try self.orRegReg(Reg.acu, Reg.r2);
+                } else {
+                    // Integer mul — drop the high half.
+                    try self.movRegToReg(Reg.r2, Reg.acu);
+                }
             },
             .div => {
-                // Signed 32÷16 divide. Dividend lives in acu:dst
-                // (high:low); the dividend assumed to fit in 16
-                // bits (sign-extension lands in a later commit).
-                try self.movRegToReg(Reg.acu, Reg.r2); // r2 = low half
-                try self.movImmToReg(0, Reg.acu); // high half = 0
-                try self.divsRegReg(Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
-                try self.movRegToReg(Reg.r2, Reg.acu);
+                if (fixed_op) {
+                    // Q8.8 / Q8.8 — scale the dividend up by 2^8
+                    // before the signed divide so the quotient lands
+                    // back in Q8.8. The 24-bit pre-shifted dividend
+                    // straddles acu:r2:
+                    //   r2  = acu << 8           (low half)
+                    //   acu = acu >>arith 8      (sign-extended top byte)
+                    // Then `divs r1, r2` performs the 32÷16 signed
+                    // divide and the quotient ends up in r2.
+                    try self.movRegToReg(Reg.acu, Reg.r2);
+                    try self.shlRegImm(Reg.r2, 8); // r2 = lhs << 8 (low)
+                    try self.asrRegImm(Reg.acu, 8); // acu = lhs >>a 8 (high)
+                    try self.divsRegReg(Reg.r1, Reg.r2);
+                    try self.movRegToReg(Reg.r2, Reg.acu);
+                } else {
+                    // Signed 32÷16 divide. Dividend lives in acu:dst
+                    // (high:low); the dividend assumed to fit in 16
+                    // bits (sign-extension lands in a later commit).
+                    try self.movRegToReg(Reg.acu, Reg.r2); // r2 = low half
+                    try self.movImmToReg(0, Reg.acu); // high half = 0
+                    try self.divsRegReg(Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
+                    try self.movRegToReg(Reg.r2, Reg.acu);
+                }
             },
             .mod => {
                 // Same divs pattern as `div`, but keep `acu` (the
@@ -2393,15 +2605,43 @@ fn writeU16Le(dst: *[2]u8, value: u16) void {
     dst[1] = @intCast(value >> 8);
 }
 
+/// Decode the standard backslash escapes (`\n`, `\r`, `\t`, `\\`,
+/// `\"`, `\0`) into raw bytes. The source slice is the part between
+/// the surrounding `"` delimiters with escapes still encoded; the
+/// returned slice owns its bytes (caller's allocator). Unknown
+/// escape sequences pass through as the bare character following
+/// the backslash — matches the lexer's leniency until a spec-
+/// committed escape table lands.
+fn decodeStringEscapes(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < raw.len) {
+        const c = raw[i];
+        if (c == '\\' and i + 1 < raw.len) {
+            const next = raw[i + 1];
+            const decoded: u8 = switch (next) {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '\\' => '\\',
+                '"' => '"',
+                '0' => 0,
+                else => next,
+            };
+            try out.append(allocator, decoded);
+            i += 2;
+            continue;
+        }
+        try out.append(allocator, c);
+        i += 1;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 /// Round `value` up to the next multiple of `align_n` (which must
 /// be a power of two — typechecker enforces). `align_n == 1`
 /// passes through.
-fn alignUpU8(value: u8, align_n: u8) u8 {
-    if (align_n <= 1) return value;
-    const mask: u8 = align_n - 1;
-    return (value + mask) & ~mask;
-}
-
 fn alignUpU16(value: u16, align_n: u16) u16 {
     if (align_n <= 1) return value;
     const mask: u16 = align_n - 1;
