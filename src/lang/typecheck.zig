@@ -155,6 +155,43 @@ pub fn typecheck(
     };
 }
 
+/// Signature description for one `mem.X` stdlib builtin — used
+/// by both the typechecker (to synthesize a function type during
+/// resolution) and the codegen (to dispatch lowering). The
+/// `is_addr_of` flag flags the one builtin whose argument type
+/// can't be expressed in the regular primitive shape.
+pub const MemBuiltinSig = struct {
+    name: []const u8,
+    params: []const types.Primitive,
+    ret: ?types.Primitive,
+    is_addr_of: bool = false,
+};
+
+const mem_builtins = [_]MemBuiltinSig{
+    .{ .name = "read_u8", .params = &.{.u16}, .ret = .u8 },
+    .{ .name = "read_u16", .params = &.{.u16}, .ret = .u16 },
+    .{ .name = "read_i8", .params = &.{.u16}, .ret = .i8 },
+    .{ .name = "read_i16", .params = &.{.u16}, .ret = .i16 },
+    .{ .name = "write_u8", .params = &.{ .u16, .u8 }, .ret = null },
+    .{ .name = "write_u16", .params = &.{ .u16, .u16 }, .ret = null },
+    .{ .name = "write_i8", .params = &.{ .u16, .i8 }, .ret = null },
+    .{ .name = "write_i16", .params = &.{ .u16, .i16 }, .ret = null },
+    .{ .name = "memcpy", .params = &.{ .u16, .u16, .u16 }, .ret = null },
+    .{ .name = "memset", .params = &.{ .u16, .u8, .u16 }, .ret = null },
+    .{ .name = "peek", .params = &.{.u16}, .ret = .u8 }, // alias for read_u8
+    .{ .name = "poke", .params = &.{ .u16, .u8 }, .ret = null }, // alias for write_u8
+    .{ .name = "addr_of", .params = &.{}, .ret = .u16, .is_addr_of = true },
+};
+
+/// Look up a `mem.X` builtin by name. Returns `null` for unknown
+/// names so the typechecker can surface a clean diagnostic.
+pub fn lookupMemBuiltin(name: []const u8) ?MemBuiltinSig {
+    for (mem_builtins) |b| {
+        if (std.mem.eql(u8, b.name, name)) return b;
+    }
+    return null;
+}
+
 const Checker = struct {
     source: []const u8,
     arena: std.mem.Allocator,
@@ -1463,19 +1500,32 @@ const Checker = struct {
             },
             .call => |c| return try self.checkCall(c, hint),
             .method_call => |m| {
+                // `mem.X(args)` parses as a method call on the
+                // synthetic `mem` module — dispatch through the
+                // stdlib resolver rather than the class-method path.
+                if (m.receiver.* == .ident) {
+                    const recv_name = self.lexeme(m.receiver.ident.span);
+                    if (std.mem.eql(u8, recv_name, "mem")) {
+                        return try self.checkMemMethodCall(m);
+                    }
+                }
                 const recv_ty = try self.inferExpr(m.receiver, null);
                 try self.checkNotNullableDeref(m.receiver, recv_ty, m.span);
                 return try self.checkMethodCall(m, recv_ty);
             },
             .field => |f| {
-                // Enum-variant constructor shape: `Item.Sword`. The
-                // receiver is an ident matching a registered enum
-                // name — resolve directly to the enum's type so a
-                // subsequent `let s = Item.Sword` infers as `Item`.
+                // Special receivers (recognized before generic
+                // field resolution since their "receiver" is a
+                // module / type name rather than a value):
+                //   - `EnumName.Variant` — variant constructor.
+                //   - `mem.func`         — stdlib builtin.
                 if (f.receiver.* == .ident) {
                     const recv_name = self.lexeme(f.receiver.ident.span);
                     if (self.enum_registry.get(recv_name)) |ed| {
                         return try self.resolveEnumVariant(ed, recv_name, f);
+                    }
+                    if (std.mem.eql(u8, recv_name, "mem")) {
+                        return try self.resolveMemBuiltin(f);
                     }
                 }
                 const recv_ty = try self.inferExpr(f.receiver, null);
@@ -1672,6 +1722,114 @@ const Checker = struct {
         fn_ty.* = .{ .function = .{
             .params = try param_tys.toOwnedSlice(self.arena),
             .ret = enum_ty,
+        } };
+        return fn_ty;
+    }
+
+    /// Type-check `mem.X(args)` as a method-call expression. The
+    /// stdlib `mem` module is compiler-recognized; the call's
+    /// arity + per-arg types are validated against the builtin's
+    /// declared signature. `mem.addr_of` accepts any addressable
+    /// argument so it skips per-arg checking — codegen rejects
+    /// non-addressable targets later.
+    fn checkMemMethodCall(self: *Checker, m: ast.MethodCallExpr) WalkError!?*const types.Type {
+        const fn_name = self.lexeme(m.method);
+        const sig: ?MemBuiltinSig = lookupMemBuiltin(fn_name);
+        if (sig == null) {
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "stdlib module `mem` has no member `{s}`",
+                .{fn_name},
+            );
+            try self.emitSpan("E_TYPE_UNDEFINED_METHOD", m.method, msg);
+            for (m.args) |a| _ = try self.inferExpr(a, null);
+            return null;
+        }
+        if (sig.?.is_addr_of) {
+            if (m.args.len != 1) {
+                try self.emitSpan("E_TYPE_ARG_COUNT", m.span, "`mem.addr_of` takes exactly one argument");
+            }
+            // Walk the arg to populate `expr_types` + run nested
+            // checks; codegen handles the "must be addressable" rule.
+            for (m.args) |a| _ = try self.inferExpr(a, null);
+            return try self.primitive(.u16);
+        }
+        if (m.args.len != sig.?.params.len) {
+            const suffix: []const u8 = if (sig.?.params.len == 1) "" else "s";
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "`mem.{s}` takes {d} argument{s}, called with {d}",
+                .{ fn_name, sig.?.params.len, suffix, m.args.len },
+            );
+            try self.emitSpan("E_TYPE_ARG_COUNT", m.span, msg);
+        }
+        const n = @min(m.args.len, sig.?.params.len);
+        for (m.args[0..n], sig.?.params[0..n]) |a, p| {
+            const expected = try self.primitive(p);
+            _ = try self.inferExpr(a, expected);
+        }
+        // Walk extras (when arg count mismatched) so per-arg
+        // diagnostics still surface.
+        if (m.args.len > n) {
+            for (m.args[n..]) |a| _ = try self.inferExpr(a, null);
+        }
+        if (sig.?.ret) |r| return try self.primitive(r);
+        return try self.primitive(.nil_);
+    }
+
+    /// Resolve `mem.X` builtin field expressions. The `mem` module
+    /// is compiler-recognized rather than a regular source module —
+    /// each entry here synthesizes a function type so the wrapping
+    /// `CallExpr` flows through the normal `checkCall` path (arity
+    /// + per-arg type check).
+    ///
+    /// `mem.addr_of` is the one shape that doesn't fit the regular
+    /// arity / type rules — its argument can be any place
+    /// expression. We synthesize `fn() -> u16` and rely on the
+    /// codegen to do the address resolution; the call-site arity
+    /// check still validates one-arg-ness.
+    fn resolveMemBuiltin(self: *Checker, f: ast.FieldExpr) WalkError!?*const types.Type {
+        const fn_name = self.lexeme(f.field);
+        const sig: ?MemBuiltinSig = lookupMemBuiltin(fn_name);
+        if (sig == null) {
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "stdlib module `mem` has no member `{s}`",
+                .{fn_name},
+            );
+            try self.emitSpan("E_TYPE_UNDEFINED_METHOD", f.field, msg);
+            return null;
+        }
+        // Special case: `mem.addr_of` accepts any addressable
+        // expression as its single arg; surface its signature as
+        // `fn(<anything>) -> u16` by deferring the param type
+        // validation to codegen.
+        if (sig.?.is_addr_of) {
+            var params: std.ArrayList(*const types.Type) = .empty;
+            errdefer params.deinit(self.arena);
+            // Single-element `nil` placeholder — the codegen path
+            // accepts whatever the source supplies.
+            const nil_ty = try self.primitive(.nil_);
+            try params.append(self.arena, nil_ty);
+            const ret = try self.primitive(.u16);
+            const fn_ty = try self.arena.create(types.Type);
+            fn_ty.* = .{ .function = .{
+                .params = try params.toOwnedSlice(self.arena),
+                .ret = ret,
+            } };
+            return fn_ty;
+        }
+        var params: std.ArrayList(*const types.Type) = .empty;
+        errdefer params.deinit(self.arena);
+        for (sig.?.params) |p| {
+            const t = try self.primitive(p);
+            try params.append(self.arena, t);
+        }
+        const ret = if (sig.?.ret) |r| try self.primitive(r) else try self.primitive(.nil_);
+        const fn_ty = try self.arena.create(types.Type);
+        fn_ty.* = .{ .function = .{
+            .params = try params.toOwnedSlice(self.arena),
+            .ret = ret,
         } };
         return fn_ty;
     }

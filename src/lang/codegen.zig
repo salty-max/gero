@@ -95,7 +95,11 @@ const Op = struct {
     const mov_addr_to_reg: u8 = 0x13; // load:  reg ← [addr] (word)
     const mov_reg_to_zp: u8 = 0x19; // store: [zp] ← reg (word)
     const mov_zp_to_reg: u8 = 0x1A; // load:  reg ← [zp] (word)
+    const mov_ptr_to_reg: u8 = 0x15; // load:  reg ← [ptr_reg] (word)
+    const mov_reg_to_ptr: u8 = 0x16; // store: [ptr_reg] ← reg (word)
     const mov8_addr_to_reg: u8 = 0x22; // load:  reg ← byte [addr]
+    const mov8_reg_to_ptr: u8 = 0x23; // store: [ptr_reg] ← reg.lo (byte)
+    const mov8_ptr_to_reg: u8 = 0x24; // load:  reg ← byte [ptr_reg]
     const mov8_zp_to_reg: u8 = 0x29; // load:  reg ← byte [zp]
     const movl_reg_to_addr: u8 = 0x27; // store: [addr] ← reg.lo  (byte store)
     const movl_reg_to_zp: u8 = 0x2B; // store: [zp]   ← reg.lo  (byte store)
@@ -133,6 +137,9 @@ const Op = struct {
     const jgt_addr: u8 = 0x96; // signed >
     const jge_addr: u8 = 0x97; // signed ≥
 
+    const bcpy: u8 = 0x2C; // bcpy dst, src, len — memcpy via 3 regs
+    const bfill: u8 = 0x2D; // bfill addr, len, val — memset via 3 regs
+
     const call_addr: u8 = 0xA0;
     const call_reg: u8 = 0xA1;
     const ret_op: u8 = 0xA2;
@@ -146,6 +153,7 @@ const Reg = struct {
     const acu: u8 = 0x01;
     const r1: u8 = 0x02;
     const r2: u8 = 0x03;
+    const r3: u8 = 0x04;
     const sp: u8 = 0x0A;
     const fp: u8 = 0x0B;
     const mb: u8 = 0x0C;
@@ -177,17 +185,22 @@ const interp_buffer_size: u16 = 64;
 // ---------- public surface ----------
 
 /// Codegen output. Owns the `.gx` image bytes + the diagnostic
-/// slice.
+/// slice + the arena that backs the diagnostic message strings
+/// (kept alive past `compile`'s return so callers can read
+/// `Diagnostic.message`).
 pub const Compiled = struct {
     /// Full `.gx` archive, ready to feed to `gero.vm.parseGx`.
     image: []u8,
     diagnostics: []Diagnostic,
+    diag_arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
 
-    /// Release the image buffer + diagnostics slice.
+    /// Release the image buffer + diagnostics slice + the arena
+    /// backing diagnostic message strings.
     pub fn deinit(self: *Compiled) void {
         self.allocator.free(self.image);
         self.allocator.free(self.diagnostics);
+        self.diag_arena.deinit();
     }
 
     /// `true` when at least one fatal diagnostic fired.
@@ -234,14 +247,23 @@ pub fn compile(
     var diagnostics: std.ArrayList(Diagnostic) = .empty;
     errdefer diagnostics.deinit(allocator);
 
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
+    // Scratch arena — short-lived bookkeeping (local-name dupes,
+    // hash-map storage). Released at the end of this function.
+    var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+    defer scratch_arena.deinit();
+
+    // Diagnostics arena — backs the message strings on every
+    // `Diagnostic` the codegen produces. Persists past this
+    // function via `Compiled.diag_arena`.
+    var diag_arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer diag_arena.deinit();
 
     if (findEntryDef(source, checked.program, opts.entry_name) == null) return error.EntryNotFound;
 
     var emitter: Emitter = .{
         .allocator = allocator,
-        .arena = arena.allocator(),
+        .arena = scratch_arena.allocator(),
+        .diag_arena = diag_arena.allocator(),
         .source = source,
         .code = .empty,
         .locals = .{},
@@ -294,6 +316,7 @@ pub fn compile(
     return .{
         .image = image,
         .diagnostics = try diagnostics.toOwnedSlice(allocator),
+        .diag_arena = diag_arena,
         .allocator = allocator,
     };
 }
@@ -420,6 +443,10 @@ const Emitter = struct {
     /// Arena for short-lived bookkeeping (local-name dupes,
     /// scratch buffers). Released at the end of `compile`.
     arena: std.mem.Allocator,
+    /// Persistent arena used exclusively for `Diagnostic.message`
+    /// strings — survives past `compile`'s return so callers can
+    /// read the diagnostics. Lives on `Compiled.diag_arena`.
+    diag_arena: std.mem.Allocator,
     source: []const u8,
     /// The growing bytecode buffer.
     code: std.ArrayList(u8),
@@ -1397,7 +1424,7 @@ const Emitter = struct {
             const target_addr: u16 = switch (p.target) {
                 .fn_name => |name| self.fn_addresses.get(name) orelse {
                     const msg = try std.fmt.allocPrint(
-                        self.arena,
+                        self.diag_arena,
                         "codegen: call target `{s}` is not a known top-level def",
                         .{name},
                     );
@@ -2445,8 +2472,11 @@ const Emitter = struct {
             .unary => |u| try self.emitUnary(u),
             .binary => |b| try self.emitBinary(b),
             .call => |c| try self.emitCall(c),
+            .method_call => |m| try self.emitMethodCall(m, e),
             .field => |f| try self.emitFieldExpr(f, e),
             .is_test => |it| try self.emitIsTest(it),
+            .ref_of => |r| try self.emitAddrOf(r.inner),
+            .cast => |c| try self.emitExpr(c.inner), // primitives are bit-pattern-identical at the M3a width set
             else => try self.unsupported(e.span(), "this expression form"),
         }
     }
@@ -2633,6 +2663,19 @@ const Emitter = struct {
     /// bare ident referencing a top-level `def`. Method calls /
     /// closure invocations / fn-pointer calls land in M3.
     fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
+        // Intercept compiler-known builtins before the regular
+        // direct-call path so they emit specialized opcode
+        // sequences instead of going through a `call addr` site.
+        if (c.callee.* == .field) {
+            const fe = c.callee.field;
+            if (fe.receiver.* == .ident) {
+                const recv = self.source[fe.receiver.ident.span.start..fe.receiver.ident.span.end];
+                if (std.mem.eql(u8, recv, "mem")) {
+                    try self.emitMemCall(fe, c);
+                    return;
+                }
+            }
+        }
         if (c.callee.* != .ident) {
             try self.unsupported(c.span, "non-ident callee");
             return;
@@ -2790,6 +2833,217 @@ const Emitter = struct {
         return null;
     }
 
+    /// Lower a `receiver.method(args)` expression. M3a handles the
+    /// stdlib `mem.X(...)` shape; other receivers (class instance
+    /// method calls) land with M3b's vtable lowering.
+    fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr) !void {
+        if (m.receiver.* == .ident) {
+            const recv = self.source[m.receiver.ident.span.start..m.receiver.ident.span.end];
+            if (std.mem.eql(u8, recv, "mem")) {
+                // Build a synthetic `FieldExpr` + `CallExpr` shape
+                // so the existing `emitMemCall` can dispatch without
+                // duplicating the per-builtin emit code.
+                const synth_field: ast.FieldExpr = .{
+                    .receiver = m.receiver,
+                    .field = m.method,
+                    .span = m.span,
+                };
+                const synth_call: ast.CallExpr = .{
+                    .callee = m.receiver, // unused by emitMemCall
+                    .args = m.args,
+                    .span = m.span,
+                };
+                try self.emitMemCall(synth_field, synth_call);
+                return;
+            }
+        }
+        try self.unsupported(e.span(), "method calls (class instance methods land with M3b's vtable lowering)");
+    }
+
+    // ---------- mem stdlib builtins ----------
+
+    /// Lower a `mem.X(args)` call. Each builtin maps to a specific
+    /// opcode sequence — see the per-arm comments for the exact
+    /// shape. Unknown `mem.X` calls fall through to a defensive
+    /// diagnostic (the typechecker already rejects bad names with
+    /// `E_TYPE_UNDEFINED_METHOD`).
+    fn emitMemCall(self: *Emitter, fe: ast.FieldExpr, c: ast.CallExpr) !void {
+        const fn_name = self.source[fe.field.start..fe.field.end];
+        if (std.mem.eql(u8, fn_name, "read_u8") or std.mem.eql(u8, fn_name, "peek")) {
+            try self.emitMemRead1Arg(c, .byte_zext);
+        } else if (std.mem.eql(u8, fn_name, "read_u16") or std.mem.eql(u8, fn_name, "read_i16")) {
+            try self.emitMemRead1Arg(c, .word);
+        } else if (std.mem.eql(u8, fn_name, "read_i8")) {
+            try self.emitMemRead1Arg(c, .byte_sext);
+        } else if (std.mem.eql(u8, fn_name, "write_u8") or std.mem.eql(u8, fn_name, "write_i8") or std.mem.eql(u8, fn_name, "poke")) {
+            try self.emitMemWrite2Args(c, .byte);
+        } else if (std.mem.eql(u8, fn_name, "write_u16") or std.mem.eql(u8, fn_name, "write_i16")) {
+            try self.emitMemWrite2Args(c, .word);
+        } else if (std.mem.eql(u8, fn_name, "memcpy")) {
+            try self.emitMemCopy(c);
+        } else if (std.mem.eql(u8, fn_name, "memset")) {
+            try self.emitMemFill(c);
+        } else if (std.mem.eql(u8, fn_name, "addr_of")) {
+            if (c.args.len != 1) {
+                try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `mem.addr_of` takes exactly one argument");
+                return;
+            }
+            try self.emitAddrOf(c.args[0]);
+        } else {
+            try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: unknown `mem` builtin");
+        }
+    }
+
+    const MemReadKind = enum { byte_zext, byte_sext, word };
+    const MemWriteKind = enum { byte, word };
+
+    /// Common shape: `mem.read_*(addr)` — one arg, returns a value
+    /// in `acu`. The width / sign-extension choice picks the load
+    /// opcode (and an optional sign-extension tail for `read_i8`).
+    fn emitMemRead1Arg(self: *Emitter, c: ast.CallExpr, kind: MemReadKind) !void {
+        if (c.args.len != 1) {
+            try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `mem.read_*` takes exactly one argument");
+            return;
+        }
+        try self.emitExpr(c.args[0]); // acu = addr
+        try self.movRegToReg(Reg.acu, Reg.r1); // r1 = addr
+        switch (kind) {
+            .word => {
+                try self.emitByte(Op.mov_ptr_to_reg);
+                try self.emitByte(Reg.acu); // dst
+                try self.emitByte(Reg.r1); // ptr
+            },
+            .byte_zext => {
+                try self.emitByte(Op.mov8_ptr_to_reg);
+                try self.emitByte(Reg.r1); // ptr
+                try self.emitByte(Reg.acu); // dst
+            },
+            .byte_sext => {
+                try self.emitByte(Op.mov8_ptr_to_reg);
+                try self.emitByte(Reg.r1);
+                try self.emitByte(Reg.acu);
+                // Sign-extend 8 → 16: `shl 8 ; asr 8`. The byte
+                // sits in `acu.lo`; shifting it into the top byte
+                // and back arithmetic-shift-right preserves the
+                // sign bit through the high half.
+                try self.shlRegImm(Reg.acu, 8);
+                try self.asrRegImm(Reg.acu, 8);
+            },
+        }
+    }
+
+    /// Common shape: `mem.write_*(addr, v)` — two args, no return.
+    /// Args eval left-to-right via push/pop so `addr` and `v` can
+    /// be arbitrary subexpressions.
+    fn emitMemWrite2Args(self: *Emitter, c: ast.CallExpr, kind: MemWriteKind) !void {
+        if (c.args.len != 2) {
+            try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `mem.write_*` takes exactly two arguments");
+            return;
+        }
+        try self.emitExpr(c.args[0]); // acu = addr
+        try self.pushReg(Reg.acu);
+        try self.emitExpr(c.args[1]); // acu = value
+        try self.popReg(Reg.r1); // r1 = addr
+        switch (kind) {
+            .word => {
+                try self.emitByte(Op.mov_reg_to_ptr);
+                try self.emitByte(Reg.r1); // ptr
+                try self.emitByte(Reg.acu); // src
+            },
+            .byte => {
+                try self.emitByte(Op.mov8_reg_to_ptr);
+                try self.emitByte(Reg.acu); // src (low byte)
+                try self.emitByte(Reg.r1); // ptr
+            },
+        }
+    }
+
+    /// `mem.memcpy(dst, src, n)` — eval each arg left-to-right
+    /// into a dedicated register, then emit `bcpy dst, src, len`
+    /// (opcode 0x2C).
+    fn emitMemCopy(self: *Emitter, c: ast.CallExpr) !void {
+        if (c.args.len != 3) {
+            try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `mem.memcpy` takes exactly three arguments");
+            return;
+        }
+        try self.emitExpr(c.args[0]); // dst
+        try self.pushReg(Reg.acu);
+        try self.emitExpr(c.args[1]); // src
+        try self.pushReg(Reg.acu);
+        try self.emitExpr(c.args[2]); // n → acu
+        try self.movRegToReg(Reg.acu, Reg.r3); // r3 = len
+        try self.popReg(Reg.r2); // r2 = src
+        try self.popReg(Reg.r1); // r1 = dst
+        try self.emitByte(Op.bcpy);
+        try self.emitByte(Reg.r1); // dst
+        try self.emitByte(Reg.r2); // src
+        try self.emitByte(Reg.r3); // len
+    }
+
+    /// `mem.memset(dst, v, n)` — eval args into dedicated regs and
+    /// emit `bfill addr, len, val` (opcode 0x2D). Note the operand
+    /// order: the VM reads bytes as `dst, len, val`.
+    fn emitMemFill(self: *Emitter, c: ast.CallExpr) !void {
+        if (c.args.len != 3) {
+            try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `mem.memset` takes exactly three arguments");
+            return;
+        }
+        try self.emitExpr(c.args[0]); // dst
+        try self.pushReg(Reg.acu);
+        try self.emitExpr(c.args[1]); // v
+        try self.pushReg(Reg.acu);
+        try self.emitExpr(c.args[2]); // n → acu
+        try self.movRegToReg(Reg.acu, Reg.r3); // r3 = len
+        try self.popReg(Reg.r2); // r2 = val
+        try self.popReg(Reg.r1); // r1 = dst
+        try self.emitByte(Op.bfill);
+        try self.emitByte(Reg.r1); // dst
+        try self.emitByte(Reg.r3); // len
+        try self.emitByte(Reg.r2); // val
+    }
+
+    /// Compute the address of an addressable expression and leave
+    /// it in `acu`. Backs `mem.addr_of(x)` and the typed `&x`
+    /// reference operator. Slice M3a supports plain idents (locals,
+    /// params, globals); field / index targets land with M3b's
+    /// struct + class layout.
+    fn emitAddrOf(self: *Emitter, e: *const ast.Expr) !void {
+        if (e.* != .ident) {
+            try self.unsupported(e.span(), "`addr_of` on non-ident expression (M3b brings field / index targets)");
+            return;
+        }
+        const name = self.source[e.ident.span.start..e.ident.span.end];
+        if (self.locals.get(name)) |ofs| {
+            // Local: address = fp + ofs (ofs is negative).
+            try self.movRegToReg(Reg.fp, Reg.acu);
+            if (ofs < 0) {
+                // @as: widen i8 → i16 so the negate doesn't trip on the minimum value.
+                const widened: i16 = ofs;
+                // @as: |ofs| ≤ 128 by allocLocal cap; result fits a u16.
+                const neg: u16 = @intCast(-widened);
+                try self.subImmFromReg(neg, Reg.acu);
+            } else if (ofs > 0) {
+                // @as: positive i8 → u16; cap by allocLocal layout.
+                const pos: u16 = @intCast(ofs);
+                try self.addImmToReg(pos, Reg.acu);
+            }
+            return;
+        }
+        if (self.params.get(name)) |ofs| {
+            // Param: address = fp + ofs (ofs is positive).
+            try self.movRegToReg(Reg.fp, Reg.acu);
+            // @as: positive i8 → u16.
+            const pos: u16 = @intCast(ofs);
+            try self.addImmToReg(pos, Reg.acu);
+            return;
+        }
+        if (self.globals.get(name)) |g| {
+            try self.movImmToReg(g.address, Reg.acu);
+            return;
+        }
+        try self.unsupported(e.span(), "`addr_of` target not in scope");
+    }
+
     // ---------- diagnostics ----------
 
     fn diagFatal(self: *Emitter, span: ast.Span, code: []const u8, message: []const u8) !void {
@@ -2803,8 +3057,8 @@ const Emitter = struct {
 
     fn unsupported(self: *Emitter, span: ast.Span, what: []const u8) !void {
         const msg = try std.fmt.allocPrint(
-            self.arena,
-            "codegen does not yet support {s} (slice M1 only covers let/const + arithmetic + print)",
+            self.diag_arena,
+            "codegen does not yet support {s}",
             .{what},
         );
         try self.diagnostics.append(self.allocator, .{

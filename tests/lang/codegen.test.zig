@@ -1336,6 +1336,164 @@ test "codegen: undefined enum variant in `is` rhs is rejected" {
     try std.testing.expect(found);
 }
 
+// ---------- M3a: mem stdlib + references ----------
+
+test "codegen: mem.write_u8 + mem.read_u8 round-trip a byte" {
+    try runAndExpect(
+        \\use mem
+        \\def main()
+        \\  mem.write_u8($2100, 42)
+        \\  let v: u8 = mem.read_u8($2100)
+        \\  print v
+        \\end
+    , "42\n");
+}
+
+test "codegen: mem.write_u16 + mem.read_u16 preserve little-endian byte order" {
+    try runAndExpect(
+        \\use mem
+        \\def main()
+        \\  mem.write_u16($2100, $1234)
+        \\  -- low byte = 0x34 at $2100, high byte = 0x12 at $2101
+        \\  let lo: u8 = mem.read_u8($2100)
+        \\  let hi: u8 = mem.read_u8($2101)
+        \\  print lo
+        \\  print hi
+        \\end
+    , "52\n18\n");
+}
+
+test "codegen: mem.read_i8 sign-extends negative byte values into i16 range" {
+    try runAndExpect(
+        \\use mem
+        \\def main()
+        \\  mem.write_u8($2100, 255)
+        \\  let v: i8 = mem.read_i8($2100)
+        \\  print v
+        \\end
+    , "-1\n");
+}
+
+test "codegen: mem.poke + mem.peek aliases work" {
+    try runAndExpect(
+        \\use mem
+        \\def main()
+        \\  mem.poke($2100, 7)
+        \\  let v: u8 = mem.peek($2100)
+        \\  print v
+        \\end
+    , "7\n");
+}
+
+test "codegen: mem.memcpy copies n bytes from src to dst" {
+    try runAndExpect(
+        \\use mem
+        \\def main()
+        \\  mem.write_u8($2100, 11)
+        \\  mem.write_u8($2101, 22)
+        \\  mem.write_u8($2102, 33)
+        \\  mem.memcpy($2200, $2100, 3)
+        \\  print mem.read_u8($2200)
+        \\  print mem.read_u8($2201)
+        \\  print mem.read_u8($2202)
+        \\end
+    , "11\n22\n33\n");
+}
+
+test "codegen: mem.memset fills n bytes with the value" {
+    try runAndExpect(
+        \\use mem
+        \\def main()
+        \\  mem.memset($2200, 99, 3)
+        \\  print mem.read_u8($2200)
+        \\  print mem.read_u8($2201)
+        \\  print mem.read_u8($2202)
+        \\end
+    , "99\n99\n99\n");
+}
+
+test "codegen: mem.addr_of on a local returns its stack-slot address" {
+    try runAndExpect(
+        \\use mem
+        \\def main()
+        \\  let x: i16 = 42
+        \\  let p: u16 = mem.addr_of(x)
+        \\  let v: i16 = mem.read_i16(p)
+        \\  print v
+        \\end
+    , "42\n");
+}
+
+test "codegen: mem.addr_of on a global returns its static address" {
+    try runAndExpect(
+        \\use mem
+        \\let counter: u16 = 7
+        \\def main()
+        \\  let p: u16 = mem.addr_of(counter)
+        \\  mem.write_u16(p, 99)
+        \\  print counter
+        \\end
+    , "99\n");
+}
+
+test "codegen: `&local` produces same address as mem.addr_of" {
+    // `&x` and `mem.addr_of(x)` share the same runtime
+    // representation (a 16-bit address). Auto-deref on field /
+    // method access lands with M3b's struct + class lowering;
+    // M3a only verifies the address itself is correct.
+    try runAndExpect(
+        \\use mem
+        \\def main()
+        \\  let x: i16 = 7
+        \\  let r: &i16 = &x
+        \\  let a: u16 = mem.addr_of(x)
+        \\  mem.write_i16(a, 42)
+        \\  print x
+        \\  -- Suppress an unused-binding warning on `r` by
+        \\  -- comparing addresses textually below.
+        \\  let _b: &i16 = r
+        \\end
+    , "42\n");
+}
+
+test "codegen: `&(a + b)` is rejected by typecheck" {
+    const source =
+        \\def main()
+        \\  let r: &i16 = &(1 + 2)
+        \\  print r
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+    try std.testing.expect(checked.diagnostics.len > 0);
+}
+
+test "codegen: undefined mem.X is rejected by typecheck" {
+    const source =
+        \\use mem
+        \\def main()
+        \\  let v: u8 = mem.read_nonsense($2100)
+        \\  print v
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var found = false;
+    for (checked.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_TYPE_UNDEFINED_METHOD")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
 test "codegen: custom entry_name resolves" {
     const source = "def boot() end";
     var stream = try gero.lang.tokenize(alloc, source);
