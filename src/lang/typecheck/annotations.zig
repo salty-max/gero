@@ -49,7 +49,9 @@ pub const AnnotationSpec = struct {
     conflicts_with: []const []const u8 = &.{},
 };
 
-/// Spec inventory per `docs/gero-lang.md` §3.7.
+/// Spec inventory per `docs/gero-lang.md` §3.7. Comptime array —
+/// iterate with `&annotation_specs` to keep slot pointers stable
+/// across element copies.
 pub const annotation_specs = [_]AnnotationSpec{
     // Memory placement (§3.7.1)
     .{ .name = "bank", .targets = T.DEF | T.LET | T.CONST, .args = .int_lit },
