@@ -47,10 +47,22 @@ const ast = @import("ast.zig");
 const types_mod = @import("types.zig");
 const typecheck_mod = @import("typecheck.zig");
 const diag_mod = @import("diagnostic.zig");
+/// Re-exported codegen sub-modules — tests reach internal files
+/// through the public barrel so the lint mirror rule resolves.
+pub const opcodes = @import("codegen/opcodes.zig");
+/// `.gx` archive layout + small pure helpers (escape decode,
+/// power-of-two alignment, bank-tag comparison).
+pub const archive = @import("codegen/archive.zig");
+/// `mem.*` stdlib builtin lowering — typed peek / poke,
+/// memcpy / memset, addr-of.
+pub const mem_builtin = @import("codegen/mem_builtin.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const CheckedProgram = typecheck_mod.CheckedProgram;
 const Type = types_mod.Type;
+const Op = opcodes.Op;
+const Reg = opcodes.Reg;
+const Sys = opcodes.Sys;
 
 // ---------- public constants (boot layout per ISA §7) ----------
 
@@ -64,114 +76,9 @@ pub const code_base: u16 = 0x1100;
 /// `code_base`; data grows up from here.
 pub const data_base: u16 = 0x2000;
 
-// ---------- .gx file constants ----------
+// ---------- .gx file constants (re-exported from archive) ----------
 
-const gx_magic = [4]u8{ 'G', 'E', 'R', 'O' };
-const gx_version: u16 = 0x0001;
-const gx_header_size: usize = 16;
-/// Per-bank disk size — 16 KiB, the size of the `0xC000..0xFEFF`
-/// window in the address space. Each bank stored in the .gx
-/// archive consumes exactly this many bytes (zero-padded).
-const bank_disk_size: usize = 0x4000;
-/// Window base address — every banked address resolves to
-/// `window_base + offset_within_bank`.
-const bank_window_base: u16 = 0xC000;
-/// Banked flag bit in the .gx header per ISA §7.1.
-const flag_banked: u16 = 0x0001;
-
-// ---------- VM opcode + register byte values ----------
-//
-// Mirrored from `src/vm/opcodes.zig`. We don't import the VM module
-// at compile time (keeps lang codegen self-contained) — when a
-// new opcode lands there, this table needs the matching constant.
-
-const Op = struct {
-    const mov_imm16_reg: u8 = 0x10;
-    const mov_reg_reg: u8 = 0x11;
-    const mov_reg_offset_reg: u8 = 0x1C; // load:  reg ← [base + ofs]
-    const mov_reg_reg_offset: u8 = 0x1D; // store: [base + ofs] ← reg
-    const mov_reg_to_addr: u8 = 0x12; // store: [addr] ← reg (word)
-    const mov_addr_to_reg: u8 = 0x13; // load:  reg ← [addr] (word)
-    const mov_reg_to_zp: u8 = 0x19; // store: [zp] ← reg (word)
-    const mov_zp_to_reg: u8 = 0x1A; // load:  reg ← [zp] (word)
-    const mov_ptr_to_reg: u8 = 0x15; // load:  reg ← [ptr_reg] (word)
-    const mov_reg_to_ptr: u8 = 0x16; // store: [ptr_reg] ← reg (word)
-    const mov8_addr_to_reg: u8 = 0x22; // load:  reg ← byte [addr]
-    const mov8_reg_to_ptr: u8 = 0x23; // store: [ptr_reg] ← reg.lo (byte)
-    const mov8_ptr_to_reg: u8 = 0x24; // load:  reg ← byte [ptr_reg]
-    const mov8_zp_to_reg: u8 = 0x29; // load:  reg ← byte [zp]
-    const movl_reg_to_addr: u8 = 0x27; // store: [addr] ← reg.lo  (byte store)
-    const movl_reg_to_zp: u8 = 0x2B; // store: [zp]   ← reg.lo  (byte store)
-
-    const push_reg: u8 = 0x31;
-    const pop_reg: u8 = 0x32;
-
-    const add_imm16_reg: u8 = 0x40;
-    const add_reg_acu: u8 = 0x42; // acu ← acu + reg
-    const sub_imm16_reg: u8 = 0x43;
-    const sub_reg_acu: u8 = 0x45; // acu ← acu - reg
-    const mul_reg_reg: u8 = 0x47; // dst ← dst * src
-    const neg_reg: u8 = 0x4A;
-    const divs_reg_reg: u8 = 0x4E; // dst ← dst / src (signed)
-
-    const and_reg_reg: u8 = 0x61; // dst ← dst & src
-    const or_reg_reg: u8 = 0x63; // dst ← dst | src
-    const xor_reg_reg: u8 = 0x65; // dst ← dst ^ src
-    const not_reg: u8 = 0x66; // reg ← ~reg
-    const shl_reg_reg: u8 = 0x71; // dst ← dst << src
-    const shr_reg_reg: u8 = 0x73; // dst ← dst >> src
-
-    const shl_reg_imm8: u8 = 0x70; // reg ← reg << imm
-    const shr_reg_imm8: u8 = 0x72; // reg ← reg >> imm (logical / unsigned)
-    const asr_reg_imm8: u8 = 0x74; // reg ← reg >>a imm (arithmetic / signed)
-
-    const cmp_reg_imm16: u8 = 0x80; // flags ← reg - imm
-    const cmp_reg_reg: u8 = 0x81; // flags ← dst - src
-
-    const jmp_addr: u8 = 0x90; // unconditional
-    const jeq_addr: u8 = 0x92; // Z = 1
-    const jne_addr: u8 = 0x93; // Z = 0
-    const jlt_addr: u8 = 0x94; // signed less
-    const jle_addr: u8 = 0x95; // signed ≤
-    const jgt_addr: u8 = 0x96; // signed >
-    const jge_addr: u8 = 0x97; // signed ≥
-
-    const bcpy: u8 = 0x2C; // bcpy dst, src, len — memcpy via 3 regs
-    const bfill: u8 = 0x2D; // bfill addr, len, val — memset via 3 regs
-
-    const call_addr: u8 = 0xA0;
-    const call_reg: u8 = 0xA1;
-    const ret_op: u8 = 0xA2;
-
-    const sys: u8 = 0xFB;
-    const hlt: u8 = 0xFF;
-};
-
-/// VM register byte values per `src/vm/registers.zig`.
-const Reg = struct {
-    const acu: u8 = 0x01;
-    const r1: u8 = 0x02;
-    const r2: u8 = 0x03;
-    const r3: u8 = 0x04;
-    const sp: u8 = 0x0A;
-    const fp: u8 = 0x0B;
-    const mb: u8 = 0x0C;
-};
-
-/// `sys` syscall ids per `src/vm/handlers/system.zig::SyscallId`.
-const Sys = struct {
-    const print_str: u8 = 0x01;
-    const print_int: u8 = 0x02;
-    const print_char: u8 = 0x03;
-    const print_newline: u8 = 0x04;
-    const print_fixed: u8 = 0x05;
-
-    const format_str_to_buf: u8 = 0x10;
-    const format_int_to_buf: u8 = 0x11;
-    const format_char_to_buf: u8 = 0x12;
-    const format_fixed_to_buf: u8 = 0x13;
-    const format_terminate_buf: u8 = 0x14;
-};
+const bank_window_base = archive.bank_window_base;
 
 /// Bytes reserved per interpolated-string buffer in the data
 /// region. Sized for the worst common case (a few interp values
@@ -437,7 +344,7 @@ const Global = struct {
 /// local-slot table, and the diagnostic sink. The entry-def
 /// emission path owns one Emitter; later M1 commits will create
 /// a fresh Emitter per non-entry def too.
-const Emitter = struct {
+pub const Emitter = struct {
     allocator: std.mem.Allocator,
     /// Arena for short-lived bookkeeping (local-name dupes,
     /// scratch buffers). Released at the end of `compile`.
@@ -557,12 +464,15 @@ const Emitter = struct {
         return buf.items.len;
     }
 
-    fn emitByte(self: *Emitter, b: u8) !void {
+    /// Append one raw byte to the currently-active code buffer
+    /// (base image or per-bank window).
+    pub fn emitByte(self: *Emitter, b: u8) !void {
         const buf = try self.currentCode();
         try buf.append(self.allocator, b);
     }
 
-    fn emitU16Le(self: *Emitter, value: u16) !void {
+    /// Append a 16-bit value in little-endian byte order.
+    pub fn emitU16Le(self: *Emitter, value: u16) !void {
         // safety: u16 → 2 LE bytes; both casts are byte-mask, no truncation.
         try self.emitByte(@intCast(value & 0xFF));
         try self.emitByte(@intCast(value >> 8));
@@ -571,14 +481,14 @@ const Emitter = struct {
     // ---------- ISA instructions used in M1 ----------
 
     /// `mov imm16, reg` (0x10) — `reg ← imm`.
-    fn movImmToReg(self: *Emitter, imm: u16, reg: u8) !void {
+    pub fn movImmToReg(self: *Emitter, imm: u16, reg: u8) !void {
         try self.emitByte(Op.mov_imm16_reg);
         try self.emitU16Le(imm);
         try self.emitByte(reg);
     }
 
     /// `mov src, dst` (0x11) — `dst ← src`.
-    fn movRegToReg(self: *Emitter, src: u8, dst: u8) !void {
+    pub fn movRegToReg(self: *Emitter, src: u8, dst: u8) !void {
         try self.emitByte(Op.mov_reg_reg);
         try self.emitByte(src);
         try self.emitByte(dst);
@@ -662,26 +572,26 @@ const Emitter = struct {
     }
 
     /// `push reg` (0x31).
-    fn pushReg(self: *Emitter, reg: u8) !void {
+    pub fn pushReg(self: *Emitter, reg: u8) !void {
         try self.emitByte(Op.push_reg);
         try self.emitByte(reg);
     }
 
     /// `pop reg` (0x32).
-    fn popReg(self: *Emitter, reg: u8) !void {
+    pub fn popReg(self: *Emitter, reg: u8) !void {
         try self.emitByte(Op.pop_reg);
         try self.emitByte(reg);
     }
 
     /// `add imm16, reg` (0x40) — `reg ← reg + imm`.
-    fn addImmToReg(self: *Emitter, imm: u16, reg: u8) !void {
+    pub fn addImmToReg(self: *Emitter, imm: u16, reg: u8) !void {
         try self.emitByte(Op.add_imm16_reg);
         try self.emitU16Le(imm);
         try self.emitByte(reg);
     }
 
     /// `sub imm16, reg` (0x43) — `reg ← reg - imm`.
-    fn subImmFromReg(self: *Emitter, imm: u16, reg: u8) !void {
+    pub fn subImmFromReg(self: *Emitter, imm: u16, reg: u8) !void {
         try self.emitByte(Op.sub_imm16_reg);
         try self.emitU16Le(imm);
         try self.emitByte(reg);
@@ -776,7 +686,7 @@ const Emitter = struct {
     }
 
     /// `shl reg, imm8` (0x70) — `reg ← reg << imm`.
-    fn shlRegImm(self: *Emitter, reg: u8, imm: u8) !void {
+    pub fn shlRegImm(self: *Emitter, reg: u8, imm: u8) !void {
         try self.emitByte(Op.shl_reg_imm8);
         try self.emitByte(reg);
         try self.emitByte(imm);
@@ -790,7 +700,7 @@ const Emitter = struct {
     }
 
     /// `asr reg, imm8` (0x74) — `reg ← reg >>arith imm` (sign-fill).
-    fn asrRegImm(self: *Emitter, reg: u8, imm: u8) !void {
+    pub fn asrRegImm(self: *Emitter, reg: u8, imm: u8) !void {
         try self.emitByte(Op.asr_reg_imm8);
         try self.emitByte(reg);
         try self.emitByte(imm);
@@ -2416,7 +2326,10 @@ const Emitter = struct {
 
     // ---------- expression emission (result → acu) ----------
 
-    fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
+    /// Lower one expression — result lands in `acu`. Branches on
+    /// the AST variant; sub-modules (`mem_builtin`, etc.) call
+    /// back into this through the method dispatch.
+    pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         switch (e.*) {
             .int_lit => |lit| {
                 // @as: truncate i32 → i16; safety: typechecker already verified the literal fits in the target primitive's width.
@@ -2849,192 +2762,27 @@ const Emitter = struct {
         try self.unsupported(e.span(), "method calls on non-stdlib receivers");
     }
 
-    // ---------- mem stdlib builtins ----------
+    // ---------- mem stdlib builtins (delegated) ----------
 
-    /// Lower a `mem.X(args)` call. Each builtin maps to a specific
-    /// opcode sequence — see the per-arm comments for the exact
-    /// shape. Unknown `mem.X` calls fall through to a defensive
-    /// diagnostic (the typechecker already rejects bad names with
-    /// `E_TYPE_UNDEFINED_METHOD`).
+    /// Dispatch a `mem.X(args)` call to the matching emitter in
+    /// `codegen/mem_builtin.zig`.
     fn emitMemCall(self: *Emitter, fe: ast.FieldExpr, c: ast.CallExpr) !void {
-        const fn_name = self.source[fe.field.start..fe.field.end];
-        if (std.mem.eql(u8, fn_name, "read_u8") or std.mem.eql(u8, fn_name, "peek")) {
-            try self.emitMemRead1Arg(c, .byte_zext);
-        } else if (std.mem.eql(u8, fn_name, "read_u16") or std.mem.eql(u8, fn_name, "read_i16")) {
-            try self.emitMemRead1Arg(c, .word);
-        } else if (std.mem.eql(u8, fn_name, "read_i8")) {
-            try self.emitMemRead1Arg(c, .byte_sext);
-        } else if (std.mem.eql(u8, fn_name, "write_u8") or std.mem.eql(u8, fn_name, "write_i8") or std.mem.eql(u8, fn_name, "poke")) {
-            try self.emitMemWrite2Args(c, .byte);
-        } else if (std.mem.eql(u8, fn_name, "write_u16") or std.mem.eql(u8, fn_name, "write_i16")) {
-            try self.emitMemWrite2Args(c, .word);
-        } else if (std.mem.eql(u8, fn_name, "memcpy")) {
-            try self.emitMemCopy(c);
-        } else if (std.mem.eql(u8, fn_name, "memset")) {
-            try self.emitMemFill(c);
-        } else if (std.mem.eql(u8, fn_name, "addr_of")) {
-            if (c.args.len != 1) {
-                try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `mem.addr_of` takes exactly one argument");
-                return;
-            }
-            try self.emitAddrOf(c.args[0]);
-        } else {
-            try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: unknown `mem` builtin");
-        }
+        return mem_builtin.emitMemCall(self, fe, c);
     }
 
-    const MemReadKind = enum { byte_zext, byte_sext, word };
-    const MemWriteKind = enum { byte, word };
-
-    /// Common shape: `mem.read_*(addr)` — one arg, returns a value
-    /// in `acu`. The width / sign-extension choice picks the load
-    /// opcode (and an optional sign-extension tail for `read_i8`).
-    fn emitMemRead1Arg(self: *Emitter, c: ast.CallExpr, kind: MemReadKind) !void {
-        if (c.args.len != 1) {
-            try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `mem.read_*` takes exactly one argument");
-            return;
-        }
-        try self.emitExpr(c.args[0]); // acu = addr
-        try self.movRegToReg(Reg.acu, Reg.r1); // r1 = addr
-        switch (kind) {
-            .word => {
-                try self.emitByte(Op.mov_ptr_to_reg);
-                try self.emitByte(Reg.acu); // dst
-                try self.emitByte(Reg.r1); // ptr
-            },
-            .byte_zext => {
-                try self.emitByte(Op.mov8_ptr_to_reg);
-                try self.emitByte(Reg.r1); // ptr
-                try self.emitByte(Reg.acu); // dst
-            },
-            .byte_sext => {
-                try self.emitByte(Op.mov8_ptr_to_reg);
-                try self.emitByte(Reg.r1);
-                try self.emitByte(Reg.acu);
-                // Sign-extend 8 → 16: `shl 8 ; asr 8`. The byte
-                // sits in `acu.lo`; shifting it into the top byte
-                // and back arithmetic-shift-right preserves the
-                // sign bit through the high half.
-                try self.shlRegImm(Reg.acu, 8);
-                try self.asrRegImm(Reg.acu, 8);
-            },
-        }
-    }
-
-    /// Common shape: `mem.write_*(addr, v)` — two args, no return.
-    /// Args eval left-to-right via push/pop so `addr` and `v` can
-    /// be arbitrary subexpressions.
-    fn emitMemWrite2Args(self: *Emitter, c: ast.CallExpr, kind: MemWriteKind) !void {
-        if (c.args.len != 2) {
-            try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `mem.write_*` takes exactly two arguments");
-            return;
-        }
-        try self.emitExpr(c.args[0]); // acu = addr
-        try self.pushReg(Reg.acu);
-        try self.emitExpr(c.args[1]); // acu = value
-        try self.popReg(Reg.r1); // r1 = addr
-        switch (kind) {
-            .word => {
-                try self.emitByte(Op.mov_reg_to_ptr);
-                try self.emitByte(Reg.r1); // ptr
-                try self.emitByte(Reg.acu); // src
-            },
-            .byte => {
-                try self.emitByte(Op.mov8_reg_to_ptr);
-                try self.emitByte(Reg.acu); // src (low byte)
-                try self.emitByte(Reg.r1); // ptr
-            },
-        }
-    }
-
-    /// `mem.memcpy(dst, src, n)` — eval each arg left-to-right
-    /// into a dedicated register, then emit `bcpy dst, src, len`
-    /// (opcode 0x2C).
-    fn emitMemCopy(self: *Emitter, c: ast.CallExpr) !void {
-        if (c.args.len != 3) {
-            try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `mem.memcpy` takes exactly three arguments");
-            return;
-        }
-        try self.emitExpr(c.args[0]); // dst
-        try self.pushReg(Reg.acu);
-        try self.emitExpr(c.args[1]); // src
-        try self.pushReg(Reg.acu);
-        try self.emitExpr(c.args[2]); // n → acu
-        try self.movRegToReg(Reg.acu, Reg.r3); // r3 = len
-        try self.popReg(Reg.r2); // r2 = src
-        try self.popReg(Reg.r1); // r1 = dst
-        try self.emitByte(Op.bcpy);
-        try self.emitByte(Reg.r1); // dst
-        try self.emitByte(Reg.r2); // src
-        try self.emitByte(Reg.r3); // len
-    }
-
-    /// `mem.memset(dst, v, n)` — eval args into dedicated regs and
-    /// emit `bfill addr, len, val` (opcode 0x2D). Note the operand
-    /// order: the VM reads bytes as `dst, len, val`.
-    fn emitMemFill(self: *Emitter, c: ast.CallExpr) !void {
-        if (c.args.len != 3) {
-            try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `mem.memset` takes exactly three arguments");
-            return;
-        }
-        try self.emitExpr(c.args[0]); // dst
-        try self.pushReg(Reg.acu);
-        try self.emitExpr(c.args[1]); // v
-        try self.pushReg(Reg.acu);
-        try self.emitExpr(c.args[2]); // n → acu
-        try self.movRegToReg(Reg.acu, Reg.r3); // r3 = len
-        try self.popReg(Reg.r2); // r2 = val
-        try self.popReg(Reg.r1); // r1 = dst
-        try self.emitByte(Op.bfill);
-        try self.emitByte(Reg.r1); // dst
-        try self.emitByte(Reg.r3); // len
-        try self.emitByte(Reg.r2); // val
-    }
-
-    /// Compute the address of an addressable expression and leave
-    /// it in `acu`. Backs `mem.addr_of(x)` and the typed `&x`
-    /// reference operator. Plain idents (locals, params, globals)
-    /// are supported; field / index targets are not yet supported.
+    /// Compute the address of an addressable expression into
+    /// `acu`. Backs `mem.addr_of(x)` and the `&x` reference
+    /// operator.
     fn emitAddrOf(self: *Emitter, e: *const ast.Expr) !void {
-        if (e.* != .ident) {
-            try self.unsupported(e.span(), "`addr_of` on non-ident expression");
-            return;
-        }
-        const name = self.source[e.ident.span.start..e.ident.span.end];
-        if (self.locals.get(name)) |ofs| {
-            // Local: address = fp + ofs (ofs is negative).
-            try self.movRegToReg(Reg.fp, Reg.acu);
-            if (ofs < 0) {
-                // @as: widen i8 → i16 so the negate doesn't trip on the minimum value.
-                const widened: i16 = ofs;
-                // @as: |ofs| ≤ 128 by allocLocal cap; result fits a u16.
-                const neg: u16 = @intCast(-widened);
-                try self.subImmFromReg(neg, Reg.acu);
-            } else if (ofs > 0) {
-                // @as: positive i8 → u16; cap by allocLocal layout.
-                const pos: u16 = @intCast(ofs);
-                try self.addImmToReg(pos, Reg.acu);
-            }
-            return;
-        }
-        if (self.params.get(name)) |ofs| {
-            // Param: address = fp + ofs (ofs is positive).
-            try self.movRegToReg(Reg.fp, Reg.acu);
-            // @as: positive i8 → u16.
-            const pos: u16 = @intCast(ofs);
-            try self.addImmToReg(pos, Reg.acu);
-            return;
-        }
-        if (self.globals.get(name)) |g| {
-            try self.movImmToReg(g.address, Reg.acu);
-            return;
-        }
-        try self.unsupported(e.span(), "`addr_of` target not in scope");
+        return mem_builtin.emitAddrOf(self, e);
     }
 
     // ---------- diagnostics ----------
 
-    fn diagFatal(self: *Emitter, span: ast.Span, code: []const u8, message: []const u8) !void {
+    /// Append a fatal `Diagnostic` with the given code + literal
+    /// message. The message string isn't duplicated — callers
+    /// either pass a string literal or allocate on `diag_arena`.
+    pub fn diagFatal(self: *Emitter, span: ast.Span, code: []const u8, message: []const u8) !void {
         try self.diagnostics.append(self.allocator, .{
             .severity = .fatal,
             .code = code,
@@ -3043,7 +2791,11 @@ const Emitter = struct {
         });
     }
 
-    fn unsupported(self: *Emitter, span: ast.Span, what: []const u8) !void {
+    /// Emit `E_CODEGEN_UNSUPPORTED` with a message describing the
+    /// shape that wasn't lowered. `what` is interpolated into the
+    /// formatted message and the formatted string lives on
+    /// `diag_arena`.
+    pub fn unsupported(self: *Emitter, span: ast.Span, what: []const u8) !void {
         const msg = try std.fmt.allocPrint(
             self.diag_arena,
             "codegen does not yet support {s}",
@@ -3060,116 +2812,7 @@ const Emitter = struct {
 
 // ---------- archive layout (.gx per ISA §7.1) ----------
 
-fn buildArchive(
-    allocator: std.mem.Allocator,
-    base_image: []const u8,
-    entry_point: u16,
-    banks: *const std.AutoHashMapUnmanaged(u8, std.ArrayList(u8)),
-) ![]u8 {
-    // Bank count = max bank index + 1 (banks are 0-indexed). 0 if
-    // no banks declared.
-    var max_bank: ?u8 = null;
-    var it = banks.keyIterator();
-    while (it.next()) |b| {
-        if (max_bank) |m| max_bank = @max(m, b.*) else max_bank = b.*;
-    }
-    // @as: widen u8 max_bank to u16 so `+ 1` doesn't overflow when max_bank == 255.
-    const bank_count: u16 = if (max_bank) |m| @as(u16, m) + 1 else 0;
-    // @as: bank_count ≤ 256 by u8 input; the byte total fits usize.
-    const banked_bytes: usize = @as(usize, bank_count) * bank_disk_size;
-
-    // safety: base image fits in 16-bit address space per ISA.
-    const image_size: u16 = @intCast(base_image.len);
-    const total = gx_header_size + base_image.len + banked_bytes;
-    var out = try allocator.alloc(u8, total);
-    @memset(out, 0);
-
-    var flags: u16 = 0;
-    if (bank_count > 0) flags |= flag_banked;
-
-    @memcpy(out[0..4], &gx_magic);
-    writeU16Le(out[4..6], gx_version);
-    writeU16Le(out[6..8], flags);
-    writeU16Le(out[8..10], entry_point);
-    writeU16Le(out[10..12], image_size);
-    // safety: bank_count ≤ 256 by construction.
-    out[12] = @intCast(bank_count);
-    out[13] = 0; // sram_bank_count
-    writeU16Le(out[14..16], 0); // reserved
-
-    @memcpy(out[gx_header_size..][0..base_image.len], base_image);
-
-    // Bank buffers: each occupies `bank_disk_size` bytes (zero-
-    // padded). Banks the user didn't touch stay all zeros.
-    var cursor: usize = gx_header_size + base_image.len;
-    var b: u16 = 0;
-    while (b < bank_count) : (b += 1) {
-        const dst = out[cursor..][0..bank_disk_size];
-        // safety: b < bank_count ≤ 256, fits u8.
-        if (banks.get(@intCast(b))) |bank_buf| {
-            const n = @min(bank_buf.items.len, bank_disk_size);
-            @memcpy(dst[0..n], bank_buf.items[0..n]);
-        }
-        cursor += bank_disk_size;
-    }
-
-    return out;
-}
-
-fn writeU16Le(dst: *[2]u8, value: u16) void {
-    // safety: u16 → 2 bytes by definition; no truncation possible.
-    dst[0] = @intCast(value & 0xFF);
-    dst[1] = @intCast(value >> 8);
-}
-
-/// Decode the standard backslash escapes (`\n`, `\r`, `\t`, `\\`,
-/// `\"`, `\0`) into raw bytes. The source slice is the part between
-/// the surrounding `"` delimiters with escapes still encoded; the
-/// returned slice owns its bytes (caller's allocator). Unknown
-/// escape sequences pass through as the bare character following
-/// the backslash — matches the lexer's leniency until a spec-
-/// committed escape table lands.
-fn decodeStringEscapes(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    var i: usize = 0;
-    while (i < raw.len) {
-        const c = raw[i];
-        if (c == '\\' and i + 1 < raw.len) {
-            const next = raw[i + 1];
-            const decoded: u8 = switch (next) {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                '\\' => '\\',
-                '"' => '"',
-                '0' => 0,
-                else => next,
-            };
-            try out.append(allocator, decoded);
-            i += 2;
-            continue;
-        }
-        try out.append(allocator, c);
-        i += 1;
-    }
-    return out.toOwnedSlice(allocator);
-}
-
-/// Round `value` up to the next multiple of `align_n` (which must
-/// be a power of two — typechecker enforces). `align_n == 1`
-/// passes through.
-fn alignUpU16(value: u16, align_n: u16) u16 {
-    if (align_n <= 1) return value;
-    const mask: u16 = align_n - 1;
-    return (value + mask) & ~mask;
-}
-
-/// `true` when two optional bank tags refer to the same code
-/// location — both `null` (base image) or both wrapping the same
-/// bank index.
-fn banksEqual(a: ?u8, b: ?u8) bool {
-    if (a == null and b == null) return true;
-    if (a == null or b == null) return false;
-    return a.? == b.?;
-}
+const buildArchive = archive.buildArchive;
+const decodeStringEscapes = archive.decodeStringEscapes;
+const alignUpU16 = archive.alignUpU16;
+const banksEqual = archive.banksEqual;
