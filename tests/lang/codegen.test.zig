@@ -1,4 +1,6 @@
-/// Tests for `gero.lang.codegen` — slice-B1 framework smoke.
+/// Tests for `gero.lang.codegen` — compiles small programs end
+/// to end (tokenize → parse → typecheck → compile → boot on the
+/// VM) and asserts on printed output or VM-memory state.
 const std = @import("std");
 const gero = @import("gero");
 
@@ -656,7 +658,7 @@ test "codegen: byte-store to @addr global uses movl (does not clobber adjacent b
     try std.testing.expectEqual(@as(u8, 0xAB), vm.mmap.readByte(0xFE41));
 }
 
-// ---------- M2: control flow (if / while / for / repeat / match) ----------
+// ---------- control flow (if / while / for / repeat / match) ----------
 
 /// Shorthand: compile, boot, run until halt, assert on printed output.
 fn runAndExpect(source: []const u8, expected: []const u8) !void {
@@ -1018,7 +1020,7 @@ test "codegen: defer fires on continue path before going to next iteration" {
         "1\n9\n9\n3\n9\n");
 }
 
-// ---------- M1 self-review backfill: AC items previously missing ----------
+// ---------- str-literal print, fixed-point, recursion, frame slots ----------
 
 test "codegen: print of a string literal goes through sys print_str + emits `hi`" {
     try runAndExpect(
@@ -1252,7 +1254,7 @@ test "codegen: zero-page overflow emits E_CODEGEN_ZP_OVERFLOW" {
     try std.testing.expect(found);
 }
 
-// ---------- M3a: enum codegen (nullary variants) ----------
+// ---------- enum codegen (nullary variants) ----------
 
 test "codegen: nullary enum constructor loads tag byte into acu" {
     try runAndExpect(
@@ -1336,7 +1338,7 @@ test "codegen: undefined enum variant in `is` rhs is rejected" {
     try std.testing.expect(found);
 }
 
-// ---------- M3a: mem stdlib + references ----------
+// ---------- mem stdlib + references ----------
 
 test "codegen: mem.write_u8 + mem.read_u8 round-trip a byte" {
     try runAndExpect(
@@ -1438,9 +1440,9 @@ test "codegen: mem.addr_of on a global returns its static address" {
 
 test "codegen: `&local` produces same address as mem.addr_of" {
     // `&x` and `mem.addr_of(x)` share the same runtime
-    // representation (a 16-bit address). Auto-deref on field /
-    // method access lands with M3b's struct + class lowering;
-    // M3a only verifies the address itself is correct.
+    // representation (a 16-bit address). This test verifies the
+    // address itself is correct; auto-deref on field / method
+    // access is exercised by class / struct tests when those land.
     try runAndExpect(
         \\use mem
         \\def main()
