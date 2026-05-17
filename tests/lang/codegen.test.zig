@@ -1567,3 +1567,348 @@ test "codegen: custom entry_name resolves" {
     defer compiled.deinit();
     try std.testing.expect(!compiled.hasErrors());
 }
+
+// ---------- M3b chunk 1: class vtable + dispatch ----------
+
+test "codegen/class: zero-field class with one method prints from the method" {
+    var compiled = try compileSource(
+        \\class Player
+        \\  def greet(self)
+        \\    print "hi"
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let p = Player()
+        \\  p.greet()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("hi\n", writer.written());
+}
+
+test "codegen/class: instance pointer is freshly heap-allocated (acu = heap_base on first alloc)" {
+    var compiled = try compileSource(
+        \\class Box
+        \\  let v: i16
+        \\end
+        \\
+        \\def main()
+        \\  let p = Box()
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // `let p` lives at [fp - 2] (first local). Should hold the
+    // heap-allocated instance address; heap starts at data_base
+    // when no globals are placed.
+    const p_addr = vm.mmap.readWord(0xFFFC);
+    try std.testing.expectEqual(@as(u16, gero.lang.codegen.data_base), p_addr);
+}
+
+test "codegen/class: vtable_ptr at instance[0] points at the class's vtable" {
+    var compiled = try compileSource(
+        \\class Player
+        \\  def greet(self)
+        \\    print "hi"
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let p = Player()
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // p is at [fp - 2] = 0xFFFC.
+    const p_addr = vm.mmap.readWord(0xFFFC);
+    // [p+0] = vtable address. Vtable address must be non-zero
+    // (lives in the base image past code + strings).
+    const vtable_addr = vm.mmap.readWord(p_addr);
+    try std.testing.expect(vtable_addr != 0);
+}
+
+test "codegen/class: field read returns the value written by init" {
+    var compiled = try compileSource(
+        \\class Counter
+        \\  let n: i16
+        \\
+        \\  def init(self)
+        \\    self.n = 7
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let c = Counter()
+        \\  print c.n
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("7\n", writer.written());
+}
+
+test "codegen/class: field write from outside the class persists" {
+    var compiled = try compileSource(
+        \\class Box
+        \\  let v: i16
+        \\end
+        \\
+        \\def main()
+        \\  let b = Box()
+        \\  b.v = 42
+        \\  print b.v
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("42\n", writer.written());
+}
+
+test "codegen/class: byte-wide field (u8) reads back narrowed" {
+    var compiled = try compileSource(
+        \\class Cell
+        \\  let b: u8
+        \\end
+        \\
+        \\def main()
+        \\  let c = Cell()
+        \\  c.b = 200
+        \\  print c.b
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("200\n", writer.written());
+}
+
+test "codegen/class: method with user args" {
+    var compiled = try compileSource(
+        \\class Adder
+        \\  def add(self, x: i16, y: i16)
+        \\    print x + y
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let a = Adder()
+        \\  a.add(3, 4)
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("7\n", writer.written());
+}
+
+test "codegen/class: init with args populates fields" {
+    var compiled = try compileSource(
+        \\class Pair
+        \\  let lo: i16
+        \\  let hi: i16
+        \\
+        \\  def init(self, a: i16, b: i16)
+        \\    self.lo = a
+        \\    self.hi = b
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let p = Pair(10, 20)
+        \\  print p.lo
+        \\  print p.hi
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("10\n20\n", writer.written());
+}
+
+test "codegen/class: method-to-method dispatch on self" {
+    var compiled = try compileSource(
+        \\class Echo
+        \\  def shout(self)
+        \\    self.whisper()
+        \\    self.whisper()
+        \\  end
+        \\
+        \\  def whisper(self)
+        \\    print "."
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let e = Echo()
+        \\  e.shout()
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings(".\n.\n", writer.written());
+}
+
+test "codegen/class: two instances of the same class are independent" {
+    var compiled = try compileSource(
+        \\class Box
+        \\  let v: i16
+        \\end
+        \\
+        \\def main()
+        \\  let a = Box()
+        \\  let b = Box()
+        \\  a.v = 11
+        \\  b.v = 22
+        \\  print a.v
+        \\  print b.v
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("11\n22\n", writer.written());
+}
+
+test "codegen/class: mixed-width fields land at the expected offsets" {
+    // u8 (1) + i16 (2) + bool (1) + i16 (2) → 6 bytes of fields,
+    // total instance_size = 2 (vtable_ptr) + 6 = 8 bytes.
+    var compiled = try compileSource(
+        \\class Mix
+        \\  let a: u8
+        \\  let b: i16
+        \\  let c: bool
+        \\  let d: i16
+        \\
+        \\  def init(self)
+        \\    self.a = 7
+        \\    self.b = 1000
+        \\    self.c = true
+        \\    self.d = -1
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let m = Mix()
+        \\  print m.a
+        \\  print m.b
+        \\  print m.c
+        \\  print m.d
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("7\n1000\n1\n-1\n", writer.written());
+}
+
+test "codegen/class: method returning a value propagates through `acu`" {
+    var compiled = try compileSource(
+        \\class Box
+        \\  let v: i16
+        \\
+        \\  def init(self, x: i16)
+        \\    self.v = x
+        \\  end
+        \\
+        \\  def get(self) -> i16
+        \\    return self.v
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let b = Box(99)
+        \\  let v = b.get()
+        \\  print v
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("99\n", writer.written());
+}

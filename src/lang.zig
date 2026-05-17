@@ -29,6 +29,7 @@ const cg_strings = @import("lang/codegen/strings.zig");
 const cg_pattern = @import("lang/codegen/pattern.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
+const cg_class = @import("lang/codegen/class.zig");
 
 // ---------- lexer ----------
 
@@ -153,5 +154,8 @@ pub const internal = struct {
         /// Internal — control-flow lowering (if / while / for /
         /// match / break / continue / defer).
         pub const control_flow = cg_control_flow;
+        /// Internal — class lowering (vtable + constructor +
+        /// field rw + method dispatch).
+        pub const class = cg_class;
     };
 };

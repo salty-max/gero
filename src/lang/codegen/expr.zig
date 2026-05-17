@@ -7,6 +7,7 @@ const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const archive = @import("archive.zig");
+const class = @import("class.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -66,6 +67,16 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .call => |c| try emitCall(self, c),
         .method_call => |m| try emitMethodCall(self, m, e),
         .field => |f| try emitFieldExpr(self, f, e),
+        .self_expr => |se| {
+            // `self` inside a method body lives at fp+4 (the first
+            // implicit param). Outside a method it's a typecheck
+            // error — the codegen falls through to "unsupported".
+            if (self.params.get("self")) |ofs| {
+                try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
+            } else {
+                try self.unsupported(se.span, "`self` used outside a method body");
+            }
+        },
         .is_test => |it| try emitIsTest(self, it),
         .ref_of => |r| try self.emitAddrOf(r.inner),
         .cast => |c| try emitExpr(self, c.inner), // same-width primitives share a bit pattern, so the cast is a no-op
@@ -84,6 +95,12 @@ pub fn emitExprDiscard(self: *Emitter, e: *const ast.Expr) !void {
 /// `acu`. Field access on non-enum receivers is not yet
 /// supported.
 pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void {
+    // Class-typed receiver — `obj.field` instance load.
+    if (self.classNameOf(f.receiver)) |cname| {
+        const fname = self.source[f.field.start..f.field.end];
+        try class.emitFieldLoad(self, f.receiver, cname, fname, f.span);
+        return;
+    }
     if (f.receiver.* == .ident) {
         const recv_name = self.source[f.receiver.ident.span.start..f.receiver.ident.span.end];
         if (self.enum_decls.get(recv_name)) |ed| {
@@ -354,6 +371,12 @@ pub fn emitShortCircuitBool(self: *Emitter, b: ast.BinaryExpr) !void {
 /// other receivers (class instance method calls) are not yet
 /// supported.
 pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr) !void {
+    // Class-typed receiver — vtable dispatch.
+    if (self.classNameOf(m.receiver)) |cname| {
+        const mname = self.source[m.method.start..m.method.end];
+        try class.emitMethodDispatch(self, m.receiver, cname, mname, m.args, m.span);
+        return;
+    }
     if (m.receiver.* == .ident) {
         const recv = self.source[m.receiver.ident.span.start..m.receiver.ident.span.end];
         if (std.mem.eql(u8, recv, "mem")) {
@@ -390,6 +413,16 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
 /// way in. Closure invocations and fn-pointer calls are not
 /// yet supported.
 pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
+    // Class constructor call — `ClassName(args)` allocates an
+    // instance, writes the vtable pointer, and runs `init` if
+    // declared. The instance address lands in `acu`.
+    if (c.callee.* == .ident) {
+        const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
+        if (class.isClassName(self, callee_name)) {
+            try class.emitConstructor(self, callee_name, c);
+            return;
+        }
+    }
     if (c.callee.* == .field) {
         const fe = c.callee.field;
         if (fe.receiver.* == .ident) {
