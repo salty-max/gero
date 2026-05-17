@@ -13,6 +13,7 @@ const scope_mod = @import("lang/scope.zig");
 const typecheck_mod = @import("lang/typecheck.zig");
 const diag_mod = @import("lang/diagnostic.zig");
 const render_mod = @import("lang/render.zig");
+const codegen_mod = @import("lang/codegen.zig");
 
 /// Re-export: lexer token.
 pub const Token = lexer_mod.Token;
@@ -49,3 +50,14 @@ pub const Severity = diag_mod.Severity;
 /// Re-export: diagnostic-rendering primitives (pretty + JSON).
 /// Per `docs/lang-diagnostics.md`.
 pub const render = render_mod;
+
+/// Re-export: codegen module (constants `ivt_base`, `code_base`,
+/// `data_base`).
+pub const codegen = codegen_mod;
+/// Re-export: codegen output (`.gx` image + diagnostics).
+pub const Compiled = codegen_mod.Compiled;
+/// Re-export: codegen knobs (`entry_name`, `debug_symbols`).
+pub const CompileOptions = codegen_mod.Options;
+/// Re-export: walk a `CheckedProgram` through codegen to a `.gx`
+/// image.
+pub const compile = codegen_mod.compile;
