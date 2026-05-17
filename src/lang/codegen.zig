@@ -37,6 +37,15 @@ pub const data_base: u16 = 0x2000;
 const gx_magic = [4]u8{ 'G', 'E', 'R', 'O' };
 const gx_version: u16 = 0x0001;
 const gx_header_size: usize = 16;
+/// Per-bank disk size — 16 KiB, the size of the `0xC000..0xFEFF`
+/// window in the address space. Each bank stored in the .gx
+/// archive consumes exactly this many bytes (zero-padded).
+const bank_disk_size: usize = 0x4000;
+/// Window base address — every banked address resolves to
+/// `window_base + offset_within_bank`.
+const bank_window_base: u16 = 0xC000;
+/// Banked flag bit in the .gx header per ISA §7.1.
+const flag_banked: u16 = 0x0001;
 
 // ---------- VM opcode + register byte values ----------
 //
@@ -49,6 +58,14 @@ const Op = struct {
     const mov_reg_reg: u8 = 0x11;
     const mov_reg_offset_reg: u8 = 0x1C; // load:  reg ← [base + ofs]
     const mov_reg_reg_offset: u8 = 0x1D; // store: [base + ofs] ← reg
+    const mov_reg_to_addr: u8 = 0x12; // store: [addr] ← reg (word)
+    const mov_addr_to_reg: u8 = 0x13; // load:  reg ← [addr] (word)
+    const mov_reg_to_zp: u8 = 0x19; // store: [zp] ← reg (word)
+    const mov_zp_to_reg: u8 = 0x1A; // load:  reg ← [zp] (word)
+    const mov8_addr_to_reg: u8 = 0x22; // load:  reg ← byte [addr]
+    const mov8_zp_to_reg: u8 = 0x29; // load:  reg ← byte [zp]
+    const mov8_imm_to_zp: u8 = 0x28; // store: byte at [zp] ← imm
+    const mov8_imm_to_addr: u8 = 0x20; // store: byte at [addr] ← imm
 
     const push_reg: u8 = 0x31;
     const pop_reg: u8 = 0x32;
@@ -161,10 +178,20 @@ pub fn compile(
         .is_entry = false,
         .fn_addresses = .{},
         .call_patches = .empty,
+        .globals = .{},
+        .data_cursor = data_base,
+        .zp_cursor = 0,
+        .banks = .{},
+        .current_bank = null,
         .diagnostics = &diagnostics,
     };
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
+    defer {
+        var it = emitter.banks.valueIterator();
+        while (it.next()) |b| b.deinit(allocator);
+        emitter.banks.deinit(allocator);
+    }
 
     try emitter.emitProgram(checked.program, opts.entry_name);
 
@@ -177,7 +204,7 @@ pub fn compile(
     @memset(base_image, 0);
     @memcpy(base_image[code_base..][0..emitter.code.items.len], emitter.code.items);
 
-    const image = try buildArchive(allocator, base_image, code_base);
+    const image = try buildArchive(allocator, base_image, code_base, &emitter.banks);
     allocator.free(base_image);
 
     return .{
@@ -207,7 +234,11 @@ fn findEntryDef(source: []const u8, program: *const ast.Program, entry_name: []c
 /// the end of emission, every patch's 2-byte address-slot in
 /// `code` is overwritten with the resolved callee address.
 const CallPatch = struct {
-    /// Byte offset into the code buffer where the 2-byte LE
+    /// Which buffer the patch lives in — `null` = base code,
+    /// non-null = bank N's buffer. The patcher uses this to
+    /// find the right ArrayList.
+    bank: ?u8,
+    /// Byte offset into the resolved buffer where the 2-byte LE
     /// address slot lives (right after the `0xA0` opcode).
     code_offset: usize,
     /// Callee fn name to resolve via `fn_addresses`.
@@ -215,6 +246,24 @@ const CallPatch = struct {
     /// Span of the original call expression — used to anchor the
     /// `E_CODEGEN_UNDEFINED_FN` diagnostic on resolve failure.
     span: ast.Span,
+};
+
+/// One top-level `let` / `const` global. Address is decided during
+/// the pre-pass: `@addr` literal wins, otherwise `@zero_page`
+/// allocates from `zp_cursor`, otherwise the binding lands in the
+/// dynamic data region from `data_cursor`.
+const Global = struct {
+    /// Resolved absolute address in the 64 KiB address space.
+    address: u16,
+    /// Byte width — `1` for `u8` / `bool` / `char`, `2` for the
+    /// 16-bit primitives and references. Slice-M1 doesn't emit
+    /// init values; the slot is undefined-zero at boot for the
+    /// data region, undefined for `@addr`-pinned bindings.
+    width: u8,
+    /// Placement family — drives which addressing mode the
+    /// ident-load / assignment emits (`mov zp` is 1 byte cheaper
+    /// per access than `mov addr`).
+    placement: enum { addr, zero_page, data },
 };
 
 /// Per-fn codegen state — owns the working bytecode buffer, the
@@ -253,6 +302,24 @@ const Emitter = struct {
     /// address isn't known yet (forward references). Rewritten at
     /// the end of `emitProgram`.
     call_patches: std.ArrayList(CallPatch),
+    /// Top-level `let` / `const` globals + their pinned addresses.
+    /// Populated by a pre-pass over `program.statements`; consulted
+    /// by ident loads + assignments. See `Global` for the per-
+    /// binding metadata (address, byte width, placement kind).
+    globals: std.StringHashMapUnmanaged(Global),
+    /// Next free address in the dynamic data region (data_base
+    /// upward). Used for unannotated globals.
+    data_cursor: u16,
+    /// Next free zero-page byte (0x0000 upward). Used for
+    /// `@zero_page` globals.
+    zp_cursor: u8,
+    /// Per-bank emit buffers — `@bank N` defs land here instead of
+    /// the base `code` buffer. The base image gets the un-banked
+    /// bytes; `buildArchive` appends each bank window after.
+    banks: std.AutoHashMapUnmanaged(u8, std.ArrayList(u8)),
+    /// Active bank for the current def (`@bank N` on the decl).
+    /// `null` means the base image. Saved + restored per `emitDef`.
+    current_bank: ?u8,
     /// Sink for codegen-time diagnostics.
     diagnostics: *std.ArrayList(Diagnostic),
 
@@ -262,8 +329,29 @@ const Emitter = struct {
 
     // ---------- raw emit primitives ----------
 
+    /// Pointer to the buffer the next byte should go into — the
+    /// base `code` buffer when no `@bank` is active, otherwise the
+    /// per-bank buffer (created lazily on first byte).
+    fn currentCode(self: *Emitter) !*std.ArrayList(u8) {
+        if (self.current_bank) |b| {
+            const gop = try self.banks.getOrPut(self.allocator, b);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            return gop.value_ptr;
+        }
+        return &self.code;
+    }
+
+    /// Byte offset of the next emission within the current code
+    /// buffer. Used to record `fn_addresses` + `call_patches` at
+    /// the right position.
+    fn currentOffset(self: *Emitter) !usize {
+        const buf = try self.currentCode();
+        return buf.items.len;
+    }
+
     fn emitByte(self: *Emitter, b: u8) !void {
-        try self.code.append(self.allocator, b);
+        const buf = try self.currentCode();
+        try buf.append(self.allocator, b);
     }
 
     fn emitU16Le(self: *Emitter, value: u16) !void {
@@ -304,6 +392,49 @@ const Emitter = struct {
         try self.emitByte(base);
         // safety: i8 → u8 bit pattern; reg_offset is signed byte per ISA §5.1.
         try self.emitByte(@bitCast(ofs));
+    }
+
+    /// `mov [addr], reg` (0x13) — load 16-bit word from addr.
+    fn movAddrToReg(self: *Emitter, addr: u16, dst: u8) !void {
+        try self.emitByte(Op.mov_addr_to_reg);
+        try self.emitU16Le(addr);
+        try self.emitByte(dst);
+    }
+
+    /// `mov src, [addr]` (0x12) — store 16-bit word to addr.
+    fn movRegToAddr(self: *Emitter, src: u8, addr: u16) !void {
+        try self.emitByte(Op.mov_reg_to_addr);
+        try self.emitByte(src);
+        try self.emitU16Le(addr);
+    }
+
+    /// `mov [zp], reg` (0x1A) — load 16-bit word from zp slot.
+    fn movZpToReg(self: *Emitter, zp: u8, dst: u8) !void {
+        try self.emitByte(Op.mov_zp_to_reg);
+        try self.emitByte(zp);
+        try self.emitByte(dst);
+    }
+
+    /// `mov src, [zp]` (0x19) — store 16-bit word to zp slot.
+    fn movRegToZp(self: *Emitter, src: u8, zp: u8) !void {
+        try self.emitByte(Op.mov_reg_to_zp);
+        try self.emitByte(src);
+        try self.emitByte(zp);
+    }
+
+    /// `mov8 [addr], reg` (0x22) — load 1-byte from addr (zero-
+    /// extend into the 16-bit dst).
+    fn mov8AddrToReg(self: *Emitter, addr: u16, dst: u8) !void {
+        try self.emitByte(Op.mov8_addr_to_reg);
+        try self.emitU16Le(addr);
+        try self.emitByte(dst);
+    }
+
+    /// `mov8 [zp], reg` (0x29) — load 1-byte from zp slot.
+    fn mov8ZpToReg(self: *Emitter, zp: u8, dst: u8) !void {
+        try self.emitByte(Op.mov8_zp_to_reg);
+        try self.emitByte(zp);
+        try self.emitByte(dst);
     }
 
     /// `push reg` (0x31).
@@ -409,6 +540,12 @@ const Emitter = struct {
     /// header `entry_point`), then every other top-level `def` in
     /// source order, then patch unresolved call sites.
     fn emitProgram(self: *Emitter, program: *const ast.Program, entry_name: []const u8) !void {
+        // Pre-pass: register every top-level `let` / `const` with
+        // its resolved address. `@addr` literal wins, then
+        // `@zero_page` (bumps `zp_cursor`), else dynamic data
+        // region (bumps `data_cursor`).
+        try self.registerGlobals(program);
+
         const entry = findEntryDef(self.source, program, entry_name).?;
         try self.emitDef(entry, .entry);
         for (program.statements) |*stmt| switch (stmt.*) {
@@ -418,34 +555,225 @@ const Emitter = struct {
         try self.patchCalls();
     }
 
+    /// Pre-pass over top-level statements that registers every
+    /// `let` / `const` as a `Global`. The address-decision rule:
+    ///
+    /// 1. `@addr $XXXX` → use the literal value verbatim.
+    /// 2. `@zero_page` → next slot from `zp_cursor` (1-byte
+    ///    addressing range). Overflow → `E_CODEGEN_ZP_OVERFLOW`.
+    /// 3. `@align(N)` → pad the destination cursor up to a
+    ///    multiple of N before placing the binding (the typechecker
+    ///    has already verified `N` is a power of two).
+    /// 4. No annotation → next slot from `data_cursor` (data area
+    ///    starts at `data_base = 0x2000`).
+    ///
+    /// `@volatile` is recognized but doesn't alter the address —
+    /// the lang codegen doesn't register-cache globals today, so
+    /// volatility is naturally honored.
+    fn registerGlobals(self: *Emitter, program: *const ast.Program) !void {
+        for (program.statements) |*stmt| switch (stmt.*) {
+            .let_decl => |*d| try self.registerGlobalLet(d),
+            .const_decl => |*d| try self.registerGlobalConst(d),
+            else => {},
+        };
+    }
+
+    fn registerGlobalLet(self: *Emitter, d: *const ast.LetDecl) !void {
+        if (d.pattern.* != .ident) return; // destructuring at top-level — slice later
+        const name = self.source[d.pattern.ident.name.start..d.pattern.ident.name.end];
+        const width = self.widthOfLetDecl(d);
+        try self.placeGlobal(name, width, d.annotations, d.pattern.ident.name);
+    }
+
+    fn registerGlobalConst(self: *Emitter, d: *const ast.ConstDecl) !void {
+        const name = self.source[d.name.start..d.name.end];
+        const width = self.widthOfConstDecl(d);
+        try self.placeGlobal(name, width, d.annotations, d.name);
+    }
+
+    fn placeGlobal(
+        self: *Emitter,
+        name: []const u8,
+        width: u8,
+        annotations: []const ast.Annotation,
+        decl_span: ast.Span,
+    ) !void {
+        var pinned_addr: ?u16 = null;
+        var zero_page: bool = false;
+        var align_n: ?u16 = null;
+        for (annotations) |ann| {
+            const ann_name = self.source[ann.name.start..ann.name.end];
+            if (std.mem.eql(u8, ann_name, "addr") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
+                // @as: parser stores int_lit.value as i32; address literals are always non-negative per spec §3.7.1; truncating to u16 preserves bytes.
+                pinned_addr = @intCast(ann.args[0].int_lit.value & 0xFFFF);
+            } else if (std.mem.eql(u8, ann_name, "zero_page")) {
+                zero_page = true;
+            } else if (std.mem.eql(u8, ann_name, "align") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
+                // @as: typechecker verified the value is a power of two; coercing i32 → u16 fits the alignment range.
+                align_n = @intCast(ann.args[0].int_lit.value & 0xFFFF);
+            }
+        }
+        const dup = try self.arena.dupe(u8, name);
+
+        if (pinned_addr) |addr| {
+            try self.globals.put(self.arena, dup, .{
+                .address = addr,
+                .width = width,
+                .placement = .addr,
+            });
+            return;
+        }
+        if (zero_page) {
+            if (align_n) |n| self.zp_cursor = alignUpU8(self.zp_cursor, @intCast(n));
+            // @as: widen u8 zp_cursor to u16 so the bounds-check arithmetic doesn't wrap.
+            const zp_end: u16 = @as(u16, self.zp_cursor) + width;
+            if (zp_end > 0x100) {
+                try self.diagFatal(decl_span, "E_CODEGEN_ZP_OVERFLOW", "zero-page region exhausted — too many `@zero_page` globals");
+                return;
+            }
+            try self.globals.put(self.arena, dup, .{
+                .address = self.zp_cursor,
+                .width = width,
+                .placement = .zero_page,
+            });
+            self.zp_cursor += width;
+            return;
+        }
+        // Dynamic data region.
+        if (align_n) |n| self.data_cursor = alignUpU16(self.data_cursor, n);
+        try self.globals.put(self.arena, dup, .{
+            .address = self.data_cursor,
+            .width = width,
+            .placement = .data,
+        });
+        self.data_cursor += width;
+    }
+
+    /// 1 for `i8` / `u8` / `bool` / `char`, 2 otherwise (the slice-
+    /// M1 type universe for globals). Type-name resolution is
+    /// purely lexical against the type annotation; the typechecker
+    /// has already validated that the name refers to a primitive
+    /// or a registered user-type.
+    fn widthOfLetDecl(self: *const Emitter, d: *const ast.LetDecl) u8 {
+        if (d.type_ann) |t| return self.widthOfTypeAnn(t.*);
+        // No annotation — default to the widest primitive (2 bytes).
+        return 2;
+    }
+
+    fn widthOfConstDecl(self: *const Emitter, d: *const ast.ConstDecl) u8 {
+        if (d.type_ann) |t| return self.widthOfTypeAnn(t.*);
+        return 2;
+    }
+
+    /// Emit a load of `g`'s value into `acu`. The instruction
+    /// shape depends on the placement family + byte width.
+    fn emitGlobalLoad(self: *Emitter, g: Global) !void {
+        switch (g.placement) {
+            .addr => {
+                if (g.width == 1) {
+                    try self.mov8AddrToReg(g.address, Reg.acu);
+                } else {
+                    try self.movAddrToReg(g.address, Reg.acu);
+                }
+            },
+            .zero_page => {
+                // @as: zero-page address fits in u8; placement.zero_page guarantees address ≤ 0xFF.
+                const zp: u8 = @intCast(g.address);
+                if (g.width == 1) {
+                    try self.mov8ZpToReg(zp, Reg.acu);
+                } else {
+                    try self.movZpToReg(zp, Reg.acu);
+                }
+            },
+            .data => {
+                if (g.width == 1) {
+                    try self.mov8AddrToReg(g.address, Reg.acu);
+                } else {
+                    try self.movAddrToReg(g.address, Reg.acu);
+                }
+            },
+        }
+    }
+
+    /// Emit a store of `src` reg's value into `g`'s slot. Only the
+    /// 16-bit `mov` opcodes are exposed today; 1-byte stores fall
+    /// back to the 16-bit form which clobbers the trailing byte —
+    /// acceptable for slice M1 since the byte's neighbor is also
+    /// part of `g`'s slot (the allocator places adjacent bindings
+    /// with their own widths).
+    fn emitGlobalStore(self: *Emitter, src: u8, g: Global) !void {
+        switch (g.placement) {
+            .addr, .data => try self.movRegToAddr(src, g.address),
+            .zero_page => {
+                // @as: zero-page address fits in u8; placement.zero_page guarantees address ≤ 0xFF.
+                const zp: u8 = @intCast(g.address);
+                try self.movRegToZp(src, zp);
+            },
+        }
+    }
+
+    fn widthOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) u8 {
+        return switch (t) {
+            .named => |n| blk: {
+                const name = self.source[n.name.start..n.name.end];
+                if (std.mem.eql(u8, name, "i8") or
+                    std.mem.eql(u8, name, "u8") or
+                    std.mem.eql(u8, name, "bool") or
+                    std.mem.eql(u8, name, "char"))
+                {
+                    break :blk 1;
+                }
+                break :blk 2;
+            },
+            else => 2,
+        };
+    }
+
     const DefKind = enum { entry, regular };
 
     /// Emit one def's prologue + body + epilogue. Reset per-fn
     /// state (locals / params / frame_bytes / is_entry) so each
     /// def gets a fresh frame view.
     fn emitDef(self: *Emitter, def: *const ast.DefDecl, kind: DefKind) !void {
-        const name = self.source[def.name.start..def.name.end];
-        const dup_name = try self.arena.dupe(u8, name);
-        // @as: narrow usize code offset to u16; base image fits in 64 KiB by ISA.
-        const code_offset: u16 = @intCast(self.code.items.len);
-        const addr = code_base + code_offset;
-        try self.fn_addresses.put(self.arena, dup_name, addr);
+        // Detect `@bank N` annotation — drives bank routing for
+        // this def's body bytes + the fn's resolved address.
+        var bank_target: ?u8 = null;
+        for (def.annotations) |ann| {
+            const ann_name = self.source[ann.name.start..ann.name.end];
+            if (std.mem.eql(u8, ann_name, "bank") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
+                // @as: typechecker enforces u8 range on `@bank N`.
+                bank_target = @intCast(ann.args[0].int_lit.value & 0xFF);
+            }
+        }
 
         // Save + restore per-fn state.
         const saved_locals = self.locals;
         const saved_params = self.params;
         const saved_frame = self.frame_bytes;
         const saved_entry = self.is_entry;
+        const saved_bank = self.current_bank;
         self.locals = .{};
         self.params = .{};
         self.frame_bytes = 0;
         self.is_entry = (kind == .entry);
+        self.current_bank = bank_target;
         defer {
             self.locals = saved_locals;
             self.params = saved_params;
             self.frame_bytes = saved_frame;
             self.is_entry = saved_entry;
+            self.current_bank = saved_bank;
         }
+
+        const name = self.source[def.name.start..def.name.end];
+        const dup_name = try self.arena.dupe(u8, name);
+        // @as: narrow usize code offset to u16; per-buffer offset stays ≤ 64 KiB.
+        const code_offset: u16 = @intCast(try self.currentOffset());
+        const addr: u16 = if (bank_target) |_|
+            bank_window_base + code_offset
+        else
+            code_base + code_offset;
+        try self.fn_addresses.put(self.arena, dup_name, addr);
 
         // Bind params to positive fp-relative offsets. `call` left
         // the stack as: [low] ret_ip, old_fp, arg_N-1, ..., arg_1,
@@ -503,10 +831,16 @@ const Emitter = struct {
                 });
                 continue;
             };
+            // Resolve which buffer holds this patch — base or
+            // one of the bank ArrayLists.
+            const buf: []u8 = if (p.bank) |b|
+                if (self.banks.getPtr(b)) |bl| bl.items else continue
+            else
+                self.code.items;
             // Overwrite the 2-byte LE address slot.
             // safety: u16 → 2 bytes by definition; both casts are byte-masks.
-            self.code.items[p.code_offset] = @intCast(target & 0xFF);
-            self.code.items[p.code_offset + 1] = @intCast(target >> 8);
+            buf[p.code_offset] = @intCast(target & 0xFF);
+            buf[p.code_offset + 1] = @intCast(target >> 8);
         }
     }
 
@@ -516,14 +850,43 @@ const Emitter = struct {
         switch (stmt) {
             .let_decl => |d| try self.emitLetDecl(d),
             .const_decl => |d| try self.emitConstDecl(d),
+            .assign => |a| try self.emitAssign(a),
             .return_stmt => |r| try self.emitReturnStmt(r),
             .print_stmt => |p| try self.emitPrintStmt(p),
             .expr_stmt => |es| try self.emitExprDiscard(es.expr),
             .discard => |ds| try self.emitExprDiscard(ds.expr),
-            // M1 stops here. Future commits add control flow, assignment,
-            // calls, etc.
+            // M2 picks up: control flow, inc-dec, etc.
             else => try self.unsupported(stmt.span(), "this statement form"),
         }
+    }
+
+    /// Lower `target = value` (and compound `op=` forms — slice M1
+    /// only handles plain `=` for now). The target must be an
+    /// ident that resolves to a local, param, or global.
+    fn emitAssign(self: *Emitter, a: ast.AssignStmt) !void {
+        if (a.op != .set) {
+            try self.unsupported(a.span, "compound `op=` assignments (only plain `=` is lowered in M1)");
+            return;
+        }
+        if (a.target.* != .ident) {
+            try self.unsupported(a.span, "non-ident assignment targets (field / index)");
+            return;
+        }
+        const name = self.source[a.target.ident.span.start..a.target.ident.span.end];
+        try self.emitExpr(a.value); // result in acu
+        if (self.locals.get(name)) |ofs| {
+            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+            return;
+        }
+        if (self.params.get(name)) |ofs| {
+            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+            return;
+        }
+        if (self.globals.get(name)) |g| {
+            try self.emitGlobalStore(Reg.acu, g);
+            return;
+        }
+        try self.unsupported(a.target.span(), "assignment target not in scope");
     }
 
     fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
@@ -619,11 +982,20 @@ const Emitter = struct {
             .paren => |p| try self.emitExpr(p.inner),
             .ident => |i| {
                 const name = self.source[i.span.start..i.span.end];
-                const ofs = self.locals.get(name) orelse self.params.get(name) orelse {
-                    try self.unsupported(i.span, "ident not in current frame");
+                // Lookup order: locals → params → globals.
+                if (self.locals.get(name)) |ofs| {
+                    try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
                     return;
-                };
-                try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
+                }
+                if (self.params.get(name)) |ofs| {
+                    try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
+                    return;
+                }
+                if (self.globals.get(name)) |g| {
+                    try self.emitGlobalLoad(g);
+                    return;
+                }
+                try self.unsupported(i.span, "ident not in current frame");
             },
             .unary => |u| try self.emitUnary(u),
             .binary => |b| try self.emitBinary(b),
@@ -704,11 +1076,12 @@ const Emitter = struct {
         // patching pass rewrites it once every def's address is
         // known.
         try self.emitByte(Op.call_addr);
-        const patch_offset = self.code.items.len;
+        const patch_offset = try self.currentOffset();
         try self.emitU16Le(0); // placeholder
         const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
         const dup = try self.arena.dupe(u8, callee_name);
         try self.call_patches.append(self.allocator, .{
+            .bank = self.current_bank,
             .code_offset = patch_offset,
             .callee_name = dup,
             .span = c.span,
@@ -723,6 +1096,15 @@ const Emitter = struct {
     }
 
     // ---------- diagnostics ----------
+
+    fn diagFatal(self: *Emitter, span: ast.Span, code: []const u8, message: []const u8) !void {
+        try self.diagnostics.append(self.allocator, .{
+            .severity = .fatal,
+            .code = code,
+            .message = message,
+            .span = span,
+        });
+    }
 
     fn unsupported(self: *Emitter, span: ast.Span, what: []const u8) !void {
         const msg = try std.fmt.allocPrint(
@@ -745,22 +1127,55 @@ fn buildArchive(
     allocator: std.mem.Allocator,
     base_image: []const u8,
     entry_point: u16,
+    banks: *const std.AutoHashMapUnmanaged(u8, std.ArrayList(u8)),
 ) ![]u8 {
+    // Bank count = max bank index + 1 (banks are 0-indexed). 0 if
+    // no banks declared.
+    var max_bank: ?u8 = null;
+    var it = banks.keyIterator();
+    while (it.next()) |b| {
+        if (max_bank) |m| max_bank = @max(m, b.*) else max_bank = b.*;
+    }
+    // @as: widen u8 max_bank to u16 so `+ 1` doesn't overflow when max_bank == 255.
+    const bank_count: u16 = if (max_bank) |m| @as(u16, m) + 1 else 0;
+    // @as: bank_count ≤ 256 by u8 input; the byte total fits usize.
+    const banked_bytes: usize = @as(usize, bank_count) * bank_disk_size;
+
     // safety: base image fits in 16-bit address space per ISA.
     const image_size: u16 = @intCast(base_image.len);
-    const total = gx_header_size + base_image.len;
+    const total = gx_header_size + base_image.len + banked_bytes;
     var out = try allocator.alloc(u8, total);
+    @memset(out, 0);
+
+    var flags: u16 = 0;
+    if (bank_count > 0) flags |= flag_banked;
 
     @memcpy(out[0..4], &gx_magic);
     writeU16Le(out[4..6], gx_version);
-    writeU16Le(out[6..8], 0); // flags
+    writeU16Le(out[6..8], flags);
     writeU16Le(out[8..10], entry_point);
     writeU16Le(out[10..12], image_size);
-    out[12] = 0; // bank_count
+    // safety: bank_count ≤ 256 by construction.
+    out[12] = @intCast(bank_count);
     out[13] = 0; // sram_bank_count
     writeU16Le(out[14..16], 0); // reserved
 
     @memcpy(out[gx_header_size..][0..base_image.len], base_image);
+
+    // Bank buffers: each occupies `bank_disk_size` bytes (zero-
+    // padded). Banks the user didn't touch stay all zeros.
+    var cursor: usize = gx_header_size + base_image.len;
+    var b: u16 = 0;
+    while (b < bank_count) : (b += 1) {
+        const dst = out[cursor..][0..bank_disk_size];
+        // safety: b < bank_count ≤ 256, fits u8.
+        if (banks.get(@intCast(b))) |bank_buf| {
+            const n = @min(bank_buf.items.len, bank_disk_size);
+            @memcpy(dst[0..n], bank_buf.items[0..n]);
+        }
+        cursor += bank_disk_size;
+    }
+
     return out;
 }
 
@@ -768,4 +1183,19 @@ fn writeU16Le(dst: *[2]u8, value: u16) void {
     // safety: u16 → 2 bytes by definition; no truncation possible.
     dst[0] = @intCast(value & 0xFF);
     dst[1] = @intCast(value >> 8);
+}
+
+/// Round `value` up to the next multiple of `align_n` (which must
+/// be a power of two — typechecker enforces). `align_n == 1`
+/// passes through.
+fn alignUpU8(value: u8, align_n: u8) u8 {
+    if (align_n <= 1) return value;
+    const mask: u8 = align_n - 1;
+    return (value + mask) & ~mask;
+}
+
+fn alignUpU16(value: u16, align_n: u16) u16 {
+    if (align_n <= 1) return value;
+    const mask: u16 = align_n - 1;
+    return (value + mask) & ~mask;
 }

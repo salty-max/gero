@@ -395,6 +395,209 @@ test "codegen: nested call (twice(twice(2)) = 8)" {
     try std.testing.expectEqualStrings("8\n", writer.written());
 }
 
+// ---------- memory placement annotations (#261) ----------
+
+test "codegen: @addr global is read from the pinned address" {
+    var compiled = try compileSource(
+        \\@addr $FE40
+        \\let DISPCTL: u8 = 0
+        \\
+        \\def main()
+        \\  let x: u8 = DISPCTL
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+
+    // Pre-load a byte at $FE40 so the read picks it up.
+    var vm = gero.vm.VM.init(alloc);
+    defer vm.deinit();
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try vm.boot(alloc, loaded);
+    vm.host = .{ .out = &writer.writer };
+    vm.mmap.writeByte(0xFE40, 0x55);
+
+    _ = gero.vm.run(&vm);
+
+    // x's local slot = mem[fp-2] = mem[0xFFFC]; should hold 0x55.
+    try std.testing.expectEqual(@as(u16, 0x55), vm.mmap.readWord(0xFFFC));
+}
+
+test "codegen: @addr global accepts assignment (MMIO write)" {
+    var compiled = try compileSource(
+        \\@addr $FE40
+        \\let DISPCTL: u8 = 0
+        \\
+        \\def main()
+        \\  DISPCTL = 42
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // The store landed at $FE40.
+    try std.testing.expectEqual(@as(u16, 42), vm.mmap.readWord(0xFE40));
+}
+
+test "codegen: @volatile is accepted without altering codegen" {
+    // Slice M1 doesn't register-cache, so @volatile is structural
+    // recognition only; the test verifies it doesn't trigger
+    // unsupported-feature diagnostics.
+    var compiled = try compileSource(
+        \\@addr $FE40
+        \\@volatile
+        \\let DISPCTL: u8 = 0
+        \\
+        \\def main()
+        \\  DISPCTL = 1
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+}
+
+test "codegen: @zero_page allocates from byte 0 upward" {
+    var compiled = try compileSource(
+        \\@zero_page
+        \\let cursor: u16 = 0
+        \\
+        \\@zero_page
+        \\let next_cursor: u16 = 0
+        \\
+        \\def main()
+        \\  cursor = $1234
+        \\  next_cursor = $5678
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // cursor at $00, next_cursor at $02 (2 bytes each).
+    try std.testing.expectEqual(@as(u16, 0x1234), vm.mmap.readWord(0x0000));
+    try std.testing.expectEqual(@as(u16, 0x5678), vm.mmap.readWord(0x0002));
+}
+
+test "codegen: globals in data region land at data_base upward" {
+    var compiled = try compileSource(
+        \\let a: i16 = 0
+        \\let b: i16 = 0
+        \\
+        \\def main()
+        \\  a = 100
+        \\  b = 200
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqual(@as(u16, 100), vm.mmap.readWord(0x2000));
+    try std.testing.expectEqual(@as(u16, 200), vm.mmap.readWord(0x2002));
+}
+
+test "codegen: @align(16) pads global placement to a 16-byte boundary" {
+    var compiled = try compileSource(
+        \\let pad: i16 = 0
+        \\
+        \\@align(16)
+        \\let aligned: i16 = 0
+        \\
+        \\def main()
+        \\  pad = 1
+        \\  aligned = 2
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // pad at $2000 (unaligned start). aligned must round UP from
+    // $2002 to the next 16-byte boundary = $2010.
+    try std.testing.expectEqual(@as(u16, 1), vm.mmap.readWord(0x2000));
+    try std.testing.expectEqual(@as(u16, 2), vm.mmap.readWord(0x2010));
+}
+
+test "codegen: read-modify-write through @addr binding" {
+    var compiled = try compileSource(
+        \\@addr $FE40
+        \\let counter: i16 = 0
+        \\
+        \\def main()
+        \\  counter = counter + 1
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+
+    var vm = gero.vm.VM.init(alloc);
+    defer vm.deinit();
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try vm.boot(alloc, loaded);
+    vm.host = .{ .out = &writer.writer };
+    vm.mmap.writeWord(0xFE40, 41);
+
+    _ = gero.vm.run(&vm);
+    try std.testing.expectEqual(@as(u16, 42), vm.mmap.readWord(0xFE40));
+}
+
+test "codegen: @bank N routes a def's bytecode into bank N's buffer" {
+    var compiled = try compileSource(
+        \\@bank 2
+        \\def town() -> i16
+        \\  return 42
+        \\end
+        \\
+        \\def main()
+        \\  print 0
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    // .gx header should declare bank_count = 3 (banks 0, 1, 2).
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try std.testing.expectEqual(@as(u8, 3), loaded.header.bank_count);
+    try std.testing.expect(loaded.header.isBanked());
+
+    // Banks 0 + 1 are empty zero-padded windows; bank 2 carries
+    // `town`'s bytecode. The first byte of bank 2 should be a
+    // `mov imm16, acu` (0x10) emitting the `42` literal.
+    const bank2 = loaded.banks[2 * 0x4000 ..][0..0x4000];
+    try std.testing.expectEqual(@as(u8, 0x10), bank2[0]); // mov imm16, reg
+    try std.testing.expectEqual(@as(u8, 42), bank2[1]); // low byte
+    try std.testing.expectEqual(@as(u8, 0), bank2[2]); // high byte
+}
+
 test "codegen: custom entry_name resolves" {
     const source = "def boot() end";
     var stream = try gero.lang.tokenize(alloc, source);
