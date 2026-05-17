@@ -1227,6 +1227,86 @@ test "typecheck: multi-return bail propagates non-nil to sibling slot" {
     );
 }
 
+// ---------- @no_capture enforcement (§3.7.2) ----------
+
+test "typecheck: @no_capture rejects closure that mutates captured binding" {
+    try expectCode(
+        \\@no_capture
+        \\def f()
+        \\  let n: i16 = 0
+        \\  let inc = lambda ()
+        \\    n = n + 1
+        \\  end
+        \\end
+    , "E_ANN_CAPTURE_VIOLATION");
+}
+
+test "typecheck: @no_capture accepts closure with read-only capture" {
+    try expectClean(
+        \\@no_capture
+        \\def f()
+        \\  let n: i16 = 0
+        \\  let read = || n
+        \\end
+    );
+}
+
+test "typecheck: @no_capture accepts closure with no capture at all" {
+    try expectClean(
+        \\@no_capture
+        \\def f()
+        \\  let g = || 42
+        \\end
+    );
+}
+
+test "typecheck: @no_capture rejects compound op= on captured binding" {
+    try expectCode(
+        \\@no_capture
+        \\def f()
+        \\  let n: i16 = 0
+        \\  let bump = lambda ()
+        \\    n += 1
+        \\  end
+        \\end
+    , "E_ANN_CAPTURE_VIOLATION");
+}
+
+test "typecheck: @no_capture rejects `++` on captured binding" {
+    try expectCode(
+        \\@no_capture
+        \\def f()
+        \\  let n: i16 = 0
+        \\  let tick = lambda ()
+        \\    n++
+        \\  end
+        \\end
+    , "E_ANN_CAPTURE_VIOLATION");
+}
+
+test "typecheck: closure mutating its own local accepts" {
+    try expectClean(
+        \\@no_capture
+        \\def f()
+        \\  let g = lambda ()
+        \\    let inner: i16 = 0
+        \\    inner = inner + 1
+        \\  end
+        \\end
+    );
+}
+
+test "typecheck: without @no_capture, mutating capture compiles" {
+    try expectClean(
+        \\def f()
+        \\  let n: i16 = 0
+        \\  let inc = lambda ()
+        \\    n = n + 1
+        \\  end
+        \\end
+    );
+}
+
 // ---------- char literal typing ----------
 
 test "typecheck: char literal infers as `char` primitive" {
