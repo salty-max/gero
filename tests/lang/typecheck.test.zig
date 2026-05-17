@@ -1248,6 +1248,201 @@ test "typecheck: char ↔ u8 explicit cast accepts" {
     );
 }
 
+// ---------- slice 7: annotation validation (§3.7) ----------
+
+test "typecheck: unknown annotation errors with E_ANN_UNKNOWN" {
+    try expectCode(
+        \\@bogus
+        \\let x: i16 = 0
+    , "E_ANN_UNKNOWN");
+}
+
+test "typecheck: @inline on a let errors with E_ANN_BAD_TARGET" {
+    try expectCode(
+        \\@inline
+        \\let x: i16 = 0
+    , "E_ANN_BAD_TARGET");
+}
+
+test "typecheck: @addr on a def errors with E_ANN_BAD_TARGET" {
+    try expectCode(
+        \\@addr $FE40
+        \\def f() end
+    , "E_ANN_BAD_TARGET");
+}
+
+test "typecheck: @bank with non-int arg errors with E_ANN_BAD_ARG" {
+    try expectCode(
+        \\@bank "five"
+        \\def f() end
+    , "E_ANN_BAD_ARG");
+}
+
+test "typecheck: @align(3) (non-power-of-two) errors with E_ANN_BAD_ARG" {
+    try expectCode(
+        \\@align(3)
+        \\let x: i16 = 0
+    , "E_ANN_BAD_ARG");
+}
+
+test "typecheck: @align(16) accepts (power of two)" {
+    try expectClean(
+        \\@align(16)
+        \\let x: i16 = 0
+    );
+}
+
+test "typecheck: @final + @override on same decl errors with E_ANN_CONFLICT" {
+    try expectCode(
+        \\class Parent
+        \\  def foo(self) end
+        \\end
+        \\
+        \\class Child extends Parent
+        \\  @final
+        \\  @override
+        \\  def foo(self) end
+        \\end
+    , "E_ANN_CONFLICT");
+}
+
+test "typecheck: @bank 5 on def accepts" {
+    try expectClean(
+        \\@bank 5
+        \\def town_intro() -> str
+        \\  return "Welcome"
+        \\end
+    );
+}
+
+test "typecheck: @addr + @volatile on let accepts" {
+    try expectClean(
+        \\@addr $FE40
+        \\@volatile
+        \\let DISPCTL: u8 = 0
+    );
+}
+
+test "typecheck: @inline with arg errors with E_ANN_BAD_ARG" {
+    try expectCode(
+        \\@inline 5
+        \\def f() end
+    , "E_ANN_BAD_ARG");
+}
+
+test "typecheck: @inline + @cold on same def accepts (functionally redundant, not conflicting per spec)" {
+    try expectClean(
+        \\@inline
+        \\@cold
+        \\def f() end
+    );
+}
+
+// ---------- slice 7: bake validation (§3.8) ----------
+
+test "typecheck: simple bake def accepts" {
+    try expectClean(
+        \\bake def make() -> i16
+        \\  return 42
+        \\end
+    );
+}
+
+test "typecheck: bake def returning Vec errors with E_BAKE_NON_BAKEABLE_VALUE" {
+    try expectCode(
+        \\bake def make() -> Vec(i16)
+        \\  return nil
+        \\end
+    , "E_BAKE_NON_BAKEABLE_VALUE");
+}
+
+test "typecheck: bake def with asm inside errors with E_BAKE_ASM_INSIDE" {
+    try expectCode(
+        \\bake def f() -> i16
+        \\  asm "noop"
+        \\  return 0
+        \\end
+    , "E_BAKE_ASM_INSIDE");
+}
+
+test "typecheck: bake def reading MMIO errors with E_BAKE_MMIO_ACCESS" {
+    try expectCode(
+        \\@addr $FE40
+        \\@volatile
+        \\let DISPCTL: u8 = 0
+        \\
+        \\bake def read_disp() -> u8
+        \\  return DISPCTL
+        \\end
+    , "E_BAKE_MMIO_ACCESS");
+}
+
+test "typecheck: bake def writing MMIO errors with E_BAKE_MMIO_ACCESS" {
+    try expectCode(
+        \\@addr $FE40
+        \\@volatile
+        \\let DISPCTL: u8 = 0
+        \\
+        \\bake def write_disp() -> u8
+        \\  DISPCTL = $42
+        \\  return 0
+        \\end
+    , "E_BAKE_MMIO_ACCESS");
+}
+
+test "typecheck: bake def calling non-bake fn errors with E_BAKE_FORBIDDEN_CALL" {
+    try expectCode(
+        \\def runtime_helper() -> i16
+        \\  return 5
+        \\end
+        \\
+        \\bake def make() -> i16
+        \\  return runtime_helper()
+        \\end
+    , "E_BAKE_FORBIDDEN_CALL");
+}
+
+test "typecheck: bake def calling another bake fn accepts" {
+    try expectClean(
+        \\bake def helper() -> i16
+        \\  return 5
+        \\end
+        \\
+        \\bake def make() -> i16
+        \\  return helper()
+        \\end
+    );
+}
+
+// ---------- slice 7: variadic call validation (§4.6.2) ----------
+
+test "typecheck: variadic call with homogeneous args accepts" {
+    try expectClean(
+        \\def log(args: ...)
+        \\end
+        \\
+        \\log(1, 2, 3)
+    );
+}
+
+test "typecheck: variadic call with mixed types errors with E_VAR_HETEROGENEOUS" {
+    try expectCode(
+        \\def log(args: ...)
+        \\end
+        \\
+        \\log(1, 2, "hi")
+    , "E_VAR_HETEROGENEOUS");
+}
+
+test "typecheck: variadic call with leading fixed param + homogeneous variadic accepts" {
+    try expectClean(
+        \\def log(label: str, vals: ...)
+        \\end
+        \\
+        \\log("nums", 1, 2, 3)
+    );
+}
+
 // ---------- CheckedProgram surface ----------
 
 test "typecheck: CheckedProgram retains program pointer" {
