@@ -49,9 +49,19 @@ as the implementation — never after.
 ## The contract
 
 **Workflow:** one issue → one branch → one PR → wait for explicit
-merge signal → next issue. Never batch issues. Never start the next
-one before the current is merged. PR diff past ~400 lines → stop
-and split.
+merge signal → next issue. Never batch multiple issues into a
+single PR. **Do not** split a single issue across multiple PRs
+either — one issue maps to exactly one end-to-end PR, no matter
+the diff size. Multi-concern changes within that PR split into
+multiple commits (see [Branches + commits + changesets](#branches--commits--changesets)),
+but the PR boundary matches the issue boundary.
+
+**Close the issue from the PR.** Every `feat` / `fix` / `perf` PR
+description ends with `Closes #N` (or `Advances #N` when a partial
+ship is honestly out of scope, with the deferred AC items listed
+explicitly). GitHub auto-closes on merge — verify post-merge that
+the issue actually closed and reflect any drift back to the
+maintainer.
 
 **Done means the acceptance criteria are met**, not green CI.
 Re-read the issue body before declaring the work finished.
@@ -412,7 +422,8 @@ on it locally, but `verify` green is required before pushing.
 - `docs/<short>` — docs-only change
 - `refactor/<short>` — internal restructure, no behavior change
 
-Branch from `main`. One issue → one branch → one PR.
+Branch from `main`. One issue → one branch → one PR end-to-end
+(no chunking; see [The contract](#the-contract)).
 
 **Commits:** Conventional Commits enforced by **convco** with a
 strict scope-enum from `.versionrc`.

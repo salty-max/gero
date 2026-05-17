@@ -2186,3 +2186,176 @@ test "codegen/class: three-level inheritance — Grandparent ← Parent ← Chil
 
     try std.testing.expectEqualStrings("G\n", writer.written());
 }
+
+// ---------- M3b: closures (#259) ----------
+
+test "codegen/closure: lambda with no captures returns a constant" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let f = || 42
+        \\  print f()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("42\n", writer.written());
+}
+
+test "codegen/closure: AC1 — read-only capture reads parent local" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let n: i16 = 7
+        \\  let read = || n
+        \\  print read()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("7\n", writer.written());
+}
+
+test "codegen/closure: AC2 — mutated capture lives on the heap, closure shares state" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let n: i16 = 0
+        \\  let inc = lambda ()
+        \\    n = n + 1
+        \\  end
+        \\  inc()
+        \\  inc()
+        \\  print n
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("2\n", writer.written());
+}
+
+test "codegen/closure: AC3 — two closures over the same binding see consistent state" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let n: i16 = 0
+        \\  let inc = lambda ()
+        \\    n = n + 1
+        \\  end
+        \\  let read = || n
+        \\  inc()
+        \\  inc()
+        \\  inc()
+        \\  print read()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("3\n", writer.written());
+}
+
+test "codegen/closure: short lambda |x| with one user param" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let n: i16 = 10
+        \\  let add = |x: i16| n + x
+        \\  print add(5)
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("15\n", writer.written());
+}
+
+test "codegen/closure: AC4 — returned closure keeps env alive (escape analysis)" {
+    var compiled = try compileSource(
+        \\def make_counter() -> fn() -> i16
+        \\  let n: i16 = 0
+        \\  let inc = lambda () -> i16
+        \\    n = n + 1
+        \\    return n
+        \\  end
+        \\  return inc
+        \\end
+        \\
+        \\def main()
+        \\  let c = make_counter()
+        \\  print c()
+        \\  print c()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("1\n2\n", writer.written());
+}
+
+test "codegen/closure: multiple captures (mixed read-only and mutated)" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let counter: i16 = 0
+        \\  let base: i16 = 100
+        \\  let bump = lambda ()
+        \\    counter = counter + 1
+        \\  end
+        \\  let report = || counter + base
+        \\  bump()
+        \\  bump()
+        \\  print report()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("102\n", writer.written());
+}

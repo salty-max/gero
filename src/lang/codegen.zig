@@ -55,6 +55,7 @@ const pattern = @import("codegen/pattern.zig");
 const expr_emit = @import("codegen/expr.zig");
 const control_flow = @import("codegen/control_flow.zig");
 const class = @import("codegen/class.zig");
+const lambda = @import("codegen/lambda.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const CheckedProgram = typecheck_mod.CheckedProgram;
@@ -186,6 +187,13 @@ pub fn compile(
         .class_decls = .{},
         .class_layouts = .{},
         .current_class_name = null,
+        .fn_closure_info = .{
+            .promoted = .{},
+            .lambdas = .empty,
+            .closure_bindings = .{},
+        },
+        .captures = .{},
+        .lambda_patches = .empty,
         .vtable_patches = .empty,
         .block_stack = .empty,
         .loop_stack = .empty,
@@ -194,6 +202,7 @@ pub fn compile(
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
     defer emitter.vtable_patches.deinit(allocator);
+    defer emitter.lambda_patches.deinit(allocator);
     defer emitter.strings.deinit(allocator);
     defer emitter.string_patches.deinit(allocator);
     defer emitter.block_stack.deinit(allocator);
@@ -331,6 +340,16 @@ pub const VtablePatch = struct {
     class_name: []const u8,
 };
 
+/// Unresolved lambda fn_ptr site — a closure-creation site left
+/// an imm16 slot at `code_offset` for the lambda body's address.
+/// `patchLambdaSlots` rewrites every slot once each lambda body
+/// has emitted and `fn_addresses[label]` resolves.
+pub const LambdaPatch = struct {
+    bank: ?u8,
+    code_offset: usize,
+    label: []const u8,
+};
+
 /// Per-fn codegen state — owns the working bytecode buffer, the
 /// local-slot table, and the diagnostic sink. The entry-def
 /// emission path owns one Emitter; later M1 commits will create
@@ -430,6 +449,20 @@ pub const Emitter = struct {
     /// emitting — drives `super` resolution. `null` outside any
     /// method body. Saved + restored per `emitMethodAsDef` call.
     current_class_name: ?[]const u8,
+    /// Per-fn closure analysis — populated by `lambda.analyzeFn`
+    /// before each fn body emits, then consulted by `emitLetDecl`
+    /// / `emitIdent` / `emitAssign` / `emitCall` to route through
+    /// the heap-cell / closure-call paths. Reset between defs.
+    fn_closure_info: lambda.FnClosureInfo,
+    /// Captures visible to the body currently emitting — set when
+    /// emitting a lambda's body so `emitIdent` / `emitAssign` can
+    /// dispatch env-relative loads / stores for captured names.
+    /// `null` outside any lambda body.
+    captures: std.StringHashMapUnmanaged(lambda.CaptureSlot),
+    /// Unresolved lambda fn_ptr slots emitted by closure-creation
+    /// sites — patched by `lambda.patchLambdaSlots` once each
+    /// lambda body has landed in `fn_addresses`.
+    lambda_patches: std.ArrayList(LambdaPatch),
     /// Unresolved vtable-address slots emitted by class
     /// constructors — the constructor emits `mov 0, r2` as a
     /// placeholder when it runs (vtables don't have addresses
@@ -805,7 +838,7 @@ pub const Emitter = struct {
     /// recurses through control-flow forms; arms that never execute
     /// at runtime still reserve their slots (the savings of slot
     /// reuse aren't worth a live-range analysis at this scale).
-    fn countLocalsInBody(self: *const Emitter, body: []const ast.Statement) usize {
+    pub fn countLocalsInBody(self: *const Emitter, body: []const ast.Statement) usize {
         var n: usize = 0;
         for (body) |s| n += self.countLocalsInStmt(s);
         return n;
@@ -906,6 +939,10 @@ pub const Emitter = struct {
         // Resolve constructor-side placeholder slots now that each
         // class's vtable lives at a known address.
         try class.patchVtableSlots(self);
+        // Resolve every closure-creation site's lambda fn_ptr slot
+        // — lambda bodies emitted alongside their parent def, so
+        // their addresses live in `fn_addresses` by now.
+        try lambda.patchLambdaSlots(self);
 
         try self.patchCalls();
         try self.patchStrings();
@@ -934,7 +971,7 @@ pub const Emitter = struct {
     /// Look up the typechecker's inferred type for an expression.
     /// Returns `null` when the typechecker couldn't infer a type
     /// (callers must fall back to a less-specific lowering).
-    fn typeOf(self: *const Emitter, e: *const ast.Expr) ?*const Type {
+    pub fn typeOf(self: *const Emitter, e: *const ast.Expr) ?*const Type {
         return self.checked.typeOf(e);
     }
 
@@ -1331,6 +1368,14 @@ pub const Emitter = struct {
             try self.subImmFromReg(reserve_bytes, Reg.sp);
         }
 
+        // Closure-analysis pre-pass — populates fn_closure_info
+        // with the lambda inventory, capture layouts, and the
+        // promotion set. Drives the heap-cell paths in
+        // emitLetDecl / emitIdent / emitAssign + the closure-call
+        // dispatch in emitCall.
+        try lambda.analyzeFn(self, def);
+        defer lambda.resetFnInfo(self);
+
         // Function body opens the outermost block of the frame —
         // `defer`s at the top of the body run before the implicit
         // epilogue's `hlt` / `ret`.
@@ -1347,6 +1392,11 @@ pub const Emitter = struct {
             // the return value in acu (callers read from there).
             try self.emitByte(Op.ret_op);
         }
+
+        // Emit any lambda bodies discovered during analyzeFn —
+        // they emit as plain defs adjacent to the parent so their
+        // call sites + closure-creation patches resolve normally.
+        try lambda.emitLambdaBodies(self, def);
     }
 
     /// Rewrite each unresolved call's 2-byte address slot. An
@@ -1529,6 +1579,21 @@ pub const Emitter = struct {
             return;
         }
         const name = self.source[a.target.ident.span.start..a.target.ident.span.end];
+        // Captured-binding write inside a lambda body — store
+        // through the env-relative cell pointer (the parent
+        // promoted the binding so the write is visible everywhere).
+        if (self.captures.get(name)) |slot| {
+            try lambda.emitCaptureStore(self, slot, a.value);
+            return;
+        }
+        // Promoted local in the parent fn — store through the
+        // local-slot cell pointer.
+        if (lambda.isPromoted(self, name)) {
+            if (self.locals.get(name)) |ofs| {
+                try lambda.emitPromotedAssign(self, ofs, a.value);
+                return;
+            }
+        }
         try self.emitExpr(a.value); // result in acu
         if (self.locals.get(name)) |ofs| {
             try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
@@ -1553,6 +1618,12 @@ pub const Emitter = struct {
         const name = self.source[d.pattern.ident.name.start..d.pattern.ident.name.end];
         const dup_name = try self.arena.dupe(u8, name);
         const ofs = try self.allocLocal(dup_name);
+        // Promoted bindings live as heap cells — the slot holds
+        // the cell pointer instead of the value directly.
+        if (lambda.isPromoted(self, name)) {
+            try lambda.emitPromotedLetInit(self, d.init, ofs);
+            return;
+        }
         if (d.init) |init_expr| {
             try self.emitExpr(init_expr); // result in acu
             try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
@@ -1686,12 +1757,12 @@ pub const Emitter = struct {
     // ---------- block + defer infrastructure (delegated) ----------
 
     /// Delegated to `codegen/control_flow.zig`.
-    fn pushBlock(self: *Emitter) !void {
+    pub fn pushBlock(self: *Emitter) !void {
         return control_flow.pushBlock(self);
     }
 
     /// Delegated to `codegen/control_flow.zig`.
-    fn popBlockWithDefers(self: *Emitter) !void {
+    pub fn popBlockWithDefers(self: *Emitter) !void {
         return control_flow.popBlockWithDefers(self);
     }
 

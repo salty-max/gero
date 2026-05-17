@@ -1321,19 +1321,37 @@ pub const Checker = struct {
                 if (self.in_no_capture) self.lambda_locals = .{};
                 defer self.lambda_locals = saved_locals;
 
+                var param_types: std.ArrayList(*const types.Type) = .empty;
+                errdefer param_types.deinit(self.arena);
                 for (l.params) |p| {
-                    const pt: ?*const types.Type = if (p.type_ann) |t|
+                    const pt: *const types.Type = if (p.type_ann) |t|
                         try self.resolveType(t)
                     else
-                        null;
+                        try self.primitive(.nil_);
                     try self.registerName(self.lexeme(p.name), .{
                         .kind = .param,
                         .decl_span = p.name,
                         .ty = pt,
                     });
+                    try param_types.append(self.arena, pt);
                 }
+                const ret_ty: *const types.Type = if (l.ret_type) |r|
+                    try self.resolveType(r)
+                else
+                    try self.primitive(.nil_);
+                // Swap current_ret_ty so `return expr` inside the
+                // lambda body checks against the lambda's own
+                // return type rather than the enclosing fn's.
+                const saved_ret = self.current_ret_ty;
+                self.current_ret_ty = ret_ty;
+                defer self.current_ret_ty = saved_ret;
                 for (l.body) |s| try self.walkStatement(s);
-                return null;
+                const sig = try self.arena.create(types.Type);
+                sig.* = .{ .function = .{
+                    .params = try param_types.toOwnedSlice(self.arena),
+                    .ret = ret_ty,
+                } };
+                return sig;
             },
             .list_lit => |ll| return try self.inferListLit(ll, hint),
             .list_repeat => |lr| return try self.inferListRepeat(lr, hint),

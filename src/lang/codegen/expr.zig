@@ -8,6 +8,7 @@ const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const archive = @import("archive.zig");
 const class = @import("class.zig");
+const lambda = @import("lambda.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -47,8 +48,20 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .paren => |p| try emitExpr(self, p.inner),
         .ident => |i| {
             const name = self.source[i.span.start..i.span.end];
-            // Lookup order: locals → params → globals.
+            // Lookup order: captures (lambda body) → locals → params
+            // → globals. Captures take precedence so they shadow any
+            // same-named local that might also exist in the body.
+            if (self.captures.get(name)) |slot| {
+                try lambda.emitCaptureLoad(self, slot);
+                return;
+            }
             if (self.locals.get(name)) |ofs| {
+                // Promoted bindings live as heap cells — the slot
+                // holds the cell pointer; deref to get the value.
+                if (lambda.isPromoted(self, name)) {
+                    try lambda.emitPromotedIdentLoad(self, ofs);
+                    return;
+                }
                 try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
                 return;
             }
@@ -83,6 +96,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
             // intercept before they reach this fallthrough arm.
             try self.unsupported(se.span, "`super` must be followed by `.method(...)` or `.field`");
         },
+        .lambda => |l| try lambda.emitLambdaExpr(self, l, e),
         .is_test => |it| try emitIsTest(self, it),
         .ref_of => |r| try self.emitAddrOf(r.inner),
         .cast => |c| try emitExpr(self, c.inner), // same-width primitives share a bit pattern, so the cast is a no-op
@@ -447,6 +461,15 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
         if (class.isClassName(self, callee_name)) {
             try class.emitConstructor(self, callee_name, c);
+            return;
+        }
+        // Closure call — `f(args)` where `f` is a let-binding
+        // initialized from a lambda OR a binding whose inferred
+        // type is a function (covers `let c = make_counter()`
+        // where make_counter returns a closure). Dispatch through
+        // the tuple's fn_ptr instead of the free-fn path.
+        if (lambda.isClosureBinding(self, callee_name) or lambda.isClosureByType(self, c.callee)) {
+            try lambda.emitClosureCall(self, c.callee, c);
             return;
         }
     }
