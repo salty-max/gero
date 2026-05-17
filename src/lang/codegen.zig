@@ -157,6 +157,7 @@ const Sys = struct {
     const print_int: u8 = 0x02;
     const print_char: u8 = 0x03;
     const print_newline: u8 = 0x04;
+    const print_fixed: u8 = 0x05;
 };
 
 // ---------- public surface ----------
@@ -2143,17 +2144,31 @@ const Emitter = struct {
     /// argument's inferred type (per spec §4.9):
     ///
     /// - `char` → `print_char` (low byte of `acu`).
-    /// - `str` → `print_str` (address in `acu` to a null-terminated
-    ///   byte run laid out in the string pool).
+    /// - `fixed` → `print_fixed` (Q8.8 → `<int>.<frac>` decimal).
+    /// - `str` literal — peeled into per-part syscalls so an
+    ///   interpolated `"a $(x) b"` writes directly to `host.out`
+    ///   without ever materializing the full string (the
+    ///   zero-alloc-for-print path called out in spec §4.9).
+    /// - `str` non-literal → `print_str` (address in `acu` to a
+    ///   null-terminated byte run laid out in the string pool).
     /// - everything else → `print_int` (signed decimal).
-    ///
-    /// Falls back to `print_int` when the typechecker didn't record
-    /// a type — the M1 surface guarantees a type for any
-    /// well-checked print arg.
     fn emitPrintArg(self: *Emitter, arg: *const ast.Expr) !void {
+        // Direct-from-source string literal — emit each part
+        // sequentially. Pure-literal strings short-circuit on the
+        // single-part path below, so the multi-part walk only
+        // runs for actual interpolations.
+        if (arg.* == .str_lit) {
+            try self.emitPrintStrLit(arg.str_lit);
+            return;
+        }
         if (self.isPrimitiveType(arg, .char)) {
             try self.emitExpr(arg);
             try self.sys(Sys.print_char);
+            return;
+        }
+        if (self.isPrimitiveType(arg, .fixed)) {
+            try self.emitExpr(arg);
+            try self.sys(Sys.print_fixed);
             return;
         }
         if (self.isPrimitiveType(arg, .str)) {
@@ -2163,6 +2178,43 @@ const Emitter = struct {
         }
         try self.emitExpr(arg);
         try self.sys(Sys.print_int);
+    }
+
+    /// Walk a string literal's parts inside `print`, emitting the
+    /// per-part syscall for each. Zero-alloc per spec §4.9: no
+    /// runtime buffer materializes — each part writes to `host.out`
+    /// directly. The interpolated value's type drives the syscall
+    /// pick (same dispatch as `emitPrintArg` for non-literal args).
+    fn emitPrintStrLit(self: *Emitter, sl: ast.StrLitExpr) !void {
+        for (sl.parts) |part| switch (part) {
+            .lit => |lp| {
+                const raw = self.source[lp.span.start..lp.span.end];
+                if (raw.len == 0) continue;
+                const decoded = try decodeStringEscapes(self.arena, raw);
+                const id = try self.internString(decoded);
+                try self.emitMovStringAddrToReg(id, Reg.acu);
+                try self.sys(Sys.print_str);
+            },
+            .interp => |ip| {
+                if (ip.format_spec != null) {
+                    try self.unsupported(ip.span, "`$(expr:fmt)` format specs (M3 brings the parameterized formatter)");
+                    return;
+                }
+                if (self.isPrimitiveType(ip.expr, .char)) {
+                    try self.emitExpr(ip.expr);
+                    try self.sys(Sys.print_char);
+                } else if (self.isPrimitiveType(ip.expr, .fixed)) {
+                    try self.emitExpr(ip.expr);
+                    try self.sys(Sys.print_fixed);
+                } else if (self.isPrimitiveType(ip.expr, .str)) {
+                    try self.emitExpr(ip.expr);
+                    try self.sys(Sys.print_str);
+                } else {
+                    try self.emitExpr(ip.expr);
+                    try self.sys(Sys.print_int);
+                }
+            },
+        };
     }
 
     fn emitExprDiscard(self: *Emitter, e: *const ast.Expr) !void {

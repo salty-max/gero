@@ -280,6 +280,38 @@ test "sys 0xFB: print_char writes low byte of acu" {
     try std.testing.expectEqualStrings("B", writer.written());
 }
 
+test "sys 0xFB: print_fixed formats Q8.8 positive value as `int.frac`" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    var writer = captureWriter(&buf);
+    defer writer.deinit();
+    vm.host = .{ .out = &writer.writer };
+
+    // 1.5 in Q8.8 = 1*256 + 128 = 384 → "1.500".
+    vm.regs.write(.acu, 384);
+    loadProgram(&vm, &.{ 0xFB, 0x05 }); // sys print_fixed
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqualStrings("1.500", writer.written());
+}
+
+test "sys 0xFB: print_fixed formats Q8.8 negative value with leading `-`" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    var writer = captureWriter(&buf);
+    defer writer.deinit();
+    vm.host = .{ .out = &writer.writer };
+
+    // -2.25 in Q8.8 = -(2*256 + 64) = -576 → as u16 = 0xFDC0 → "-2.250".
+    vm.regs.write(.acu, 0xFDC0);
+    loadProgram(&vm, &.{ 0xFB, 0x05 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqualStrings("-2.250", writer.written());
+}
+
 test "sys 0xFB: print_newline writes a single \\n" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
