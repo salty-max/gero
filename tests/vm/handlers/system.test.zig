@@ -402,3 +402,84 @@ test "sys 0xFB: with host.out = null, output syscalls are silent no-ops" {
     try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
     try std.testing.expectEqual(@as(u16, 0x1102), vm.regs.read(.ip));
 }
+
+// ---------- sys alloc (0x20) ----------
+
+test "sys 0xFB alloc 0x20: returns heap_base on first call, advances cursor by size" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.heap_cursor = 0x3000;
+    vm.regs.write(.acu, 16);
+    loadProgram(&vm, &.{ 0xFB, 0x20 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x3000), vm.regs.read(.acu));
+    try std.testing.expectEqual(@as(u16, 0x3010), vm.heap_cursor);
+    try std.testing.expectEqual(@as(u16, 0x1102), vm.regs.read(.ip));
+}
+
+test "sys 0xFB alloc 0x20: second call returns previous cursor" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.heap_cursor = 0x3000;
+    // First alloc: 8 bytes.
+    vm.regs.write(.acu, 8);
+    loadProgram(&vm, &.{ 0xFB, 0x20, 0xFB, 0x20 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x3000), vm.regs.read(.acu));
+    // Second alloc: 4 bytes — cursor moved past the first block.
+    vm.regs.write(.acu, 4);
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x3008), vm.regs.read(.acu));
+    try std.testing.expectEqual(@as(u16, 0x300C), vm.heap_cursor);
+}
+
+test "sys 0xFB alloc 0x20: zero-size allocation returns cursor without advancing" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.heap_cursor = 0x3000;
+    vm.regs.write(.acu, 0);
+    loadProgram(&vm, &.{ 0xFB, 0x20 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x3000), vm.regs.read(.acu));
+    try std.testing.expectEqual(@as(u16, 0x3000), vm.heap_cursor);
+}
+
+test "sys 0xFB alloc 0x20: heap_cursor = 0 raises heap_exhausted fault" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    // heap_cursor defaults to 0 (no heap declared).
+    vm.mmap.writeWord(gero.vm.ivtSlot(.heap_exhausted), 0x5000);
+    vm.regs.write(.acu, 8);
+    loadProgram(&vm, &.{ 0xFB, 0x20 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+}
+
+test "sys 0xFB alloc 0x20: cursor + size colliding with sp raises heap_exhausted" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.heap_cursor = 0xFFF0;
+    vm.regs.write(.sp, 0xFFF8);
+    vm.mmap.writeWord(gero.vm.ivtSlot(.heap_exhausted), 0x5000);
+    // Allocating 16 bytes would push cursor to 0x10000, past sp.
+    vm.regs.write(.acu, 16);
+    loadProgram(&vm, &.{ 0xFB, 0x20 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+    // Cursor must be unchanged — failed allocation doesn't consume.
+    try std.testing.expectEqual(@as(u16, 0xFFF0), vm.heap_cursor);
+}
+
+test "sys 0xFB alloc 0x20: size that would overflow u16 raises heap_exhausted" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.heap_cursor = 0xFF00;
+    vm.regs.write(.sp, 0xFFFE);
+    vm.mmap.writeWord(gero.vm.ivtSlot(.heap_exhausted), 0x5000);
+    // cursor (0xFF00) + size (0x0200) = 0x10100 — exceeds u16.
+    vm.regs.write(.acu, 0x0200);
+    loadProgram(&vm, &.{ 0xFB, 0x20 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+    try std.testing.expectEqual(@as(u16, 0xFF00), vm.heap_cursor);
+}

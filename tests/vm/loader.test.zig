@@ -60,11 +60,20 @@ test "loader: rejects reserved flag bits" {
     try std.testing.expectError(error.ReservedBitsSet, gero.vm.parseGx(&buf));
 }
 
-test "loader: rejects non-zero reserved field at 0x0E" {
+test "loader: parses heap_base from bytes 0x0E..0x0F (little-endian)" {
+    var buf: [16]u8 = undefined;
+    _ = buildGx(&buf, 0x0002, 0, 0x1100, 0, 0, 0);
+    buf[0x0E] = 0x34;
+    buf[0x0F] = 0x12;
+    const loaded = try gero.vm.parseGx(&buf);
+    try std.testing.expectEqual(@as(u16, 0x1234), loaded.header.heap_base);
+}
+
+test "loader: heap_base defaults to 0 when bytes 0x0E..0x0F are zero" {
     var buf: [16]u8 = undefined;
     _ = buildGx(&buf, 0x0001, 0, 0x1100, 0, 0, 0);
-    buf[0x0E] = 0x42;
-    try std.testing.expectError(error.ReservedBitsSet, gero.vm.parseGx(&buf));
+    const loaded = try gero.vm.parseGx(&buf);
+    try std.testing.expectEqual(@as(u16, 0), loaded.header.heap_base);
 }
 
 test "loader: rejects sram_bank_count > bank_count" {

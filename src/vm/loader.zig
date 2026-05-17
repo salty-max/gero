@@ -10,7 +10,7 @@ pub const magic: [4]u8 = .{ 'G', 'E', 'R', 'O' };
 /// ISA version this loader accepts (high byte = major, low =
 /// minor). Files with a higher major are rejected; same major
 /// + higher minor are accepted (backwards-compatible additions).
-pub const version_target: u16 = 0x0001;
+pub const version_target: u16 = 0x0002;
 
 /// Header bytes — fixed 16-byte prefix.
 pub const header_size: usize = 16;
@@ -34,8 +34,7 @@ pub const LoaderError = error{
     BadMagic,
     /// Major version exceeds what this loader supports.
     UnsupportedVersion,
-    /// `flags` has a reserved bit set, or the trailing
-    /// `reserved` field is non-zero.
+    /// `flags` has a reserved bit set.
     ReservedBitsSet,
     /// `sram_bank_count > bank_count`.
     InvalidSramCount,
@@ -54,6 +53,11 @@ pub const Header = struct {
     image_size: u16,
     bank_count: u8,
     sram_bank_count: u8,
+    /// Address where the bump-allocator heap starts. `0` means the
+    /// program declared no heap and `sys alloc` will fault on first
+    /// call. Files declaring version `0x0001` always read `0` here
+    /// (the field was added in `0x0002`).
+    heap_base: u16,
 
     /// `true` when the file carries a bank-pool section.
     pub fn isBanked(self: Header) bool {
@@ -98,8 +102,11 @@ pub fn parse(bytes: []const u8) LoaderError!LoadedProgram {
     const image_size = readU16Le(bytes, 0x0A);
     const bank_count = bytes[0x0C];
     const sram_bank_count = bytes[0x0D];
-    const reserved = readU16Le(bytes, 0x0E);
-    if (reserved != 0) return error.ReservedBitsSet;
+    // 0x0E..0x0F is `heap_base` from version 0x0002 onward. Files
+    // declaring version 0x0001 still pass — the field reads as 0,
+    // which means "no heap" and the alloc syscall faults on first
+    // use. Older files never called `sys alloc` anyway.
+    const heap_base = readU16Le(bytes, 0x0E);
     if (sram_bank_count > bank_count) return error.InvalidSramCount;
 
     const image_start = header_size;
@@ -135,6 +142,7 @@ pub fn parse(bytes: []const u8) LoaderError!LoadedProgram {
             .image_size = image_size,
             .bank_count = bank_count,
             .sram_bank_count = sram_bank_count,
+            .heap_base = heap_base,
         },
         .image = image,
         .banks = banks,

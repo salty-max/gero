@@ -107,6 +107,12 @@ pub const VM = struct {
     /// silent no-ops — fine for tests / headless smoke runs that
     /// don't care about output.
     host: Host,
+    /// Bump-allocator cursor — next address `sys alloc` returns.
+    /// Initialized from `loaded.header.heap_base` at boot;
+    /// advances forward by the requested size on each allocation.
+    /// `0` means "no heap" (program declared none) and `sys alloc`
+    /// faults on first call.
+    heap_cursor: u16,
 
     /// Construct a fresh VM with default boot state. `ip` is left
     /// at 0; the loader sets it to the program's entry point. The
@@ -119,6 +125,7 @@ pub const VM = struct {
             .banks = null,
             .cycles = 0,
             .host = .{},
+            .heap_cursor = 0,
         };
         vm.bootInitRegisters();
         return vm;
@@ -182,6 +189,7 @@ pub const VM = struct {
     ) (std.mem.Allocator.Error || BanksError)!void {
         @memcpy(self.mmap.mem.bytes[0..loaded.image.len], loaded.image);
         self.regs.write(.ip, loaded.header.entry_point);
+        self.heap_cursor = loaded.header.heap_base;
         if (loaded.header.bank_count > 0) {
             try self.installBanksWithImage(
                 allocator,

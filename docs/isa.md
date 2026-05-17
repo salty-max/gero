@@ -544,6 +544,7 @@ silent no-ops. Unknown syscall numbers raise the
 | `0x02`| `print_int`     | `acu` = signed 16-bit value. Written as decimal to `Host.out`. |
 | `0x03`| `print_char`    | low byte of `acu` written directly. |
 | `0x04`| `print_newline` | writes a single `\n` byte. |
+| `0x20`| `alloc`         | bump-allocate `acu` bytes on the heap. On success, sets `acu` to the address of the freshly-allocated block and advances the VM's heap cursor by the requested size. On exhaustion (cursor + size would collide with the stack or fall outside the program's heap region), raises the **heap-exhausted** fault (vector `0x04`). Faults if `heap_base = 0` (program declared no heap). |
 
 Writer failures (host stdout closed, OOM in the writer's buffer)
 raise the **invalid-opcode** fault as well. The `sys` mechanism is
@@ -567,7 +568,7 @@ Reserved vectors:
 | `0x01` | Invalid opcode fault. |
 | `0x02` | Invalid register fault. |
 | `0x03` | Division by zero (`div` / `divs` with divisor = 0). |
-| `0x04` | Reserved (future). |
+| `0x04` | Heap exhausted (`sys alloc` with cursor + size colliding with the stack, exceeding the heap budget, or `heap_base = 0`). |
 | `0x05` | Arithmetic overflow (currently only emitted by `div` / `divs` when quotient exceeds 16 bits). |
 | `0x06..0x1F` | Reserved (host-defined). |
 | `0x20..0x3F` | Software interrupts (`int N`). |
@@ -625,13 +626,13 @@ metadata.
 | Offset | Field          | Size | Notes |
 |--------|----------------|------|-------|
 | `0x00` | magic          | 4    | `'G' 'E' 'R' 'O'` (`0x47 0x45 0x52 0x4F`) |
-| `0x04` | version        | 2    | u16le format version. Currently `0x0001`. |
+| `0x04` | version        | 2    | u16le format version. Currently `0x0002`. |
 | `0x06` | flags          | 2    | u16le bitfield (see below) |
 | `0x08` | entry_point    | 2    | u16le address `ip` is set to at boot |
 | `0x0A` | image_size     | 2    | u16le base-image size in bytes (`0..65535`; max 65535-byte image — programs needing more use banks) |
 | `0x0C` | bank_count     | 1    | total number of 16KB banks (0..255) |
 | `0x0D` | sram_bank_count| 1    | how many of the **last** banks are battery-backed SRAM (0..255, must be `<= bank_count`); 0 ⇒ no save support |
-| `0x0E` | reserved       | 2    | must be `0x00 0x00` |
+| `0x0E` | heap_base      | 2    | u16le address where the bump allocator's heap starts. Usually the first byte past the end of static data, leaving the gap to `sp` for heap growth. `0x0000` ⇒ no heap (programs that call `sys alloc` will fault). Added in version `0x0002`; files declaring version `0x0001` always read `0x0000` here. |
 
 #### Flags bitfield
 
@@ -709,6 +710,7 @@ the VM halts with a host-visible error code.
 | `0x01` | Invalid opcode (byte read at `ip` is not in the opcode table) |
 | `0x02` | Invalid register (operand register index `>= 0x0F`) |
 | `0x03` | Division by zero (`div` / `divs` with divisor = 0) |
+| `0x04` | Heap exhausted (`sys alloc` overflows past the available heap region) |
 | `0x05` | Arithmetic overflow (`div` / `divs` quotient > 16 bits) |
 
 `mb >= bank_count` and stack over/underflow are **not** faults — they
@@ -718,7 +720,7 @@ behave permissively (read `0xFF`, write dropped; stack wraps).
 
 ## 10. Versioning
 
-This document specifies version `0x0001`. Future ISA changes:
+This document specifies version `0x0002`. Future ISA changes:
 
 - **Patch-level edits to this doc** (clarifying ambiguous behavior,
   fixing typos, documenting reserved bits) do not bump the version.

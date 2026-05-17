@@ -159,6 +159,15 @@ pub const SyscallId = enum(u8) {
     /// stomp the same slot).
     format_terminate_buf = 0x14,
 
+    /// `acu` = requested size in bytes. On success: `acu` ← the
+    /// address of the freshly-allocated block, and the VM's bump
+    /// cursor advances by the requested size. Raises the
+    /// `heap_exhausted` fault when the cursor is 0 (program
+    /// declared no heap), when the request overflows the 16-bit
+    /// address space, or when the new cursor would collide with
+    /// the stack (`new_cursor > sp`).
+    alloc = 0x20,
+
     /// Open-enum tail — unknown syscall ids coerce here and the
     /// `sys` handler routes them to the `invalid_opcode` fault.
     _,
@@ -187,10 +196,28 @@ pub fn sys(vm: *VM) StepResult {
         .format_char_to_buf => formatCharToBuf(vm),
         .format_fixed_to_buf => formatFixedToBuf(vm) catch return fault(vm, .invalid_opcode),
         .format_terminate_buf => formatTerminateBuf(vm),
+        .alloc => return allocSyscall(vm),
         // Unknown id — open-enum coercion picks this up; future
         // syscall ids should add an arm above.
         _ => return fault(vm, .invalid_opcode),
     }
+    return ok;
+}
+
+/// `sys alloc` (0x20) — bump-allocate `acu` bytes on the heap.
+/// Returns the freshly-allocated address in `acu` and advances
+/// `vm.heap_cursor` by the requested size. Faults on out-of-heap.
+fn allocSyscall(vm: *VM) StepResult {
+    const cursor = vm.heap_cursor;
+    if (cursor == 0) return fault(vm, .heap_exhausted);
+    const size = vm.regs.read(.acu);
+    // @as: widen both u16 operands to u32 so the overflow check sees the real sum, not the wrapped low 16 bits.
+    const new_cursor: u32 = @as(u32, cursor) + @as(u32, size);
+    if (new_cursor > 0xFFFF) return fault(vm, .heap_exhausted);
+    if (new_cursor > vm.regs.read(.sp)) return fault(vm, .heap_exhausted);
+    // @as: u32 fits in u16 here — the check above proved it.
+    vm.heap_cursor = @intCast(new_cursor);
+    vm.regs.write(.acu, cursor);
     return ok;
 }
 

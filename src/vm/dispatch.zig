@@ -33,6 +33,10 @@ pub const Vector = enum(u8) {
     invalid_register = 0x02,
     /// Division by zero.
     div_by_zero = 0x03,
+    /// Heap exhausted — `sys alloc` couldn't satisfy a request
+    /// because the bump cursor would have collided with the stack
+    /// or fallen outside the program's heap region.
+    heap_exhausted = 0x04,
     /// Arithmetic overflow (e.g. `div` quotient > 16 bits).
     arith_overflow = 0x05,
     _,

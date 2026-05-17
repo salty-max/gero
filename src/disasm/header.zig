@@ -57,7 +57,7 @@ pub const Symbols = struct {
 /// One file's worth of decoded header info + section slices, all
 /// borrowed from the caller's `bytes` buffer.
 pub const Header = struct {
-    /// Bytecode format version — currently `0x0001`.
+    /// Bytecode format version — currently `0x0002`.
     version: u16,
     /// Bit-set per ISA §7.1 (bit 0 = banked, bit 1 = has-debug).
     flags: u16,
@@ -71,6 +71,10 @@ pub const Header = struct {
     bank_count: u8,
     /// Number of trailing bank slots that are SRAM (battery-backed).
     sram_bank_count: u8,
+    /// Bump-allocator heap base — usually the first byte past the
+    /// static-data region. `0` means the program declared no heap.
+    /// Added in version `0x0002`; files declaring `0x0001` read `0`.
+    heap_base: u16,
 
     /// Slice of the base image bytes (length == `image_size`).
     image: []const u8,
@@ -136,8 +140,9 @@ pub fn parseSymbols(allocator: std.mem.Allocator, debug_bytes: []const u8) Symbo
 }
 
 /// Parse `bytes` as a `.gx` archive. Strict: rejects unknown
-/// flag bits and any version != `0x0001`. The returned slices
-/// borrow from the input buffer.
+/// flag bits and any version with a higher major byte than the
+/// VM's loader accepts. The returned slices borrow from the input
+/// buffer.
 pub fn parse(bytes: []const u8) DecodeError!Header {
     const loaded = try gero.vm.parseGx(bytes);
 
@@ -148,6 +153,7 @@ pub fn parse(bytes: []const u8) DecodeError!Header {
         .image_size = loaded.header.image_size,
         .bank_count = loaded.header.bank_count,
         .sram_bank_count = loaded.header.sram_bank_count,
+        .heap_base = loaded.header.heap_base,
         .image = loaded.image,
         .banks = loaded.banks,
         .debug = loaded.debug,
