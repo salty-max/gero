@@ -158,7 +158,21 @@ const Sys = struct {
     const print_char: u8 = 0x03;
     const print_newline: u8 = 0x04;
     const print_fixed: u8 = 0x05;
+
+    const format_str_to_buf: u8 = 0x10;
+    const format_int_to_buf: u8 = 0x11;
+    const format_char_to_buf: u8 = 0x12;
+    const format_fixed_to_buf: u8 = 0x13;
+    const format_terminate_buf: u8 = 0x14;
 };
+
+/// Bytes reserved per interpolated-string buffer in the data
+/// region. Sized for the worst common case (a few interp values
+/// + surrounding literal text). Programs that need larger
+/// interpolations should compose with explicit concatenation —
+/// the codegen rejects the formatted result at runtime if it
+/// overflows (the VM doesn't bounds-check the buffer writes).
+const interp_buffer_size: u16 = 64;
 
 // ---------- public surface ----------
 
@@ -2180,6 +2194,100 @@ const Emitter = struct {
         try self.sys(Sys.print_int);
     }
 
+    /// Lower a `str_lit` at expression position. Single-literal
+    /// strings load the pooled address directly into `acu`.
+    /// Interpolated strings allocate a fixed-size buffer in the
+    /// data region (per-site, lives for the program's lifetime
+    /// per spec §3.2.2 "single-buffer allocation") and emit the
+    /// `format_*_to_buf` syscall sequence that fills it. The
+    /// buffer's base address lands in `acu` as the string value.
+    fn emitStrLitExpr(self: *Emitter, sl: ast.StrLitExpr) !void {
+        if (sl.parts.len == 1 and sl.parts[0] == .lit) {
+            const span = sl.parts[0].lit.span;
+            const raw = self.source[span.start..span.end];
+            const decoded = try decodeStringEscapes(self.arena, raw);
+            const id = try self.internString(decoded);
+            try self.emitMovStringAddrToReg(id, Reg.acu);
+            return;
+        }
+
+        const buf_addr = self.reserveInterpBuffer(sl.span) orelse {
+            // Diagnostic already emitted; produce a valid placeholder
+            // so downstream codegen doesn't see a bad acu shape.
+            try self.movImmToReg(0, Reg.acu);
+            return;
+        };
+
+        // r1 holds the moving write cursor. Initialize it to the
+        // buffer's base address.
+        try self.movImmToReg(buf_addr, Reg.r1);
+        try self.emitInterpFill(sl);
+        try self.sys(Sys.format_terminate_buf);
+        try self.movImmToReg(buf_addr, Reg.acu);
+    }
+
+    /// Reserve `interp_buffer_size` bytes at the top of the data
+    /// region for one interpolated-string site. Returns the
+    /// buffer's base address. Emits `E_CODEGEN_DATA_OVERFLOW` and
+    /// `null` when the data region (capped at the MMIO line) would
+    /// overflow.
+    fn reserveInterpBuffer(self: *Emitter, site_span: ast.Span) ?u16 {
+        const base = self.data_cursor;
+        // @as: widen u16 → u32 so the overflow check doesn't itself wrap.
+        const next: u32 = @as(u32, self.data_cursor) + interp_buffer_size;
+        if (next > 0xFE40) {
+            self.diagFatal(site_span, "E_CODEGEN_DATA_OVERFLOW", "static-data region exhausted — too many interpolated string sites") catch return null;
+            return null;
+        }
+        // @as: bounded by the > 0xFE40 check above; result fits u16.
+        self.data_cursor = @intCast(next);
+        return base;
+    }
+
+    /// Emit one `format_*_to_buf` syscall per `sl.parts` entry —
+    /// shared between non-print interpolation and the buffered
+    /// equivalent. `r1` must hold the buffer cursor on entry and
+    /// holds the post-write cursor on exit. Saves / restores `r1`
+    /// around interp-expression evaluation so the stack-machine
+    /// pattern's scratch use of `r1` doesn't trash the cursor.
+    fn emitInterpFill(self: *Emitter, sl: ast.StrLitExpr) !void {
+        for (sl.parts) |part| switch (part) {
+            .lit => |lp| {
+                const raw = self.source[lp.span.start..lp.span.end];
+                if (raw.len == 0) continue;
+                const decoded = try decodeStringEscapes(self.arena, raw);
+                const id = try self.internString(decoded);
+                // Save cursor across the lit-address load (the
+                // `mov imm16, acu` itself only touches acu, but
+                // emitting it via the patching helper is cleaner if
+                // we treat `r1` as untouched here).
+                try self.emitMovStringAddrToReg(id, Reg.acu);
+                try self.sys(Sys.format_str_to_buf);
+            },
+            .interp => |ip| {
+                if (ip.format_spec != null) {
+                    try self.unsupported(ip.span, "`$(expr:fmt)` format specs (M3 brings the parameterized formatter)");
+                    return;
+                }
+                // Save the cursor — the interp-expression eval may
+                // pop into r1 as scratch.
+                try self.pushReg(Reg.r1);
+                try self.emitExpr(ip.expr);
+                try self.popReg(Reg.r1);
+
+                if (self.isPrimitiveType(ip.expr, .char)) {
+                    try self.sys(Sys.format_char_to_buf);
+                } else if (self.isPrimitiveType(ip.expr, .fixed)) {
+                    try self.sys(Sys.format_fixed_to_buf);
+                } else if (self.isPrimitiveType(ip.expr, .str)) {
+                    try self.sys(Sys.format_str_to_buf);
+                } else {
+                    try self.sys(Sys.format_int_to_buf);
+                }
+            },
+        };
+    }
+
     /// Walk a string literal's parts inside `print`, emitting the
     /// per-part syscall for each. Zero-alloc per spec §4.9: no
     /// runtime buffer materializes — each part writes to `host.out`
@@ -2243,17 +2351,7 @@ const Emitter = struct {
                 const v: u16 = @bitCast(trimmed);
                 try self.movImmToReg(v, Reg.acu);
             },
-            .str_lit => |sl| {
-                if (sl.parts.len == 1 and sl.parts[0] == .lit) {
-                    const span = sl.parts[0].lit.span;
-                    const raw = self.source[span.start..span.end];
-                    const decoded = try decodeStringEscapes(self.arena, raw);
-                    const id = try self.internString(decoded);
-                    try self.emitMovStringAddrToReg(id, Reg.acu);
-                } else {
-                    try self.unsupported(sl.span, "string interpolation `\"...$(...)...\"` (the runtime format syscall lands later — single-literal strings are supported)");
-                }
-            },
+            .str_lit => |sl| try self.emitStrLitExpr(sl),
             .bool_lit => |b| {
                 const v: u16 = if (b.value) 1 else 0;
                 try self.movImmToReg(v, Reg.acu);

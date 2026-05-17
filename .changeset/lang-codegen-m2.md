@@ -153,35 +153,49 @@ gaps that this PR also closes:
   byte without a safe-mode integer-overflow panic. Test covers
   130 `@zero_page u16` globals → `E_CODEGEN_ZP_OVERFLOW`.
 
-**VM extension: `print_fixed` syscall**
+**VM extension: print + format-to-buffer syscalls**
 
-New `sys 0xFB` ID `0x05` formats a Q8.8 value from `acu` as
-`<int>.<3-digit-frac>` decimal (e.g. `384` (= 1.5) prints
-`1.500`; the i16 minimum `-32768` prints `-128.000`). Closes
-the "print fixed-point values" gap — `print c` for a
-`fixed`-typed binding now reads as a decimal rather than the
-raw Q8.8 integer.
+- `sys 0xFB` ID `0x05` `print_fixed` — formats a Q8.8 value
+  from `acu` as `<int>.<3-digit-frac>` decimal. `print c` for
+  a `fixed`-typed binding now reads as a decimal rather than
+  the raw integer.
+- `sys 0xFB` IDs `0x10..0x14` `format_*_to_buf` — append
+  formatted bytes at `[r1]` and advance `r1` past the write
+  so chained calls compose. Backstop the non-print
+  interpolation lowering. The family is `format_str_to_buf`
+  (`0x10`), `format_int_to_buf` (`0x11`),
+  `format_char_to_buf` (`0x12`), `format_fixed_to_buf`
+  (`0x13`), `format_terminate_buf` (`0x14`).
 
-**Print interpolation (zero-alloc fast path)**
+**String interpolation (zero-alloc print + per-site buffer)**
 
-`print "x = $(value)!"` now walks the string literal's parts
-in source order and writes each one to `host.out` directly via
-the appropriate `print_X` syscall — no runtime buffer ever
-materializes. Per-part type dispatch matches the regular
-`emitPrintArg` rules (`char` / `fixed` / `str` / int fallback).
-Closes the "zero-alloc for `print`" half of #194's
-interpolation AC.
+- `print "x = $(value)!"` walks the string literal's parts
+  in source order and writes each one to `host.out` directly
+  via the appropriate `print_X` syscall — no buffer ever
+  materializes (the zero-alloc fast path from #194).
+- `let s = "x=$(x)"` reserves a 64-byte buffer in the data
+  region at codegen time (one allocation per interp site per
+  spec §3.2.2 "single-buffer allocation"), then emits the
+  `format_*_to_buf` syscall sequence that fills it with the
+  formatted bytes. The buffer's base address becomes the
+  `str` value. `r1` carries the moving write cursor; the
+  codegen save / restores it around each interp-expression
+  evaluation so the stack-machine pattern's scratch use of
+  `r1` doesn't trash the cursor.
+
+Per-part type dispatch matches the regular `emitPrintArg`
+rules — `char` / `fixed` / `str` / int fallback for both the
+print fast-path and the buffered path. Closes #194's
+interpolation AC. The data-region overflow case surfaces as
+`E_CODEGEN_DATA_OVERFLOW` when too many interp sites would
+push the cursor past the MMIO line (`$FE40`).
 
 **Not yet (M3 follow-ups)**
 
-- **Non-print interpolation** (`let s = "x=$(x)"`) — needs a
-  VM-side format-to-buffer syscall plus a scratch/heap
-  allocator (the "one-alloc per non-print interpolation" path
-  from #194). The codegen rejects this with
-  `E_CODEGEN_UNSUPPORTED` until that VM surface ships.
 - **`$(expr:fmt)` format specs** (`:04d` / `:.2f` / etc.) —
   needs the parameterized formatter on the VM side; M2 ships
-  default formatting per type only.
+  default formatting per type only. The codegen rejects the
+  format-spec form with `E_CODEGEN_UNSUPPORTED`.
 - Enum-variant patterns + jump-table dispatch in `match`
   (need M3 enum tag layout — the codegen emits
   `E_CODEGEN_UNSUPPORTED` on a variant pattern today; the
@@ -195,8 +209,8 @@ interpolation AC.
 
 **Tests**
 
-41 new codegen tests (29 → 70, +41) + 4 new typecheck tests +
-2 new VM-handler tests:
+42 new codegen tests (29 → 71, +42) + 4 new typecheck tests +
+5 new VM-handler tests:
 
 Codegen:
 
@@ -240,14 +254,21 @@ M1 backfill (this PR's self-review pass on M1 ACs):
   (formats `0.25` as `0.250`).
 - `print "x = $(x)"` emits per-part syscalls in source order.
 - Mixed-type interpolation: literal + int + char + fixed.
-- Non-print interpolation rejected with
-  `E_CODEGEN_UNSUPPORTED`.
+- Non-print interpolation `let s = "x=$(x)"; print s` formats
+  into a per-site data buffer.
+- `$(expr:fmt)` rejected with `E_CODEGEN_UNSUPPORTED`.
 
 VM (`tests/vm/handlers/system.test.zig`):
 
 - `sys print_fixed` formats `1.5` (Q8.8 = 384) as `"1.500"`.
 - `sys print_fixed` formats `-2.25` (Q8.8 = 0xFDC0) as
   `"-2.250"`.
+- `sys format_int_to_buf` writes `-7` as `"-7"` at `[r1]` and
+  advances `r1` by 2.
+- `sys format_str_to_buf` copies bytes (excluding the source
+  null terminator) and advances `r1`.
+- `sys format_terminate_buf` writes a null byte over a
+  poisoned slot and advances `r1` by 1.
 
 Typecheck (defer-shape rejections per spec §4.10 +
 `docs/lang-diagnostics.md` §5.11):

@@ -312,6 +312,57 @@ test "sys 0xFB: print_fixed formats Q8.8 negative value with leading `-`" {
     try std.testing.expectEqualStrings("-2.250", writer.written());
 }
 
+test "sys 0xFB: format_int_to_buf writes signed decimal at [r1], advances r1" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    // Empty host writer — the format-to-buf family writes to VM
+    // memory, never to host.out.
+    vm.regs.write(.acu, 0xFFF9); // -7 as i16
+    vm.regs.write(.r1, 0x2000);
+    loadProgram(&vm, &.{ 0xFB, 0x11 }); // sys format_int_to_buf
+    _ = gero.vm.step(&vm);
+
+    try std.testing.expectEqual(@as(u8, '-'), vm.mmap.readByte(0x2000));
+    try std.testing.expectEqual(@as(u8, '7'), vm.mmap.readByte(0x2001));
+    // r1 advanced past the 2 bytes written.
+    try std.testing.expectEqual(@as(u16, 0x2002), vm.regs.read(.r1));
+}
+
+test "sys 0xFB: format_str_to_buf copies bytes (excl null) and advances r1" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    // Source string "hi\0" at 0x3000.
+    vm.mmap.writeByte(0x3000, 'h');
+    vm.mmap.writeByte(0x3001, 'i');
+    vm.mmap.writeByte(0x3002, 0);
+    vm.regs.write(.acu, 0x3000);
+    vm.regs.write(.r1, 0x2000);
+    loadProgram(&vm, &.{ 0xFB, 0x10 });
+    _ = gero.vm.step(&vm);
+
+    try std.testing.expectEqual(@as(u8, 'h'), vm.mmap.readByte(0x2000));
+    try std.testing.expectEqual(@as(u8, 'i'), vm.mmap.readByte(0x2001));
+    // null NOT copied — caller calls format_terminate_buf separately.
+    try std.testing.expectEqual(@as(u8, 0), vm.mmap.readByte(0x2002));
+    try std.testing.expectEqual(@as(u16, 0x2002), vm.regs.read(.r1));
+}
+
+test "sys 0xFB: format_terminate_buf writes a null byte at [r1] and advances r1" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    // Pre-poison the slot — the terminator must overwrite it.
+    vm.mmap.writeByte(0x2000, 0xAB);
+    vm.regs.write(.r1, 0x2000);
+    loadProgram(&vm, &.{ 0xFB, 0x14 });
+    _ = gero.vm.step(&vm);
+
+    try std.testing.expectEqual(@as(u8, 0), vm.mmap.readByte(0x2000));
+    try std.testing.expectEqual(@as(u16, 0x2001), vm.regs.read(.r1));
+}
+
 test "sys 0xFB: print_newline writes a single \\n" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();

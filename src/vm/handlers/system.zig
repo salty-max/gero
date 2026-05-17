@@ -131,6 +131,34 @@ pub const SyscallId = enum(u8) {
     /// (1.5 in Q8.8) prints `1.500`. Negative values get a
     /// leading `-`.
     print_fixed = 0x05,
+
+    // ---------- format-to-buffer family ----------
+    //
+    // These backstop non-print string interpolation per spec
+    // §3.2.2 + #194 ("one-alloc per non-print interpolation").
+    // The caller supplies the destination cursor in `r1`; each
+    // syscall appends bytes at `[r1]` and advances `r1` past
+    // them so the calls compose without any extra bookkeeping
+    // on the codegen side.
+
+    /// `acu` = source str address (null-terminated). `r1` = dst
+    /// cursor. Copies the bytes (excluding the trailing null)
+    /// from `[acu]` to `[r1]`, advances `r1` past the copy.
+    format_str_to_buf = 0x10,
+    /// `acu` = i16 value. `r1` = dst cursor. Appends the signed
+    /// decimal representation of `acu` at `[r1]`, advances `r1`.
+    format_int_to_buf = 0x11,
+    /// `acu` = char value (low byte). `r1` = dst cursor. Writes
+    /// the low byte to `[r1]`, advances `r1` by 1.
+    format_char_to_buf = 0x12,
+    /// `acu` = Q8.8 value. `r1` = dst cursor. Appends the same
+    /// `<int>.<3-digit-frac>` formatting as `print_fixed`.
+    format_fixed_to_buf = 0x13,
+    /// `r1` = dst cursor. Writes a single null byte at `[r1]`
+    /// and advances `r1` by 1 (so chained terminators don't
+    /// stomp the same slot).
+    format_terminate_buf = 0x14,
+
     /// Open-enum tail — unknown syscall ids coerce here and the
     /// `sys` handler routes them to the `invalid_opcode` fault.
     _,
@@ -138,33 +166,53 @@ pub const SyscallId = enum(u8) {
 
 /// `0xFB` — `sys imm8` → host-callback syscall. Reads the
 /// syscall id from the operand byte, dispatches to a fixed
-/// handler. Output syscalls are silent no-ops when
-/// `vm.host.out` is `null`. Writer failures and unknown
-/// syscall ids both raise the `invalid_opcode` fault.
+/// handler. Print syscalls are silent no-ops when
+/// `vm.host.out` is `null`; format-to-buffer syscalls still
+/// run (they touch VM memory, not the host). Writer failures
+/// and unknown syscall ids both raise the `invalid_opcode`
+/// fault.
 pub fn sys(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const id_byte = vm.readByte(ip +% 1);
     // safety: enum payload is u8 — every value round-trips, even
     // unrecognized ones via the `else` arm below.
     const id: SyscallId = @enumFromInt(id_byte);
-    const writer = vm.host.out orelse return ok;
+    switch (id) {
+        .print_str, .print_int, .print_char, .print_newline, .print_fixed => {
+            const writer = vm.host.out orelse return ok;
+            return dispatchPrint(vm, id, writer);
+        },
+        .format_str_to_buf => formatStrToBuf(vm),
+        .format_int_to_buf => formatIntToBuf(vm) catch return fault(vm, .invalid_opcode),
+        .format_char_to_buf => formatCharToBuf(vm),
+        .format_fixed_to_buf => formatFixedToBuf(vm) catch return fault(vm, .invalid_opcode),
+        .format_terminate_buf => formatTerminateBuf(vm),
+        // Unknown id — open-enum coercion picks this up; future
+        // syscall ids should add an arm above.
+        _ => return fault(vm, .invalid_opcode),
+    }
+    return ok;
+}
+
+/// Print-family dispatch — split out so the host-null fast path
+/// can short-circuit before evaluating which print syscall fired.
+fn dispatchPrint(vm: *VM, id: SyscallId, writer: *@import("std").Io.Writer) StepResult {
     switch (id) {
         .print_str => printStr(vm, writer) catch return fault(vm, .invalid_opcode),
         .print_int => {
-            // safety: r0 is u16; bit-cast to i16 for signed-decimal output.
+            // safety: acu is u16; bit-cast to i16 for signed-decimal output.
             const v: i16 = @bitCast(vm.regs.read(.acu));
             writer.print("{d}", .{v}) catch return fault(vm, .invalid_opcode);
         },
         .print_char => {
-            // safety: r0 is u16; the print_char syscall writes the low byte only.
+            // @as: acu is u16; the print_char syscall writes the low byte only.
             const byte: u8 = @intCast(vm.regs.read(.acu) & 0xFF);
             writer.writeByte(byte) catch return fault(vm, .invalid_opcode);
         },
         .print_newline => writer.writeByte('\n') catch return fault(vm, .invalid_opcode),
         .print_fixed => printFixed(vm, writer) catch return fault(vm, .invalid_opcode),
-        // Unknown id — open-enum coercion picks this up; future
-        // syscall ids should add an arm above.
-        _ => return fault(vm, .invalid_opcode),
+        // allow-strict: the outer `sys` filters to the five print ids before calling here.
+        else => unreachable,
     }
     return ok;
 }
@@ -179,7 +227,58 @@ fn printStr(vm: *VM, writer: *@import("std").Io.Writer) !void {
     }
 }
 
-fn printFixed(vm: *VM, writer: *@import("std").Io.Writer) !void {
+// ---------- format-to-buffer ----------
+
+/// Write `byte` at `[r1]` and advance `r1` by 1. Helper used by
+/// every `format_*_to_buf` syscall so cursor advance + memory
+/// write stay in one place.
+fn writeBufByte(vm: *VM, byte: u8) void {
+    const cur = vm.regs.read(.r1);
+    vm.writeByte(cur, byte);
+    vm.regs.write(.r1, cur +% 1);
+}
+
+fn formatStrToBuf(vm: *VM) void {
+    var src: u16 = vm.regs.read(.acu);
+    while (true) {
+        const b = vm.readByte(src);
+        if (b == 0) break;
+        writeBufByte(vm, b);
+        src +%= 1;
+    }
+}
+
+fn formatIntToBuf(vm: *VM) !void {
+    // safety: acu is u16; bit-cast to i16 for signed-decimal output.
+    const v: i16 = @bitCast(vm.regs.read(.acu));
+    var stack_buf: [8]u8 = undefined;
+    var local: @import("std").Io.Writer = .fixed(&stack_buf);
+    try local.print("{d}", .{v});
+    for (local.buffered()) |b| writeBufByte(vm, b);
+}
+
+fn formatCharToBuf(vm: *VM) void {
+    // @as: acu is u16; the format_char syscall writes the low byte only.
+    const byte: u8 = @intCast(vm.regs.read(.acu) & 0xFF);
+    writeBufByte(vm, byte);
+}
+
+fn formatFixedToBuf(vm: *VM) !void {
+    var stack_buf: [16]u8 = undefined;
+    var local: @import("std").Io.Writer = .fixed(&stack_buf);
+    try writeFixedTo(vm, &local);
+    for (local.buffered()) |b| writeBufByte(vm, b);
+}
+
+fn formatTerminateBuf(vm: *VM) void {
+    writeBufByte(vm, 0);
+}
+
+/// Q8.8 → `<int>.<3-digit-frac>` decimal. Shared between
+/// `print_fixed` (writes through to host.out) and
+/// `format_fixed_to_buf` (writes to VM memory at `r1`) — the
+/// formatting math is identical; only the sink differs.
+fn writeFixedTo(vm: *VM, writer: *@import("std").Io.Writer) !void {
     // safety: Q8.8 lives in acu as a u16 — bit-cast to i16 for sign + magnitude split.
     const raw: i16 = @bitCast(vm.regs.read(.acu));
     if (raw < 0) try writer.writeByte('-');
@@ -197,4 +296,8 @@ fn printFixed(vm: *VM, writer: *@import("std").Io.Writer) !void {
     // @as: widen u16 → u32 so the *1000 multiplication doesn't overflow.
     const frac_thousandths: u32 = @as(u32, frac_part) * 1000 / 256;
     try writer.print("{d}.{d:0>3}", .{ int_part, frac_thousandths });
+}
+
+fn printFixed(vm: *VM, writer: *@import("std").Io.Writer) !void {
+    try writeFixedTo(vm, writer);
 }
