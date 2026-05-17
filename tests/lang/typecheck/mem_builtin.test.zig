@@ -7,7 +7,7 @@ const std = @import("std");
 const gero = @import("gero");
 
 test "typecheck/mem_builtin: module compiles through the barrel" {
-    _ = gero.lang.typechecker.mem_builtin;
+    _ = gero.lang.typechecker.internal.mem_builtin;
 }
 
 test "typecheck/mem_builtin: lookupMemBuiltin recognizes every entry" {
@@ -18,7 +18,7 @@ test "typecheck/mem_builtin: lookupMemBuiltin recognizes every entry" {
         "addr_of",
     };
     for (names) |name| {
-        try std.testing.expect(gero.lang.typechecker.mem_builtin.lookupMemBuiltin(name) != null);
+        try std.testing.expect(gero.lang.typechecker.internal.mem_builtin.lookupMemBuiltin(name) != null);
     }
-    try std.testing.expect(gero.lang.typechecker.mem_builtin.lookupMemBuiltin("nonexistent") == null);
+    try std.testing.expect(gero.lang.typechecker.internal.mem_builtin.lookupMemBuiltin("nonexistent") == null);
 }

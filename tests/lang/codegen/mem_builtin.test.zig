@@ -6,5 +6,5 @@ const std = @import("std");
 const gero = @import("gero");
 
 test "mem_builtin: module compiles through the codegen barrel" {
-    _ = gero.lang.codegen.mem_builtin;
+    _ = gero.lang.codegen.internal.mem_builtin;
 }

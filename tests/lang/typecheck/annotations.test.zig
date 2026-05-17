@@ -10,7 +10,7 @@
 const std = @import("std");
 const gero = @import("gero");
 
-const annotations = gero.lang.typechecker.annotations;
+const annotations = gero.lang.typechecker.internal.annotations;
 const alloc = std.testing.allocator;
 
 // ---------- E2E helpers ----------
