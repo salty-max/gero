@@ -6,5 +6,5 @@ const std = @import("std");
 const gero = @import("gero");
 
 test "codegen/control_flow: module compiles through the barrel" {
-    _ = gero.lang.codegen.internal.control_flow;
+    _ = gero.lang.internal.codegen.control_flow;
 }
