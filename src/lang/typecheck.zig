@@ -15,19 +15,20 @@
 /// bake / cast-range / varargs rules and the rendered-diagnostic shape
 /// from `docs/lang-diagnostics.md`.
 const std = @import("std");
-const knit = @import("knit");
-const core = knit.core;
 
 const ast = @import("ast.zig");
 const types = @import("types.zig");
 const scope_mod = @import("scope.zig");
+const diag_mod = @import("diagnostic.zig");
 const Scope = scope_mod.Scope;
+const Diagnostic = diag_mod.Diagnostic;
+const Severity = diag_mod.Severity;
 
 /// Typechecker output. Owns the diagnostics slice and the arena that
 /// allocated every `*Type` plus the scope tree.
 pub const CheckedProgram = struct {
     program: *const ast.Program,
-    diagnostics: []core.ParseError,
+    diagnostics: []Diagnostic,
     type_arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
 
@@ -54,7 +55,7 @@ pub fn typecheck(
     errdefer arena.deinit();
     const a = arena.allocator();
 
-    var diagnostics: std.ArrayList(core.ParseError) = .empty;
+    var diagnostics: std.ArrayList(Diagnostic) = .empty;
     errdefer diagnostics.deinit(allocator);
 
     var module_scope: Scope = .init(a, null);
@@ -140,7 +141,7 @@ const Checker = struct {
     /// allocator the caller releases the slice with later.
     /// Diagnostic message strings still live in `arena`.
     diag_alloc: std.mem.Allocator,
-    diagnostics: *std.ArrayList(core.ParseError),
+    diagnostics: *std.ArrayList(Diagnostic),
     /// The outermost (module) scope.
     module_scope: *Scope,
     /// The currently-active scope. Walker entry into a function /
@@ -242,19 +243,39 @@ const Checker = struct {
 
     // ---------- diagnostic helpers ----------
 
-    fn emit(
+    /// Emit a diagnostic with full span coverage so the renderer
+    /// can underline the offending source slice rather than a
+    /// single character.
+    fn emitSpan(
         self: *Checker,
         code: []const u8,
-        index: u32,
+        span: ast.Span,
         message: []const u8,
-        actual: ?[]const u8,
     ) WalkError!void {
-        try self.diagnostics.append(self.diag_alloc, core.parseError(
-            "lang_typecheck",
-            index,
-            message,
-            .{ .expected = code, .actual = actual, .kind = .semantic },
-        ));
+        try self.diagnostics.append(self.diag_alloc, .{
+            .severity = .fatal,
+            .code = code,
+            .message = message,
+            .span = span,
+        });
+    }
+
+    /// Same as `emitSpan` plus an optional `help:` block printed
+    /// after the caret snippet.
+    fn emitSpanHelp(
+        self: *Checker,
+        code: []const u8,
+        span: ast.Span,
+        message: []const u8,
+        help: []const u8,
+    ) WalkError!void {
+        try self.diagnostics.append(self.diag_alloc, .{
+            .severity = .fatal,
+            .code = code,
+            .message = message,
+            .span = span,
+            .help = help,
+        });
     }
 
     fn emitMismatch(
@@ -270,7 +291,7 @@ const Checker = struct {
             "type mismatch: expected `{s}`, found `{s}`",
             .{ expected_s, actual_s },
         );
-        try self.emit("E_TYPE_MISMATCH", span.start, msg, null);
+        try self.emitSpan("E_TYPE_MISMATCH", span, msg);
     }
 
     fn lexeme(self: *const Checker, span: ast.Span) []const u8 {
@@ -293,7 +314,7 @@ const Checker = struct {
                     "unknown annotation `@{s}`",
                     .{name},
                 );
-                try self.emit("E_ANN_UNKNOWN", ann.name.start, msg, name);
+                try self.emitSpan("E_ANN_UNKNOWN", ann.name, msg);
                 continue;
             };
             if ((spec.targets & target) == 0) {
@@ -302,7 +323,7 @@ const Checker = struct {
                     "annotation `@{s}` cannot be applied to a {s}",
                     .{ name, targetLabel(target) },
                 );
-                try self.emit("E_ANN_BAD_TARGET", ann.name.start, msg, name);
+                try self.emitSpan("E_ANN_BAD_TARGET", ann.name, msg);
             }
             try self.validateAnnotationArgs(ann, spec);
         }
@@ -320,7 +341,7 @@ const Checker = struct {
                             "annotations `@{s}` and `@{s}` cannot be combined",
                             .{ self.lexeme(a.name), b_name },
                         );
-                        try self.emit("E_ANN_CONFLICT", b.name.start, msg, null);
+                        try self.emitSpan("E_ANN_CONFLICT", b.name, msg);
                     }
                 }
             }
@@ -336,7 +357,7 @@ const Checker = struct {
                         "annotation `@{s}` does not take arguments",
                         .{spec.name},
                     );
-                    try self.emit("E_ANN_BAD_ARG", ann.span.start, msg, null);
+                    try self.emitSpan("E_ANN_BAD_ARG", ann.span, msg);
                 }
             },
             .int_lit => {
@@ -346,7 +367,7 @@ const Checker = struct {
                         "annotation `@{s}` expects a single integer literal",
                         .{spec.name},
                     );
-                    try self.emit("E_ANN_BAD_ARG", ann.span.start, msg, null);
+                    try self.emitSpan("E_ANN_BAD_ARG", ann.span, msg);
                 }
             },
             .int_lit_pow2 => {
@@ -356,7 +377,7 @@ const Checker = struct {
                         "annotation `@{s}` expects a single integer literal",
                         .{spec.name},
                     );
-                    try self.emit("E_ANN_BAD_ARG", ann.span.start, msg, null);
+                    try self.emitSpan("E_ANN_BAD_ARG", ann.span, msg);
                     return;
                 }
                 const v = ann.args[0].int_lit.value;
@@ -366,7 +387,7 @@ const Checker = struct {
                         "annotation `@{s}` requires a power-of-two value, got {d}",
                         .{ spec.name, v },
                     );
-                    try self.emit("E_ANN_BAD_ARG", ann.span.start, msg, null);
+                    try self.emitSpan("E_ANN_BAD_ARG", ann.span, msg);
                 }
             },
         }
@@ -474,7 +495,7 @@ const Checker = struct {
                     "`{s}` is already defined in this scope",
                     .{name},
                 );
-                try self.emit("E_TYPE_REDEFINED", info.decl_span.start, msg, name);
+                try self.emitSpan("E_TYPE_REDEFINED", info.decl_span, msg);
                 _ = existing;
                 return;
             },
@@ -540,12 +561,7 @@ const Checker = struct {
             .enum_decl => |ed| try self.validateAnnotations(ed.annotations, T.ENUM),
             .use_decl, .local_decl => {},
             .asm_stmt => |as_| if (self.in_bake) {
-                try self.emit(
-                    "E_BAKE_ASM_INSIDE",
-                    as_.span.start,
-                    "`asm` is not allowed inside a `bake` context — compile-time interpretation cannot run host bytecode",
-                    null,
-                );
+                try self.emitSpan("E_BAKE_ASM_INSIDE", as_.span, "`asm` is not allowed inside a `bake` context — compile-time interpretation cannot run host bytecode");
             },
             .defer_stmt => |ds| try self.walkStatement(ds.body.*),
             .unknown => {},
@@ -678,7 +694,7 @@ const Checker = struct {
                 "tuple-destructuring pattern has {d} element{s}, init has {d}",
                 .{ tp.elems.len, suffix, slots.len },
             );
-            try self.emit("E_TYPE_TUPLE_ARITY", tp.span.start, msg, null);
+            try self.emitSpan("E_TYPE_TUPLE_ARITY", tp.span, msg);
             try self.registerPatternBindings(pat);
             return;
         }
@@ -730,12 +746,7 @@ const Checker = struct {
 
     fn checkAssign(self: *Checker, a: ast.AssignStmt) WalkError!void {
         if (!isPlaceExpr(a.target)) {
-            try self.emit(
-                "E_TYPE_MISMATCH",
-                a.target.span().start,
-                "assignment target must be a place expression (ident, field, or index)",
-                null,
-            );
+            try self.emitSpan("E_TYPE_MISMATCH", a.target.span(), "assignment target must be a place expression (ident, field, or index)");
             _ = try self.inferExpr(a.value, null);
             return;
         }
@@ -750,12 +761,7 @@ const Checker = struct {
 
     fn checkIncDec(self: *Checker, id: ast.IncDecStmt) WalkError!void {
         if (!isPlaceExpr(id.target)) {
-            try self.emit(
-                "E_TYPE_MISMATCH",
-                id.target.span().start,
-                "`++` / `--` target must be a place expression (ident, field, or index)",
-                null,
-            );
+            try self.emitSpan("E_TYPE_MISMATCH", id.target.span(), "`++` / `--` target must be a place expression (ident, field, or index)");
             return;
         }
         const tgt_ty = try self.inferExpr(id.target, null);
@@ -767,7 +773,7 @@ const Checker = struct {
                     "`++` / `--` requires an integer type, found `{s}`",
                     .{ty_s},
                 );
-                try self.emit("E_TYPE_MISMATCH", id.target.span().start, msg, null);
+                try self.emitSpan("E_TYPE_MISMATCH", id.target.span(), msg);
             }
         }
     }
@@ -902,12 +908,7 @@ const Checker = struct {
         has_wildcard: *bool,
     ) WalkError!void {
         if (has_wildcard.*) {
-            try self.emit(
-                "E_MATCH_UNREACHABLE_ARM",
-                arm.span.start,
-                "this arm cannot be reached — a wildcard `_` arm above already handles every remaining variant",
-                null,
-            );
+            try self.emitSpan("E_MATCH_UNREACHABLE_ARM", arm.span, "this arm cannot be reached — a wildcard `_` arm above already handles every remaining variant");
         }
         try self.walkArmPattern(arm.pattern, ed, covered, has_wildcard);
     }
@@ -939,7 +940,7 @@ const Checker = struct {
                         "variant `{s}.{s}` is already handled by an earlier arm",
                         .{ self.lexeme(ed.name), split.tail },
                     );
-                    try self.emit("E_MATCH_UNREACHABLE_ARM", pat.span().start, msg, null);
+                    try self.emitSpan("E_MATCH_UNREACHABLE_ARM", pat.span(), msg);
                 }
             },
             .or_pattern => |op| {
@@ -984,7 +985,7 @@ const Checker = struct {
             "non-exhaustive match on enum `{s}` — missing variant{s}: {s}",
             .{ self.lexeme(ed.name), suffix, buf.items },
         );
-        try self.emit("E_MATCH_NON_EXHAUSTIVE", match_span.start, msg, null);
+        try self.emitSpan("E_MATCH_NON_EXHAUSTIVE", match_span, msg);
     }
 
     fn checkReturn(self: *Checker, rs: ast.ReturnStmt) WalkError!void {
@@ -1014,7 +1015,7 @@ const Checker = struct {
             "returning a reference to local binding `{s}` — its storage is freed when the function returns",
             .{name},
         );
-        try self.emit("E_REF_STACK_LIFETIME", v.span().start, msg, null);
+        try self.emitSpan("E_REF_STACK_LIFETIME", v.span(), msg);
     }
 
     fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
@@ -1051,7 +1052,7 @@ const Checker = struct {
                     "`bake def` cannot return `{s}` — only types representable as static data are bakeable",
                     .{ty_s},
                 );
-                try self.emit("E_BAKE_NON_BAKEABLE_VALUE", r.span().start, msg, null);
+                try self.emitSpan("E_BAKE_NON_BAKEABLE_VALUE", r.span(), msg);
             }
         };
 
@@ -1073,7 +1074,7 @@ const Checker = struct {
                 "recursive function `{s}` needs an explicit return type",
                 .{self.lexeme(d.name)},
             );
-            try self.emit("E_TYPE_RECURSIVE_NO_RET", d.name.start, msg, self.lexeme(d.name));
+            try self.emitSpan("E_TYPE_RECURSIVE_NO_RET", d.name, msg);
         }
 
         // Track ret type for `return expr` checking inside the body.
@@ -1207,7 +1208,7 @@ const Checker = struct {
                     "undefined type `{s}`",
                     .{name},
                 );
-                try self.emit("E_TYPE_UNDEFINED", n.name.start, msg, name);
+                try self.emitSpan("E_TYPE_UNDEFINED", n.name, msg);
                 return try types.mkNamed(self.arena, name, n.span);
             },
             .nullable => |n| {
@@ -1219,7 +1220,7 @@ const Checker = struct {
                         "type `{s}?` is invalid — `T?` only applies to pointer-like types (`str`, class, fn-pointer, references)",
                         .{inner_s},
                     );
-                    try self.emit("E_NULL_NON_POINTER", n.span.start, msg, null);
+                    try self.emitSpan("E_NULL_NON_POINTER", n.span, msg);
                 }
                 return try types.mkOptional(self.arena, inner);
             },
@@ -1322,7 +1323,7 @@ const Checker = struct {
                             "binding `{s}` is `@addr`-pinned MMIO — not accessible from a `bake` context",
                             .{name},
                         );
-                        try self.emit("E_BAKE_MMIO_ACCESS", i.span.start, msg, name);
+                        try self.emitSpan("E_BAKE_MMIO_ACCESS", i.span, msg);
                     }
                     // Class names in expression position act as
                     // constructors — synthesize `fn(init.params) ->
@@ -1340,7 +1341,7 @@ const Checker = struct {
                     "undefined symbol `{s}`",
                     .{name},
                 );
-                try self.emit("E_UNDEFINED_SYMBOL", i.span.start, msg, name);
+                try self.emitSpan("E_UNDEFINED_SYMBOL", i.span, msg);
                 return null;
             },
             .self_expr => |se| {
@@ -1354,12 +1355,7 @@ const Checker = struct {
                 if (self.current_class_extends) |ext| {
                     return try types.mkNamed(self.arena, self.lexeme(ext), ext);
                 }
-                try self.emit(
-                    "E_UNDEFINED_SYMBOL",
-                    se.span.start,
-                    "`super` is only valid inside a method of a class that extends a parent",
-                    "super",
-                );
+                try self.emitSpan("E_UNDEFINED_SYMBOL", se.span, "`super` is only valid inside a method of a class that extends a parent");
                 return null;
             },
             .paren => |p| return try self.inferExpr(p.inner, hint),
@@ -1466,30 +1462,20 @@ const Checker = struct {
             "dereferencing nullable `{s}` without a prior nil-check",
             .{ty_s},
         );
-        try self.emit("E_NULL_DEREF", access_span.start, msg, null);
+        try self.emitSpan("E_NULL_DEREF", access_span, msg);
     }
 
     /// `&x` — verify the inner is a place expression and not
     /// already a reference type.
     fn checkRefOf(self: *Checker, r: ast.RefOfExpr) WalkError!?*const types.Type {
         if (!isPlaceExpr(r.inner)) {
-            try self.emit(
-                "E_REF_TEMPORARY",
-                r.span.start,
-                "cannot take a reference to a temporary value (only places — ident, field, or index — have addresses)",
-                null,
-            );
+            try self.emitSpan("E_REF_TEMPORARY", r.span, "cannot take a reference to a temporary value (only places — ident, field, or index — have addresses)");
             _ = try self.inferExpr(r.inner, null);
             return null;
         }
         const inner = try self.inferExpr(r.inner, null) orelse return null;
         if (inner.* == .reference) {
-            try self.emit(
-                "E_REF_DOUBLE",
-                r.span.start,
-                "`&&T` is not a valid type — references do not nest",
-                null,
-            );
+            try self.emitSpan("E_REF_DOUBLE", r.span, "`&&T` is not a valid type — references do not nest");
             return inner;
         }
         return try types.mkReference(self.arena, inner);
@@ -1503,12 +1489,7 @@ const Checker = struct {
                 .optional => return h,
                 .primitive => |p| if (p == .nil_) return try self.primitive(.nil_),
                 .reference => {
-                    try self.emit(
-                        "E_REF_NULLABLE",
-                        lit.span.start,
-                        "`nil` is not a valid reference value — use `T?` for nullable bindings",
-                        null,
-                    );
+                    try self.emitSpan("E_REF_NULLABLE", lit.span, "`nil` is not a valid reference value — use `T?` for nullable bindings");
                     return h;
                 },
                 else => {},
@@ -1519,7 +1500,7 @@ const Checker = struct {
                 "cannot use `nil` where `{s}` is expected",
                 .{ty_s},
             );
-            try self.emit("E_NULL_NIL_TO_NONNULL", lit.span.start, msg, null);
+            try self.emitSpan("E_NULL_NIL_TO_NONNULL", lit.span, msg);
             return h;
         }
         return try self.primitive(.nil_);
@@ -1547,12 +1528,12 @@ const Checker = struct {
                     return try self.resolveType(fld.type_ann);
                 }
             }
-            try self.emitUndefinedField(named_name, field_name, f.field.start);
+            try self.emitUndefinedField(named_name, field_name, f.field);
             return null;
         }
         if (self.class_registry.get(named_name)) |cd| {
             if (try self.lookupClassFieldType(cd, field_name)) |t| return t;
-            try self.emitUndefinedField(named_name, field_name, f.field.start);
+            try self.emitUndefinedField(named_name, field_name, f.field);
             return null;
         }
         return null;
@@ -1577,13 +1558,13 @@ const Checker = struct {
         return null;
     }
 
-    fn emitUndefinedField(self: *Checker, type_name: []const u8, field_name: []const u8, at: u32) WalkError!void {
+    fn emitUndefinedField(self: *Checker, type_name: []const u8, field_name: []const u8, span: ast.Span) WalkError!void {
         const msg = try std.fmt.allocPrint(
             self.arena,
             "type `{s}` has no field `{s}`",
             .{ type_name, field_name },
         );
-        try self.emit("E_TYPE_UNDEFINED_FIELD", at, msg, field_name);
+        try self.emitSpan("E_TYPE_UNDEFINED_FIELD", span, msg);
     }
 
     /// Type-check a method call against the class registry.
@@ -1616,7 +1597,7 @@ const Checker = struct {
                 "class `{s}` has no method `{s}`",
                 .{ named_name, method_name },
             );
-            try self.emit("E_TYPE_UNDEFINED_METHOD", m.method.start, msg, method_name);
+            try self.emitSpan("E_TYPE_UNDEFINED_METHOD", m.method, msg);
             for (m.args) |a| _ = try self.inferExpr(a, null);
             return null;
         };
@@ -1633,7 +1614,7 @@ const Checker = struct {
                 "method `{s}.{s}` takes {d} argument{s}, called with {d}",
                 .{ named_name, method_name, sig_params.len, suffix, m.args.len },
             );
-            try self.emit("E_TYPE_ARG_COUNT", m.span.start, msg, null);
+            try self.emitSpan("E_TYPE_ARG_COUNT", m.span, msg);
             for (m.args) |a| _ = try self.inferExpr(a, null);
         } else {
             for (m.args, sig_params) |arg, p| {
@@ -1678,7 +1659,7 @@ const Checker = struct {
             "undefined type `{s}`",
             .{type_name},
         );
-        try self.emit("E_TYPE_UNDEFINED", sl.type_name.start, msg, type_name);
+        try self.emitSpan("E_TYPE_UNDEFINED", sl.type_name, msg);
         for (sl.fields) |f| _ = try self.inferExpr(f.value, null);
         return named_ty;
     }
@@ -1694,7 +1675,7 @@ const Checker = struct {
         for (sl.fields) |lit_field| {
             const field_name = self.lexeme(lit_field.name);
             const decl_field = findStructField(self, decl_fields, field_name) orelse {
-                try self.emitUndefinedField(type_name, field_name, lit_field.name.start);
+                try self.emitUndefinedField(type_name, field_name, lit_field.name);
                 _ = try self.inferExpr(lit_field.value, null);
                 continue;
             };
@@ -1714,7 +1695,7 @@ const Checker = struct {
                     "missing field `{s}` in `{s}` literal",
                     .{ dn, type_name },
                 );
-                try self.emit("E_TYPE_MISSING_FIELD", sl.span.start, msg, dn);
+                try self.emitSpan("E_TYPE_MISSING_FIELD", sl.span, msg);
             }
         }
     }
@@ -1731,7 +1712,7 @@ const Checker = struct {
             // optional-typed, so an untyped field accepts anything.
             const expected_ty: ?*const types.Type = try self.lookupClassFieldType(cd, field_name);
             if (expected_ty == null and findClassField(self, cd, field_name) == null) {
-                try self.emitUndefinedField(type_name, field_name, lit_field.name.start);
+                try self.emitUndefinedField(type_name, field_name, lit_field.name);
                 _ = try self.inferExpr(lit_field.value, null);
                 continue;
             }
@@ -1808,7 +1789,7 @@ const Checker = struct {
                         "literal `{d}` does not fit in `{s}`",
                         .{ lit.value, primitiveName(p) },
                     );
-                    try self.emit("E_TYPE_MISMATCH", lit.span.start, msg, null);
+                    try self.emitSpan("E_TYPE_MISMATCH", lit.span, msg);
                 }
                 return try self.primitive(p);
             }
@@ -1999,7 +1980,7 @@ const Checker = struct {
             "operator {s} requires {s}, found `{s}`",
             .{ op_name, wants, actual_s },
         );
-        try self.emit("E_TYPE_MISMATCH", span.start, msg, null);
+        try self.emitSpan("E_TYPE_MISMATCH", span, msg);
     }
 
     // ---------- cast (`as T`) checking ----------
@@ -2016,7 +1997,7 @@ const Checker = struct {
                     "cannot cast `{s}` to `{s}`",
                     .{ from_s, to_s },
                 );
-                try self.emit("E_CAST_INVALID", c.span.start, msg, null);
+                try self.emitSpan("E_CAST_INVALID", c.span, msg);
             }
         }
         return target_ty;
@@ -2040,7 +2021,7 @@ const Checker = struct {
                 "called value has type `{s}`, expected a function",
                 .{ty_s},
             );
-            try self.emit("E_TYPE_MISMATCH", c.callee.span().start, msg, null);
+            try self.emitSpan("E_TYPE_MISMATCH", c.callee.span(), msg);
             for (c.args) |a| _ = try self.inferExpr(a, null);
             return null;
         }
@@ -2061,7 +2042,7 @@ const Checker = struct {
                 "function takes {d} argument{s}, called with {d}",
                 .{ f.params.len, suffix, c.args.len },
             );
-            try self.emit("E_TYPE_ARG_COUNT", c.span.start, msg, null);
+            try self.emitSpan("E_TYPE_ARG_COUNT", c.span, msg);
             for (c.args) |a| _ = try self.inferExpr(a, null);
             return f.ret;
         }
@@ -2087,12 +2068,7 @@ const Checker = struct {
     fn checkVariadicPosition(self: *Checker, d: ast.DefDecl) WalkError!void {
         for (d.params, 0..) |p, i| {
             if (p.variadic and i != d.params.len - 1) {
-                try self.emit(
-                    "E_VAR_NOT_LAST",
-                    p.span.start,
-                    "variadic parameter must be the last in the parameter list",
-                    null,
-                );
+                try self.emitSpan("E_VAR_NOT_LAST", p.span, "variadic parameter must be the last in the parameter list");
                 return;
             }
         }
@@ -2115,7 +2091,7 @@ const Checker = struct {
                 "variadic function requires at least {d} fixed argument{s}, called with {d}",
                 .{ fixed_count, suffix, c.args.len },
             );
-            try self.emit("E_TYPE_ARG_COUNT", c.span.start, msg, null);
+            try self.emitSpan("E_TYPE_ARG_COUNT", c.span, msg);
             for (c.args) |a| _ = try self.inferExpr(a, null);
             return f.ret;
         }
@@ -2142,7 +2118,7 @@ const Checker = struct {
                         "variadic argument has type `{s}` but earlier variadic arg was `{s}` — all variadic args must share a single type",
                         .{ got_s, exp_s },
                     );
-                    try self.emit("E_VAR_HETEROGENEOUS", arg.span().start, msg, null);
+                    try self.emitSpan("E_VAR_HETEROGENEOUS", arg.span(), msg);
                 }
             } else {
                 pivot = at;
@@ -2162,7 +2138,7 @@ const Checker = struct {
                 "cannot call non-`bake` function `{s}` from inside a `bake` context",
                 .{callee_name},
             );
-            try self.emit("E_BAKE_FORBIDDEN_CALL", c.callee.span().start, msg, callee_name);
+            try self.emitSpan("E_BAKE_FORBIDDEN_CALL", c.callee.span(), msg);
         }
     }
 };

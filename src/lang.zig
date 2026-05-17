@@ -11,6 +11,8 @@ const print_mod = @import("lang/print.zig");
 const types_mod = @import("lang/types.zig");
 const scope_mod = @import("lang/scope.zig");
 const typecheck_mod = @import("lang/typecheck.zig");
+const diag_mod = @import("lang/diagnostic.zig");
+const render_mod = @import("lang/render.zig");
 
 /// Re-export: lexer token.
 pub const Token = lexer_mod.Token;
@@ -39,3 +41,11 @@ pub const scope = scope_mod;
 pub const CheckedProgram = typecheck_mod.CheckedProgram;
 /// Re-export: walk an `ast.Program` through the typechecker.
 pub const typecheck = typecheck_mod.typecheck;
+
+/// Re-export: rich diagnostic shape carried by `CheckedProgram`.
+pub const Diagnostic = diag_mod.Diagnostic;
+/// Re-export: severity classification on a `Diagnostic`.
+pub const Severity = diag_mod.Severity;
+/// Re-export: diagnostic-rendering primitives (pretty + JSON).
+/// Per `docs/lang-diagnostics.md`.
+pub const render = render_mod;
