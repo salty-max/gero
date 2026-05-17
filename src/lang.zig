@@ -42,6 +42,10 @@ pub const scope = scope_mod;
 pub const CheckedProgram = typecheck_mod.CheckedProgram;
 /// Re-export: walk an `ast.Program` through the typechecker.
 pub const typecheck = typecheck_mod.typecheck;
+/// Re-export: typechecker module barrel — `gero.lang.typecheck`
+/// already names the entry-point function so sub-module access
+/// goes through this alias.
+pub const typechecker = typecheck_mod;
 
 /// Re-export: rich diagnostic shape carried by `CheckedProgram`.
 pub const Diagnostic = diag_mod.Diagnostic;
