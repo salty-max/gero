@@ -60,7 +60,9 @@ const Op = struct {
     const mul_reg_reg: u8 = 0x47; // dst ← dst * src
     const neg_reg: u8 = 0x4A;
     const divs_reg_reg: u8 = 0x4E; // dst ← dst / src (signed)
-    const mod_reg_reg: u8 = 0x50; // assumed name; not used in M1
+
+    const call_addr: u8 = 0xA0;
+    const ret_op: u8 = 0xA2;
 
     const sys: u8 = 0xFB;
     const hlt: u8 = 0xFF;
@@ -146,21 +148,25 @@ pub fn compile(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const entry = findEntryDef(source, checked.program, opts.entry_name) orelse return error.EntryNotFound;
+    if (findEntryDef(source, checked.program, opts.entry_name) == null) return error.EntryNotFound;
 
-    // Emit the entry def's body into a working buffer.
     var emitter: Emitter = .{
         .allocator = allocator,
         .arena = arena.allocator(),
         .source = source,
         .code = .empty,
         .locals = .{},
+        .params = .{},
         .frame_bytes = 0,
+        .is_entry = false,
+        .fn_addresses = .{},
+        .call_patches = .empty,
         .diagnostics = &diagnostics,
     };
     defer emitter.code.deinit(allocator);
+    defer emitter.call_patches.deinit(allocator);
 
-    try emitter.emitEntryBody(entry);
+    try emitter.emitProgram(checked.program, opts.entry_name);
 
     // Build base image: zeros from 0x0000 up to `code_base`, then
     // the emitted bytes.
@@ -196,6 +202,21 @@ fn findEntryDef(source: []const u8, program: *const ast.Program, entry_name: []c
 
 // ---------- Emitter ----------
 
+/// Unresolved `call addr` site — the codegen recorded the call
+/// when the callee's address wasn't yet known (forward refs). At
+/// the end of emission, every patch's 2-byte address-slot in
+/// `code` is overwritten with the resolved callee address.
+const CallPatch = struct {
+    /// Byte offset into the code buffer where the 2-byte LE
+    /// address slot lives (right after the `0xA0` opcode).
+    code_offset: usize,
+    /// Callee fn name to resolve via `fn_addresses`.
+    callee_name: []const u8,
+    /// Span of the original call expression — used to anchor the
+    /// `E_CODEGEN_UNDEFINED_FN` diagnostic on resolve failure.
+    span: ast.Span,
+};
+
 /// Per-fn codegen state — owns the working bytecode buffer, the
 /// local-slot table, and the diagnostic sink. The entry-def
 /// emission path owns one Emitter; later M1 commits will create
@@ -212,9 +233,26 @@ const Emitter = struct {
     /// to their negative fp-relative offsets (`fp - 2` is the
     /// first local, `fp - 4` the second, etc.).
     locals: std.StringHashMapUnmanaged(i8),
+    /// Param-name → positive fp-relative offset. The VM's `call`
+    /// pushes ret_ip + old_fp then sets fp = sp, so param 0 lives
+    /// at `[fp + 4]`, param 1 at `[fp + 6]`, etc. Reset per fn.
+    params: std.StringHashMapUnmanaged(i8),
     /// Total bytes reserved for this fn's locals — the prologue
     /// emits `sub frame_bytes, sp`.
     frame_bytes: u8,
+    /// `true` while emitting the entry def's body. Drives the
+    /// `return` lowering (`hlt` vs `ret`) and skips the
+    /// `push fp` / `mov sp, fp` parts of the prologue (the VM
+    /// boots with `fp == sp`).
+    is_entry: bool,
+    /// Top-level `def` name → absolute address in the base image
+    /// (`code_base + offset`). Populated as defs are emitted in
+    /// source order so calls patch correctly.
+    fn_addresses: std.StringHashMapUnmanaged(u16),
+    /// Unresolved `call addr` sites — recorded when the callee's
+    /// address isn't known yet (forward references). Rewritten at
+    /// the end of `emitProgram`.
+    call_patches: std.ArrayList(CallPatch),
     /// Sink for codegen-time diagnostics.
     diagnostics: *std.ArrayList(Diagnostic),
 
@@ -277,6 +315,13 @@ const Emitter = struct {
     /// `pop reg` (0x32).
     fn popReg(self: *Emitter, reg: u8) !void {
         try self.emitByte(Op.pop_reg);
+        try self.emitByte(reg);
+    }
+
+    /// `add imm16, reg` (0x40) — `reg ← reg + imm`.
+    fn addImmToReg(self: *Emitter, imm: u16, reg: u8) !void {
+        try self.emitByte(Op.add_imm16_reg);
+        try self.emitU16Le(imm);
         try self.emitByte(reg);
     }
 
@@ -357,19 +402,112 @@ const Emitter = struct {
         return n;
     }
 
-    // ---------- entry-def emission ----------
+    // ---------- program + def emission ----------
 
-    fn emitEntryBody(self: *Emitter, def: *const ast.DefDecl) !void {
-        // Pre-walk: reserve space for top-level locals.
+    /// Top-level orchestrator: emit the entry def first (so it
+    /// lands at `code_base`, matching `Options.entry_name` →
+    /// header `entry_point`), then every other top-level `def` in
+    /// source order, then patch unresolved call sites.
+    fn emitProgram(self: *Emitter, program: *const ast.Program, entry_name: []const u8) !void {
+        const entry = findEntryDef(self.source, program, entry_name).?;
+        try self.emitDef(entry, .entry);
+        for (program.statements) |*stmt| switch (stmt.*) {
+            .def_decl => |*dd| if (dd != entry) try self.emitDef(dd, .regular),
+            else => {},
+        };
+        try self.patchCalls();
+    }
+
+    const DefKind = enum { entry, regular };
+
+    /// Emit one def's prologue + body + epilogue. Reset per-fn
+    /// state (locals / params / frame_bytes / is_entry) so each
+    /// def gets a fresh frame view.
+    fn emitDef(self: *Emitter, def: *const ast.DefDecl, kind: DefKind) !void {
+        const name = self.source[def.name.start..def.name.end];
+        const dup_name = try self.arena.dupe(u8, name);
+        // @as: narrow usize code offset to u16; base image fits in 64 KiB by ISA.
+        const code_offset: u16 = @intCast(self.code.items.len);
+        const addr = code_base + code_offset;
+        try self.fn_addresses.put(self.arena, dup_name, addr);
+
+        // Save + restore per-fn state.
+        const saved_locals = self.locals;
+        const saved_params = self.params;
+        const saved_frame = self.frame_bytes;
+        const saved_entry = self.is_entry;
+        self.locals = .{};
+        self.params = .{};
+        self.frame_bytes = 0;
+        self.is_entry = (kind == .entry);
+        defer {
+            self.locals = saved_locals;
+            self.params = saved_params;
+            self.frame_bytes = saved_frame;
+            self.is_entry = saved_entry;
+        }
+
+        // Bind params to positive fp-relative offsets. `call` left
+        // the stack as: [low] ret_ip, old_fp, arg_N-1, ..., arg_1,
+        // arg_0 [high] (per right-to-left push order at the call
+        // site). fp points at ret_ip, so param 0 is at fp+4,
+        // param 1 at fp+6, etc.
+        for (def.params, 0..) |p, i| {
+            const p_name = self.source[p.name.start..p.name.end];
+            const dup_p = try self.arena.dupe(u8, p_name);
+            // @as: u8 frame index → i8 fp-offset; cap at 62 params → fits.
+            const offset: i8 = @intCast(4 + 2 * @as(i32, @intCast(i)));
+            try self.params.put(self.arena, dup_p, offset);
+        }
+
+        // Reserve local slots up front (cheap fixed reservation —
+        // a real allocator would compute live ranges).
         const local_count = self.countLocalsInBody(def.body);
         if (local_count > 0) {
-            // safety: 2 bytes per slot, capped at 64 locals → fits u16 easily.
+            // @as: 2 bytes per slot capped well below u16.
             const reserve_bytes: u16 = @intCast(local_count * 2);
             try self.subImmFromReg(reserve_bytes, Reg.sp);
         }
+
         for (def.body) |stmt| try self.emitStatement(stmt);
-        // Entry epilogue: halt. The program ends here.
-        try self.hlt();
+
+        // Implicit epilogue (no explicit `return`).
+        if (self.is_entry) {
+            try self.hlt();
+        } else {
+            // `ret` resets sp = fp then pops ret_ip + old_fp. The
+            // VM handles the whole tear-down; we just need to land
+            // the return value in acu (callers read from there).
+            try self.emitByte(Op.ret_op);
+        }
+    }
+
+    /// Rewrite each unresolved call's 2-byte address slot. An
+    /// unresolved callee name surfaces as
+    /// `E_CODEGEN_UNDEFINED_FN` — should be unreachable in
+    /// well-typed input (the typechecker resolves identifiers
+    /// first) but the check keeps the codegen defensive.
+    fn patchCalls(self: *Emitter) !void {
+        for (self.call_patches.items) |p| {
+            const target = self.fn_addresses.get(p.callee_name) orelse {
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "codegen: call target `{s}` is not a known top-level def",
+                    .{p.callee_name},
+                );
+                try self.diagnostics.append(self.allocator, .{
+                    .severity = .fatal,
+                    .code = "E_CODEGEN_UNDEFINED_FN",
+                    .message = msg,
+                    .span = p.span,
+                });
+                continue;
+            };
+            // Overwrite the 2-byte LE address slot.
+            // safety: u16 → 2 bytes by definition; both casts are byte-masks.
+            self.code.items[p.code_offset] = @intCast(target & 0xFF);
+            self.code.items[p.code_offset + 1] = @intCast(target >> 8);
+        }
     }
 
     // ---------- statement emission ----------
@@ -415,10 +553,12 @@ const Emitter = struct {
 
     fn emitReturnStmt(self: *Emitter, r: ast.ReturnStmt) !void {
         if (r.value) |v| try self.emitExpr(v);
-        // Inside the entry def, `return` halts (no caller to return
-        // to). Non-entry defs get a real epilogue in the next M1
-        // commit.
-        try self.hlt();
+        if (self.is_entry) {
+            // Entry def has no caller — halt instead of ret.
+            try self.hlt();
+        } else {
+            try self.emitByte(Op.ret_op);
+        }
     }
 
     fn emitPrintStmt(self: *Emitter, p: ast.PrintStmt) !void {
@@ -479,7 +619,7 @@ const Emitter = struct {
             .paren => |p| try self.emitExpr(p.inner),
             .ident => |i| {
                 const name = self.source[i.span.start..i.span.end];
-                const ofs = self.locals.get(name) orelse {
+                const ofs = self.locals.get(name) orelse self.params.get(name) orelse {
                     try self.unsupported(i.span, "ident not in current frame");
                     return;
                 };
@@ -487,6 +627,7 @@ const Emitter = struct {
             },
             .unary => |u| try self.emitUnary(u),
             .binary => |b| try self.emitBinary(b),
+            .call => |c| try self.emitCall(c),
             else => try self.unsupported(e.span(), "this expression form"),
         }
     }
@@ -531,6 +672,53 @@ const Emitter = struct {
             },
             // M2 picks up: comparison / logical / bitwise / shift / mod.
             else => try self.unsupported(b.span, "this binary operator"),
+        }
+    }
+
+    /// Lower `callee(args...)` per the free-fn calling convention:
+    ///
+    ///   - Push args **right-to-left** (so callee sees param 0 at
+    ///     `[fp + 4]`, param 1 at `[fp + 6]`, ...).
+    ///   - `call <addr>` — the VM enters: push fp, push ret_ip,
+    ///     fp ← sp, ip ← target.
+    ///   - On return, `add <N*2>, sp` to drop the args. The
+    ///     callee's return value lives in `acu`.
+    ///
+    /// Slice M1 only handles direct calls — the callee must be a
+    /// bare ident referencing a top-level `def`. Method calls /
+    /// closure invocations / fn-pointer calls land in M3.
+    fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
+        if (c.callee.* != .ident) {
+            try self.unsupported(c.span, "non-ident callee");
+            return;
+        }
+        // Push args right-to-left.
+        var i: usize = c.args.len;
+        while (i > 0) {
+            i -= 1;
+            try self.emitExpr(c.args[i]);
+            try self.pushReg(Reg.acu);
+        }
+
+        // Emit `call <addr>` with a placeholder address; the
+        // patching pass rewrites it once every def's address is
+        // known.
+        try self.emitByte(Op.call_addr);
+        const patch_offset = self.code.items.len;
+        try self.emitU16Le(0); // placeholder
+        const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
+        const dup = try self.arena.dupe(u8, callee_name);
+        try self.call_patches.append(self.allocator, .{
+            .code_offset = patch_offset,
+            .callee_name = dup,
+            .span = c.span,
+        });
+
+        // Caller-cleans-up the pushed args.
+        if (c.args.len > 0) {
+            // @as: each arg is one 16-bit word.
+            const drop_bytes: u16 = @intCast(c.args.len * 2);
+            try self.addImmToReg(drop_bytes, Reg.sp);
         }
     }
 
