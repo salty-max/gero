@@ -7,7 +7,7 @@
 const std = @import("std");
 const gero = @import("gero");
 
-const relations = gero.lang.typechecker.relations;
+const relations = gero.lang.typechecker.internal.relations;
 const types = gero.lang.types;
 
 const alloc = std.testing.allocator;

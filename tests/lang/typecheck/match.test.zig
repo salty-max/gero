@@ -6,15 +6,15 @@ const std = @import("std");
 const gero = @import("gero");
 
 test "typecheck/match: module compiles through the barrel" {
-    _ = gero.lang.typechecker.match;
+    _ = gero.lang.typechecker.internal.match;
 }
 
 test "typecheck/match: splitPath splits `Enum.Variant` correctly" {
-    const result = gero.lang.typechecker.match.splitPath("Color.Red");
+    const result = gero.lang.typechecker.internal.match.splitPath("Color.Red");
     try std.testing.expectEqualStrings("Color", result.head);
     try std.testing.expectEqualStrings("Red", result.tail);
 
-    const no_dot = gero.lang.typechecker.match.splitPath("Lone");
+    const no_dot = gero.lang.typechecker.internal.match.splitPath("Lone");
     try std.testing.expectEqualStrings("", no_dot.head);
     try std.testing.expectEqualStrings("Lone", no_dot.tail);
 }

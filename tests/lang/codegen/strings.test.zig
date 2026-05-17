@@ -7,9 +7,9 @@ const std = @import("std");
 const gero = @import("gero");
 
 test "codegen/strings: module compiles through the barrel" {
-    _ = gero.lang.codegen.strings;
+    _ = gero.lang.codegen.internal.strings;
 }
 
 test "codegen/strings: interp_buffer_size is the documented 64 bytes" {
-    try std.testing.expectEqual(@as(u16, 64), gero.lang.codegen.strings.interp_buffer_size);
+    try std.testing.expectEqual(@as(u16, 64), gero.lang.codegen.internal.strings.interp_buffer_size);
 }

@@ -6,14 +6,14 @@
 const std = @import("std");
 const gero = @import("gero");
 
-const predicates = gero.lang.typechecker.predicates;
+const predicates = gero.lang.typechecker.internal.predicates;
 const types = gero.lang.types;
 const ast = gero.lang.ast;
 
 const alloc = std.testing.allocator;
 
 test "typecheck/predicates: module compiles through the barrel" {
-    _ = gero.lang.typechecker.predicates;
+    _ = gero.lang.typechecker.internal.predicates;
 }
 
 // ---------- isIntegerPrimitive ----------

@@ -1,6 +1,6 @@
 const std = @import("std");
 const gero = @import("gero");
-const opcodes = gero.lang.codegen.opcodes;
+const opcodes = gero.lang.codegen.internal.opcodes;
 
 test "opcodes: Op.mov_imm16_reg matches the VM dispatch table entry" {
     try std.testing.expectEqual(@as(u8, 0x10), opcodes.Op.mov_imm16_reg);
