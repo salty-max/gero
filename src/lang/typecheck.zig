@@ -29,6 +29,14 @@ const Severity = diag_mod.Severity;
 pub const CheckedProgram = struct {
     program: *const ast.Program,
     diagnostics: []Diagnostic,
+    /// Inferred type for every `*const Expr` the typechecker walked.
+    /// Keys are AST-stable pointers from the parser's arena; values
+    /// live in `type_arena`. The codegen reads this map for
+    /// type-driven instruction selection (fixed-point arithmetic,
+    /// `print` dispatch between `print_int` / `print_str`, etc.).
+    /// Missing entries mean the expression's type couldn't be
+    /// inferred — callers should fall back rather than assume.
+    expr_types: std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type),
     type_arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
 
@@ -42,6 +50,12 @@ pub const CheckedProgram = struct {
     pub fn hasErrors(self: CheckedProgram) bool {
         for (self.diagnostics) |d| if (d.severity == .fatal) return true;
         return false;
+    }
+
+    /// Look up the inferred type for an expression. Returns `null`
+    /// when the typechecker didn't see / record it.
+    pub fn typeOf(self: *const CheckedProgram, e: *const ast.Expr) ?*const types.Type {
+        return self.expr_types.get(e);
     }
 };
 
@@ -61,6 +75,9 @@ pub fn typecheck(
     var module_scope: Scope = .init(a, null);
     // No `defer deinit` — the arena releases the scope's map storage
     // when `CheckedProgram.deinit` runs.
+
+    var expr_types: std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type) = .{};
+    errdefer expr_types.deinit(a);
 
     var c: Checker = .{
         .source = source,
@@ -83,6 +100,7 @@ pub fn typecheck(
         .in_bake = false,
         .in_no_capture = false,
         .lambda_locals = null,
+        .expr_types = &expr_types,
     };
 
     // Pre-pass: capture stable enum / struct / class / def decl
@@ -131,6 +149,7 @@ pub fn typecheck(
     return .{
         .program = program,
         .diagnostics = try diagnostics.toOwnedSlice(allocator),
+        .expr_types = expr_types,
         .type_arena = arena,
         .allocator = allocator,
     };
@@ -208,6 +227,10 @@ const Checker = struct {
     /// to the `non_nil` set (the canonical multi-return idiom per
     /// §3.4.1).
     tuple_correlations: std.StringHashMapUnmanaged([]const u8),
+    /// Out-param: every successful `inferExpr` writes its result here
+    /// keyed by the AST pointer. Owned by the caller; outlives the
+    /// `Checker` so the codegen can read it via `CheckedProgram`.
+    expr_types: *std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type),
 
     /// Mutually recursive walker fns need an explicit error set —
     /// Zig's inferred sets would deadlock the dependency graph.
@@ -1362,7 +1385,16 @@ const Checker = struct {
     /// caller expects this expression to produce, used by literal
     /// inference to pin to the requested primitive. `null` when no
     /// context is available.
+    ///
+    /// Records the inferred type on `expr_types` before returning so
+    /// the codegen can consume it without re-walking the AST.
     fn inferExpr(self: *Checker, e: *const ast.Expr, hint: ?*const types.Type) WalkError!?*const types.Type {
+        const ty = try self.inferExprInner(e, hint);
+        if (ty) |t| try self.expr_types.put(self.arena, e, t);
+        return ty;
+    }
+
+    fn inferExprInner(self: *Checker, e: *const ast.Expr, hint: ?*const types.Type) WalkError!?*const types.Type {
         switch (e.*) {
             .int_lit => |lit| return try self.inferIntLit(lit, hint),
             .fixed_lit => return try self.primitive(.fixed),

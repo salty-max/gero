@@ -1018,6 +1018,171 @@ test "codegen: defer fires on continue path before going to next iteration" {
         "1\n9\n9\n3\n9\n");
 }
 
+// ---------- M1 self-review backfill: AC items previously missing ----------
+
+test "codegen: print of a string literal goes through sys print_str + emits `hi`" {
+    try runAndExpect(
+        \\def main()
+        \\  print "hi"
+        \\end
+    , "hi\n");
+}
+
+test "codegen: string literals dedup — two `print` sites share one pool entry" {
+    // The pool intern path keys on byte content; two `print "hi"`
+    // calls should reference the same `mov str_addr, acu` immediate.
+    try runAndExpect(
+        \\def main()
+        \\  print "hi"
+        \\  print "hi"
+        \\end
+    , "hi\nhi\n");
+}
+
+test "codegen: string escape sequences decode at codegen time" {
+    try runAndExpect(
+        \\def main()
+        \\  print "a\tb"
+        \\end
+    ,
+        // \t becomes a real tab byte; trailing newline from `print`.
+        "a\tb\n");
+}
+
+test "codegen: fixed-point multiply emits `mul + asr 8` and rounds to Q8.8" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: fixed = 2.5
+        \\  let b: fixed = 1.5
+        \\  let c: fixed = a * b
+        \\  print c
+        \\end
+    ,
+        // 2.5 * 1.5 = 3.75. Q8.8 encoding: 3*256 + round(0.75*256)
+        // = 768 + 192 = 960. `print` of a `fixed` falls through to
+        // print_int per the M1 dispatch, so we expect "960\n".
+        "960\n");
+}
+
+test "codegen: fixed-point divide emits `shl 8 + divs` and rounds to Q8.8" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: fixed = 5.0
+        \\  let b: fixed = 2.0
+        \\  let c: fixed = a / b
+        \\  print c
+        \\end
+    ,
+        // 5.0 / 2.0 = 2.5 → Q8.8 = 2*256 + 128 = 640.
+        "640\n");
+}
+
+test "codegen: fixed-point round-trip `(a * b) / c` matches expected" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: fixed = 4.0
+        \\  let b: fixed = 3.0
+        \\  let c: fixed = 2.0
+        \\  let r: fixed = (a * b) / c
+        \\  print r
+        \\end
+    ,
+        // 4*3 = 12, /2 = 6.0 → Q8.8 = 6*256 = 1536.
+        "1536\n");
+}
+
+test "codegen: recursive fib(10) computes 55" {
+    try runAndExpect(
+        \\def fib(n: i16) -> i16
+        \\  if n < 2
+        \\    return n
+        \\  end
+        \\  return fib(n - 1) + fib(n - 2)
+        \\end
+        \\def main()
+        \\  print fib(10)
+        \\end
+    , "55\n");
+}
+
+test "codegen: nullary call returning a literal" {
+    try runAndExpect(
+        \\def answer() -> i16
+        \\  return 42
+        \\end
+        \\def main()
+        \\  print answer()
+        \\end
+    , "42\n");
+}
+
+test "codegen: 3-arg call sums its args left-to-right" {
+    try runAndExpect(
+        \\def add3(a: i16, b: i16, c: i16) -> i16
+        \\  return a + b + c
+        \\end
+        \\def main()
+        \\  print add3(1, 2, 3)
+        \\end
+    , "6\n");
+}
+
+test "codegen: 4-arg call preserves all four params at the right fp offsets" {
+    try runAndExpect(
+        \\def four(a: i16, b: i16, c: i16, d: i16) -> i16
+        \\  return ((a * 1000) + (b * 100) + (c * 10) + d)
+        \\end
+        \\def main()
+        \\  print four(1, 2, 3, 4)
+        \\end
+    , "1234\n");
+}
+
+test "codegen: caller-saves invariant — local survives a call that clobbers acu" {
+    try runAndExpect(
+        \\def overwrite() -> i16
+        \\  return 99
+        \\end
+        \\def main()
+        \\  let a: i16 = 7
+        \\  _ = overwrite()
+        \\  print a
+        \\end
+    , "7\n");
+}
+
+test "codegen: zero-page overflow emits E_CODEGEN_ZP_OVERFLOW" {
+    // 130 `@zero_page` u16 globals = 260 bytes — exceeds the 256-byte
+    // zero-page budget at the 129th binding (which would push the
+    // cursor past `$00FF`).
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(alloc);
+    var i: usize = 0;
+    while (i < 130) : (i += 1) {
+        const line = try std.fmt.allocPrint(alloc, "@zero_page\nlet v{d}: u16 = 0\n", .{i});
+        defer alloc.free(line);
+        try source.appendSlice(alloc, line);
+    }
+    try source.appendSlice(alloc, "def main() end");
+
+    var stream = try gero.lang.tokenize(alloc, source.items);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source.items, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source.items, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source.items, &checked, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_ZP_OVERFLOW")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
 test "codegen: custom entry_name resolves" {
     const source = "def boot() end";
     var stream = try gero.lang.tokenize(alloc, source);
