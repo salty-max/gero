@@ -39,9 +39,19 @@ test "header: minimal valid cart exposes fields" {
     try std.testing.expectEqual(@as(u16, 3), h.image_size);
     try std.testing.expectEqual(@as(u8, 0), h.bank_count);
     try std.testing.expectEqual(@as(u8, 0), h.sram_bank_count);
+    try std.testing.expectEqual(@as(u16, 0), h.heap_base);
     try std.testing.expectEqualSlices(u8, &.{ 0xFF, 0xFF, 0xFF }, h.image);
     try std.testing.expectEqual(@as(usize, 0), h.banks.len);
     try std.testing.expectEqual(@as(usize, 0), h.debug.len);
+}
+
+test "header: heap_base parses from bytes 0x0E..0x0F (little-endian)" {
+    var buf: [16]u8 = undefined;
+    _ = buildGx(&buf, 0, 0x1100, 0, 0, 0);
+    buf[0x0E] = 0x34;
+    buf[0x0F] = 0x12;
+    const h = try gero.disasm.parseHeader(&buf);
+    try std.testing.expectEqual(@as(u16, 0x1234), h.heap_base);
 }
 
 test "header: bad magic rejected" {

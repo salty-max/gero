@@ -540,11 +540,17 @@ silent no-ops. Unknown syscall numbers raise the
 
 | ID    | Name            | Register convention                            |
 |-------|-----------------|------------------------------------------------|
-| `0x01`| `print_str`     | `acu` = address of a null-terminated byte string in memory. Bytes (without the trailing `\0`) are written to `Host.out`. |
-| `0x02`| `print_int`     | `acu` = signed 16-bit value. Written as decimal to `Host.out`. |
-| `0x03`| `print_char`    | low byte of `acu` written directly. |
-| `0x04`| `print_newline` | writes a single `\n` byte. |
-| `0x20`| `alloc`         | bump-allocate `acu` bytes on the heap. On success, sets `acu` to the address of the freshly-allocated block and advances the VM's heap cursor by the requested size. On exhaustion (cursor + size would collide with the stack or fall outside the program's heap region), raises the **heap-exhausted** fault (vector `0x04`). Faults if `heap_base = 0` (program declared no heap). |
+| `0x01`| `print_str`            | `acu` = address of a null-terminated byte string in memory. Bytes (without the trailing `\0`) are written to `Host.out`. |
+| `0x02`| `print_int`            | `acu` = signed 16-bit value. Written as decimal to `Host.out`. |
+| `0x03`| `print_char`           | low byte of `acu` written directly. |
+| `0x04`| `print_newline`        | writes a single `\n` byte. |
+| `0x05`| `print_fixed`          | `acu` = Q8.8 fixed-point value. Formats as `<int>.<3-digit-frac>` decimal — e.g. value `384` (1.5 in Q8.8) prints `1.500`. Negative values get a leading `-`. |
+| `0x10`| `format_str_to_buf`    | `acu` = source str address (null-terminated). `r1` = dst cursor. Copies the bytes (excluding the trailing null) from `[acu]` to `[r1]`, then advances `r1` past the copy. |
+| `0x11`| `format_int_to_buf`    | `acu` = i16 value. `r1` = dst cursor. Appends the signed-decimal representation of `acu` at `[r1]`, then advances `r1`. |
+| `0x12`| `format_char_to_buf`   | `acu` = char value (low byte). `r1` = dst cursor. Writes the low byte to `[r1]`, advances `r1` by 1. |
+| `0x13`| `format_fixed_to_buf`  | `acu` = Q8.8 value. `r1` = dst cursor. Appends the same `<int>.<3-digit-frac>` formatting as `print_fixed` at `[r1]`, then advances `r1`. |
+| `0x14`| `format_terminate_buf` | `r1` = dst cursor. Writes a single null byte at `[r1]` and advances `r1` by 1 (so chained terminators don't stomp the same slot). |
+| `0x20`| `alloc`                | bump-allocate `acu` bytes on the heap. On success, sets `acu` to the address of the freshly-allocated block and advances the VM's heap cursor by the requested size. On exhaustion (cursor + size would collide with the stack or fall outside the program's heap region), raises the **heap-exhausted** fault (vector `0x04`). Faults if `heap_base = 0` (program declared no heap). |
 
 Writer failures (host stdout closed, OOM in the writer's buffer)
 raise the **invalid-opcode** fault as well. The `sys` mechanism is

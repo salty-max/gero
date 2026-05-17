@@ -483,3 +483,33 @@ test "sys 0xFB alloc 0x20: size that would overflow u16 raises heap_exhausted" {
     try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
     try std.testing.expectEqual(@as(u16, 0xFF00), vm.heap_cursor);
 }
+
+test "sys 0xFB alloc 0x20: boundary cursor + size == sp succeeds (no fault)" {
+    // The OOH check is `new_cursor > sp`, so allocating exactly up
+    // to (and including) sp is allowed. One byte past would fault.
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.heap_cursor = 0x3000;
+    vm.regs.write(.sp, 0x3010);
+    vm.regs.write(.acu, 0x10);
+    loadProgram(&vm, &.{ 0xFB, 0x20 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x3000), vm.regs.read(.acu));
+    try std.testing.expectEqual(@as(u16, 0x3010), vm.heap_cursor);
+    // ip advances past the 2-byte sys instruction — no fault path.
+    try std.testing.expectEqual(@as(u16, 0x1102), vm.regs.read(.ip));
+}
+
+test "sys 0xFB alloc 0x20: one byte past sp raises heap_exhausted" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.heap_cursor = 0x3000;
+    vm.regs.write(.sp, 0x3010);
+    vm.mmap.writeWord(gero.vm.ivtSlot(.heap_exhausted), 0x5000);
+    // 0x3000 + 0x11 = 0x3011 > sp (0x3010) → fault.
+    vm.regs.write(.acu, 0x11);
+    loadProgram(&vm, &.{ 0xFB, 0x20 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0x5000), vm.regs.read(.ip));
+    try std.testing.expectEqual(@as(u16, 0x3000), vm.heap_cursor);
+}
