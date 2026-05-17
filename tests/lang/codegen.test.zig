@@ -281,6 +281,120 @@ test "codegen: print of let-bound value (1 + 2 = 3)" {
     try std.testing.expectEqualStrings("3\n", writer.written());
 }
 
+// ---------- free-fn calling convention (M1 chunk 2) ----------
+
+test "codegen: nullary fn call returns acu value" {
+    var compiled = try compileSource(
+        \\def answer() -> i16
+        \\  return 42
+        \\end
+        \\
+        \\def main()
+        \\  let r: i16 = answer()
+        \\  print r
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("42\n", writer.written());
+}
+
+test "codegen: binary fn (add a, b) called with literals" {
+    var compiled = try compileSource(
+        \\def add(a: i16, b: i16) -> i16
+        \\  return a + b
+        \\end
+        \\
+        \\def main()
+        \\  print add(2, 3)
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("5\n", writer.written());
+}
+
+test "codegen: call result stored into let-bound local" {
+    var compiled = try compileSource(
+        \\def add(a: i16, b: i16) -> i16
+        \\  return a + b
+        \\end
+        \\
+        \\def main()
+        \\  let r: i16 = add(5, 3)
+        \\  print r
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("8\n", writer.written());
+}
+
+test "codegen: param order respects source ordering (sub a, b)" {
+    var compiled = try compileSource(
+        \\def sub(a: i16, b: i16) -> i16
+        \\  return a - b
+        \\end
+        \\
+        \\def main()
+        \\  print sub(10, 3)
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("7\n", writer.written());
+}
+
+test "codegen: nested call (twice(twice(2)) = 8)" {
+    var compiled = try compileSource(
+        \\def twice(x: i16) -> i16
+        \\  return x + x
+        \\end
+        \\
+        \\def main()
+        \\  print twice(twice(2))
+        \\end
+    );
+    defer compiled.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("8\n", writer.written());
+}
+
 test "codegen: custom entry_name resolves" {
     const source = "def boot() end";
     var stream = try gero.lang.tokenize(alloc, source);
