@@ -30,11 +30,13 @@ pub fn parseLetDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
     errdefer parser_mod.freeAnnSlice(p.allocator, annotations);
 
     const pattern = try pattern_mod.parsePattern(p);
+    errdefer ast.freePattern(p.allocator, pattern);
 
     var type_ann: ?*ast.TypeAnn = null;
     if (p.accept(.colon)) |_| {
         type_ann = try type_mod.parseTypeAnn(p);
     }
+    errdefer if (type_ann) |t| ast.freeTypeAnn(p.allocator, t);
 
     var init: ?*ast.Expr = null;
     if (p.accept(.equals)) |_| {
@@ -42,9 +44,10 @@ pub fn parseLetDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
     } else if (type_ann == null) {
         try p.recordError(
             "expected `=` or `: T` after `let` binding",
-            "= or : T",
+            "E_SYNTAX_MISSING_TOKEN",
         );
     }
+    errdefer if (init) |e| ast.freeExpr(p.allocator, e);
 
     const end = if (init) |e| e.span().end else if (type_ann) |t| t.span().end else pattern.span().end;
     try p.requireStatementBoundary();
@@ -67,7 +70,7 @@ pub fn parseConstDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
     const annotations = try parser_mod.takePendingAnnotations(p);
     errdefer parser_mod.freeAnnSlice(p.allocator, annotations);
 
-    const name_tok = try p.expect(.ident, "identifier");
+    const name_tok = try p.expect(.ident, "E_SYNTAX_MISSING_TOKEN");
     const name_span = ast.Span.fromToken(name_tok);
 
     var type_ann: ?*ast.TypeAnn = null;
@@ -193,7 +196,7 @@ pub fn parseParamList(p: *Parser) ParserError![]ast.Param {
                 break :blk .{ .start = tok.start, .end = tok.end };
             },
             else => {
-                try p.recordError("expected parameter name", "identifier");
+                try p.recordError("expected parameter name", "E_SYNTAX_MISSING_TOKEN");
                 return error.ParseFailed;
             },
         };
@@ -295,7 +298,7 @@ pub fn parseClassDecl(p: *Parser, is_local: bool) ParserError!ast.Statement {
             else => {
                 try p.recordError(
                     "expected field (`let`) or method (`def`) in class body",
-                    "let or def",
+                    "E_SYNTAX_UNEXPECTED_TOKEN",
                 );
                 try p.recoverToNewline();
             },
@@ -599,7 +602,7 @@ fn parseQuotedPath(p: *Parser, quoted: *bool) ParserError!ast.Span {
             .str_expr_start => {
                 try p.recordError(
                     "string interpolation not allowed in `use` path",
-                    "literal path",
+                    "E_SYNTAX_UNEXPECTED_TOKEN",
                 );
                 return error.ParseFailed;
             },
@@ -657,7 +660,7 @@ pub fn parseLocalDecl(
             }
             try p.recordError(
                 "expected declaration after `local`",
-                "let / const / def / class / struct / enum / use",
+                "E_SYNTAX_MISSING_TOKEN",
             );
             try p.recoverToNewline();
             try statements.append(p.allocator, .{ .local_decl = .{
@@ -667,7 +670,7 @@ pub fn parseLocalDecl(
         else => {
             try p.recordError(
                 "expected declaration after `local`",
-                "let / const / def / class / struct / enum / use",
+                "E_SYNTAX_MISSING_TOKEN",
             );
             try p.recoverToNewline();
             try statements.append(p.allocator, .{ .local_decl = .{

@@ -36,10 +36,17 @@ const Kind = lexer.Token.Kind;
 pub const ParseTree = struct {
     program: ast.Program,
     errors: []core.ParseError,
+    /// Owned message strings the parser allocPrint'd for richer
+    /// diagnostics (e.g. `expect` building `"expected )"`).
+    /// String literals don't land here — only heap-allocated bytes
+    /// that need freeing at deinit.
+    allocated_messages: [][]const u8,
     allocator: std.mem.Allocator,
 
     /// Release the owned statement list and the diagnostics buffer.
     pub fn deinit(self: *ParseTree) void {
+        for (self.allocated_messages) |m| self.allocator.free(m);
+        self.allocator.free(self.allocated_messages);
         self.program.deinit();
         self.allocator.free(self.errors);
     }
@@ -80,6 +87,12 @@ pub fn parse(
         allocator.free(a.args);
     };
 
+    var allocated_messages: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (allocated_messages.items) |m| allocator.free(m);
+        allocated_messages.deinit(allocator);
+    }
+
     var p: Parser = .{
         .source = source,
         .tokens = stream.tokens,
@@ -87,6 +100,7 @@ pub fn parse(
         .allocator = allocator,
         .errors = &errors,
         .pending_annotations = &pending_annotations,
+        .allocated_messages = &allocated_messages,
     };
 
     p.skipNewlines();
@@ -103,7 +117,7 @@ pub fn parse(
             "lang_parser",
             pending_annotations.items[0].span.start,
             "annotation at EOF has no following declaration to attach to",
-            .{ .expected = "declaration after annotation", .kind = .semantic },
+            .{ .expected = "E_SYNTAX_ANNOTATION_PLACEMENT", .kind = .semantic },
         ));
         for (pending_annotations.items) |a| {
             for (a.args) |arg| ast.freeExpr(allocator, arg);
@@ -118,6 +132,7 @@ pub fn parse(
             .allocator = allocator,
         },
         .errors = try errors.toOwnedSlice(allocator),
+        .allocated_messages = try allocated_messages.toOwnedSlice(allocator),
         .allocator = allocator,
     };
 }
@@ -172,6 +187,10 @@ pub const Parser = struct {
     allocator: std.mem.Allocator,
     errors: *std.ArrayList(core.ParseError),
     pending_annotations: *std.ArrayList(ast.Annotation),
+    /// Heap-allocated message strings (`expect`'s formatted
+    /// "expected X"). Stashed here so `ParseTree.deinit` can free
+    /// them. String literals don't land here.
+    allocated_messages: *std.ArrayList([]const u8),
 
     /// Current token. Always defined — the lexer guarantees a
     /// trailing `.eof` token.
@@ -220,7 +239,7 @@ pub const Parser = struct {
         }
         try self.recordError(
             "expected newline or end-of-input after statement",
-            "newline",
+            "E_SYNTAX_MISSING_TOKEN",
         );
         try self.recoverToNewline();
     }
@@ -254,11 +273,15 @@ pub const Parser = struct {
     }
 
     /// Expect a specific token kind. Returns the consumed token on
-    /// hit; on miss, emits a diagnostic and bails with
-    /// `error.ParseFailed` (caller recovers to the next newline).
+    /// hit; on miss, emits a `E_SYNTAX_MISSING_TOKEN` diagnostic and
+    /// bails with `error.ParseFailed` (caller recovers to the next
+    /// newline). The `what` string is folded into the message body so
+    /// the user sees what was expected.
     pub fn expect(self: *Parser, kind: Kind, what: []const u8) ParserError!lexer.Token {
         if (self.accept(kind)) |t| return t;
-        try self.recordError("expected token", what);
+        const msg = try std.fmt.allocPrint(self.allocator, "expected {s}", .{what});
+        try self.allocated_messages.append(self.allocator, msg);
+        try self.recordError(msg, "E_SYNTAX_MISSING_TOKEN");
         return error.ParseFailed;
     }
 
@@ -342,7 +365,7 @@ fn parseBakeStatement(p: *Parser) ParserError!ast.Statement {
         else => {
             try p.recordError(
                 "`bake` must prefix a `def` or `do` block",
-                "bake def | bake do",
+                "E_SYNTAX_UNEXPECTED_TOKEN",
             );
             return error.ParseFailed;
         },
@@ -376,7 +399,7 @@ fn emitAsmKeywordStmt(
     if (!p.check(.str_start)) {
         try p.recordError(
             "`asm` expects a string literal with the instruction body",
-            "asm \"...\"",
+            "E_SYNTAX_MISSING_TOKEN",
         );
         return error.ParseFailed;
     }
@@ -391,7 +414,7 @@ fn emitAsmKeywordStmt(
             .str_expr_start => {
                 try p.recordError(
                     "`$(...)` interpolation is not allowed inside `asm`; use `{name}` operand substitution instead",
-                    "asm body without interpolation",
+                    "E_SYNTAX_UNEXPECTED_TOKEN",
                 );
                 return error.ParseFailed;
             },
@@ -405,7 +428,7 @@ fn emitAsmKeywordStmt(
                 return;
             },
             else => {
-                try p.recordError("malformed asm body", "string content");
+                try p.recordError("malformed asm body", "E_SYNTAX_MALFORMED_LITERAL");
                 return error.ParseFailed;
             },
         }
@@ -431,7 +454,7 @@ pub fn parseStatement(
             if (std.mem.eql(u8, name, "asm")) {
                 try p.recordError(
                     "`@asm(\"...\")` is no longer accepted; use the `asm \"...\"` statement (§4.11)",
-                    "asm \"...\"",
+                    "E_SYNTAX_ANNOTATION_PLACEMENT",
                 );
                 return error.ParseFailed;
             }

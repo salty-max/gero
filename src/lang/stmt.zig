@@ -22,10 +22,11 @@ const Kind = lexer.Token.Kind;
 /// separator (§4.5) — emit a clear error rather than letting the
 /// inner block consume the loop body silently.
 fn rejectStrandedDo(p: *Parser, context: []const u8) ParserError!void {
+    _ = context; // Was the "expected" prose hint — message body carries it.
     if (p.check(.kw_do)) {
         try p.recordError(
             "`do` is not a loop-head separator — the head ends at the newline (`do…end` is the block form only)",
-            context,
+            "E_SYNTAX_UNEXPECTED_TOKEN",
         );
         return error.ParseFailed;
     }
@@ -419,7 +420,7 @@ pub fn parseDeferStatement(p: *Parser) ParserError!ast.Statement {
         temp.deinit(p.allocator);
         try p.recordError(
             "defer requires exactly one statement (wrap with `do … end` for multi-statement cleanups)",
-            "single statement",
+            "E_SYNTAX_UNEXPECTED_TOKEN",
         );
         return error.ParseFailed;
     }

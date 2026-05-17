@@ -105,7 +105,7 @@ fn parseAtomicPattern(p: *Parser) ParserError!*ast.Pattern {
         },
         .lparen => return try parseTuplePattern(p),
         else => {
-            try p.recordError("expected pattern", "pattern");
+            try p.recordError("expected pattern", "E_SYNTAX_MISSING_TOKEN");
             return error.ParseFailed;
         },
     }
@@ -157,7 +157,7 @@ fn parseStringLitPattern(p: *Parser) ParserError!*ast.Pattern {
             .str_expr_start => {
                 try p.recordError(
                     "interpolation not allowed in pattern position",
-                    "literal string",
+                    "E_SYNTAX_UNEXPECTED_TOKEN",
                 );
                 return error.ParseFailed;
             },
