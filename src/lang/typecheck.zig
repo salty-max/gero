@@ -1468,6 +1468,16 @@ const Checker = struct {
                 return try self.checkMethodCall(m, recv_ty);
             },
             .field => |f| {
+                // Enum-variant constructor shape: `Item.Sword`. The
+                // receiver is an ident matching a registered enum
+                // name — resolve directly to the enum's type so a
+                // subsequent `let s = Item.Sword` infers as `Item`.
+                if (f.receiver.* == .ident) {
+                    const recv_name = self.lexeme(f.receiver.ident.span);
+                    if (self.enum_registry.get(recv_name)) |ed| {
+                        return try self.resolveEnumVariant(ed, recv_name, f);
+                    }
+                }
                 const recv_ty = try self.inferExpr(f.receiver, null);
                 try self.checkNotNullableDeref(f.receiver, recv_ty, f.span);
                 return try self.resolveFieldAccess(f, recv_ty);
@@ -1618,6 +1628,54 @@ const Checker = struct {
     /// `null` when the receiver type isn't a resolvable named
     /// struct / class — downstream callers treat that as "unknown
     /// for now" rather than another error.
+    /// Resolve an enum-variant constructor expression
+    /// (`EnumName.Variant`). Nullary variants resolve directly to
+    /// the enum's `Named` type — `let s = Color.Red` infers as
+    /// `Color`. Payload-bearing variants resolve to the constructor
+    /// function type `fn(payload_types) -> Enum` so a wrapping
+    /// `CallExpr` (`Item.Potion(20)`) type-checks through the
+    /// regular `checkCall` path.
+    fn resolveEnumVariant(
+        self: *Checker,
+        ed: *const ast.EnumDecl,
+        enum_name: []const u8,
+        f: ast.FieldExpr,
+    ) WalkError!?*const types.Type {
+        const variant_name = self.lexeme(f.field);
+        const variant: ?*const ast.EnumVariant = blk: {
+            for (ed.variants) |*v| {
+                if (std.mem.eql(u8, self.lexeme(v.name), variant_name)) break :blk v;
+            }
+            break :blk null;
+        };
+        if (variant == null) {
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "enum `{s}` has no variant `{s}`",
+                .{ enum_name, variant_name },
+            );
+            try self.emitSpan("E_TYPE_UNDEFINED_VARIANT", f.field, msg);
+            return null;
+        }
+        const enum_ty = try types.mkNamed(self.arena, enum_name, f.receiver.ident.span);
+        if (variant.?.payload.len == 0) return enum_ty;
+
+        // Payload-bearing variant — synthesize a constructor
+        // function signature so call-site type-checking flows.
+        var param_tys: std.ArrayList(*const types.Type) = .empty;
+        errdefer param_tys.deinit(self.arena);
+        for (variant.?.payload) |pf| {
+            const pt = try self.resolveType(pf.type_ann);
+            try param_tys.append(self.arena, pt);
+        }
+        const fn_ty = try self.arena.create(types.Type);
+        fn_ty.* = .{ .function = .{
+            .params = try param_tys.toOwnedSlice(self.arena),
+            .ret = enum_ty,
+        } };
+        return fn_ty;
+    }
+
     fn resolveFieldAccess(
         self: *Checker,
         f: ast.FieldExpr,

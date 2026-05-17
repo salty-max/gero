@@ -260,6 +260,7 @@ pub fn compile(
         .strings = .empty,
         .string_patches = .empty,
         .checked = checked,
+        .enum_decls = .{},
         .block_stack = .empty,
         .loop_stack = .empty,
         .diagnostics = &diagnostics,
@@ -487,6 +488,11 @@ const Emitter = struct {
     /// only). Drives type-aware lowering — fixed-point arithmetic,
     /// `print` dispatch between `print_int` / `print_str`, etc.
     checked: *const CheckedProgram,
+    /// Top-level `enum Foo … end` declarations indexed by name.
+    /// Codegen reads this map to resolve variant-tag indices when
+    /// emitting `EnumName.Variant` constructors, `is` tests, and
+    /// `match` arm patterns.
+    enum_decls: std.StringHashMapUnmanaged(*const ast.EnumDecl),
     /// Stack of lexical blocks active at the current emit cursor.
     /// The function body opens the bottom block; nested `do…end`,
     /// loop bodies, `if` arms, etc. push more on top. Each block
@@ -895,6 +901,9 @@ const Emitter = struct {
     /// header `entry_point`), then every other top-level `def` in
     /// source order, then patch unresolved call sites.
     fn emitProgram(self: *Emitter, program: *const ast.Program, entry_name: []const u8) !void {
+        // Pre-pass 0: index top-level enum decls so variant-tag
+        // lookups during expr / pattern emission resolve cheaply.
+        try self.collectEnumDecls(program);
         // Pre-pass 1: register globals (top-level let/const).
         try self.registerGlobals(program);
         // Pre-pass 2: collect each def's bank so `emitCall` can
@@ -999,6 +1008,44 @@ const Emitter = struct {
     fn isPrimitiveType(self: *const Emitter, e: *const ast.Expr, p: types_mod.Primitive) bool {
         const t = self.typeOf(e) orelse return false;
         return t.* == .primitive and t.primitive == p;
+    }
+
+    /// Pre-pass: index every top-level `enum` decl by name so the
+    /// codegen can look up variant-tag indices during emission.
+    fn collectEnumDecls(self: *Emitter, program: *const ast.Program) !void {
+        for (program.statements) |*stmt| switch (stmt.*) {
+            .enum_decl => |ed| {
+                const name = self.source[ed.name.start..ed.name.end];
+                const dup = try self.arena.dupe(u8, name);
+                try self.enum_decls.put(self.arena, dup, &stmt.enum_decl);
+            },
+            else => {},
+        };
+    }
+
+    /// Resolve the tag index for `enum_name.variant_name`. Tags are
+    /// numbered in declaration order starting at 0 — matches spec
+    /// §3.6 ("Sword=0, Potion=1, Key=2"). Returns `null` if the
+    /// enum or variant doesn't exist (the typechecker should have
+    /// caught that; the check keeps codegen defensive).
+    fn variantTag(self: *const Emitter, enum_name: []const u8, variant_name: []const u8) ?u8 {
+        const ed = self.enum_decls.get(enum_name) orelse return null;
+        for (ed.variants, 0..) |v, i| {
+            const v_name = self.source[v.name.start..v.name.end];
+            if (std.mem.eql(u8, v_name, variant_name)) {
+                // @as: variant index fits u8 — spec §3.6 limits the
+                // tag to one byte (max 256 variants per enum).
+                return @intCast(i);
+            }
+        }
+        return null;
+    }
+
+    /// `true` when the type is a `Named` variant whose name matches
+    /// a registered enum. Used to detect enum-typed expressions
+    /// during print / match / store lowering.
+    fn isEnumType(self: *const Emitter, ty: *const Type) bool {
+        return ty.* == .named and self.enum_decls.contains(ty.named.name);
     }
 
     /// Scan top-level `def`s, recording each name → its `@bank N`
@@ -2069,7 +2116,26 @@ const Emitter = struct {
                 const body_offset = try self.currentOffset();
                 for (match_patches.items) |p| try self.patchJumpTo(p, body_offset);
             },
-            else => try self.unsupported(pat.span(), "this pattern shape (M3 brings enum / struct / tuple destructuring)"),
+            .variant_pattern => |vp| {
+                if (vp.args.len > 0) {
+                    try self.unsupported(vp.span, "enum-variant patterns with payload binders (M3b brings the payload destructuring)");
+                    return;
+                }
+                const path = self.source[vp.path.start..vp.path.end];
+                const dot = std.mem.indexOfScalar(u8, path, '.') orelse {
+                    try self.diagFatal(vp.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: variant pattern must be `EnumName.Variant`");
+                    return;
+                };
+                const enum_name = path[0..dot];
+                const variant_name = path[dot + 1 ..];
+                const tag = self.variantTag(enum_name, variant_name) orelse {
+                    try self.diagFatal(vp.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant in match pattern");
+                    return;
+                };
+                try self.cmpRegImm(Reg.acu, tag);
+                try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
+            },
+            else => try self.unsupported(pat.span(), "this pattern shape (M3b brings struct / tuple destructuring)"),
         }
     }
 
@@ -2379,8 +2445,67 @@ const Emitter = struct {
             .unary => |u| try self.emitUnary(u),
             .binary => |b| try self.emitBinary(b),
             .call => |c| try self.emitCall(c),
+            .field => |f| try self.emitFieldExpr(f, e),
+            .is_test => |it| try self.emitIsTest(it),
             else => try self.unsupported(e.span(), "this expression form"),
         }
+    }
+
+    /// Lower an `EnumName.Variant` field expression — a nullary
+    /// enum-variant constructor. Loads the variant's tag byte
+    /// into `acu` (the runtime representation of the variant).
+    /// Field access on non-enum receivers (struct / class fields)
+    /// lands in M3b alongside the class layout work.
+    fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void {
+        if (f.receiver.* == .ident) {
+            const recv_name = self.source[f.receiver.ident.span.start..f.receiver.ident.span.end];
+            if (self.enum_decls.get(recv_name)) |ed| {
+                const variant_name = self.source[f.field.start..f.field.end];
+                const tag = self.variantTag(recv_name, variant_name) orelse {
+                    try self.diagFatal(f.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant");
+                    return;
+                };
+                // Payload-bearing constructor (`Item.Potion(20)`)
+                // lands as a `CallExpr` whose callee is a
+                // `FieldExpr` — that path is M3b. A bare
+                // `Item.Potion` reference at expression position
+                // (without a call) needs the payload to be empty.
+                if (ed.variants.len > 0) {
+                    for (ed.variants) |v| {
+                        if (std.mem.eql(u8, self.source[v.name.start..v.name.end], variant_name)) {
+                            if (v.payload.len != 0) {
+                                try self.unsupported(f.span, "payload-bearing enum-variant constructors (call form lands with M3b's enum layout)");
+                                return;
+                            }
+                        }
+                    }
+                }
+                try self.movImmToReg(tag, Reg.acu);
+                return;
+            }
+        }
+        try self.unsupported(e.span(), "non-enum field access (struct / class fields land with M3b)");
+    }
+
+    /// Lower `expr is EnumName.Variant`. Evaluates `expr` into
+    /// `acu`, compares against the variant's tag, materializes a
+    /// `0` / `1` bool. The typechecker validates that the variant
+    /// path matches the LHS's enum type.
+    fn emitIsTest(self: *Emitter, it: ast.IsTestExpr) !void {
+        const path = self.source[it.variant_path.start..it.variant_path.end];
+        const dot = std.mem.indexOfScalar(u8, path, '.') orelse {
+            try self.diagFatal(it.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: `is` rhs must be `EnumName.Variant`");
+            return;
+        };
+        const enum_name = path[0..dot];
+        const variant_name = path[dot + 1 ..];
+        const tag = self.variantTag(enum_name, variant_name) orelse {
+            try self.diagFatal(it.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant in `is` test");
+            return;
+        };
+        try self.emitExpr(it.lhs);
+        try self.cmpRegImm(Reg.acu, tag);
+        try self.materializeBoolFromFlags(.eq);
     }
 
     fn emitUnary(self: *Emitter, u: ast.UnaryExpr) !void {
