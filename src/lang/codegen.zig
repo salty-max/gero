@@ -60,6 +60,8 @@ pub const mem_builtin = @import("codegen/mem_builtin.zig");
 /// `StringPatch`, the interp buffer reservation, and the per-part
 /// fill helpers.
 pub const strings = @import("codegen/strings.zig");
+/// `match` pattern-arm test emission.
+pub const pattern = @import("codegen/pattern.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const CheckedProgram = typecheck_mod.CheckedProgram;
@@ -486,7 +488,8 @@ pub const Emitter = struct {
     }
 
     /// `mov src, [base + ofs]` (0x1D) — store reg to fp-relative.
-    fn movRegToRegOffset(self: *Emitter, src: u8, base: u8, ofs: i8) !void {
+    /// `mov src, [base + ofs]` (0x1D) — store reg to fp-relative.
+    pub fn movRegToRegOffset(self: *Emitter, src: u8, base: u8, ofs: i8) !void {
         try self.emitByte(Op.mov_reg_reg_offset);
         try self.emitByte(src);
         try self.emitByte(base);
@@ -612,7 +615,8 @@ pub const Emitter = struct {
     }
 
     /// `cmp reg, imm16` (0x80) — flags ← reg - imm. Result discarded.
-    fn cmpRegImm(self: *Emitter, reg: u8, imm: u16) !void {
+    /// `cmp reg, imm16` (0x80) — flags ← reg - imm.
+    pub fn cmpRegImm(self: *Emitter, reg: u8, imm: u16) !void {
         try self.emitByte(Op.cmp_reg_imm16);
         try self.emitByte(reg);
         try self.emitU16Le(imm);
@@ -691,7 +695,11 @@ pub const Emitter = struct {
     /// Emit a forward jump with a placeholder address slot. Returns
     /// the offset of the 2-byte slot inside the current code buffer —
     /// pass it to `patchJumpTo` once the target offset is known.
-    fn emitJumpPlaceholder(self: *Emitter, op: u8) !usize {
+    /// Emit a forward jump with a placeholder address slot.
+    /// Returns the offset of the 2-byte slot inside the current
+    /// code buffer — pass it to `patchJumpTo` once the target
+    /// offset is known.
+    pub fn emitJumpPlaceholder(self: *Emitter, op: u8) !usize {
         try self.emitByte(op);
         const slot = try self.currentOffset();
         try self.emitU16Le(0); // placeholder
@@ -702,7 +710,10 @@ pub const Emitter = struct {
     /// `currentBufferBase() + target_offset` into the 2-byte slot at
     /// `patch_offset`. `target_offset` is a byte offset inside the
     /// current code buffer.
-    fn patchJumpTo(self: *Emitter, patch_offset: usize, target_offset: usize) !void {
+    /// Resolve a forward-jump patch: writes the absolute address
+    /// `currentBufferBase() + target_offset` into the 2-byte slot
+    /// at `patch_offset`.
+    pub fn patchJumpTo(self: *Emitter, patch_offset: usize, target_offset: usize) !void {
         const buf = try self.currentCode();
         // @as: usize → u16; per-buffer offset stays ≤ 64 KiB.
         const target_in_buffer: u16 = @intCast(target_offset);
@@ -745,7 +756,9 @@ pub const Emitter = struct {
 
     /// Reserve a 2-byte slot for `name` at the next fp-relative
     /// offset. Returns the offset (negative — locals grow down).
-    fn allocLocal(self: *Emitter, name: []const u8) !i8 {
+    /// Reserve a 2-byte slot for `name` at the next fp-relative
+    /// offset. Returns the offset (negative — locals grow down).
+    pub fn allocLocal(self: *Emitter, name: []const u8) !i8 {
         const new_frame_bytes = self.frame_bytes + 2;
         // @as: i8 covers -128..127; with 2 bytes per slot we cap at 64 locals per frame, fits.
         const ofs: i8 = -@as(i8, @intCast(new_frame_bytes));
@@ -904,7 +917,10 @@ pub const Emitter = struct {
     /// §3.6 ("Sword=0, Potion=1, Key=2"). Returns `null` if the
     /// enum or variant doesn't exist (the typechecker should have
     /// caught that; the check keeps codegen defensive).
-    fn variantTag(self: *const Emitter, enum_name: []const u8, variant_name: []const u8) ?u8 {
+    /// Look up the tag index for `enum_name.variant_name`. Tags
+    /// are numbered in declaration order starting at 0 (spec §3.6).
+    /// Returns `null` if the enum or variant doesn't exist.
+    pub fn variantTag(self: *const Emitter, enum_name: []const u8, variant_name: []const u8) ?u8 {
         const ed = self.enum_decls.get(enum_name) orelse return null;
         for (ed.variants, 0..) |v, i| {
             const v_name = self.source[v.name.start..v.name.end];
@@ -1896,6 +1912,7 @@ pub const Emitter = struct {
     /// any prelude that needs the same register state. Failures
     /// emit placeholder jumps and push them onto `skip_patches`;
     /// the caller resolves all of them to the same post-body offset.
+    /// Delegated to `codegen/pattern.zig`.
     fn emitPatternTest(
         self: *Emitter,
         pat: ast.Pattern,
@@ -1903,110 +1920,7 @@ pub const Emitter = struct {
         scrutinee_is_ident: bool,
         skip_patches: *std.ArrayList(usize),
     ) !void {
-        switch (pat) {
-            .wildcard => {
-                // Always matches — emit nothing.
-            },
-            .ident => |ip| {
-                // Bind the value to a local slot. Always matches.
-                const name = self.source[ip.name.start..ip.name.end];
-                const dup = try self.arena.dupe(u8, name);
-                const ofs = try self.allocLocal(dup);
-                try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
-            },
-            .int_lit => |lit| {
-                // @as: parser holds int_lit.value as i32; literals fit i16 by typecheck rule.
-                const trimmed: i16 = @truncate(lit.value);
-                // safety: i16 → u16 bit pattern preserved.
-                const v: u16 = @bitCast(trimmed);
-                try self.cmpRegImm(Reg.acu, v);
-                try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
-            },
-            .char_lit => |c| {
-                try self.cmpRegImm(Reg.acu, c.value);
-                try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
-            },
-            .bool_lit => |b| {
-                const v: u16 = if (b.value) 1 else 0;
-                try self.cmpRegImm(Reg.acu, v);
-                try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
-            },
-            .nil_lit => {
-                try self.cmpRegImm(Reg.acu, 0);
-                try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
-            },
-            .range_pattern => |rp| {
-                // Lower `start..end` as: cmp acu, start; jlt skip;
-                //                       cmp acu, end;   j(g[te]) skip.
-                // Endpoints must be compile-time integer literals
-                // so they emit as immediate operands.
-                if (rp.start.* != .int_lit or rp.end.* != .int_lit) {
-                    try self.unsupported(rp.span, "non-literal range pattern endpoints");
-                    return;
-                }
-                // @as: parser holds int_lit.value as i32; range bounds fit i16 by spec.
-                const start_i16: i16 = @truncate(rp.start.int_lit.value);
-                // safety: i16 → u16 keeps the two's-complement bit pattern.
-                const start_v: u16 = @bitCast(start_i16);
-                // @as: same i32 → i16 truncation for the end bound.
-                const end_i16: i16 = @truncate(rp.end.int_lit.value);
-                // safety: i16 → u16 keeps the two's-complement bit pattern.
-                const end_v: u16 = @bitCast(end_i16);
-                try self.cmpRegImm(Reg.acu, start_v);
-                try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jlt_addr));
-                try self.cmpRegImm(Reg.acu, end_v);
-                const above_bound_op: u8 = if (rp.inclusive) Op.jgt_addr else Op.jge_addr;
-                try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(above_bound_op));
-            },
-            .or_pattern => |op_| {
-                // Each alt emits its own cmp + branch. A match jumps
-                // OVER the remaining alts to the body. A non-match
-                // falls through to the next alt. After the last alt,
-                // a non-match jumps to the shared skip target.
-                var match_patches: std.ArrayList(usize) = .empty;
-                defer match_patches.deinit(self.allocator);
-
-                for (op_.alts) |alt| {
-                    var alt_skip: std.ArrayList(usize) = .empty;
-                    defer alt_skip.deinit(self.allocator);
-                    try self.emitPatternTest(alt.*, scrutinee_ofs, scrutinee_is_ident, &alt_skip);
-                    // The alt matched if we reach this point — jump
-                    // to the shared "body entry" label.
-                    try match_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jmp_addr));
-                    // Failure-skips of this alt land at the next alt
-                    // (or, after the final alt, at the outer skip).
-                    const after_alt = try self.currentOffset();
-                    for (alt_skip.items) |p| try self.patchJumpTo(p, after_alt);
-                }
-                // None of the alts matched — punt to the outer
-                // skip set.
-                try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jmp_addr));
-                // All match-patches resolve to the byte after the
-                // outer skip jump — i.e. the body's first byte.
-                const body_offset = try self.currentOffset();
-                for (match_patches.items) |p| try self.patchJumpTo(p, body_offset);
-            },
-            .variant_pattern => |vp| {
-                if (vp.args.len > 0) {
-                    try self.unsupported(vp.span, "enum-variant patterns with payload binders");
-                    return;
-                }
-                const path = self.source[vp.path.start..vp.path.end];
-                const dot = std.mem.indexOfScalar(u8, path, '.') orelse {
-                    try self.diagFatal(vp.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: variant pattern must be `EnumName.Variant`");
-                    return;
-                };
-                const enum_name = path[0..dot];
-                const variant_name = path[dot + 1 ..];
-                const tag = self.variantTag(enum_name, variant_name) orelse {
-                    try self.diagFatal(vp.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant in match pattern");
-                    return;
-                };
-                try self.cmpRegImm(Reg.acu, tag);
-                try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
-            },
-            else => try self.unsupported(pat.span(), "this pattern shape"),
-        }
+        return pattern.emitPatternTest(self, pat, scrutinee_ofs, scrutinee_is_ident, skip_patches);
     }
 
     /// Lower `target = value`. The target must be an ident that
