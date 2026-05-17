@@ -1180,15 +1180,25 @@ test "codegen: fixed-point `print c` uses print_fixed (Q8.8 formatting)" {
         "0.250\n");
 }
 
-test "codegen: non-print interpolation is rejected with E_CODEGEN_UNSUPPORTED" {
-    // `let s = "$(x)"` would require a runtime format-to-buffer
-    // syscall + a heap / scratch allocator — both still ahead of
-    // M1. The codegen rejects the multi-part str_lit in non-print
-    // position rather than emitting broken bytes.
+test "codegen: non-print interpolation formats into a per-site data buffer" {
+    // `let s = "x=$(x)"; print s` formats into a static buffer
+    // reserved in the data region (one allocation per interp
+    // site per spec §3.2.2). Reading `s` later prints the same
+    // bytes since the buffer persists.
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 42
+        \\  let s: str = "x=$(x)"
+        \\  print s
+        \\end
+    , "x=42\n");
+}
+
+test "codegen: format-spec `$(x:d)` is rejected with E_CODEGEN_UNSUPPORTED" {
     const source =
         \\def main()
         \\  let x: i16 = 1
-        \\  let s: str = "x=$(x)"
+        \\  let s: str = "$(x:d)"
         \\  print s
         \\end
     ;
