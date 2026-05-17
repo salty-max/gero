@@ -4,14 +4,21 @@
 /// the `CheckedProgram` from `typecheck.zig` and produces a `.gx`
 /// archive ready for the VM loader (`gero.vm.parseGx`) per ISA §7.
 ///
-/// **M1 scope** (this slice — codegen walking-skeleton):
-/// instruction selection for the entry def's body — `let` /
-/// `const`, integer literals, ident loads, binary arithmetic,
-/// unary neg, `print int_expr`, `return`. Locals live in
-/// fp-relative stack slots; expression evaluation uses
-/// `acu` + `r1` with push/pop for spills. Calling convention
-/// for free fns + memory-placement annotations land in
-/// subsequent M1 commits.
+/// **M1 surface** (instruction selection + free-fn calling
+/// convention + memory-placement annotations):
+///   - Statements: `let` / `const` / `return` / `print` /
+///     `target = value` / discard / expression statements.
+///   - Expressions: literals, idents (local + param + global),
+///     unary neg, binary `+ - * /`, direct calls.
+///   - Stack frames: locals at `[fp - 2*N]`, params at
+///     `[fp + 4 + 2*i]`; the VM's `call` / `ret` handle the
+///     ret_ip + fp push / pop.
+///   - Globals: top-level `let` / `const` with optional
+///     `@addr` / `@volatile` / `@zero_page` / `@align(N)`
+///     placement annotations. Byte-width globals use `movl`.
+///   - Banks: `@bank N` routes defs into per-bank buffers;
+///     cross-bank calls go through a `__call_bank` trampoline
+///     in the base image.
 const std = @import("std");
 const ast = @import("ast.zig");
 const typecheck_mod = @import("typecheck.zig");
