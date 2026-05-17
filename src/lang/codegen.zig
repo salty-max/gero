@@ -64,6 +64,10 @@ pub const strings = @import("codegen/strings.zig");
 pub const pattern = @import("codegen/pattern.zig");
 /// Expression lowering — `emitExpr` and the per-shape helpers.
 pub const expr_emit = @import("codegen/expr.zig");
+/// Control-flow lowering — if / while / for / repeat / match /
+/// break / continue / defer + the block / loop-frame stack
+/// helpers.
+pub const control_flow = @import("codegen/control_flow.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const CheckedProgram = typecheck_mod.CheckedProgram;
@@ -277,7 +281,7 @@ pub const CallPatch = struct {
 /// re-emit them at every exit path (fall-through, `return`, `break`,
 /// `continue`). The body of a `defer` is held by pointer — the same
 /// AST node is re-emitted once per exit path the codegen lowers.
-const Block = struct {
+pub const Block = struct {
     defers: std.ArrayList(*const ast.Statement),
 };
 
@@ -287,7 +291,7 @@ const Block = struct {
 /// codegen can resolve them at the end of the loop, and the index of
 /// the loop body's block in `block_stack` so `break` / `continue`
 /// know which range of blocks to unwind on the jump path.
-const LoopFrame = struct {
+pub const LoopFrame = struct {
     /// Optional `:label` on the loop head. `null` for unlabeled
     /// loops. Lookup matches by string equality against this; a
     /// `break :name` with no enclosing match is a codegen-time error
@@ -727,7 +731,9 @@ pub const Emitter = struct {
 
     /// Emit an unconditional jump to a known target offset within the
     /// current buffer. Used for back-edges (loop bottom → loop top).
-    fn emitJumpBack(self: *Emitter, target_offset: usize) !void {
+    /// Emit an unconditional jump to a known target offset
+    /// within the current buffer. Used for loop back-edges.
+    pub fn emitJumpBack(self: *Emitter, target_offset: usize) !void {
         try self.emitByte(Op.jmp_addr);
         // @as: usize → u16; per-buffer offset stays ≤ 64 KiB.
         const target_in_buffer: u16 = @intCast(target_offset);
@@ -736,7 +742,9 @@ pub const Emitter = struct {
 
     /// Base address of the current code buffer in VM memory — used to
     /// turn a buffer-local offset into a `jmp` target.
-    fn currentBufferBase(self: *const Emitter) u16 {
+    /// Base address of the current code buffer in VM memory.
+    /// Used to turn a buffer-local offset into a `jmp` target.
+    pub fn currentBufferBase(self: *const Emitter) u16 {
         if (self.current_bank) |_| return bank_window_base;
         return code_base;
     }
@@ -1319,7 +1327,9 @@ pub const Emitter = struct {
 
     // ---------- statement emission ----------
 
-    fn emitStatement(self: *Emitter, stmt: ast.Statement) EmitError!void {
+    /// Dispatch one statement to its lowering. Sub-modules call
+    /// back into this for body walks.
+    pub fn emitStatement(self: *Emitter, stmt: ast.Statement) EmitError!void {
         switch (stmt) {
             .let_decl => |d| try self.emitLetDecl(d),
             .const_decl => |d| try self.emitConstDecl(d),
@@ -1344,131 +1354,30 @@ pub const Emitter = struct {
     /// Walk `body` inside a fresh `Block` scope. The common
     /// helper for any statement-list with its own defer lifetime
     /// (do-blocks, if-arm bodies, loop bodies, match-arm bodies).
+    /// Delegated to `codegen/control_flow.zig`.
     fn emitScopedBody(self: *Emitter, body: []const ast.Statement) EmitError!void {
-        try self.pushBlock();
-        for (body) |s| try self.emitStatement(s);
-        try self.popBlockWithDefers();
+        return control_flow.emitScopedBody(self, body);
     }
 
+    /// Delegated to `codegen/control_flow.zig`.
     fn emitBlockStmt(self: *Emitter, b: ast.BlockStmt) !void {
-        try self.emitScopedBody(b.body);
+        return control_flow.emitBlockStmt(self, b);
     }
 
+    /// Delegated to `codegen/control_flow.zig`.
     fn emitDeferStmt(self: *Emitter, ds: ast.DeferStmt) !void {
-        if (self.block_stack.items.len == 0) {
-            try self.diagFatal(ds.span, "E_CODEGEN_DEFER_NO_BLOCK", "codegen: `defer` outside a block — likely a frontend bug");
-            return;
-        }
-        // Forbidden defer shapes (`defer return / break / continue
-        // / defer`) are rejected by the typechecker; the codegen
-        // trusts that gate.
-        const top = self.block_stack.items.len - 1;
-        try self.block_stack.items[top].defers.append(self.allocator, ds.body);
+        return control_flow.emitDeferStmt(self, ds);
     }
 
-    // ---------- control-flow lowering ----------
+    // ---------- control-flow lowering (delegated) ----------
 
-    /// Lower `if cond1 then ... elif cond2 then ... else ... end`.
-    /// Each arm emits its condition test (jumping over the body on
-    /// false), then the body, then a forward jump over every later
-    /// arm. The forward jumps collapse at the end of the if chain
-    /// onto one shared `end` label.
-    ///
-    /// The `if let pat = expr [when guard]` form binds a fresh local
-    /// for the pattern and guards the arm on the bind + the optional
-    /// `when` predicate. Only the ident-binder form is supported;
-    /// destructuring patterns are unsupported.
+    /// Delegated to `codegen/control_flow.zig`.
     fn emitIfStmt(self: *Emitter, is_: ast.IfStmt) !void {
-        // Patches that need to jump to the end of the whole chain
-        // once the chain finishes emitting (one per arm body fall-
-        // through, plus the else body if it terminates with one).
-        var end_patches: std.ArrayList(usize) = .empty;
-        defer end_patches.deinit(self.allocator);
-
-        for (is_.arms) |arm| {
-            // Per spec §4.4: an arm is either the plain `cond`
-            // shape OR the `let pat = expr [when guard]` shape.
-            const skip_body_patch = try self.emitIfArmTest(arm);
-
-            // Body — own scope (defers attach here).
-            try self.emitScopedBody(arm.body);
-
-            // After the body, jump to the end of the chain. We can
-            // skip this jump if it's the last arm AND there is no
-            // else body (the body's last byte naturally falls
-            // through to whatever's next).
-            try end_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jmp_addr));
-
-            // Wire the "false" jump to land here, after the body's
-            // forward jump and right before the next arm's test.
-            const after_body = try self.currentOffset();
-            try self.patchJumpTo(skip_body_patch, after_body);
-        }
-
-        if (is_.else_body) |eb| try self.emitScopedBody(eb);
-
-        const end_offset = try self.currentOffset();
-        for (end_patches.items) |p| try self.patchJumpTo(p, end_offset);
-    }
-
-    /// Emit the test for one if-arm and return the offset of the
-    /// "skip body" jump patch — the caller resolves it to the byte
-    /// right after the body.
-    fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
-        if (arm.cond) |c| {
-            // Plain `if cond` arm — evaluate the cond as a 0 / 1
-            // value in acu, compare against 0, jump-on-equal.
-            try self.emitCondBranch(c);
-            // `emitCondBranch` returns nothing — emit the placeholder
-            // here. Falls through when cond is truthy, jumps when
-            // cond is falsy. We use jeq (skip body on zero).
-            return try self.emitJumpPlaceholder(Op.jeq_addr);
-        }
-        // `if let pat = expr [when guard]` — ident-binder form.
-        const pat = arm.let_pattern.?.*;
-        const expr = arm.let_expr.?;
-        // Evaluate the RHS into acu.
-        try self.emitExpr(expr);
-        switch (pat) {
-            .ident => |id| {
-                const name = self.source[id.name.start..id.name.end];
-                const dup = try self.arena.dupe(u8, name);
-                const ofs = try self.allocLocal(dup);
-                // Bind the slot — the ident pattern always matches.
-                try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
-                // Optional `when guard` — evaluate and skip body
-                // on zero. With no guard, the bind always succeeds,
-                // so we emit `cmp acu, 0; jeq skip` after binding to
-                // turn the bind itself into a "non-zero" test? No —
-                // an ident binder matches anything, including 0.
-                // Without a guard, the arm always fires.
-                if (arm.let_guard) |g| {
-                    try self.emitExpr(g);
-                    try self.cmpRegImm(Reg.acu, 0);
-                    return try self.emitJumpPlaceholder(Op.jeq_addr);
-                }
-                // No guard — placeholder for symmetry with the plain
-                // arm, but emit an `unconditional NO-skip`: a never-
-                // taken jump. Simplest is to compare a const-true to
-                // 0 with jne, which never branches. We model that by
-                // not emitting a real skip — but the caller expects
-                // an offset to patch. Emit a `jeq` past a comparison
-                // that always fails (acu = 1; cmp 0).
-                try self.movImmToReg(1, Reg.r1);
-                try self.cmpRegImm(Reg.r1, 0);
-                return try self.emitJumpPlaceholder(Op.jeq_addr);
-            },
-            else => {
-                try self.unsupported(arm.span, "`if let` patterns other than a bare ident");
-                // Emit a placeholder anyway so the caller doesn't
-                // walk the patches list into a hole.
-                return try self.emitJumpPlaceholder(Op.jeq_addr);
-            },
-        }
+        return control_flow.emitIfStmt(self, is_);
     }
 
     /// Delegated to `codegen/expr.zig`.
-    fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
+    pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
         return expr_emit.emitCondBranch(self, e);
     }
 
@@ -1482,315 +1391,31 @@ pub const Emitter = struct {
         return expr_emit.emitShortCircuitBool(self, b);
     }
 
-    /// Lower `while cond ... end`. Standard top-test loop:
-    /// continue-target sits at the cond test, exit-target at the
-    /// byte after the back-edge. `while let` is supported for the
-    /// ident-binder form per spec §4.5.2.
+    /// Delegated to `codegen/control_flow.zig`.
     fn emitWhileStmt(self: *Emitter, ws: ast.WhileStmt) !void {
-        const cond_offset = try self.currentOffset();
-        const label_str: ?[]const u8 = if (ws.label) |s|
-            try self.arena.dupe(u8, self.source[s.start..s.end])
-        else
-            null;
-
-        // Push the body block BEFORE the cond test so the frame's
-        // `body_block_idx` aligns with the actual body block. Defers
-        // registered inside the body live in this block.
-        try self.pushBlock();
-        const body_block_idx = self.block_stack.items.len - 1;
-        try self.loop_stack.append(self.allocator, .{
-            .label = label_str,
-            .body_block_idx = body_block_idx,
-            .break_patches = .empty,
-            .continue_patches = .empty,
-        });
-
-        // Condition test — either plain cond or `while let pat = expr`.
-        const exit_on_false_patch = if (ws.cond) |c| blk: {
-            try self.emitCondBranch(c);
-            break :blk try self.emitJumpPlaceholder(Op.jeq_addr);
-        } else blk: {
-            // while let pat = expr [when guard]
-            const pat = ws.let_pattern.?.*;
-            try self.emitExpr(ws.let_expr.?);
-            switch (pat) {
-                .ident => |id| {
-                    const name = self.source[id.name.start..id.name.end];
-                    const dup = try self.arena.dupe(u8, name);
-                    const ofs = try self.allocLocal(dup);
-                    try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
-                    if (ws.let_guard) |g| {
-                        try self.emitExpr(g);
-                        try self.cmpRegImm(Reg.acu, 0);
-                        break :blk try self.emitJumpPlaceholder(Op.jeq_addr);
-                    }
-                    // No guard — ident binder always matches; emit
-                    // a never-taken skip for symmetry.
-                    try self.movImmToReg(1, Reg.r1);
-                    try self.cmpRegImm(Reg.r1, 0);
-                    break :blk try self.emitJumpPlaceholder(Op.jeq_addr);
-                },
-                else => {
-                    try self.unsupported(ws.span, "`while let` patterns other than a bare ident");
-                    break :blk try self.emitJumpPlaceholder(Op.jeq_addr);
-                },
-            }
-        };
-
-        // Body — defers register against the block we just pushed.
-        for (ws.body) |s| try self.emitStatement(s);
-        try self.popBlockWithDefers();
-
-        // Back-edge to the cond test.
-        try self.emitJumpBack(cond_offset);
-
-        // `break` lands here; `continue` lands at the cond test.
-        const exit_offset = try self.currentOffset();
-        try self.patchJumpTo(exit_on_false_patch, exit_offset);
-
-        var frame = self.loop_stack.pop().?;
-        for (frame.break_patches.items) |p| try self.patchJumpTo(p, exit_offset);
-        for (frame.continue_patches.items) |p| try self.patchJumpTo(p, cond_offset);
-        frame.break_patches.deinit(self.allocator);
-        frame.continue_patches.deinit(self.allocator);
+        return control_flow.emitWhileStmt(self, ws);
     }
 
-    /// Lower `repeat body until cond`. Bottom-test loop: the body
-    /// always runs at least once; `cond` is tested after the body
-    /// and the loop exits when `cond` is truthy. `continue` jumps
-    /// to the trailing test; `break` jumps past it.
+    /// Delegated to `codegen/control_flow.zig`.
     fn emitRepeatStmt(self: *Emitter, rs: ast.RepeatStmt) !void {
-        const top_offset = try self.currentOffset();
-        const label_str: ?[]const u8 = if (rs.label) |s|
-            try self.arena.dupe(u8, self.source[s.start..s.end])
-        else
-            null;
-
-        try self.pushBlock();
-        const body_block_idx = self.block_stack.items.len - 1;
-        try self.loop_stack.append(self.allocator, .{
-            .label = label_str,
-            .body_block_idx = body_block_idx,
-            .break_patches = .empty,
-            .continue_patches = .empty,
-        });
-
-        for (rs.body) |s| try self.emitStatement(s);
-        try self.popBlockWithDefers();
-
-        // `continue` jumps here — the trailing `until` test.
-        const test_offset = try self.currentOffset();
-        try self.emitCondBranch(rs.cond);
-        // `repeat … until cond` exits when cond is truthy — so
-        // `jne` (cond non-zero) jumps back over the back-edge to
-        // the bottom of the loop, while a `jeq` falls back to top.
-        // Simpler: emit `jeq top` so that when cond is false (zero)
-        // we go back, and when cond is true we fall through to exit.
-        try self.emitByte(Op.jeq_addr);
-        // @as: usize → u16; per-buffer offset stays ≤ 64 KiB.
-        const top_in_buffer: u16 = @intCast(top_offset);
-        try self.emitU16Le(self.currentBufferBase() +% top_in_buffer);
-
-        const exit_offset = try self.currentOffset();
-        var frame = self.loop_stack.pop().?;
-        for (frame.break_patches.items) |p| try self.patchJumpTo(p, exit_offset);
-        for (frame.continue_patches.items) |p| try self.patchJumpTo(p, test_offset);
-        frame.break_patches.deinit(self.allocator);
-        frame.continue_patches.deinit(self.allocator);
+        return control_flow.emitRepeatStmt(self, rs);
     }
 
-    /// Lower `for x in start..end [step S] body end` — the range
-    /// special case per spec §4.5.3. User-defined iterables
-    /// (`next(self) -> T?`) are not yet supported.
+    /// Delegated to `codegen/control_flow.zig`.
     fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
-        if (fs.iter.* != .range) {
-            try self.unsupported(fs.span, "`for` over non-range iterables");
-            return;
-        }
-        const range = fs.iter.range;
-        const inclusive = range.inclusive;
-        const step_expr = fs.step;
-        const binding_name = self.source[fs.binding.start..fs.binding.end];
-
-        // Allocate slots: the loop variable + a hidden `end` slot.
-        const dup_name = try self.arena.dupe(u8, binding_name);
-        const var_ofs = try self.allocLocal(dup_name);
-        const end_ofs = try self.allocLocal(try self.arena.dupe(u8, "\x00__for_end"));
-
-        // Evaluate start → acu, store into the loop variable.
-        try self.emitExpr(range.start);
-        try self.movRegToRegOffset(Reg.acu, Reg.fp, var_ofs);
-        // Evaluate end → acu, store into the hidden end slot.
-        try self.emitExpr(range.end);
-        try self.movRegToRegOffset(Reg.acu, Reg.fp, end_ofs);
-
-        const label_str: ?[]const u8 = if (fs.label) |s|
-            try self.arena.dupe(u8, self.source[s.start..s.end])
-        else
-            null;
-
-        try self.pushBlock();
-        const body_block_idx = self.block_stack.items.len - 1;
-        try self.loop_stack.append(self.allocator, .{
-            .label = label_str,
-            .body_block_idx = body_block_idx,
-            .break_patches = .empty,
-            .continue_patches = .empty,
-        });
-
-        // Top-of-loop: load `current`, load `end`, compare. Exit
-        // when current > end (inclusive) or current >= end (exclusive).
-        const test_offset = try self.currentOffset();
-        try self.movRegOffsetToReg(Reg.fp, var_ofs, Reg.acu);
-        try self.movRegOffsetToReg(Reg.fp, end_ofs, Reg.r1);
-        try self.cmpRegReg(Reg.acu, Reg.r1);
-        const exit_patch = if (inclusive)
-            try self.emitJumpPlaceholder(Op.jgt_addr) // exit on current > end
-        else
-            try self.emitJumpPlaceholder(Op.jge_addr); // exit on current >= end
-
-        // Body.
-        for (fs.body) |s| try self.emitStatement(s);
-        try self.popBlockWithDefers();
-
-        // `continue` target — the step-and-back-edge. Step then
-        // jump back to the test.
-        const continue_offset = try self.currentOffset();
-        // Load current, add step, store back.
-        try self.movRegOffsetToReg(Reg.fp, var_ofs, Reg.acu);
-        if (step_expr) |se| {
-            // Evaluate step expression — typechecker has already
-            // confirmed it's an integer expression. Int-literal
-            // fast-path emits `add imm`; arbitrary exprs go through
-            // the general eval-and-add path.
-            if (se.* == .int_lit) {
-                // @as: parser stores int_lit as i32; range steps fit i16 per spec §4.5.1.
-                const step_i16: i16 = @truncate(se.int_lit.value);
-                // safety: i16 → u16 keeps the two's-complement bit pattern for negative steps.
-                const step_val: u16 = @bitCast(step_i16);
-                try self.addImmToReg(step_val, Reg.acu);
-            } else {
-                try self.pushReg(Reg.acu);
-                try self.emitExpr(se);
-                try self.movRegToReg(Reg.acu, Reg.r1);
-                try self.popReg(Reg.acu);
-                try self.addRegToAcu(Reg.r1);
-            }
-        } else {
-            try self.addImmToReg(1, Reg.acu);
-        }
-        try self.movRegToRegOffset(Reg.acu, Reg.fp, var_ofs);
-        try self.emitJumpBack(test_offset);
-
-        const exit_offset = try self.currentOffset();
-        try self.patchJumpTo(exit_patch, exit_offset);
-
-        var frame = self.loop_stack.pop().?;
-        for (frame.break_patches.items) |p| try self.patchJumpTo(p, exit_offset);
-        for (frame.continue_patches.items) |p| try self.patchJumpTo(p, continue_offset);
-        frame.break_patches.deinit(self.allocator);
-        frame.continue_patches.deinit(self.allocator);
+        return control_flow.emitForStmt(self, fs);
     }
 
-    const LoopJumpKind = enum { break_, continue_ };
+    const LoopJumpKind = control_flow.LoopJumpKind;
 
-    /// Lower `break [:label]` / `continue [:label]`. Unwinds every
-    /// block between the jump site and the target loop (innermost
-    /// match for unlabeled, named match for labeled), emits the
-    /// jump placeholder, and records it on the target frame's
-    /// `break_patches` / `continue_patches` for resolution at loop
-    /// teardown.
+    /// Delegated to `codegen/control_flow.zig`.
     fn emitLoopJump(self: *Emitter, j: ast.LoopJumpStmt, kind: LoopJumpKind) !void {
-        const frame = self.findLoopFrame(j.label) orelse {
-            try self.diagFatal(j.span, "E_CODEGEN_LOOP_JUMP_NO_LOOP", "codegen: `break` / `continue` outside an enclosing loop");
-            return;
-        };
-        try self.unwindDefersDownTo(frame.body_block_idx);
-        const patch = try self.emitJumpPlaceholder(Op.jmp_addr);
-        switch (kind) {
-            .break_ => try frame.break_patches.append(self.allocator, patch),
-            .continue_ => try frame.continue_patches.append(self.allocator, patch),
-        }
+        return control_flow.emitLoopJump(self, j, kind);
     }
 
-    /// Lower `match scrutinee case … end` as a sequential
-    /// cmp + branch decision tree. The compiler handles:
-    ///
-    /// - Wildcard `_` and ident binders (always match).
-    /// - Integer / char / bool / nil literal patterns.
-    /// - `A | B | C` or-patterns (DEDUPED — each alt emits one cmp,
-    ///   then all alts jump to one shared body label).
-    /// - Range patterns (`a..b` / `a..=b`) — one cmp + cond branch
-    ///   pair instead of a per-element chain.
-    /// - Nullary enum-variant patterns — dispatch on the variant tag.
-    /// - `when guard` clauses — evaluated after the pattern match.
-    ///
-    /// Payload-bearing variant patterns, tuple patterns, and struct
-    /// patterns are not yet supported (require enum-tag payload
-    /// layout + field-offset codegen).
+    /// Delegated to `codegen/control_flow.zig`.
     fn emitMatchStmt(self: *Emitter, ms: ast.MatchStmt) !void {
-        // Bind the scrutinee to a slot so subsequent arms can re-test
-        // it without re-evaluating side effects. Skip the bind if
-        // the source already wrote an ident — direct loads stay cheap.
-        const scrutinee_ofs: i8 = blk: {
-            switch (ms.scrutinee.*) {
-                .ident => {
-                    // We re-load via the normal ident path each arm.
-                    // Return 0 as a sentinel that the code below
-                    // shouldn't touch — we'll dispatch on a flag.
-                    break :blk 0;
-                },
-                else => {
-                    try self.emitExpr(ms.scrutinee);
-                    const ofs = try self.allocLocal(try self.arena.dupe(u8, "\x00__match"));
-                    try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
-                    break :blk ofs;
-                },
-            }
-        };
-        const scrutinee_is_ident = ms.scrutinee.* == .ident;
-
-        // End-patches collapse onto the byte after the last arm.
-        var end_patches: std.ArrayList(usize) = .empty;
-        defer end_patches.deinit(self.allocator);
-
-        for (ms.arms) |arm| {
-            // Reload scrutinee → acu at the head of each arm so the
-            // arm's tests use a known register state.
-            if (scrutinee_is_ident) {
-                try self.emitExpr(ms.scrutinee);
-            } else {
-                try self.movRegOffsetToReg(Reg.fp, scrutinee_ofs, Reg.acu);
-            }
-
-            // Emit the pattern test — returns a list of "skip body"
-            // patches (one per alt for an or-pattern, one for a
-            // simple pattern). Body matches when control falls
-            // through to the body emission; skips when any patch
-            // resolves to the post-body offset.
-            var skip_patches: std.ArrayList(usize) = .empty;
-            defer skip_patches.deinit(self.allocator);
-            try self.emitPatternTest(arm.pattern.*, scrutinee_ofs, scrutinee_is_ident, &skip_patches);
-
-            // Optional `when guard` — evaluate after the pattern
-            // bound any names. Failure routes to the same skip set.
-            if (arm.guard) |g| {
-                try self.emitExpr(g);
-                try self.cmpRegImm(Reg.acu, 0);
-                try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jeq_addr));
-            }
-
-            // Body — own scope.
-            try self.emitScopedBody(arm.body);
-            // Skip past the rest of the match on success.
-            try end_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jmp_addr));
-
-            const after_arm = try self.currentOffset();
-            for (skip_patches.items) |p| try self.patchJumpTo(p, after_arm);
-        }
-
-        const end_offset = try self.currentOffset();
-        for (end_patches.items) |p| try self.patchJumpTo(p, end_offset);
+        return control_flow.emitMatchStmt(self, ms);
     }
 
     /// Emit a pattern test against the scrutinee. The scrutinee
@@ -1976,91 +1601,36 @@ pub const Emitter = struct {
         return expr_emit.emitCall(self, c);
     }
 
-    // ---------- block + defer infrastructure ----------
+    // ---------- block + defer infrastructure (delegated) ----------
 
-    /// Open a fresh lexical block on top of `block_stack`. Each
-    /// nested `do…end`, `if`-arm body, loop body, and `match`-arm
-    /// body pushes one before walking its statements.
+    /// Delegated to `codegen/control_flow.zig`.
     fn pushBlock(self: *Emitter) !void {
-        try self.block_stack.append(self.allocator, .{ .defers = .empty });
+        return control_flow.pushBlock(self);
     }
 
-    /// Close the innermost block, emitting its registered `defer`
-    /// statements inline in LIFO order before discarding the block.
-    /// Use this on the fall-through exit path of the block.
+    /// Delegated to `codegen/control_flow.zig`.
     fn popBlockWithDefers(self: *Emitter) !void {
-        // The block exits normally — emit its defers in reverse
-        // registration order. `acu` may hold a return value (e.g. the
-        // last expression statement in a fn body); we save / restore
-        // around the defer body so cleanup statements can scribble
-        // over acu freely.
-        const top = self.block_stack.items.len - 1;
-        const block = &self.block_stack.items[top];
-        try self.emitDefersLifo(block.defers.items);
-        var popped = self.block_stack.pop().?;
-        popped.defers.deinit(self.allocator);
+        return control_flow.popBlockWithDefers(self);
     }
 
-    /// Emit `stmts` in LIFO order, preserving `acu` across the
-    /// cleanup sequence (so a `return value` keeps its value
-    /// visible to the caller after defers run).
+    /// Delegated to `codegen/control_flow.zig`.
     fn emitDefersLifo(self: *Emitter, stmts: []const *const ast.Statement) !void {
-        if (stmts.len == 0) return;
-        try self.pushReg(Reg.acu);
-        var i = stmts.len;
-        while (i > 0) {
-            i -= 1;
-            try self.emitStatement(stmts[i].*);
-        }
-        try self.popReg(Reg.acu);
+        return control_flow.emitDefersLifo(self, stmts);
     }
 
-    /// Emit every active block's defers in LIFO order from the
-    /// innermost outward. Used on the `return` path — the entire
-    /// frame is being unwound, so every block's cleanup fires before
-    /// the actual `ret` / `hlt`.
+    /// Delegated to `codegen/control_flow.zig`.
     fn unwindAllDefersForReturn(self: *Emitter) !void {
-        var bi = self.block_stack.items.len;
-        while (bi > 0) {
-            bi -= 1;
-            try self.emitDefersLifo(self.block_stack.items[bi].defers.items);
-        }
+        return control_flow.unwindAllDefersForReturn(self);
     }
 
-    /// Emit defers for every block in `[body_block_idx .. top]`
-    /// inclusive — the range the codegen needs to unwind on
-    /// `break` / `continue` for the loop whose body opens at
-    /// `body_block_idx`.
+    /// Delegated to `codegen/control_flow.zig`.
     fn unwindDefersDownTo(self: *Emitter, body_block_idx: usize) !void {
-        var bi = self.block_stack.items.len;
-        while (bi > body_block_idx) {
-            bi -= 1;
-            try self.emitDefersLifo(self.block_stack.items[bi].defers.items);
-        }
+        return control_flow.unwindDefersDownTo(self, body_block_idx);
     }
 
-    /// Walk the loop stack from innermost outward looking for the
-    /// frame targeted by a `break` / `continue`. Unlabeled jumps
-    /// match the innermost frame; labeled jumps match by string
-    /// equality. Returns the matching pointer so the caller can
-    /// append patches in place.
+    /// Delegated to `codegen/control_flow.zig`.
     fn findLoopFrame(self: *Emitter, label_span: ?ast.Span) ?*LoopFrame {
-        if (self.loop_stack.items.len == 0) return null;
-        const want_label: ?[]const u8 = if (label_span) |s|
-            self.source[s.start..s.end]
-        else
-            null;
-        var i = self.loop_stack.items.len;
-        while (i > 0) {
-            i -= 1;
-            const f = &self.loop_stack.items[i];
-            if (want_label) |w| {
-                if (f.label) |fl| if (std.mem.eql(u8, fl, w)) return f;
-            } else {
-                return f; // innermost
-            }
-        }
-        return null;
+        return control_flow.findLoopFrame(self, label_span);
     }
 
     /// Delegated to `codegen/expr.zig`.
