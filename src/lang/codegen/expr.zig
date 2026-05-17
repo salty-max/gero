@@ -77,6 +77,12 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
                 try self.unsupported(se.span, "`self` used outside a method body");
             }
         },
+        .super_expr => |se| {
+            // Bare `super` is never a valid value — it must be
+            // followed by `.method(...)` or `.field`. Both shapes
+            // intercept before they reach this fallthrough arm.
+            try self.unsupported(se.span, "`super` must be followed by `.method(...)` or `.field`");
+        },
         .is_test => |it| try emitIsTest(self, it),
         .ref_of => |r| try self.emitAddrOf(r.inner),
         .cast => |c| try emitExpr(self, c.inner), // same-width primitives share a bit pattern, so the cast is a no-op
@@ -95,6 +101,16 @@ pub fn emitExprDiscard(self: *Emitter, e: *const ast.Expr) !void {
 /// `acu`. Field access on non-enum receivers is not yet
 /// supported.
 pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void {
+    // `super.field` — read parent-side shadowed slot.
+    if (f.receiver.* == .super_expr) {
+        if (self.current_class_name) |cname| {
+            const fname = self.source[f.field.start..f.field.end];
+            try class.emitSuperFieldLoad(self, cname, fname, f.span);
+            return;
+        }
+        try self.unsupported(f.span, "`super.field` used outside a method body");
+        return;
+    }
     // Class-typed receiver — `obj.field` instance load.
     if (self.classNameOf(f.receiver)) |cname| {
         const fname = self.source[f.field.start..f.field.end];
@@ -371,6 +387,17 @@ pub fn emitShortCircuitBool(self: *Emitter, b: ast.BinaryExpr) !void {
 /// other receivers (class instance method calls) are not yet
 /// supported.
 pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr) !void {
+    // `super.method(args)` — direct call to parent's method,
+    // bypassing the vtable.
+    if (m.receiver.* == .super_expr) {
+        if (self.current_class_name) |cname| {
+            const mname = self.source[m.method.start..m.method.end];
+            try class.emitSuperMethodCall(self, cname, mname, m.args, m.span);
+            return;
+        }
+        try self.unsupported(m.span, "`super.method` used outside a method body");
+        return;
+    }
     // Class-typed receiver — vtable dispatch.
     if (self.classNameOf(m.receiver)) |cname| {
         const mname = self.source[m.method.start..m.method.end];
