@@ -153,12 +153,35 @@ gaps that this PR also closes:
   byte without a safe-mode integer-overflow panic. Test covers
   130 `@zero_page u16` globals → `E_CODEGEN_ZP_OVERFLOW`.
 
+**VM extension: `print_fixed` syscall**
+
+New `sys 0xFB` ID `0x05` formats a Q8.8 value from `acu` as
+`<int>.<3-digit-frac>` decimal (e.g. `384` (= 1.5) prints
+`1.500`; the i16 minimum `-32768` prints `-128.000`). Closes
+the "print fixed-point values" gap — `print c` for a
+`fixed`-typed binding now reads as a decimal rather than the
+raw Q8.8 integer.
+
+**Print interpolation (zero-alloc fast path)**
+
+`print "x = $(value)!"` now walks the string literal's parts
+in source order and writes each one to `host.out` directly via
+the appropriate `print_X` syscall — no runtime buffer ever
+materializes. Per-part type dispatch matches the regular
+`emitPrintArg` rules (`char` / `fixed` / `str` / int fallback).
+Closes the "zero-alloc for `print`" half of #194's
+interpolation AC.
+
 **Not yet (M3 follow-ups)**
 
-- **String interpolation** — needs a VM-side format syscall
-  (printf-style `%d / %s / %c` from a template + args) that
-  doesn't ship yet. Single-literal strings work; `"$(expr)"`
-  emits `E_CODEGEN_UNSUPPORTED` until the syscall lands.
+- **Non-print interpolation** (`let s = "x=$(x)"`) — needs a
+  VM-side format-to-buffer syscall plus a scratch/heap
+  allocator (the "one-alloc per non-print interpolation" path
+  from #194). The codegen rejects this with
+  `E_CODEGEN_UNSUPPORTED` until that VM surface ships.
+- **`$(expr:fmt)` format specs** (`:04d` / `:.2f` / etc.) —
+  needs the parameterized formatter on the VM side; M2 ships
+  default formatting per type only.
 - Enum-variant patterns + jump-table dispatch in `match`
   (need M3 enum tag layout — the codegen emits
   `E_CODEGEN_UNSUPPORTED` on a variant pattern today; the
@@ -172,7 +195,8 @@ gaps that this PR also closes:
 
 **Tests**
 
-37 new codegen tests (29 → 66, +37) + 4 new typecheck tests:
+41 new codegen tests (29 → 70, +41) + 4 new typecheck tests +
+2 new VM-handler tests:
 
 Codegen:
 
@@ -212,6 +236,18 @@ M1 backfill (this PR's self-review pass on M1 ACs):
 - Caller-saves invariant — local survives a clobbering call.
 - Zero-page overflow at the 257th `@zero_page` byte →
   `E_CODEGEN_ZP_OVERFLOW`.
+- `print c` for a `fixed`-typed binding uses `print_fixed`
+  (formats `0.25` as `0.250`).
+- `print "x = $(x)"` emits per-part syscalls in source order.
+- Mixed-type interpolation: literal + int + char + fixed.
+- Non-print interpolation rejected with
+  `E_CODEGEN_UNSUPPORTED`.
+
+VM (`tests/vm/handlers/system.test.zig`):
+
+- `sys print_fixed` formats `1.5` (Q8.8 = 384) as `"1.500"`.
+- `sys print_fixed` formats `-2.25` (Q8.8 = 0xFDC0) as
+  `"-2.250"`.
 
 Typecheck (defer-shape rejections per spec §4.10 +
 `docs/lang-diagnostics.md` §5.11):

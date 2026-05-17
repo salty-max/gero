@@ -1058,10 +1058,8 @@ test "codegen: fixed-point multiply emits `mul + asr 8` and rounds to Q8.8" {
         \\  print c
         \\end
     ,
-        // 2.5 * 1.5 = 3.75. Q8.8 encoding: 3*256 + round(0.75*256)
-        // = 768 + 192 = 960. `print` of a `fixed` falls through to
-        // print_int per the M1 dispatch, so we expect "960\n".
-        "960\n");
+        // 2.5 * 1.5 = 3.75 → Q8.8 = 960 → print_fixed formats as "3.750".
+        "3.750\n");
 }
 
 test "codegen: fixed-point divide emits `shl 8 + divs` and rounds to Q8.8" {
@@ -1073,8 +1071,8 @@ test "codegen: fixed-point divide emits `shl 8 + divs` and rounds to Q8.8" {
         \\  print c
         \\end
     ,
-        // 5.0 / 2.0 = 2.5 → Q8.8 = 2*256 + 128 = 640.
-        "640\n");
+        // 5.0 / 2.0 = 2.5 → Q8.8 = 640 → print_fixed formats as "2.500".
+        "2.500\n");
 }
 
 test "codegen: fixed-point round-trip `(a * b) / c` matches expected" {
@@ -1087,8 +1085,8 @@ test "codegen: fixed-point round-trip `(a * b) / c` matches expected" {
         \\  print r
         \\end
     ,
-        // 4*3 = 12, /2 = 6.0 → Q8.8 = 6*256 = 1536.
-        "1536\n");
+        // 4*3 = 12, /2 = 6.0 → Q8.8 = 1536 → "6.000".
+        "6.000\n");
 }
 
 test "codegen: recursive fib(10) computes 55" {
@@ -1149,6 +1147,67 @@ test "codegen: caller-saves invariant — local survives a call that clobbers ac
         \\  print a
         \\end
     , "7\n");
+}
+
+test "codegen: print interpolation emits per-part syscalls in source order" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 42
+        \\  print "x = $(x)"
+        \\end
+    , "x = 42\n");
+}
+
+test "codegen: print interpolation mixes literal + int + char + fixed parts" {
+    try runAndExpect(
+        \\def main()
+        \\  let n: i16 = 7
+        \\  let c: char = 'B'
+        \\  let f: fixed = 1.5
+        \\  print "n=$(n) c=$(c) f=$(f)"
+        \\end
+    , "n=7 c=B f=1.500\n");
+}
+
+test "codegen: fixed-point `print c` uses print_fixed (Q8.8 formatting)" {
+    try runAndExpect(
+        \\def main()
+        \\  let c: fixed = 0.25
+        \\  print c
+        \\end
+    ,
+        // 0.25 → Q8.8 = 64 → "0.250".
+        "0.250\n");
+}
+
+test "codegen: non-print interpolation is rejected with E_CODEGEN_UNSUPPORTED" {
+    // `let s = "$(x)"` would require a runtime format-to-buffer
+    // syscall + a heap / scratch allocator — both still ahead of
+    // M1. The codegen rejects the multi-part str_lit in non-print
+    // position rather than emitting broken bytes.
+    const source =
+        \\def main()
+        \\  let x: i16 = 1
+        \\  let s: str = "x=$(x)"
+        \\  print s
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_UNSUPPORTED")) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "codegen: zero-page overflow emits E_CODEGEN_ZP_OVERFLOW" {

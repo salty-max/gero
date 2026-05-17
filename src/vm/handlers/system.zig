@@ -126,6 +126,11 @@ pub const SyscallId = enum(u8) {
     print_char = 0x03,
     /// Writes a single `\n` byte to `host.out`. No args.
     print_newline = 0x04,
+    /// `acu` = Q8.8 fixed-point value. Formats as
+    /// `<int>.<3-digit-frac>` decimal — e.g. value `384`
+    /// (1.5 in Q8.8) prints `1.500`. Negative values get a
+    /// leading `-`.
+    print_fixed = 0x05,
     /// Open-enum tail — unknown syscall ids coerce here and the
     /// `sys` handler routes them to the `invalid_opcode` fault.
     _,
@@ -156,6 +161,7 @@ pub fn sys(vm: *VM) StepResult {
             writer.writeByte(byte) catch return fault(vm, .invalid_opcode);
         },
         .print_newline => writer.writeByte('\n') catch return fault(vm, .invalid_opcode),
+        .print_fixed => printFixed(vm, writer) catch return fault(vm, .invalid_opcode),
         // Unknown id — open-enum coercion picks this up; future
         // syscall ids should add an arm above.
         _ => return fault(vm, .invalid_opcode),
@@ -171,4 +177,24 @@ fn printStr(vm: *VM, writer: *@import("std").Io.Writer) !void {
         try writer.writeByte(b);
         addr +%= 1;
     }
+}
+
+fn printFixed(vm: *VM, writer: *@import("std").Io.Writer) !void {
+    // safety: Q8.8 lives in acu as a u16 — bit-cast to i16 for sign + magnitude split.
+    const raw: i16 = @bitCast(vm.regs.read(.acu));
+    if (raw < 0) try writer.writeByte('-');
+    // @as: widen i16 → i32 so negating the minimum value (-32768) doesn't overflow.
+    const widened_neg: i32 = -@as(i32, raw);
+    // safety: i16 bit pattern → u16 of the same width preserves the bits (used only on the positive branch).
+    const positive_u16: u16 = @bitCast(raw);
+    const abs: u16 = if (raw < 0)
+        // @as: i32 → u16; the magnitude of an i16 fits a u16 by 1 bit of headroom.
+        @intCast(widened_neg)
+    else
+        positive_u16;
+    const int_part: u16 = abs >> 8;
+    const frac_part: u16 = abs & 0xFF;
+    // @as: widen u16 → u32 so the *1000 multiplication doesn't overflow.
+    const frac_thousandths: u32 = @as(u32, frac_part) * 1000 / 256;
+    try writer.print("{d}.{d:0>3}", .{ int_part, frac_thousandths });
 }
