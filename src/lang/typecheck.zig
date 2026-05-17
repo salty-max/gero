@@ -167,6 +167,13 @@ pub const match = @import("typecheck/match.zig");
 /// `ast.BinaryOp` — integer / numeric / bool / nil / bakeable
 /// checks plus diagnostic-string formatters.
 pub const predicates = @import("typecheck/predicates.zig");
+/// Annotation validation (§3.7) — target bit-flags, spec table,
+/// per-decl walker, and the `@no_capture` predicate.
+pub const annotations = @import("typecheck/annotations.zig");
+
+/// Re-export: target bit-flag namespace used by every decl-walker
+/// that calls into `annotations.validateAnnotations`.
+const T = annotations.T;
 
 /// `mem.*` stdlib builtin signature (re-exported from the
 /// sub-module for callers that just want the lookup type).
@@ -356,101 +363,6 @@ pub const Checker = struct {
         return self.source[span.start..span.end];
     }
 
-    // ---------- annotation validation (§3.7) ----------
-
-    /// Validate every annotation attached to a decl. `target` is
-    /// the decl's target bit (see the `T` namespace). Emits
-    /// `E_ANN_UNKNOWN` / `E_ANN_BAD_TARGET` / `E_ANN_BAD_ARG` /
-    /// `E_ANN_CONFLICT` per the rules in the annotation spec
-    /// table.
-    fn validateAnnotations(self: *Checker, anns: []const ast.Annotation, target: u32) WalkError!void {
-        for (anns) |ann| {
-            const name = self.lexeme(ann.name);
-            const spec = findAnnotationSpec(name) orelse {
-                const msg = try std.fmt.allocPrint(
-                    self.arena,
-                    "unknown annotation `@{s}`",
-                    .{name},
-                );
-                try self.emitSpan("E_ANN_UNKNOWN", ann.name, msg);
-                continue;
-            };
-            if ((spec.targets & target) == 0) {
-                const msg = try std.fmt.allocPrint(
-                    self.arena,
-                    "annotation `@{s}` cannot be applied to a {s}",
-                    .{ name, targetLabel(target) },
-                );
-                try self.emitSpan("E_ANN_BAD_TARGET", ann.name, msg);
-            }
-            try self.validateAnnotationArgs(ann, spec);
-        }
-        // Conflict pairs — second loop so we only emit each conflict
-        // once and so we don't false-positive when an earlier
-        // annotation was already rejected.
-        for (anns, 0..) |a, i| {
-            const a_spec = findAnnotationSpec(self.lexeme(a.name)) orelse continue;
-            for (anns[i + 1 ..]) |b| {
-                const b_name = self.lexeme(b.name);
-                for (a_spec.conflicts_with) |c| {
-                    if (std.mem.eql(u8, c, b_name)) {
-                        const msg = try std.fmt.allocPrint(
-                            self.arena,
-                            "annotations `@{s}` and `@{s}` cannot be combined",
-                            .{ self.lexeme(a.name), b_name },
-                        );
-                        try self.emitSpan("E_ANN_CONFLICT", b.name, msg);
-                    }
-                }
-            }
-        }
-    }
-
-    fn validateAnnotationArgs(self: *Checker, ann: ast.Annotation, spec: *const AnnotationSpec) WalkError!void {
-        switch (spec.args) {
-            .none => {
-                if (ann.args.len != 0) {
-                    const msg = try std.fmt.allocPrint(
-                        self.arena,
-                        "annotation `@{s}` does not take arguments",
-                        .{spec.name},
-                    );
-                    try self.emitSpan("E_ANN_BAD_ARG", ann.span, msg);
-                }
-            },
-            .int_lit => {
-                if (ann.args.len != 1 or ann.args[0].* != .int_lit) {
-                    const msg = try std.fmt.allocPrint(
-                        self.arena,
-                        "annotation `@{s}` expects a single integer literal",
-                        .{spec.name},
-                    );
-                    try self.emitSpan("E_ANN_BAD_ARG", ann.span, msg);
-                }
-            },
-            .int_lit_pow2 => {
-                if (ann.args.len != 1 or ann.args[0].* != .int_lit) {
-                    const msg = try std.fmt.allocPrint(
-                        self.arena,
-                        "annotation `@{s}` expects a single integer literal",
-                        .{spec.name},
-                    );
-                    try self.emitSpan("E_ANN_BAD_ARG", ann.span, msg);
-                    return;
-                }
-                const v = ann.args[0].int_lit.value;
-                if (v <= 0 or (v & (v - 1)) != 0) {
-                    const msg = try std.fmt.allocPrint(
-                        self.arena,
-                        "annotation `@{s}` requires a power-of-two value, got {d}",
-                        .{ spec.name, v },
-                    );
-                    try self.emitSpan("E_ANN_BAD_ARG", ann.span, msg);
-                }
-            },
-        }
-    }
-
     // ---------- Pass 1: top-level decl registration ----------
 
     fn registerTopLevel(self: *Checker, s: ast.Statement) WalkError!void {
@@ -621,8 +533,8 @@ pub const Checker = struct {
             },
             .def_decl => |d| try self.checkDefDecl(d),
             .class_decl => |c| try self.checkClassDecl(c),
-            .struct_decl => |sd| try self.validateAnnotations(sd.annotations, T.STRUCT),
-            .enum_decl => |ed| try self.validateAnnotations(ed.annotations, T.ENUM),
+            .struct_decl => |sd| try annotations.validateAnnotations(self, sd.annotations, T.STRUCT),
+            .enum_decl => |ed| try annotations.validateAnnotations(self, ed.annotations, T.ENUM),
             .use_decl, .local_decl => {},
             .asm_stmt => |as_| if (self.in_bake) {
                 try self.emitSpan("E_BAKE_ASM_INSIDE", as_.span, "`asm` is not allowed inside a `bake` context — compile-time interpretation cannot run host bytecode");
@@ -688,7 +600,7 @@ pub const Checker = struct {
     }
 
     fn checkLetDecl(self: *Checker, d: ast.LetDecl) WalkError!void {
-        try self.validateAnnotations(d.annotations, T.LET);
+        try annotations.validateAnnotations(self, d.annotations, T.LET);
         const ann_ty: ?*const types.Type = if (d.type_ann) |t|
             try self.resolveType(t)
         else
@@ -787,7 +699,7 @@ pub const Checker = struct {
     }
 
     fn checkConstDecl(self: *Checker, d: ast.ConstDecl) WalkError!void {
-        try self.validateAnnotations(d.annotations, T.CONST);
+        try annotations.validateAnnotations(self, d.annotations, T.CONST);
         const ann_ty: ?*const types.Type = if (d.type_ann) |t|
             try self.resolveType(t)
         else
@@ -995,7 +907,7 @@ pub const Checker = struct {
     }
 
     fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
-        try self.validateAnnotations(d.annotations, T.DEF);
+        try annotations.validateAnnotations(self, d.annotations, T.DEF);
         try self.checkVariadicPosition(d);
         const saved_scope = self.current_scope;
         var fn_scope: Scope = .init(self.arena, saved_scope);
@@ -1021,7 +933,7 @@ pub const Checker = struct {
         // must not mutate captured bindings. Nested `def`s inherit
         // the flag so a closure two levels deep still flags.
         const saved_nc = self.in_no_capture;
-        self.in_no_capture = saved_nc or defHasNoCapture(self, d);
+        self.in_no_capture = saved_nc or annotations.defHasNoCapture(self, d);
         defer self.in_no_capture = saved_nc;
 
         // Bake fn return type must be bakeable. `Vec(T)` and `&T`
@@ -1069,7 +981,7 @@ pub const Checker = struct {
     }
 
     fn checkClassDecl(self: *Checker, d: ast.ClassDecl) WalkError!void {
-        try self.validateAnnotations(d.annotations, T.CLASS);
+        try annotations.validateAnnotations(self, d.annotations, T.CLASS);
         const saved = self.current_scope;
         var class_scope: Scope = .init(self.arena, saved);
         self.current_scope = &class_scope;
@@ -1084,7 +996,7 @@ pub const Checker = struct {
         defer self.current_class_name = saved_name;
 
         for (d.fields) |f| {
-            try self.validateAnnotations(f.annotations, T.CLASS_FIELD);
+            try annotations.validateAnnotations(self, f.annotations, T.CLASS_FIELD);
             const ty: ?*const types.Type = if (f.type_ann) |t|
                 try self.resolveType(t)
             else
@@ -2343,14 +2255,6 @@ fn findClassField(c: *const Checker, cd: *const ast.ClassDecl, name: []const u8)
     return null;
 }
 
-/// `true` when `d` carries a `@no_capture` annotation.
-fn defHasNoCapture(c: *const Checker, d: ast.DefDecl) bool {
-    for (d.annotations) |ann| {
-        if (std.mem.eql(u8, c.lexeme(ann.name), "no_capture")) return true;
-    }
-    return false;
-}
-
 // ---------- place expression check ----------
 
 /// `true` when `e` is a valid assignment target — `ident`, `field`,
@@ -2361,101 +2265,6 @@ fn isPlaceExpr(e: *const ast.Expr) bool {
         .ident, .field, .index => true,
         .paren => |p| isPlaceExpr(p.inner),
         else => false,
-    };
-}
-
-// ---------- annotation validation (§3.7) ----------
-
-/// Bit flags for annotation `targets:` — which decl kinds an
-/// annotation may attach to.
-const T = struct {
-    const LET: u32 = 1 << 0;
-    const CONST: u32 = 1 << 1;
-    const DEF: u32 = 1 << 2;
-    const CLASS: u32 = 1 << 3;
-    const STRUCT: u32 = 1 << 4;
-    const ENUM: u32 = 1 << 5;
-    const CLASS_FIELD: u32 = 1 << 6;
-};
-
-/// Shape an annotation's args must take.
-const ArgRule = enum {
-    none, // no args (marker)
-    int_lit, // single int literal
-    int_lit_pow2, // single int literal, power of two
-};
-
-const AnnotationSpec = struct {
-    name: []const u8,
-    targets: u32,
-    args: ArgRule,
-    /// Annotation names that conflict with this one when both are
-    /// applied to the same decl.
-    conflicts_with: []const []const u8 = &.{},
-};
-
-/// Spec inventory per `docs/gero-lang.md` §3.7.
-const annotation_specs = [_]AnnotationSpec{
-    // Memory placement (§3.7.1)
-    .{ .name = "bank", .targets = T.DEF | T.LET | T.CONST, .args = .int_lit },
-    .{ .name = "zero_page", .targets = T.LET, .args = .none },
-    .{ .name = "addr", .targets = T.LET, .args = .int_lit },
-    .{ .name = "volatile", .targets = T.LET, .args = .none },
-    .{ .name = "align", .targets = T.LET | T.CONST | T.STRUCT, .args = .int_lit_pow2 },
-    // Codegen control (§3.7.2)
-    .{ .name = "inline", .targets = T.DEF, .args = .none },
-    .{ .name = "cold", .targets = T.DEF, .args = .none },
-    .{ .name = "no_capture", .targets = T.DEF, .args = .none },
-    // Misc
-    .{ .name = "noreturn", .targets = T.DEF, .args = .none },
-    .{ .name = "interrupt", .targets = T.DEF, .args = .int_lit },
-    .{ .name = "test", .targets = T.DEF, .args = .none },
-    .{ .name = "bench", .targets = T.DEF, .args = .none },
-    // OOP (§6)
-    .{
-        .name = "override",
-        .targets = T.DEF,
-        .args = .none,
-        .conflicts_with = &.{ "final", "abstract" },
-    },
-    .{
-        .name = "final",
-        .targets = T.DEF | T.CLASS,
-        .args = .none,
-        .conflicts_with = &.{ "override", "abstract" },
-    },
-    .{
-        .name = "abstract",
-        .targets = T.DEF | T.CLASS,
-        .args = .none,
-        .conflicts_with = &.{ "override", "final", "static" },
-    },
-    .{
-        .name = "static",
-        .targets = T.DEF,
-        .args = .none,
-        .conflicts_with = &.{ "abstract", "override" },
-    },
-    .{ .name = "private", .targets = T.DEF | T.LET | T.CLASS_FIELD, .args = .none },
-};
-
-fn findAnnotationSpec(name: []const u8) ?*const AnnotationSpec {
-    for (&annotation_specs) |*s| {
-        if (std.mem.eql(u8, s.name, name)) return s;
-    }
-    return null;
-}
-
-fn targetLabel(target: u32) []const u8 {
-    return switch (target) {
-        T.LET => "let",
-        T.CONST => "const",
-        T.DEF => "def",
-        T.CLASS => "class",
-        T.STRUCT => "struct",
-        T.ENUM => "enum",
-        T.CLASS_FIELD => "class field",
-        else => "decl",
     };
 }
 
