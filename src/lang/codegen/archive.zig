@@ -26,18 +26,23 @@ pub const bank_window_base: u16 = 0xC000;
 
 /// Banked flag bit in the .gx header per ISA §7.1.
 pub const flag_banked: u16 = 0x0001;
+/// Has-debug-symbols flag bit — set when a debug section follows
+/// the image / banks.
+pub const flag_debug_symbols: u16 = 0x0002;
 
 // ---------- helpers ----------
 
 /// Assemble the final `.gx` archive: 16-byte header, then the
 /// base image, then each declared bank's 16 KiB window
-/// (zero-padded for banks the user didn't touch).
+/// (zero-padded for banks the user didn't touch), then the
+/// optional debug-symbol section.
 pub fn buildArchive(
     allocator: std.mem.Allocator,
     base_image: []const u8,
     entry_point: u16,
     heap_base: u16,
     banks: *const std.AutoHashMapUnmanaged(u8, std.ArrayList(u8)),
+    debug_section: ?[]const u8,
 ) ![]u8 {
     // Bank count = max bank index + 1 (banks are 0-indexed). 0 if
     // no banks declared.
@@ -50,15 +55,17 @@ pub fn buildArchive(
     const bank_count: u16 = if (max_bank) |m| @as(u16, m) + 1 else 0;
     // @as: bank_count ≤ 256 by u8 input; the byte total fits usize.
     const banked_bytes: usize = @as(usize, bank_count) * bank_disk_size;
+    const debug_bytes: usize = if (debug_section) |s| s.len else 0;
 
     // safety: base image fits in 16-bit address space per ISA.
     const image_size: u16 = @intCast(base_image.len);
-    const total = gx_header_size + base_image.len + banked_bytes;
+    const total = gx_header_size + base_image.len + banked_bytes + debug_bytes;
     var out = try allocator.alloc(u8, total);
     @memset(out, 0);
 
     var flags: u16 = 0;
     if (bank_count > 0) flags |= flag_banked;
+    if (debug_section != null) flags |= flag_debug_symbols;
 
     @memcpy(out[0..4], &gx_magic);
     writeU16Le(out[4..6], gx_version);
@@ -84,6 +91,10 @@ pub fn buildArchive(
             @memcpy(dst[0..n], bank_buf.items[0..n]);
         }
         cursor += bank_disk_size;
+    }
+
+    if (debug_section) |s| {
+        @memcpy(out[cursor..][0..s.len], s);
     }
 
     return out;

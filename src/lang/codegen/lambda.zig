@@ -115,6 +115,13 @@ pub const LambdaInfo = struct {
 /// Walk `def` body, populate `Emitter.fn_closure_info` with the
 /// lambda inventory + capture layout + promotion set. Call before
 /// emitting the body so the let/ident/assign hooks can consult it.
+///
+/// `@no_capture` short-circuits promotion entirely:
+/// the typechecker has already rejected any capture-and-mutate
+/// shape, but a read-only escape could still trigger heap
+/// promotion under the regular rules — and a hidden alloc is
+/// exactly what `@no_capture` forbids. So inside such a def
+/// every capture stays by-value regardless of escape status.
 pub fn analyzeFn(self: *Emitter, def: *const ast.DefDecl) !void {
     var info: FnClosureInfo = .{
         .promoted = .{},
@@ -136,25 +143,40 @@ pub fn analyzeFn(self: *Emitter, def: *const ast.DefDecl) !void {
     // Find every lambda in the body + its captures.
     for (def.body) |stmt| try findLambdasInStatement(self, stmt, def, &info);
 
-    // Decide promotion. A binding is promoted if it's captured
-    // by some lambda AND (mutated anywhere OR captured by a
-    // lambda that escapes).
-    var mutated: std.StringHashMapUnmanaged(void) = .{};
-    for (def.body) |stmt| collectMutatedInStatement(self, stmt, &mutated);
+    const no_capture = defHasAnnotation(self, def, "no_capture");
+    if (!no_capture) {
+        // Decide promotion. A binding is promoted if it's captured
+        // by some lambda AND (mutated anywhere OR captured by a
+        // lambda that escapes).
+        var mutated: std.StringHashMapUnmanaged(void) = .{};
+        for (def.body) |stmt| collectMutatedInStatement(self, stmt, &mutated);
 
-    var escaping_captures: std.StringHashMapUnmanaged(void) = .{};
-    for (def.body) |stmt| collectEscapingCaptures(self, stmt, &info, &escaping_captures);
+        var escaping_captures: std.StringHashMapUnmanaged(void) = .{};
+        for (def.body) |stmt| collectEscapingCaptures(self, stmt, &info, &escaping_captures);
 
-    for (info.lambdas.items) |li| {
-        for (li.captures.items) |cap| {
-            if (!local_bindings.contains(cap)) continue;
-            if (mutated.contains(cap) or escaping_captures.contains(cap)) {
-                try info.promoted.put(self.arena, cap, {});
+        for (info.lambdas.items) |li| {
+            for (li.captures.items) |cap| {
+                if (!local_bindings.contains(cap)) continue;
+                if (mutated.contains(cap) or escaping_captures.contains(cap)) {
+                    try info.promoted.put(self.arena, cap, {});
+                }
             }
         }
     }
 
     self.fn_closure_info = info;
+}
+
+/// `true` when `def` carries an annotation named `name`. Codegen-
+/// side mirror of `typecheck/annotations.zig:hasAnnotation` —
+/// duplicated here so the codegen doesn't depend on the
+/// typechecker's private helpers.
+pub fn defHasAnnotation(self: *const Emitter, def: *const ast.DefDecl, name: []const u8) bool {
+    for (def.annotations) |ann| {
+        const ann_name = self.source[ann.name.start..ann.name.end];
+        if (std.mem.eql(u8, ann_name, name)) return true;
+    }
+    return false;
 }
 
 /// Reset the per-fn analysis between defs.
