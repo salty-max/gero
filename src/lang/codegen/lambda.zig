@@ -143,7 +143,7 @@ pub fn analyzeFn(self: *Emitter, def: *const ast.DefDecl) !void {
     // Find every lambda in the body + its captures.
     for (def.body) |stmt| try findLambdasInStatement(self, stmt, def, &info);
 
-    const no_capture = defHasAnnotation(self, def, "no_capture");
+    const no_capture = codegen_mod.defHasFlagAnnotation(self.source, def, "no_capture");
     if (!no_capture) {
         // Decide promotion. A binding is promoted if it's captured
         // by some lambda AND (mutated anywhere OR captured by a
@@ -165,18 +165,6 @@ pub fn analyzeFn(self: *Emitter, def: *const ast.DefDecl) !void {
     }
 
     self.fn_closure_info = info;
-}
-
-/// `true` when `def` carries an annotation named `name`. Codegen-
-/// side mirror of `typecheck/annotations.zig:hasAnnotation` —
-/// duplicated here so the codegen doesn't depend on the
-/// typechecker's private helpers.
-pub fn defHasAnnotation(self: *const Emitter, def: *const ast.DefDecl, name: []const u8) bool {
-    for (def.annotations) |ann| {
-        const ann_name = self.source[ann.name.start..ann.name.end];
-        if (std.mem.eql(u8, ann_name, name)) return true;
-    }
-    return false;
 }
 
 /// Reset the per-fn analysis between defs.
