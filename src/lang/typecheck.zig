@@ -1321,11 +1321,23 @@ pub const Checker = struct {
                 if (self.in_no_capture) self.lambda_locals = .{};
                 defer self.lambda_locals = saved_locals;
 
+                // Bidirectional hint: when the lambda flows into
+                // a function-typed slot (`let f: fn(...) -> R = ||
+                // ...`), use the hint's param + return types to
+                // refine any unannotated lambda slots. Lets a
+                // bare `|| 99` infer as `fn() -> i16` when the
+                // target binding declares that shape.
+                const hint_fn: ?types.Function = if (hint) |h|
+                    (if (h.* == .function) h.function else null)
+                else
+                    null;
                 var param_types: std.ArrayList(*const types.Type) = .empty;
                 errdefer param_types.deinit(self.arena);
-                for (l.params) |p| {
+                for (l.params, 0..) |p, i| {
                     const pt: *const types.Type = if (p.type_ann) |t|
                         try self.resolveType(t)
+                    else if (hint_fn) |hf|
+                        if (i < hf.params.len) hf.params[i] else try self.primitive(.nil_)
                     else
                         try self.primitive(.nil_);
                     try self.registerName(self.lexeme(p.name), .{
@@ -1337,6 +1349,8 @@ pub const Checker = struct {
                 }
                 const ret_ty: *const types.Type = if (l.ret_type) |r|
                     try self.resolveType(r)
+                else if (hint_fn) |hf|
+                    hf.ret
                 else
                     try self.primitive(.nil_);
                 // Swap current_ret_ty so `return expr` inside the

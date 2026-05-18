@@ -2333,6 +2333,83 @@ test "codegen/closure: AC4 — returned closure keeps env alive (escape analysis
     try std.testing.expectEqualStrings("1\n2\n", writer.written());
 }
 
+test "codegen/closure: nested lambda — inner closure pulls captures through outer env" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let n: i16 = 5
+        \\  let outer = lambda () -> i16
+        \\    let inner = lambda () -> i16
+        \\      return n + 1
+        \\    end
+        \\    return inner()
+        \\  end
+        \\  print outer()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("6\n", writer.written());
+}
+
+test "codegen/closure: nested mutation — inner mutates n through the outer's env (shared cell)" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let n: i16 = 0
+        \\  let outer = lambda () -> i16
+        \\    let inner = lambda () -> i16
+        \\      n = n + 10
+        \\      return n
+        \\    end
+        \\    inner()
+        \\    return inner()
+        \\  end
+        \\  print outer()
+        \\  print n
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // outer() runs inner() twice — n goes 0→10→20. outer returns
+    // 20. Then main prints n directly, also 20 (shared cell).
+    try std.testing.expectEqualStrings("20\n20\n", writer.written());
+}
+
+test "codegen/closure: short lambda body infers via fn-typed binding hint" {
+    var compiled = try compileSource(
+        \\def main()
+        \\  let f: fn() -> i16 = || 99
+        \\  print f()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("99\n", writer.written());
+}
+
 test "codegen/closure: multiple captures (mixed read-only and mutated)" {
     var compiled = try compileSource(
         \\def main()
