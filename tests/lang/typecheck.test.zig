@@ -41,6 +41,10 @@ fn expectClean(source: []const u8) !void {
     defer stream.deinit();
     var tree = try gero.lang.parse(alloc, source, stream);
     defer tree.deinit();
+    if (tree.errors.len > 0) {
+        std.debug.print("unexpected parse errors for source:\n{s}\n", .{source});
+        for (tree.errors) |e| std.debug.print("  - parser={s} @ {d}: {s}\n", .{ e.parser, e.index, e.message });
+    }
     try std.testing.expectEqual(@as(usize, 0), tree.errors.len);
 
     var checked = try gero.lang.typecheck(alloc, source, &tree.program);
@@ -1572,4 +1576,160 @@ test "typecheck: CheckedProgram retains program pointer" {
     defer checked.deinit();
 
     try std.testing.expectEqual(&tree.program, checked.program);
+}
+
+// ---------- OOP annotation enforcement (§3.7.6) ----------
+
+test "typecheck: @final class rejects extends" {
+    try expectCode(
+        \\@final
+        \\class Sealed
+        \\end
+        \\
+        \\class Sub extends Sealed
+        \\end
+    , "E_CLASS_FINAL_EXTENDS");
+}
+
+test "typecheck: @final method rejects override in subclass" {
+    try expectCode(
+        \\class Base
+        \\  @final
+        \\  def tick(self) end
+        \\end
+        \\
+        \\class Child extends Base
+        \\  def tick(self) end
+        \\end
+    , "E_METHOD_FINAL_OVERRIDE");
+}
+
+test "typecheck: @override without matching parent fails" {
+    try expectCode(
+        \\class Base
+        \\end
+        \\
+        \\class Child extends Base
+        \\  @override
+        \\  def ghost(self) end
+        \\end
+    , "E_OVERRIDE_NO_PARENT");
+}
+
+test "typecheck: @override matching parent passes" {
+    try expectClean(
+        \\class Base
+        \\  def tick(self) end
+        \\end
+        \\
+        \\class Child extends Base
+        \\  @override
+        \\  def tick(self) end
+        \\end
+    );
+}
+
+test "typecheck: @abstract class rejects direct instantiation" {
+    try expectCode(
+        \\@abstract
+        \\class Shape
+        \\end
+        \\
+        \\def main()
+        \\  let s = Shape()
+        \\end
+    , "E_CLASS_ABSTRACT_INSTANTIATE");
+}
+
+test "typecheck: class with @abstract method is implicitly abstract" {
+    try expectCode(
+        \\class Drawable
+        \\  @abstract
+        \\  def draw(self)
+        \\end
+        \\
+        \\def main()
+        \\  let d = Drawable()
+        \\end
+    , "E_CLASS_ABSTRACT_INSTANTIATE");
+}
+
+test "typecheck: concrete subclass must implement abstract method" {
+    try expectCode(
+        \\class Drawable
+        \\  @abstract
+        \\  def draw(self)
+        \\end
+        \\
+        \\class Sprite extends Drawable
+        \\end
+    , "E_ABSTRACT_NOT_IMPLEMENTED");
+}
+
+test "typecheck: concrete subclass implementing abstract method passes" {
+    try expectClean(
+        \\class Drawable
+        \\  @abstract
+        \\  def draw(self)
+        \\end
+        \\
+        \\class Sprite extends Drawable
+        \\  @override
+        \\  def draw(self) end
+        \\end
+    );
+}
+
+test "typecheck: @private field rejected from outside the class" {
+    try expectCode(
+        \\class Player
+        \\  @private
+        \\  let _hp: i16
+        \\end
+        \\
+        \\def main()
+        \\  let p = Player()
+        \\  let h: i16 = p._hp
+        \\end
+    , "E_PRIVATE_ACCESS");
+}
+
+test "typecheck: @private method rejected from outside the class" {
+    try expectCode(
+        \\class Player
+        \\  @private
+        \\  def secret(self) end
+        \\end
+        \\
+        \\def main()
+        \\  let p = Player()
+        \\  p.secret()
+        \\end
+    , "E_PRIVATE_ACCESS");
+}
+
+test "typecheck: @private member accessed from inside the class is allowed" {
+    try expectClean(
+        \\class Player
+        \\  @private
+        \\  let _hp: i16
+        \\
+        \\  @private
+        \\  def secret(self) end
+        \\
+        \\  def update(self)
+        \\    self._hp = 10
+        \\    self.secret()
+        \\  end
+        \\end
+    );
+}
+
+test "typecheck: @static method with `self` param is rejected" {
+    try expectCode(
+        \\class Util
+        \\  @static
+        \\  def from_origin(self) end
+        \\end
+    , "E_STATIC_HAS_SELF");
 }

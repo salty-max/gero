@@ -979,6 +979,17 @@ pub const Checker = struct {
         self.current_class_name = self.lexeme(d.name);
         defer self.current_class_name = saved_name;
 
+        if (d.extends) |ext| if (self.class_registry.get(self.lexeme(ext))) |parent| {
+            if (annotations.hasAnnotation(self, parent.annotations, "final")) {
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "cannot extend `{s}` — parent class is marked `@final`",
+                    .{self.lexeme(ext)},
+                );
+                try self.emitSpan("E_CLASS_FINAL_EXTENDS", ext, msg);
+            }
+        };
+
         for (d.fields) |f| {
             try annotations.validateAnnotations(self, f.annotations, T.CLASS_FIELD);
             const ty: ?*const types.Type = if (f.type_ann) |t|
@@ -993,6 +1004,7 @@ pub const Checker = struct {
             if (f.init) |init_| _ = try self.inferExpr(init_, ty);
         }
         for (d.methods) |m| {
+            try self.checkMethodAnnotations(&d, m);
             const sig = try self.signatureFromDef(m);
             try self.registerName(self.lexeme(m.name), .{
                 .kind = .function,
@@ -1001,6 +1013,131 @@ pub const Checker = struct {
             });
             try self.checkDefDecl(m);
         }
+
+        if (!annotations.classIsAbstract(self, &d)) {
+            try self.checkAbstractMethodsImplemented(&d);
+        }
+    }
+
+    /// Validate OOP annotations on a method against its enclosing
+    /// class + parent chain:
+    ///
+    /// - `@override`: a parent method with the same name must exist;
+    ///   else `E_OVERRIDE_NO_PARENT`.
+    /// - Overriding a `@final` parent method: `E_METHOD_FINAL_OVERRIDE`.
+    /// - `@static` on a method: the first parameter must not be
+    ///   named `self` (else `E_STATIC_HAS_SELF`). The parser already
+    ///   refuses to attach a body to an `@abstract` method, so the
+    ///   empty-body rule needs no extra check here.
+    fn checkMethodAnnotations(
+        self: *Checker,
+        cd: *const ast.ClassDecl,
+        m: ast.DefDecl,
+    ) WalkError!void {
+        const m_name = self.lexeme(m.name);
+        const is_override = annotations.hasAnnotation(self, m.annotations, "override");
+        const is_static = annotations.hasAnnotation(self, m.annotations, "static");
+
+        if (is_static and m.params.len > 0) {
+            const first = self.lexeme(m.params[0].name);
+            if (std.mem.eql(u8, first, "self")) {
+                try self.emitSpan(
+                    "E_STATIC_HAS_SELF",
+                    m.params[0].name,
+                    "`@static` method must not take a `self` parameter — it's called as `ClassName.method(...)`",
+                );
+            }
+        }
+
+        const parent_method = self.lookupParentMethod(cd, m_name);
+        if (is_override) {
+            if (parent_method == null) {
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "`@override` on `{s}` but no parent class declares a method by that name",
+                    .{m_name},
+                );
+                try self.emitSpan("E_OVERRIDE_NO_PARENT", m.name, msg);
+            }
+        }
+        if (parent_method) |pm| {
+            if (annotations.hasAnnotation(self, pm.annotations, "final")) {
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "cannot override `{s}` — parent method is marked `@final`",
+                    .{m_name},
+                );
+                try self.emitSpan("E_METHOD_FINAL_OVERRIDE", m.name, msg);
+            }
+        }
+    }
+
+    /// Walk `cd`'s ancestor chain looking for a method named
+    /// `name`. Returns the closest ancestor's declaration so the
+    /// caller can inspect its annotations (final / abstract /
+    /// private). Returns `null` when no ancestor declares it.
+    fn lookupParentMethod(
+        self: *const Checker,
+        cd: *const ast.ClassDecl,
+        name: []const u8,
+    ) ?*const ast.DefDecl {
+        var cursor = cd;
+        while (cursor.extends) |ext| {
+            const parent = self.class_registry.get(self.lexeme(ext)) orelse return null;
+            for (parent.methods) |*m| {
+                if (std.mem.eql(u8, self.lexeme(m.name), name)) return m;
+            }
+            cursor = parent;
+        }
+        return null;
+    }
+
+    /// `cd` is a concrete (non-abstract) class — every abstract
+    /// method inherited from an ancestor must be overridden by a
+    /// non-abstract method in `cd` or in some ancestor closer than
+    /// the abstract declaration. Emits `E_ABSTRACT_NOT_IMPLEMENTED`
+    /// for every missing impl.
+    fn checkAbstractMethodsImplemented(
+        self: *Checker,
+        cd: *const ast.ClassDecl,
+    ) WalkError!void {
+        var cursor: ?*const ast.ClassDecl = cd;
+        while (cursor) |c| : ({
+            cursor = if (c.extends) |ext| self.class_registry.get(self.lexeme(ext)) else null;
+        }) {
+            for (c.methods) |m| {
+                if (!annotations.hasAnnotation(self, m.annotations, "abstract")) continue;
+                if (self.hasConcreteImpl(cd, self.lexeme(m.name), c)) continue;
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "concrete class `{s}` must override abstract method `{s}` inherited from `{s}`",
+                    .{ self.lexeme(cd.name), self.lexeme(m.name), self.lexeme(c.name) },
+                );
+                try self.emitSpan("E_ABSTRACT_NOT_IMPLEMENTED", cd.name, msg);
+            }
+        }
+    }
+
+    /// Walk from `cd` up through ancestors stopping at (not
+    /// including) `stop_at` — true when some intermediate class
+    /// declares a non-abstract method named `name`.
+    fn hasConcreteImpl(
+        self: *const Checker,
+        cd: *const ast.ClassDecl,
+        name: []const u8,
+        stop_at: *const ast.ClassDecl,
+    ) bool {
+        var cursor: ?*const ast.ClassDecl = cd;
+        while (cursor) |c| {
+            if (c == stop_at) return false;
+            for (c.methods) |m| {
+                if (!std.mem.eql(u8, self.lexeme(m.name), name)) continue;
+                if (annotations.hasAnnotation(self, m.annotations, "abstract")) continue;
+                return true;
+            }
+            cursor = if (c.extends) |ext| self.class_registry.get(self.lexeme(ext)) else null;
+        }
+        return false;
     }
 
     /// Register every binder in a pattern (ident binders +
@@ -1550,7 +1687,22 @@ pub const Checker = struct {
             return null;
         }
         if (self.class_registry.get(named_name)) |cd| {
-            if (try self.lookupClassFieldType(cd, field_name)) |t| return t;
+            if (self.lookupClassFieldOwner(cd, field_name)) |hit| {
+                if (annotations.hasAnnotation(self, hit.field.annotations, "private")) {
+                    const owner_name = self.lexeme(hit.owner.name);
+                    const visible = if (self.current_class_name) |cn| std.mem.eql(u8, cn, owner_name) else false;
+                    if (!visible) {
+                        const msg = try std.fmt.allocPrint(
+                            self.arena,
+                            "field `{s}.{s}` is `@private` — only accessible from inside `{s}`",
+                            .{ named_name, field_name, owner_name },
+                        );
+                        try self.emitSpan("E_PRIVATE_ACCESS", f.field, msg);
+                    }
+                }
+                if (hit.field.type_ann) |t| return try self.resolveType(t);
+                return null;
+            }
             try self.emitUndefinedField(named_name, field_name, f.field);
             return null;
         }
@@ -1609,7 +1761,7 @@ pub const Checker = struct {
             return null;
         };
         const method_name = self.lexeme(m.method);
-        const method = self.lookupClassMethod(cd, method_name) orelse {
+        const hit = self.lookupClassMethodOwner(cd, method_name) orelse {
             const msg = try std.fmt.allocPrint(
                 self.arena,
                 "class `{s}` has no method `{s}`",
@@ -1619,6 +1771,19 @@ pub const Checker = struct {
             for (m.args) |a| _ = try self.inferExpr(a, null);
             return null;
         };
+        const method = hit.method;
+        if (annotations.hasAnnotation(self, method.annotations, "private")) {
+            const owner_name = self.lexeme(hit.owner.name);
+            const visible = if (self.current_class_name) |cn| std.mem.eql(u8, cn, owner_name) else false;
+            if (!visible) {
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "method `{s}.{s}` is `@private` — only callable from inside `{s}`",
+                    .{ named_name, method_name, owner_name },
+                );
+                try self.emitSpan("E_PRIVATE_ACCESS", m.method, msg);
+            }
+        }
         // Build the method signature on the fly. Skip the `self`
         // param when matching args.
         var has_self = false;
@@ -1784,11 +1949,46 @@ pub const Checker = struct {
         cd: *const ast.ClassDecl,
         method_name: []const u8,
     ) ?*const ast.DefDecl {
+        if (self.lookupClassMethodOwner(cd, method_name)) |hit| return hit.method;
+        return null;
+    }
+
+    /// Walk a class's inheritance chain looking for a method by
+    /// name and return both the method decl and the class that
+    /// owns it (needed for `@private` visibility checks since
+    /// the owner is what determines who can see the member).
+    fn lookupClassMethodOwner(
+        self: *const Checker,
+        cd: *const ast.ClassDecl,
+        method_name: []const u8,
+    ) ?struct { method: *const ast.DefDecl, owner: *const ast.ClassDecl } {
         for (cd.methods) |*method| {
-            if (std.mem.eql(u8, self.lexeme(method.name), method_name)) return method;
+            if (std.mem.eql(u8, self.lexeme(method.name), method_name)) {
+                return .{ .method = method, .owner = cd };
+            }
         }
         if (cd.extends) |ext| if (self.class_registry.get(self.lexeme(ext))) |parent| {
-            return self.lookupClassMethod(parent, method_name);
+            return self.lookupClassMethodOwner(parent, method_name);
+        };
+        return null;
+    }
+
+    /// Walk a class's inheritance chain looking for a field by
+    /// name and return both the field decl and the owning class.
+    /// Owner identity drives `@private` enforcement (subclasses
+    /// don't see private parent fields).
+    fn lookupClassFieldOwner(
+        self: *const Checker,
+        cd: *const ast.ClassDecl,
+        field_name: []const u8,
+    ) ?struct { field: *const ast.ClassField, owner: *const ast.ClassDecl } {
+        for (cd.fields) |*fld| {
+            if (std.mem.eql(u8, self.lexeme(fld.name), field_name)) {
+                return .{ .field = fld, .owner = cd };
+            }
+        }
+        if (cd.extends) |ext| if (self.class_registry.get(self.lexeme(ext))) |parent| {
+            return self.lookupClassFieldOwner(parent, field_name);
         };
         return null;
     }
@@ -2025,6 +2225,21 @@ pub const Checker = struct {
 
     fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
         _ = hint;
+        // Abstract-class instantiation: `ClassName(args)` where
+        // `ClassName` is abstract is rejected.
+        if (c.callee.* == .ident) {
+            const callee_name = self.lexeme(c.callee.ident.span);
+            if (self.class_registry.get(callee_name)) |cd| {
+                if (annotations.classIsAbstract(self, cd)) {
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "cannot instantiate `{s}` — class is `@abstract`",
+                        .{callee_name},
+                    );
+                    try self.emitSpan("E_CLASS_ABSTRACT_INSTANTIATE", c.callee.span(), msg);
+                }
+            }
+        }
         const callee_ty = try self.inferExpr(c.callee, null);
         // Bake-context rule: only `bake def` fns may be called.
         if (self.in_bake) try self.checkBakeCall(c);
