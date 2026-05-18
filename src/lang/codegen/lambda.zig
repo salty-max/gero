@@ -65,10 +65,20 @@ pub const FnClosureInfo = struct {
     /// Names of let / const / param bindings in this fn that must
     /// live as heap cells.
     promoted: std.StringHashMapUnmanaged(void),
-    /// Lambdas encountered in the fn body, in source order. The
-    /// index is the lambda's identity within this fn (used to
-    /// derive a stable `__lambda_<fn>_<N>` label).
+    /// Lambdas encountered in the fn body, including nested ones.
+    /// Order is "leaf-first" — a nested lambda registers before
+    /// its enclosing lambda (because the enclosing arm recurses
+    /// into the body before appending itself). Labels are unique
+    /// across the whole def via `next_lambda_id`, not the items
+    /// length, so the depth-first registration order doesn't
+    /// cause label collisions.
     lambdas: std.ArrayListUnmanaged(LambdaInfo),
+    /// Monotonic counter for mangled labels. Incremented at
+    /// every `findLambdasInExpr` lambda arm entry — BEFORE the
+    /// recursion into the body — so an outer lambda and any
+    /// nested ones each get a distinct id even though the outer's
+    /// arm captures the id pre-recursion.
+    next_lambda_id: u32,
     /// Names of let bindings whose init is a lambda — used at
     /// call sites to detect `f(args)` should dispatch as a
     /// closure call vs a free-fn call.
@@ -88,6 +98,18 @@ pub const LambdaInfo = struct {
     /// Captured binding names in slot order. Slot index N maps to
     /// tuple offset `2 + N*2` (offset 0 is fn_ptr).
     captures: std.ArrayListUnmanaged([]const u8),
+    /// Bindings declared inside THIS lambda's body that need a
+    /// heap cell — captured-by-some-inner-lambda AND
+    /// (mutated OR captured by an escaping inner lambda).
+    /// Swapped into `fn_closure_info.promoted` while this body
+    /// emits so `emitLetDecl` / `emitAssign` route through the
+    /// cell path for the right scope.
+    promoted: std.StringHashMapUnmanaged(void),
+    /// Bindings declared inside THIS lambda's body whose init is
+    /// a lambda — swapped into `fn_closure_info.closure_bindings`
+    /// while this body emits so nested `f(args)` dispatches
+    /// through the closure-call path.
+    closure_bindings: std.StringHashMapUnmanaged(void),
 };
 
 /// Walk `def` body, populate `Emitter.fn_closure_info` with the
@@ -97,6 +119,7 @@ pub fn analyzeFn(self: *Emitter, def: *const ast.DefDecl) !void {
     var info: FnClosureInfo = .{
         .promoted = .{},
         .lambdas = .empty,
+        .next_lambda_id = 0,
         .closure_bindings = .{},
     };
 
@@ -139,6 +162,7 @@ pub fn resetFnInfo(self: *Emitter) void {
     self.fn_closure_info = .{
         .promoted = .{},
         .lambdas = .empty,
+        .next_lambda_id = 0,
         .closure_bindings = .{},
     };
 }
@@ -154,17 +178,23 @@ pub fn isClosureBinding(self: *const Emitter, name: []const u8) bool {
     return self.fn_closure_info.closure_bindings.contains(name);
 }
 
-/// `true` when `e` is an ident bound to a local or param whose
-/// inferred type is a function — covers the case where a closure
-/// flowed in from a fn's return value (`let c = make_counter()`
-/// where `make_counter` returns a lambda). Limited to
-/// local/param bindings so free-fn idents (which type as
-/// function too, but dispatch via direct call) don't get
-/// misrouted to the closure path.
+/// `true` when `e` is an ident bound to a local / param / capture
+/// whose inferred type is a function — covers cases where a
+/// closure flowed in from a fn's return value (`let c =
+/// make_counter()`) or where the ident is a capture re-read from
+/// the enclosing env in a nested lambda body. Free-fn idents and
+/// class constructors type as function too but dispatch via
+/// direct call, so they're excluded.
 pub fn isClosureByType(self: *const Emitter, e: *const ast.Expr) bool {
     if (e.* != .ident) return false;
     const name = self.source[e.ident.span.start..e.ident.span.end];
-    if (!self.locals.contains(name) and !self.params.contains(name)) return false;
+    if (self.fn_addresses.contains(name)) return false;
+    if (self.class_decls.contains(name)) return false;
+    const has_binding =
+        self.locals.contains(name) or
+        self.params.contains(name) or
+        self.captures.contains(name);
+    if (!has_binding) return false;
     const ty = self.typeOf(e) orelse return false;
     return ty.* == .function;
 }
@@ -276,10 +306,25 @@ pub fn emitLambdaExpr(self: *Emitter, lambda: ast.LambdaExpr, expr: *const ast.E
 }
 
 /// Load a capture's source value into `acu` at closure-creation
-/// time. For a promoted binding: that's the cell pointer (lives
-/// directly in the local slot). For an unpromoted binding: that's
-/// the current value (regular local / param / global load).
+/// time. The slot semantics are deliberately "raw" — for a
+/// promoted binding that's the cell pointer (so the inner
+/// closure shares state with the parent), for a non-promoted
+/// binding that's the value (re-copied into the new closure).
+/// The lookup order — captures → locals → params → globals —
+/// lets nested closures chain: a closure created INSIDE another
+/// lambda's body reads its captures from the enclosing env
+/// rather than a stack slot that doesn't exist at this scope.
 fn emitCaptureSource(self: *Emitter, name: []const u8) !void {
+    if (self.captures.get(name)) |slot| {
+        // Inside an enclosing lambda — re-read this slot raw
+        // from our own env to populate the inner closure's slot.
+        // For promoted (cell-pointer) captures the pointer
+        // propagates as-is (shared state); for by-value captures
+        // the value re-copies.
+        try loadEnvPtr(self, Reg.r1);
+        try emitWordLoadAtOffset(self, Reg.r1, slot.env_offset, Reg.acu);
+        return;
+    }
     if (self.locals.get(name)) |ofs| {
         try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
         return;
@@ -330,26 +375,26 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
     const saved_frame = self.frame_bytes;
     const saved_entry = self.is_entry;
     const saved_bank = self.current_bank;
-    const saved_info = self.fn_closure_info;
+    const saved_promoted = self.fn_closure_info.promoted;
+    const saved_closure_bindings = self.fn_closure_info.closure_bindings;
     self.locals = .{};
     self.params = .{};
     self.frame_bytes = 0;
     self.is_entry = false;
-    // Lambdas inherit the parent bank — nested-bank lambdas land
-    // in a future feature; for now the lambda body shares the
-    // parent fn's emit buffer.
-    self.fn_closure_info = .{
-        .promoted = .{},
-        .lambdas = .empty,
-        .closure_bindings = .{},
-    };
+    // Swap the scope-dependent analysis fields to this lambda's
+    // own — promoted bindings + closure_bindings differ per
+    // scope. The lambdas list stays shared across nested levels
+    // (every lambda emits as a flat def at the end of the parent).
+    self.fn_closure_info.promoted = li.promoted;
+    self.fn_closure_info.closure_bindings = li.closure_bindings;
     defer {
         self.locals = saved_locals;
         self.params = saved_params;
         self.frame_bytes = saved_frame;
         self.is_entry = saved_entry;
         self.current_bank = saved_bank;
-        self.fn_closure_info = saved_info;
+        self.fn_closure_info.promoted = saved_promoted;
+        self.fn_closure_info.closure_bindings = saved_closure_bindings;
     }
 
     const dup_label = try self.arena.dupe(u8, li.label);
@@ -380,7 +425,13 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
     for (li.captures.items, 0..) |cap, idx| {
         // @as: idx fits u16 — capture count caps below 32k.
         const offset: u16 = 2 + @as(u16, @intCast(idx)) * 2;
-        const promoted_in_parent = saved_info.promoted.contains(cap);
+        // `is_cell` reflects the enclosing scope's view of this
+        // capture — promoted in the parent (whichever the parent
+        // scope was) means the slot holds a cell pointer, so
+        // reads in this body need a deref. We use the
+        // pre-swap `saved_promoted` since that's the enclosing
+        // scope's promotion set, not this lambda's own.
+        const promoted_in_parent = saved_promoted.contains(cap);
         try captures_map.put(self.arena, cap, .{
             .env_offset = offset,
             .is_cell = promoted_in_parent,
@@ -551,12 +602,14 @@ fn collectLocalsFromStatement(
     }
 }
 
+const FindError = error{OutOfMemory};
+
 fn findLambdasInStatement(
     self: *Emitter,
     s: ast.Statement,
     def: *const ast.DefDecl,
     info: *FnClosureInfo,
-) !void {
+) FindError!void {
     switch (s) {
         .let_decl => |d| if (d.init) |init_expr| try findLambdasInExpr(self, init_expr, def, info),
         .const_decl => |d| try findLambdasInExpr(self, d.init, def, info),
@@ -595,18 +648,49 @@ fn findLambdasInExpr(
     e: *const ast.Expr,
     def: *const ast.DefDecl,
     info: *FnClosureInfo,
-) !void {
+) FindError!void {
     switch (e.*) {
         .lambda => |l| {
-            const idx: usize = info.lambdas.items.len;
+            const idx = info.next_lambda_id;
+            info.next_lambda_id += 1;
             const fn_name = self.source[def.name.start..def.name.end];
             const label = try std.fmt.allocPrint(self.arena, "__lambda_{s}_{d}", .{ fn_name, idx });
             var captures: std.ArrayListUnmanaged([]const u8) = .empty;
             try collectFreeVars(self, &l, &captures, def);
+            // Per-lambda scope analysis: this lambda's own locals,
+            // which subset of them get initialized with a nested
+            // lambda, and which subset needs a heap cell. Computed
+            // here so emitOneLambdaBody can swap them in.
+            var local_bindings: std.StringHashMapUnmanaged(void) = .{};
+            var scope_closure_bindings: std.StringHashMapUnmanaged(void) = .{};
+            try collectLambdaScopeBindings(self, &l, &local_bindings, &scope_closure_bindings);
+            // Recurse — register any nested lambdas in the same
+            // flat list so emitLambdaBodies emits them all.
+            try findLambdasInLambdaBody(self, &l, def, info);
+            // Now decide promotion for this lambda's own locals.
+            // Mutation walks the body (any assignment in this body
+            // or any deeper nested lambda body counts).
+            var mutated: std.StringHashMapUnmanaged(void) = .{};
+            for (l.body) |stmt| collectMutatedInStatement(self, stmt, &mutated);
+            // Escape: nested lambdas in this body that escape via
+            // a return in this body's tail.
+            var escaping_captures: std.StringHashMapUnmanaged(void) = .{};
+            for (l.body) |stmt| collectEscapingCaptures(self, stmt, info, &escaping_captures);
+            var promoted: std.StringHashMapUnmanaged(void) = .{};
+            for (info.lambdas.items) |child_li| {
+                for (child_li.captures.items) |cap| {
+                    if (!local_bindings.contains(cap)) continue;
+                    if (mutated.contains(cap) or escaping_captures.contains(cap)) {
+                        try promoted.put(self.arena, cap, {});
+                    }
+                }
+            }
             try info.lambdas.append(self.arena, .{
                 .ast_node = &e.lambda,
                 .label = label,
                 .captures = captures,
+                .promoted = promoted,
+                .closure_bindings = scope_closure_bindings,
             });
         },
         .paren => |p| try findLambdasInExpr(self, p.inner, def, info),
@@ -627,6 +711,74 @@ fn findLambdasInExpr(
         .is_test => |it| try findLambdasInExpr(self, it.lhs, def, info),
         .ref_of => |r| try findLambdasInExpr(self, r.inner, def, info),
         .cast => |c| try findLambdasInExpr(self, c.inner, def, info),
+        else => {},
+    }
+}
+
+/// Recurse into a lambda body's statements to register nested
+/// lambdas in the shared `info.lambdas` list. Mirrors the
+/// statement walker used at def-body level — duplicated rather
+/// than parameterized because the def-body walker stays
+/// shallower (it doesn't recurse into lambda bodies itself; this
+/// helper drives that recursion).
+fn findLambdasInLambdaBody(
+    self: *Emitter,
+    lambda: *const ast.LambdaExpr,
+    def: *const ast.DefDecl,
+    info: *FnClosureInfo,
+) FindError!void {
+    for (lambda.body) |stmt| try findLambdasInStatement(self, stmt, def, info);
+}
+
+/// Collect this lambda body's own let / const bindings, plus
+/// the subset of those whose init expression is itself a lambda
+/// (drives the closure-call detection in this lambda's scope).
+fn collectLambdaScopeBindings(
+    self: *Emitter,
+    lambda: *const ast.LambdaExpr,
+    locals: *std.StringHashMapUnmanaged(void),
+    closure_bindings: *std.StringHashMapUnmanaged(void),
+) !void {
+    for (lambda.params) |p| {
+        const name = self.source[p.name.start..p.name.end];
+        try locals.put(self.arena, name, {});
+    }
+    for (lambda.body) |stmt| try collectScopeStatementBindings(self, stmt, locals, closure_bindings);
+}
+
+fn collectScopeStatementBindings(
+    self: *Emitter,
+    s: ast.Statement,
+    locals: *std.StringHashMapUnmanaged(void),
+    closure_bindings: *std.StringHashMapUnmanaged(void),
+) !void {
+    switch (s) {
+        .let_decl => |d| {
+            if (d.pattern.* == .ident) {
+                const name = self.source[d.pattern.ident.name.start..d.pattern.ident.name.end];
+                try locals.put(self.arena, name, {});
+                if (d.init) |init_expr| {
+                    if (init_expr.* == .lambda) {
+                        try closure_bindings.put(self.arena, name, {});
+                    }
+                }
+            }
+        },
+        .const_decl => |d| {
+            const name = self.source[d.name.start..d.name.end];
+            try locals.put(self.arena, name, {});
+            if (d.init.* == .lambda) {
+                try closure_bindings.put(self.arena, name, {});
+            }
+        },
+        .block => |b| for (b.body) |inner| try collectScopeStatementBindings(self, inner, locals, closure_bindings),
+        .if_stmt => |is_| {
+            for (is_.arms) |arm| for (arm.body) |inner| try collectScopeStatementBindings(self, inner, locals, closure_bindings);
+            if (is_.else_body) |eb| for (eb) |inner| try collectScopeStatementBindings(self, inner, locals, closure_bindings);
+        },
+        .while_stmt => |ws| for (ws.body) |inner| try collectScopeStatementBindings(self, inner, locals, closure_bindings),
+        .for_stmt => |fs| for (fs.body) |inner| try collectScopeStatementBindings(self, inner, locals, closure_bindings),
+        .repeat_stmt => |rs| for (rs.body) |inner| try collectScopeStatementBindings(self, inner, locals, closure_bindings),
         else => {},
     }
 }
@@ -676,13 +828,15 @@ fn collectLambdaLocalsInStatement(
     }
 }
 
+const CollectError = error{OutOfMemory};
+
 fn collectIdentsInStatement(
     self: *Emitter,
     s: ast.Statement,
     locals: *const std.StringHashMapUnmanaged(void),
     captures: *std.ArrayListUnmanaged([]const u8),
     def: *const ast.DefDecl,
-) !void {
+) CollectError!void {
     switch (s) {
         .let_decl => |d| if (d.init) |init_expr| try collectIdentsInExpr(self, init_expr, locals, captures, def),
         .const_decl => |d| try collectIdentsInExpr(self, d.init, locals, captures, def),
@@ -725,7 +879,7 @@ fn collectIdentsInExpr(
     locals: *const std.StringHashMapUnmanaged(void),
     captures: *std.ArrayListUnmanaged([]const u8),
     def: *const ast.DefDecl,
-) !void {
+) CollectError!void {
     switch (e.*) {
         .ident => |i| {
             const name = self.source[i.span.start..i.span.end];
@@ -757,11 +911,35 @@ fn collectIdentsInExpr(
         .is_test => |it| try collectIdentsInExpr(self, it.lhs, locals, captures, def),
         .ref_of => |r| try collectIdentsInExpr(self, r.inner, locals, captures, def),
         .cast => |c| try collectIdentsInExpr(self, c.inner, locals, captures, def),
-        // Nested lambdas — collect their free vars too; any name
-        // they capture from the enclosing scope might transitively
-        // need to flow through this lambda's env. For PR scope we
-        // don't recurse — known limitation.
-        .lambda => {},
+        // Nested lambda — any name the inner lambda captures from
+        // OUTSIDE its own param + locals is a free var from the
+        // enclosing scope. If that name isn't local to THIS
+        // lambda either, it transitively becomes a capture of this
+        // lambda too — at closure-creation time we populate the
+        // inner closure's slot by re-reading our own env.
+        .lambda => |inner| {
+            var inner_locals: std.StringHashMapUnmanaged(void) = .{};
+            for (inner.params) |p| {
+                const name = self.source[p.name.start..p.name.end];
+                try inner_locals.put(self.arena, name, {});
+            }
+            for (inner.body) |stmt| try collectLambdaLocalsInStatement(self, stmt, &inner_locals);
+            var inner_captures: std.ArrayListUnmanaged([]const u8) = .empty;
+            for (inner.body) |stmt| try collectIdentsInStatement(self, stmt, &inner_locals, &inner_captures, def);
+            for (inner_captures.items) |inner_cap| {
+                // Skip if local to this lambda's own scope.
+                if (locals.contains(inner_cap)) continue;
+                // De-dup against captures we've already recorded.
+                var seen = false;
+                for (captures.items) |existing| {
+                    if (std.mem.eql(u8, existing, inner_cap)) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen) try captures.append(self.arena, inner_cap);
+            }
+        },
         else => {},
     }
 }

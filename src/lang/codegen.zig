@@ -190,6 +190,7 @@ pub fn compile(
         .fn_closure_info = .{
             .promoted = .{},
             .lambdas = .empty,
+            .next_lambda_id = 0,
             .closure_bindings = .{},
         },
         .captures = .{},
