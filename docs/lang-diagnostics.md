@@ -422,6 +422,7 @@ Annotation semantics and conflicts. Per spec §3.7.
 | `E_ANN_BAD_ARG` | Wrong arg shape (`@bank` needs a literal, etc.). |
 | `E_ANN_INLINE_TOO_LARGE` | `@inline` body exceeds the spec limit. |
 | `E_ANN_INLINE_RECURSIVE` | `@inline` expansion past nesting cap — likely recursive inlining. |
+| `E_ANN_INLINE_LAMBDA_BODY` | `@inline` def body declares a lambda — unsupported (no host def to attach the lambda body to). |
 | `E_ANN_CAPTURE_VIOLATION` | `@no_capture` violated by an inner closure. |
 | `E_CLASS_FINAL_EXTENDS` | `extends` a class marked `@final`. |
 | `E_METHOD_FINAL_OVERRIDE` | Subclass method overrides a `@final` parent method. |
@@ -689,6 +690,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_ANN_BAD_ARG` | Annotations | v0.3 |
 | `E_ANN_INLINE_TOO_LARGE` | Annotations | v0.3 |
 | `E_ANN_INLINE_RECURSIVE` | Annotations | v0.3 |
+| `E_ANN_INLINE_LAMBDA_BODY` | Annotations | v0.3 |
 | `E_ANN_CAPTURE_VIOLATION` | Annotations | v0.3 |
 | `E_CLASS_FINAL_EXTENDS` | Annotations | v0.3 |
 | `E_METHOD_FINAL_OVERRIDE` | Annotations | v0.3 |

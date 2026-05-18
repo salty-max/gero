@@ -2524,7 +2524,7 @@ test "codegen/@interrupt: handler emits `rti` epilogue and IVT slot is wired at 
     try std.testing.expect(found_rti);
 }
 
-test "codegen/@cold: marked def emits after non-cold defs in source order" {
+test "codegen/@cold: marked def's resolved address lands after non-cold defs" {
     var compiled = try compileSource(
         \\@cold
         \\def cold_path()
@@ -2539,16 +2539,24 @@ test "codegen/@cold: marked def emits after non-cold defs in source order" {
         \\end
     );
     defer compiled.deinit();
-    if (compiled.hasErrors()) {
-        for (compiled.diagnostics) |d| std.debug.print("  diag: {s}: {s}\n", .{ d.code, d.message });
-    }
     try std.testing.expect(!compiled.hasErrors());
 
-    // Disasm cleanly — symbol order in the image puts `hot_path`
-    // before `cold_path` despite the source-order ordering.
-    const reroll = try gero.disasm.roundTripArchive(alloc, compiled.image);
-    defer alloc.free(reroll);
-    try std.testing.expect(reroll.len > 0);
+    // Use the debug-symbol section to read each def's resolved
+    // address — the only public surface that exposes them. Ordering
+    // is the actual behavior we're gating on, not "disasm doesn't
+    // crash", so the assert is `addr(hot_path) < addr(cold_path)`
+    // even though `cold_path` came first in source.
+    const header = try gero.disasm.parseHeader(compiled.image);
+    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
+    defer symbols.deinit(alloc);
+    var hot_addr: ?u16 = null;
+    var cold_addr: ?u16 = null;
+    for (symbols.entries) |sym| {
+        if (std.mem.eql(u8, sym.name, "hot_path")) hot_addr = sym.address;
+        if (std.mem.eql(u8, sym.name, "cold_path")) cold_addr = sym.address;
+    }
+    try std.testing.expect(hot_addr != null and cold_addr != null);
+    try std.testing.expect(hot_addr.? < cold_addr.?);
 }
 
 test "codegen/@inline: tiny body is spliced — no standalone def emitted" {
@@ -2575,6 +2583,37 @@ test "codegen/@inline: tiny body is spliced — no standalone def emitted" {
     var vm = try runWith(with_inline.image, &writer);
     defer vm.deinit();
     try std.testing.expectEqualStrings("7\n", writer.written());
+}
+
+test "codegen/@inline: body declaring a lambda emits E_ANN_INLINE_LAMBDA_BODY" {
+    const source =
+        \\@inline
+        \\def with_lambda() -> i16
+        \\  let f = || 1
+        \\  return f()
+        \\end
+        \\
+        \\def main()
+        \\  print with_lambda()
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{});
+    defer compiled.deinit();
+
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_ANN_INLINE_LAMBDA_BODY")) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
 }
 
 test "codegen/@inline: over-cap body emits E_ANN_INLINE_TOO_LARGE" {

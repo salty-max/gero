@@ -263,8 +263,11 @@ fn findEntryDef(source: []const u8, program: *const ast.Program, entry_name: []c
 /// `true` when `dd` carries a bare flag annotation named `name`.
 /// Module-level helper so emit-loop branches in `emitProgram` can
 /// route on `@cold` / `@interrupt` / etc. without spinning up a
-/// full Emitter scope.
-fn defHasFlagAnnotation(source: []const u8, dd: *const ast.DefDecl, name: []const u8) bool {
+/// full Emitter scope. Also consumed by `codegen/lambda.zig`'s
+/// `@no_capture` short-circuit, which is the lone cross-module
+/// caller — kept on this side so the source-walk lives next to
+/// the other annotation-decoding logic.
+pub fn defHasFlagAnnotation(source: []const u8, dd: *const ast.DefDecl, name: []const u8) bool {
     for (dd.annotations) |ann| {
         if (std.mem.eql(u8, source[ann.name.start..ann.name.end], name)) return true;
     }
@@ -1988,10 +1991,23 @@ pub const Emitter = struct {
 
         // Closure analysis on the inline body — let / ident /
         // assign hooks consult it for any nested lambdas the body
-        // declares.
+        // declares. Lambdas inside an `@inline` body are
+        // unsupported: their bodies emit alongside the parent def
+        // (which never emits for `@inline`), and their mangled
+        // labels would collide across multiple call sites.
         const saved_fn_info = self.fn_closure_info;
-        try lambda.analyzeFn(self, callee);
         defer self.fn_closure_info = saved_fn_info;
+        try lambda.analyzeFn(self, callee);
+        if (self.fn_closure_info.lambdas.items.len > 0) {
+            const name = self.source[callee.name.start..callee.name.end];
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "`@inline` def `{s}` declares a lambda in its body — unsupported (lambdas need a host def, but inlined bodies don't emit one)",
+                .{name},
+            );
+            try self.diagFatal(c.span, "E_ANN_INLINE_LAMBDA_BODY", msg);
+            return;
+        }
 
         try self.pushBlock();
         for (callee.body) |stmt| try self.emitStatement(stmt);
