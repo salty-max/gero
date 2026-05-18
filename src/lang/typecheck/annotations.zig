@@ -214,10 +214,31 @@ pub fn validateAnnotationArgs(self: *Checker, ann: ast.Annotation, spec: *const 
     }
 }
 
+/// `true` when `anns` contains a bare flag annotation named
+/// `name`. Args (if any) are ignored — callers that care about
+/// args read them off the matched annotation directly. Used
+/// across typecheck + codegen to drive annotation-gated behavior
+/// (`@no_capture`, `@final`, `@inline`, `@cold`, …).
+pub fn hasAnnotation(c: *const Checker, anns: []const ast.Annotation, name: []const u8) bool {
+    for (anns) |ann| {
+        if (std.mem.eql(u8, c.lexeme(ann.name), name)) return true;
+    }
+    return false;
+}
+
 /// `true` when `d` carries a `@no_capture` annotation.
 pub fn defHasNoCapture(c: *const Checker, d: ast.DefDecl) bool {
-    for (d.annotations) |ann| {
-        if (std.mem.eql(u8, c.lexeme(ann.name), "no_capture")) return true;
+    return hasAnnotation(c, d.annotations, "no_capture");
+}
+
+/// `true` when `cd` is implicitly abstract — either marked
+/// `@abstract` directly, or carries at least one `@abstract`
+/// method. A class with even one abstract method can't be
+/// instantiated.
+pub fn classIsAbstract(c: *const Checker, cd: *const ast.ClassDecl) bool {
+    if (hasAnnotation(c, cd.annotations, "abstract")) return true;
+    for (cd.methods) |m| {
+        if (hasAnnotation(c, m.annotations, "abstract")) return true;
     }
     return false;
 }
