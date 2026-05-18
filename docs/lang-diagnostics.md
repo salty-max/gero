@@ -421,7 +421,16 @@ Annotation semantics and conflicts. Per spec §3.7.
 | `E_ANN_BAD_TARGET` | Annotation applied to the wrong kind of decl. |
 | `E_ANN_BAD_ARG` | Wrong arg shape (`@bank` needs a literal, etc.). |
 | `E_ANN_INLINE_TOO_LARGE` | `@inline` body exceeds the spec limit. |
+| `E_ANN_INLINE_RECURSIVE` | `@inline` expansion past nesting cap — likely recursive inlining. |
+| `E_ANN_INLINE_LAMBDA_BODY` | `@inline` def body declares a lambda — unsupported (no host def to attach the lambda body to). |
 | `E_ANN_CAPTURE_VIOLATION` | `@no_capture` violated by an inner closure. |
+| `E_CLASS_FINAL_EXTENDS` | `extends` a class marked `@final`. |
+| `E_METHOD_FINAL_OVERRIDE` | Subclass method overrides a `@final` parent method. |
+| `E_OVERRIDE_NO_PARENT` | Method marked `@override` has no matching parent method. |
+| `E_CLASS_ABSTRACT_INSTANTIATE` | `ClassName(args)` on a `@abstract` class. |
+| `E_ABSTRACT_NOT_IMPLEMENTED` | Concrete subclass doesn't override an inherited `@abstract` method. |
+| `E_PRIVATE_ACCESS` | Access to a `@private` field / method from outside the declaring class. |
+| `E_STATIC_HAS_SELF` | `@static` method declares a `self` parameter. |
 
 **Mockup — `@inline` too large:**
 
@@ -680,7 +689,16 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_ANN_BAD_TARGET` | Annotations | v0.3 |
 | `E_ANN_BAD_ARG` | Annotations | v0.3 |
 | `E_ANN_INLINE_TOO_LARGE` | Annotations | v0.3 |
+| `E_ANN_INLINE_RECURSIVE` | Annotations | v0.3 |
+| `E_ANN_INLINE_LAMBDA_BODY` | Annotations | v0.3 |
 | `E_ANN_CAPTURE_VIOLATION` | Annotations | v0.3 |
+| `E_CLASS_FINAL_EXTENDS` | Annotations | v0.3 |
+| `E_METHOD_FINAL_OVERRIDE` | Annotations | v0.3 |
+| `E_OVERRIDE_NO_PARENT` | Annotations | v0.3 |
+| `E_CLASS_ABSTRACT_INSTANTIATE` | Annotations | v0.3 |
+| `E_ABSTRACT_NOT_IMPLEMENTED` | Annotations | v0.3 |
+| `E_PRIVATE_ACCESS` | Annotations | v0.3 |
+| `E_STATIC_HAS_SELF` | Annotations | v0.3 |
 | `E_BAKE_MMIO_ACCESS` | Bake | v0.3 |
 | `E_BAKE_NON_BAKEABLE_VALUE` | Bake | v0.3 |
 | `E_BAKE_ASM_INSIDE` | Bake | v0.3 |

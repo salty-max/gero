@@ -48,6 +48,7 @@ const types_mod = @import("types.zig");
 const typecheck_mod = @import("typecheck.zig");
 const diag_mod = @import("diagnostic.zig");
 const opcodes = @import("codegen/opcodes.zig");
+const disasm_decoder = @import("../disasm/decoder.zig");
 const archive = @import("codegen/archive.zig");
 const mem_builtin = @import("codegen/mem_builtin.zig");
 const strings = @import("codegen/strings.zig");
@@ -143,8 +144,6 @@ pub fn compile(
     checked: *const CheckedProgram,
     opts: Options,
 ) CompileError!Compiled {
-    _ = opts.debug_symbols;
-
     var diagnostics: std.ArrayList(Diagnostic) = .empty;
     errdefer diagnostics.deinit(allocator);
 
@@ -171,8 +170,14 @@ pub fn compile(
         .params = .{},
         .frame_bytes = 0,
         .is_entry = false,
+        .is_isr = false,
         .fn_addresses = .{},
         .fn_banks = .{},
+        .noreturn_defs = .{},
+        .inline_defs = .{},
+        .interrupt_defs = .empty,
+        .inline_returns = null,
+        .inline_depth = 0,
         .trampoline_addr = null,
         .call_patches = .empty,
         .globals = .{},
@@ -208,6 +213,7 @@ pub fn compile(
     defer emitter.string_patches.deinit(allocator);
     defer emitter.block_stack.deinit(allocator);
     defer emitter.loop_stack.deinit(allocator);
+    defer emitter.interrupt_defs.deinit(allocator);
     defer {
         var it = emitter.banks.valueIterator();
         while (it.next()) |b| b.deinit(allocator);
@@ -225,7 +231,12 @@ pub fn compile(
     @memset(base_image, 0);
     @memcpy(base_image[code_base..][0..emitter.code.items.len], emitter.code.items);
 
-    const image = try buildArchive(allocator, base_image, code_base, emitter.data_cursor, &emitter.banks);
+    const debug_blob: ?[]u8 = if (opts.debug_symbols)
+        try emitter.buildDebugSymbolSection()
+    else
+        null;
+    defer if (debug_blob) |s| allocator.free(s);
+    const image = try buildArchive(allocator, base_image, code_base, emitter.data_cursor, &emitter.banks, debug_blob);
     allocator.free(base_image);
 
     return .{
@@ -249,7 +260,52 @@ fn findEntryDef(source: []const u8, program: *const ast.Program, entry_name: []c
     return null;
 }
 
+/// `true` when `dd` carries a bare flag annotation named `name`.
+/// Module-level helper so emit-loop branches in `emitProgram` can
+/// route on `@cold` / `@interrupt` / etc. without spinning up a
+/// full Emitter scope. Also consumed by `codegen/lambda.zig`'s
+/// `@no_capture` short-circuit, which is the lone cross-module
+/// caller — kept on this side so the source-walk lives next to
+/// the other annotation-decoding logic.
+pub fn defHasFlagAnnotation(source: []const u8, dd: *const ast.DefDecl, name: []const u8) bool {
+    for (dd.annotations) |ann| {
+        if (std.mem.eql(u8, source[ann.name.start..ann.name.end], name)) return true;
+    }
+    return false;
+}
+
+/// Append one row of the debug-symbol section:
+/// `[u16 address][u8 kind][u8 name_len][name bytes]`. Truncates
+/// long names to 255 bytes since `name_len` is a single byte.
+fn appendDebugSymbol(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    address: u16,
+    kind: u8,
+    name: []const u8,
+) !void {
+    // safety: u16 → 2 bytes by definition; no truncation possible.
+    try out.append(allocator, @intCast(address & 0xFF));
+    try out.append(allocator, @intCast(address >> 8));
+    try out.append(allocator, kind);
+    // safety: name_len is u8 — clamp at 255 if the user picked a
+    // pathologically long identifier (the lexer caps idents well
+    // below this anyway).
+    const name_len: u8 = @intCast(@min(name.len, 255));
+    try out.append(allocator, name_len);
+    try out.appendSlice(allocator, name[0..name_len]);
+}
+
 // ---------- Emitter ----------
+
+/// One `@interrupt N` def collected during the pre-pass. The
+/// boot init code writes `def_name`'s resolved address into
+/// `mem[ivt_base + 2 * vector]` so the VM dispatches the handler
+/// when vector `N` fires.
+pub const InterruptHandler = struct {
+    vector: u8,
+    def_name: []const u8,
+};
 
 /// Unresolved `call addr` site — the codegen recorded the call
 /// when the callee's address wasn't yet known (forward refs). At
@@ -383,6 +439,10 @@ pub const Emitter = struct {
     /// `push fp` / `mov sp, fp` parts of the prologue (the VM
     /// boots with `fp == sp`).
     is_entry: bool,
+    /// `true` while emitting the body of an `@interrupt N` def —
+    /// flips `return` lowering to `rti` instead of `ret` so the
+    /// VM tears the ISR frame down (pop flg/fp/ip).
+    is_isr: bool,
     /// Top-level `def` name → absolute address. Populated as defs
     /// are emitted in source order so calls patch correctly. For
     /// banked defs, the recorded address sits in the bank window
@@ -394,6 +454,27 @@ pub const Emitter = struct {
     /// `program.statements` BEFORE emission, so `emitCall` knows
     /// the target's bank when deciding direct-call vs trampoline.
     fn_banks: std.StringHashMapUnmanaged(?u8),
+    /// Top-level `def` names that carry `@noreturn`. Populated in
+    /// the same pre-pass — `emitCall` skips the post-call
+    /// stack-cleanup epilogue at these call sites (the callee
+    /// never resumes, by contract).
+    noreturn_defs: std.StringHashMapUnmanaged(void),
+    /// Top-level `def` names that carry `@inline`. Pre-pass-
+    /// populated; `emitCall` redirects to body inlining instead
+    /// of emitting a `call addr` when the callee matches.
+    inline_defs: std.StringHashMapUnmanaged(*const ast.DefDecl),
+    /// `@interrupt N` defs — vector index → def. Used to emit
+    /// the IVT-write init code before `main` runs.
+    interrupt_defs: std.ArrayList(InterruptHandler),
+    /// Pending `return` patch offsets accumulated while emitting an
+    /// `@inline` def body. Each entry is the 2-byte address slot of
+    /// a `jmp_addr` placeholder that will be rewritten to the
+    /// "after-inlined-body" address. `null` outside any inline.
+    inline_returns: ?std.ArrayList(usize),
+    /// Reentrancy guard: caps `@inline` nesting depth to detect
+    /// recursive inlining loops. The compiler errors with
+    /// `E_ANN_INLINE_RECURSIVE` past this depth.
+    inline_depth: u8,
     /// Address of the `__call_bank` trampoline in the base image
     /// after emission. `null` until the trampoline is emitted —
     /// trampoline-target call patches resolve against this.
@@ -918,8 +999,19 @@ pub const Emitter = struct {
 
         const entry = findEntryDef(self.source, program, entry_name).?;
         try self.emitDef(entry, .entry);
+        // Two-pass over top-level defs: hot first (source order),
+        // then `@cold`-marked defs (still source order within the
+        // group) — deterministic layout across compiler versions.
+        // `@inline` defs never emit standalone — every call site
+        // splices the body in place.
         for (program.statements) |*stmt| switch (stmt.*) {
-            .def_decl => |*dd| if (dd != entry) try self.emitDef(dd, .regular),
+            .def_decl => |*dd| if (dd != entry and !defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline"))
+                try self.emitDef(dd, .regular),
+            else => {},
+        };
+        for (program.statements) |*stmt| switch (stmt.*) {
+            .def_decl => |*dd| if (dd != entry and defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline"))
+                try self.emitDef(dd, .regular),
             else => {},
         };
         // Emit class methods as plain defs with mangled labels.
@@ -1034,14 +1126,32 @@ pub const Emitter = struct {
                 const name = self.source[dd.name.start..dd.name.end];
                 const dup = try self.arena.dupe(u8, name);
                 var bank: ?u8 = null;
+                var noreturn_marked: bool = false;
+                var inline_marked: bool = false;
+                var interrupt_vec: ?u8 = null;
                 for (dd.annotations) |ann| {
                     const ann_name = self.source[ann.name.start..ann.name.end];
                     if (std.mem.eql(u8, ann_name, "bank") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
                         // @as: typechecker enforces u8 range on `@bank N`.
                         bank = @intCast(ann.args[0].int_lit.value & 0xFF);
+                    } else if (std.mem.eql(u8, ann_name, "noreturn")) {
+                        noreturn_marked = true;
+                    } else if (std.mem.eql(u8, ann_name, "inline")) {
+                        inline_marked = true;
+                    } else if (std.mem.eql(u8, ann_name, "interrupt") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
+                        // @as: vectors are capped at 64 (0x00..0x3F); narrow via mask.
+                        interrupt_vec = @intCast(ann.args[0].int_lit.value & 0xFF);
                     }
                 }
                 try self.fn_banks.put(self.arena, dup, bank);
+                if (noreturn_marked) try self.noreturn_defs.put(self.arena, dup, {});
+                if (inline_marked) try self.inline_defs.put(self.arena, dup, dd);
+                if (interrupt_vec) |vec| {
+                    try self.interrupt_defs.append(self.allocator, .{
+                        .vector = vec,
+                        .def_name = dup,
+                    });
+                }
             },
             else => {},
         };
@@ -1310,12 +1420,17 @@ pub const Emitter = struct {
     fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, label: []const u8) !void {
         // Detect `@bank N` annotation — drives bank routing for
         // this def's body bytes + the fn's resolved address.
+        // `@interrupt N` swaps the body epilogue from `ret` to
+        // `rti` (pop flg/fp/ip in reverse of entry).
         var bank_target: ?u8 = null;
+        var is_isr: bool = false;
         for (def.annotations) |ann| {
             const ann_name = self.source[ann.name.start..ann.name.end];
             if (std.mem.eql(u8, ann_name, "bank") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
                 // @as: typechecker enforces u8 range on `@bank N`.
                 bank_target = @intCast(ann.args[0].int_lit.value & 0xFF);
+            } else if (std.mem.eql(u8, ann_name, "interrupt")) {
+                is_isr = true;
             }
         }
 
@@ -1324,17 +1439,20 @@ pub const Emitter = struct {
         const saved_params = self.params;
         const saved_frame = self.frame_bytes;
         const saved_entry = self.is_entry;
+        const saved_isr = self.is_isr;
         const saved_bank = self.current_bank;
         self.locals = .{};
         self.params = .{};
         self.frame_bytes = 0;
         self.is_entry = (kind == .entry);
+        self.is_isr = is_isr;
         self.current_bank = bank_target;
         defer {
             self.locals = saved_locals;
             self.params = saved_params;
             self.frame_bytes = saved_frame;
             self.is_entry = saved_entry;
+            self.is_isr = saved_isr;
             self.current_bank = saved_bank;
         }
 
@@ -1377,9 +1495,15 @@ pub const Emitter = struct {
         try lambda.analyzeFn(self, def);
         defer lambda.resetFnInfo(self);
 
+        // Entry-def prologue: write every `@interrupt N` handler's
+        // address into its IVT slot BEFORE the user body runs.
+        // Boot leaves `flg.I = 0` so an interrupt could otherwise
+        // fire against an uninitialized vector.
+        if (self.is_entry) try self.emitIvtInit();
+
         // Function body opens the outermost block of the frame —
         // `defer`s at the top of the body run before the implicit
-        // epilogue's `hlt` / `ret`.
+        // epilogue's `hlt` / `ret` / `rti`.
         try self.pushBlock();
         for (def.body) |stmt| try self.emitStatement(stmt);
         try self.popBlockWithDefers();
@@ -1387,6 +1511,9 @@ pub const Emitter = struct {
         // Implicit epilogue (no explicit `return`).
         if (self.is_entry) {
             try self.hlt();
+        } else if (is_isr) {
+            // ISR teardown — pop flg/fp/ip in reverse of entry.
+            try self.emitByte(Op.rti_op);
         } else {
             // `ret` resets sp = fp then pops ret_ip + old_fp. The
             // VM handles the whole tear-down; we just need to land
@@ -1648,10 +1775,50 @@ pub const Emitter = struct {
         // block. `acu` carries the return value through the cleanup
         // (the defer-emitter saves / restores it).
         try self.unwindAllDefersForReturn();
+        if (self.inline_returns) |*returns| {
+            // Inside an `@inline` body — redirect `return` to a
+            // forward jmp to the after-inlined site. Patch slot
+            // queued for resolution after the body emits.
+            try self.emitByte(Op.jmp_addr);
+            const patch = try self.currentOffset();
+            try self.emitU16Le(0);
+            try returns.append(self.allocator, patch);
+            return;
+        }
         if (self.is_entry) {
             try self.hlt();
+        } else if (self.is_isr) {
+            try self.emitByte(Op.rti_op);
         } else {
             try self.emitByte(Op.ret_op);
+        }
+    }
+
+    /// Emit `mov_imm16_addr <handler_addr>, mem[ivt_base + 2*vec]`
+    /// for every `@interrupt N` handler collected in the pre-pass.
+    /// Handler addresses aren't known yet (their defs emit later),
+    /// so each init slot's imm16 lands in `call_patches` to be
+    /// rewritten once `fn_addresses` is populated. Runs at the top
+    /// of the entry def's body so IVT slots are wired before any
+    /// user code can trigger an interrupt.
+    fn emitIvtInit(self: *Emitter) !void {
+        for (self.interrupt_defs.items) |handler| {
+            try self.emitByte(Op.mov_imm16_addr);
+            const addr_patch_offset = try self.currentOffset();
+            // 2-byte imm slot — will be patched with the handler's
+            // resolved address.
+            try self.emitU16Le(0);
+            // 2-byte addr slot — IVT slot for this vector (known
+            // at emit time, no patch needed).
+            // @as: widen u8 vector to u16 before doubling so the wrap-add against ivt_base stays in u16.
+            const slot: u16 = ivt_base +% (@as(u16, handler.vector) *% 2);
+            try self.emitU16Le(slot);
+            try self.call_patches.append(self.allocator, .{
+                .bank = self.current_bank,
+                .code_offset = addr_patch_offset,
+                .target = .{ .fn_name = handler.def_name },
+                .span = .{ .start = 0, .end = 0 },
+            });
         }
     }
 
@@ -1753,6 +1920,201 @@ pub const Emitter = struct {
     /// Delegated to `codegen/expr.zig`.
     fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         return expr_emit.emitCall(self, c);
+    }
+
+    /// An `@inline` def's body may emit at most this many
+    /// bytecode instructions after lowering. Public so
+    /// `codegen/expr.zig:emitCall` can call back into it.
+    pub const inline_body_instruction_cap: usize = 32;
+
+    /// Hard cap on `@inline` reentrancy depth — every transitive
+    /// inline expansion bumps `inline_depth`; past this we treat
+    /// it as a recursive-inline loop and error out. 8 covers any
+    /// realistic depth without false positives.
+    pub const inline_max_depth: u8 = 8;
+
+    /// Splice the `@inline` callee's body into the caller's code
+    /// stream at the current emit position. Skips the call ABI
+    /// entirely — args are evaluated into fresh local slots in the
+    /// caller's frame, params re-bind to those slots, and `return`
+    /// in the body is redirected to a forward jmp to the after-
+    /// inlined-body site (see `emitReturnStmt`). After the body
+    /// emits, decode the spliced bytes to count instructions; over
+    /// the cap → `E_ANN_INLINE_TOO_LARGE`.
+    pub fn emitInlineCall(
+        self: *Emitter,
+        callee: *const ast.DefDecl,
+        c: ast.CallExpr,
+    ) !void {
+        if (self.inline_depth >= inline_max_depth) {
+            try self.diagFatal(c.span, "E_ANN_INLINE_RECURSIVE", "codegen: `@inline` def expanded past nesting cap — likely recursive inlining");
+            return;
+        }
+        self.inline_depth += 1;
+        defer self.inline_depth -= 1;
+
+        if (c.args.len != callee.params.len) {
+            try self.diagFatal(c.span, "E_CODEGEN_INLINE_ARITY", "codegen: `@inline` call arity mismatch — typechecker should have flagged");
+            return;
+        }
+
+        // Bind args → fresh locals in the caller's frame. Each
+        // local extends `frame_bytes` and stays addressable for
+        // the body's emit (gero pre-reserves the whole frame at
+        // the def's prologue, so a new sub-imm-from-sp is needed
+        // for the inline-only slots).
+        const saved_locals = self.locals;
+        const saved_params = self.params;
+        self.locals = .{};
+        self.params = .{};
+        defer {
+            self.locals = saved_locals;
+            self.params = saved_params;
+        }
+        for (callee.params, c.args) |p, arg| {
+            try self.subImmFromReg(2, Reg.sp);
+            try expr_emit.emitExpr(self, arg);
+            const pname = self.source[p.name.start..p.name.end];
+            const dup = try self.arena.dupe(u8, pname);
+            const ofs = try self.allocLocal(dup);
+            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+        }
+
+        // Body-emit setup: capture starting offset for the
+        // instruction-count gate; install a fresh inline_returns
+        // collector so nested `return` statements rewrite to a
+        // forward jmp instead of `ret`.
+        const start_offset = try self.currentOffset();
+        const saved_returns = self.inline_returns;
+        self.inline_returns = std.ArrayList(usize).empty;
+        defer self.inline_returns = saved_returns;
+
+        // Closure analysis on the inline body — let / ident /
+        // assign hooks consult it for any nested lambdas the body
+        // declares. Lambdas inside an `@inline` body are
+        // unsupported: their bodies emit alongside the parent def
+        // (which never emits for `@inline`), and their mangled
+        // labels would collide across multiple call sites.
+        const saved_fn_info = self.fn_closure_info;
+        defer self.fn_closure_info = saved_fn_info;
+        try lambda.analyzeFn(self, callee);
+        if (self.fn_closure_info.lambdas.items.len > 0) {
+            const name = self.source[callee.name.start..callee.name.end];
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "`@inline` def `{s}` declares a lambda in its body — unsupported (lambdas need a host def, but inlined bodies don't emit one)",
+                .{name},
+            );
+            try self.diagFatal(c.span, "E_ANN_INLINE_LAMBDA_BODY", msg);
+            return;
+        }
+
+        try self.pushBlock();
+        for (callee.body) |stmt| try self.emitStatement(stmt);
+        try self.popBlockWithDefers();
+
+        // Patch every `return`-redirected jmp to land HERE (after
+        // the body). The return value is in `acu` and stays there
+        // for the caller — matches the regular-call ABI.
+        const end_offset = try self.currentOffset();
+        const end_addr: u16 = self.codeOffsetToAddress(end_offset);
+        if (self.inline_returns) |*returns| {
+            const buf: []u8 = self.currentBufferMut();
+            for (returns.items) |patch| {
+                buf[patch] = @intCast(end_addr & 0xFF);
+                buf[patch + 1] = @intCast((end_addr >> 8) & 0xFF);
+            }
+            returns.deinit(self.allocator);
+        }
+
+        // Size gate: the body must emit ≤ 32 instructions. Walk
+        // the spliced bytes via the disasm decoder so the count
+        // matches what the ISA considers an instruction (not "Zig
+        // emit calls").
+        const buf: []const u8 = self.currentBufferMut();
+        var inst_count: usize = 0;
+        var cursor: usize = start_offset;
+        while (cursor < end_offset) {
+            const dec = disasm_decoder.decodeOne(self.allocator, buf, cursor) catch break;
+            defer self.allocator.free(dec.instruction.operands);
+            inst_count += 1;
+            if (cursor == dec.next_offset) break;
+            cursor = dec.next_offset;
+        }
+        if (inst_count > inline_body_instruction_cap) {
+            const name = self.source[callee.name.start..callee.name.end];
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "`@inline` body of `{s}` lowers to {d} instructions — over the cap of {d}",
+                .{ name, inst_count, inline_body_instruction_cap },
+            );
+            try self.diagFatal(c.span, "E_ANN_INLINE_TOO_LARGE", msg);
+        }
+    }
+
+    /// Emit the debug-symbol section:
+    ///
+    /// ```
+    /// [u16 symbol_count]
+    /// for each: [u16 address][u8 kind][u8 name_len][name bytes]
+    /// ```
+    ///
+    /// Includes every resolved fn address (`kind = 0` label) and
+    /// every global (`kind = 1` data). Compiler-internal labels
+    /// (lambda mangles, vtable storage labels) are filtered out —
+    /// the section is human-readable debug metadata, not a private
+    /// dump of every internal symbol.
+    pub fn buildDebugSymbolSection(self: *Emitter) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.allocator);
+
+        // Reserve space for the u16 symbol_count header — patched
+        // at the end once we've walked every symbol.
+        try out.append(self.allocator, 0);
+        try out.append(self.allocator, 0);
+        var count: u16 = 0;
+
+        // Code labels — fn addresses. Skip compiler-internal
+        // mangled prefixes that aren't user-meaningful in a
+        // debugger.
+        var fn_it = self.fn_addresses.iterator();
+        while (fn_it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            if (std.mem.startsWith(u8, name, "__lambda_")) continue;
+            if (std.mem.startsWith(u8, name, "__class_vtable_")) continue;
+            try appendDebugSymbol(self.allocator, &out, entry.value_ptr.*, 0, name);
+            count += 1;
+        }
+
+        // Data labels — top-level let / const globals.
+        var g_it = self.globals.iterator();
+        while (g_it.next()) |entry| {
+            try appendDebugSymbol(self.allocator, &out, entry.value_ptr.address, 1, entry.key_ptr.*);
+            count += 1;
+        }
+
+        archive.writeU16Le(out.items[0..2], count);
+        return out.toOwnedSlice(self.allocator);
+    }
+
+    /// Resolve a code offset (inside the active buffer — base or
+    /// the active bank) to its run-time address. Mirrors the
+    /// branch in `emitDefWithLabel` that picks `code_base` vs
+    /// `bank_window_base` based on `current_bank`.
+    fn codeOffsetToAddress(self: *const Emitter, offset: usize) u16 {
+        // @as: per-buffer offsets stay ≤ 64 KiB by ISA constraint.
+        const ofs: u16 = @intCast(offset);
+        return if (self.current_bank != null) bank_window_base + ofs else code_base + ofs;
+    }
+
+    /// Mutable view into the active code buffer (base or the
+    /// active bank). Used by emit-time patches that rewrite a
+    /// slot the caller emitted moments earlier.
+    fn currentBufferMut(self: *Emitter) []u8 {
+        if (self.current_bank) |b| {
+            if (self.banks.getPtr(b)) |bl| return bl.items;
+        }
+        return self.code.items;
     }
 
     // ---------- block + defer infrastructure (delegated) ----------

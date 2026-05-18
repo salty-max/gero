@@ -472,6 +472,13 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
             try lambda.emitClosureCall(self, c.callee, c);
             return;
         }
+        // `@inline` call — splice the callee body in place rather
+        // than emit a `call addr`. No standalone def emits for
+        // the callee (see `emitProgram`).
+        if (self.inline_defs.get(callee_name)) |callee_decl| {
+            try self.emitInlineCall(callee_decl, c);
+            return;
+        }
     }
     if (c.callee.* == .field) {
         const fe = c.callee.field;
@@ -544,7 +551,12 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         });
     }
 
-    if (c.args.len > 0) {
+    // `@noreturn` callees don't resume by contract — omit the
+    // post-call stack-cleanup so the cold path is one ADD shorter.
+    // The args we pushed leak on the stack, which is fine: control
+    // never returns to use that space.
+    const skip_cleanup = self.noreturn_defs.contains(callee_name);
+    if (c.args.len > 0 and !skip_cleanup) {
         // @as: each arg is one 16-bit word; arg count capped by parser.
         const drop_bytes: u16 = @intCast(c.args.len * 2);
         try self.addImmToReg(drop_bytes, Reg.sp);

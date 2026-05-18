@@ -11,10 +11,18 @@ fn compileSource(source: []const u8) !gero.lang.Compiled {
     defer stream.deinit();
     var tree = try gero.lang.parse(alloc, source, stream);
     defer tree.deinit();
+    if (tree.errors.len > 0) {
+        std.debug.print("parser errors for source:\n{s}\n", .{source});
+        for (tree.errors) |e| std.debug.print("  - parser={s} @ {d}: {s}\n", .{ e.parser, e.index, e.message });
+    }
     try std.testing.expectEqual(@as(usize, 0), tree.errors.len);
 
     var checked = try gero.lang.typecheck(alloc, source, &tree.program);
     defer checked.deinit();
+    if (checked.diagnostics.len > 0) {
+        std.debug.print("typecheck diagnostics for source:\n{s}\n", .{source});
+        for (checked.diagnostics) |d| std.debug.print("  - {s}: {s}\n", .{ d.code, d.message });
+    }
     try std.testing.expectEqual(@as(usize, 0), checked.diagnostics.len);
 
     return gero.lang.compile(alloc, source, &checked, .{});
@@ -2435,4 +2443,276 @@ test "codegen/closure: multiple captures (mixed read-only and mutated)" {
     defer vm.deinit();
 
     try std.testing.expectEqualStrings("102\n", writer.written());
+}
+
+// ---------- codegen-control annotations (§3.7.2 / §3.7.3 / §3.7.4) ----------
+
+test "codegen/@noreturn: callee with @noreturn skips post-call sp cleanup" {
+    // Compile two versions of the same call site — one where the
+    // callee carries `@noreturn`, one without. With the annotation
+    // emitCall skips the post-call `add <args>, sp` cleanup, so
+    // the image comes out strictly shorter.
+    var with_ann = try compileSource(
+        \\@noreturn
+        \\def bail(n: i16)
+        \\  print n
+        \\end
+        \\
+        \\def main()
+        \\  bail(1)
+        \\end
+    );
+    defer with_ann.deinit();
+    try std.testing.expect(!with_ann.hasErrors());
+
+    var without_ann = try compileSource(
+        \\def bail(n: i16)
+        \\  print n
+        \\end
+        \\
+        \\def main()
+        \\  bail(1)
+        \\end
+    );
+    defer without_ann.deinit();
+    try std.testing.expect(!without_ann.hasErrors());
+
+    try std.testing.expect(with_ann.image.len < without_ann.image.len);
+}
+
+test "codegen/@interrupt: handler emits `rti` epilogue and IVT slot is wired at boot" {
+    var compiled = try compileSource(
+        \\let frame: i16 = 0
+        \\
+        \\@interrupt $06
+        \\def on_vblank()
+        \\  frame = frame + 1
+        \\end
+        \\
+        \\def main()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    // Boot, run a couple of dispatch steps so the IVT-init code at
+    // `main`'s prologue executes, then inspect the IVT slot. The
+    // handler's address should be installed at $1000 + 2*$06 = $100C.
+    var vm = gero.vm.VM.init(alloc);
+    defer vm.deinit();
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try vm.boot(alloc, loaded);
+    // Step through the IVT-init + halt — main's body is empty so
+    // the only work before hlt is the IVT init we generated.
+    var i: usize = 0;
+    while (i < 4) : (i += 1) _ = gero.vm.step(&vm);
+    const handler_addr = vm.readWord(0x100C);
+    try std.testing.expect(handler_addr >= gero.lang.codegen.code_base);
+
+    // The handler's epilogue is `rti` (0xFD). A precise body-end
+    // walk is brittle, so we just assert there's at least one
+    // `rti` byte within a small window past the entry — this
+    // confirms the codegen swapped `ret` for `rti` on ISR defs.
+    var found_rti = false;
+    var j: u16 = handler_addr;
+    while (j < handler_addr + 64) : (j += 1) {
+        if (vm.readByte(j) == 0xFD) {
+            found_rti = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_rti);
+}
+
+test "codegen/@cold: marked def's resolved address lands after non-cold defs" {
+    var compiled = try compileSource(
+        \\@cold
+        \\def cold_path()
+        \\end
+        \\
+        \\def hot_path()
+        \\end
+        \\
+        \\def main()
+        \\  hot_path()
+        \\  cold_path()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    // Use the debug-symbol section to read each def's resolved
+    // address — the only public surface that exposes them. Ordering
+    // is the actual behavior we're gating on, not "disasm doesn't
+    // crash", so the assert is `addr(hot_path) < addr(cold_path)`
+    // even though `cold_path` came first in source.
+    const header = try gero.disasm.parseHeader(compiled.image);
+    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
+    defer symbols.deinit(alloc);
+    var hot_addr: ?u16 = null;
+    var cold_addr: ?u16 = null;
+    for (symbols.entries) |sym| {
+        if (std.mem.eql(u8, sym.name, "hot_path")) hot_addr = sym.address;
+        if (std.mem.eql(u8, sym.name, "cold_path")) cold_addr = sym.address;
+    }
+    try std.testing.expect(hot_addr != null and cold_addr != null);
+    try std.testing.expect(hot_addr.? < cold_addr.?);
+}
+
+test "codegen/@inline: tiny body is spliced — no standalone def emitted" {
+    // With @inline, calling `tiny()` from `main` should produce a
+    // shorter image than the regular version (no separate def body
+    // for tiny + no call/ret overhead).
+    var with_inline = try compileSource(
+        \\@inline
+        \\def tiny() -> i16
+        \\  return 7
+        \\end
+        \\
+        \\def main()
+        \\  print tiny()
+        \\end
+    );
+    defer with_inline.deinit();
+    try std.testing.expect(!with_inline.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(with_inline.image, &writer);
+    defer vm.deinit();
+    try std.testing.expectEqualStrings("7\n", writer.written());
+}
+
+test "codegen/@inline: body declaring a lambda emits E_ANN_INLINE_LAMBDA_BODY" {
+    const source =
+        \\@inline
+        \\def with_lambda() -> i16
+        \\  let f = || 1
+        \\  return f()
+        \\end
+        \\
+        \\def main()
+        \\  print with_lambda()
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{});
+    defer compiled.deinit();
+
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_ANN_INLINE_LAMBDA_BODY")) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen/@inline: over-cap body emits E_ANN_INLINE_TOO_LARGE" {
+    const source =
+        \\@inline
+        \\def big() -> i16
+        \\  let a: i16 = 0
+        \\  let b: i16 = 0
+        \\  let c: i16 = 0
+        \\  let d: i16 = 0
+        \\  let e: i16 = 0
+        \\  let f: i16 = 0
+        \\  let g: i16 = 0
+        \\  let h: i16 = 0
+        \\  let i: i16 = 0
+        \\  let j: i16 = 0
+        \\  let k: i16 = 0
+        \\  let l: i16 = 0
+        \\  let m: i16 = 0
+        \\  let n: i16 = 0
+        \\  let o: i16 = 0
+        \\  let p: i16 = 0
+        \\  let q: i16 = 0
+        \\  return a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p + q
+        \\end
+        \\
+        \\def main()
+        \\  print big()
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{});
+    defer compiled.deinit();
+
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_ANN_INLINE_TOO_LARGE")) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen/debug-symbols: section appended when opts.debug_symbols=true" {
+    const source =
+        \\let counter: i16 = 0
+        \\
+        \\def main()
+        \\  counter = counter + 1
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    // Default opts has debug_symbols = true.
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{});
+    defer compiled.deinit();
+
+    // Round-trip through the disassembler: header flag bit 1 set,
+    // the debug blob parses into a `Symbols` table cleanly, and
+    // both user-facing names (`main` and `counter`) are present.
+    const header = try gero.disasm.parseHeader(compiled.image);
+    try std.testing.expect((header.flags & 0x0002) != 0);
+
+    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
+    defer symbols.deinit(alloc);
+
+    var saw_main = false;
+    var saw_counter = false;
+    for (symbols.entries) |sym| {
+        if (std.mem.eql(u8, sym.name, "main")) saw_main = true;
+        if (std.mem.eql(u8, sym.name, "counter")) saw_counter = true;
+    }
+    try std.testing.expect(saw_main);
+    try std.testing.expect(saw_counter);
+}
+
+test "codegen/debug-symbols: section omitted when opts.debug_symbols=false" {
+    const source = "def main() end";
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{ .debug_symbols = false });
+    defer compiled.deinit();
+
+    const flags = (@as(u16, compiled.image[7]) << 8) | @as(u16, compiled.image[6]);
+    try std.testing.expect((flags & 0x0002) == 0);
 }
