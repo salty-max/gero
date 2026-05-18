@@ -106,12 +106,18 @@ pub const Op = struct {
     /// `bfill addr, len, val` — memset via 3 regs.
     pub const bfill: u8 = 0x2D;
 
+    /// `mov imm16, addr` — `mem[addr] ← imm`. Used to wire IVT
+    /// slots from `@interrupt N` handlers at boot.
+    pub const mov_imm16_addr: u8 = 0x14;
+
     /// `call addr` — call absolute address.
     pub const call_addr: u8 = 0xA0;
     /// `call [reg]` — call via register.
     pub const call_reg: u8 = 0xA1;
     /// `ret` — return from call.
     pub const ret_op: u8 = 0xA2;
+    /// `rti` — return from interrupt (pop flg/fp/ip).
+    pub const rti_op: u8 = 0xFD;
 
     /// `sys id` — host-callback syscall.
     pub const sys: u8 = 0xFB;
