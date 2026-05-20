@@ -2495,19 +2495,29 @@ test "codegen/@interrupt: handler emits `rti` epilogue and IVT slot is wired at 
     defer compiled.deinit();
     try std.testing.expect(!compiled.hasErrors());
 
+    // Resolve `on_vblank`'s emitted address from the debug-symbol
+    // section — that's the source of truth for what the IVT init
+    // SHOULD have written.
+    const header = try gero.disasm.parseHeader(compiled.image);
+    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
+    defer symbols.deinit(alloc);
+    var expected_addr: ?u16 = null;
+    for (symbols.entries) |sym| {
+        if (std.mem.eql(u8, sym.name, "on_vblank")) expected_addr = sym.address;
+    }
+    try std.testing.expect(expected_addr != null);
+
     // Boot, run a couple of dispatch steps so the IVT-init code at
-    // `main`'s prologue executes, then inspect the IVT slot. The
-    // handler's address should be installed at $1000 + 2*$06 = $100C.
+    // `main`'s prologue executes, then inspect the IVT slot at
+    // `$1000 + 2*$06 = $100C` — must hold `on_vblank`'s address.
     var vm = gero.vm.VM.init(alloc);
     defer vm.deinit();
     const loaded = try gero.vm.parseGx(compiled.image);
     try vm.boot(alloc, loaded);
-    // Step through the IVT-init + halt — main's body is empty so
-    // the only work before hlt is the IVT init we generated.
     var i: usize = 0;
     while (i < 4) : (i += 1) _ = gero.vm.step(&vm);
     const handler_addr = vm.readWord(0x100C);
-    try std.testing.expect(handler_addr >= gero.lang.codegen.code_base);
+    try std.testing.expectEqual(expected_addr.?, handler_addr);
 
     // The handler's epilogue is `rti` (0xFD). A precise body-end
     // walk is brittle, so we just assert there's at least one
