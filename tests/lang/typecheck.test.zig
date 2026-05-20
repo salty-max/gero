@@ -940,9 +940,10 @@ test "typecheck: or-pattern contributes each alternative to coverage" {
     );
 }
 
-test "typecheck: match on non-enum scrutinee skips exhaustiveness" {
-    // i16 has no variant list; the typechecker must not invent
-    // missing-variant diagnostics for primitive scrutinees.
+test "typecheck: match on non-enum, non-bool scrutinee skips exhaustiveness" {
+    // i16 has no closed value set; the typechecker must not invent
+    // missing-value diagnostics for arbitrary primitives. bool is
+    // the lone exception — its two-value coverage is tracked.
     try expectClean(
         \\let n: i16 = 0
         \\match n
@@ -950,6 +951,68 @@ test "typecheck: match on non-enum scrutinee skips exhaustiveness" {
         \\  case _ => let x = 1
         \\end
     );
+}
+
+test "typecheck: exhaustive bool match (true + false) accepts" {
+    try expectClean(
+        \\let flag: bool = true
+        \\match flag
+        \\  case true => let x = 0
+        \\  case false => let x = 1
+        \\end
+    );
+}
+
+test "typecheck: bool match missing `false` errors with E_MATCH_NON_EXHAUSTIVE" {
+    try expectCode(
+        \\let flag: bool = true
+        \\match flag
+        \\  case true => let x = 0
+        \\end
+    , "E_MATCH_NON_EXHAUSTIVE");
+}
+
+test "typecheck: bool match missing `true` errors with E_MATCH_NON_EXHAUSTIVE" {
+    try expectCode(
+        \\let flag: bool = true
+        \\match flag
+        \\  case false => let x = 0
+        \\end
+    , "E_MATCH_NON_EXHAUSTIVE");
+}
+
+test "typecheck: bool match with trailing wildcard accepts" {
+    try expectClean(
+        \\let flag: bool = true
+        \\match flag
+        \\  case true => let x = 0
+        \\  case _ => let x = 1
+        \\end
+    );
+}
+
+test "typecheck: redundant `true` bool arm errors with E_MATCH_UNREACHABLE_ARM" {
+    try expectCode(
+        \\let flag: bool = true
+        \\match flag
+        \\  case true => let x = 0
+        \\  case true => let x = 1
+        \\  case false => let x = 2
+        \\end
+    , "E_MATCH_UNREACHABLE_ARM");
+}
+
+test "typecheck: wildcard after exhaustive bool coverage errors with E_MATCH_UNREACHABLE_ARM" {
+    // Both `true` and `false` are already handled by the time the
+    // wildcard arm is reached — that arm cannot fire.
+    try expectCode(
+        \\let flag: bool = true
+        \\match flag
+        \\  case true => let x = 0
+        \\  case false => let x = 1
+        \\  case _ => let x = 2
+        \\end
+    , "E_MATCH_UNREACHABLE_ARM");
 }
 
 // ---------- slice 5: reference stack lifetime (§3.4.4) ----------
