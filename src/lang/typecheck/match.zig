@@ -12,8 +12,8 @@ const Checker = typecheck.Checker;
 const WalkError = error{OutOfMemory};
 
 /// Type-check a `match` statement: infer the scrutinee type,
-/// walk every arm's pattern + guard + body, and (for enum
-/// scrutinees) check that every variant is covered.
+/// walk every arm's pattern + guard + body, and (for enum or
+/// `bool` scrutinees) check that every value is covered.
 pub fn checkMatch(self: *Checker, ms: ast.MatchStmt) WalkError!void {
     const scrut_ty = try self.inferExpr(ms.scrutinee, null);
 
@@ -22,15 +22,24 @@ pub fn checkMatch(self: *Checker, ms: ast.MatchStmt) WalkError!void {
         enumDeclForType(self, st.*)
     else
         null;
+    // `bool` is the only primitive with a closed value set the
+    // checker reasons about; track it the same way as enums.
+    const is_bool: bool = if (scrut_ty) |st|
+        st.* == .primitive and st.primitive == .bool_
+    else
+        false;
 
     // Track variant-name coverage when scrutinee is an enum.
     var covered: std.StringHashMapUnmanaged(void) = .{};
     defer covered.deinit(self.arena);
     var has_wildcard: bool = false;
+    var bool_true_covered: bool = false;
+    var bool_false_covered: bool = false;
 
     for (ms.arms) |arm| {
-        // Exhaustiveness + reachability checks (enum scrutinee only).
+        // Exhaustiveness + reachability checks (per scrutinee kind).
         if (enum_decl) |ed| try recordArmCoverage(self, arm, ed, &covered, &has_wildcard);
+        if (is_bool) try recordBoolArmCoverage(self, arm, &bool_true_covered, &bool_false_covered, &has_wildcard);
 
         const saved = self.current_scope;
         var child: Scope = .init(self.arena, saved);
@@ -41,10 +50,14 @@ pub fn checkMatch(self: *Checker, ms: ast.MatchStmt) WalkError!void {
         try self.walkStatementSequence(arm.body);
     }
 
-    // Exhaustiveness: every variant must be covered (or wildcard).
+    // Exhaustiveness: every variant / bool case must be covered
+    // unless a wildcard catches the rest.
     if (enum_decl) |ed| if (!has_wildcard) {
         try checkExhaustiveness(self, ms.span, ed, &covered);
     };
+    if (is_bool and !has_wildcard) {
+        try checkBoolExhaustiveness(self, ms.span, bool_true_covered, bool_false_covered);
+    }
 }
 
 /// Resolve `ty` to its underlying enum decl (when `ty` is a
@@ -120,6 +133,80 @@ fn walkArmPattern(
             // qualify as a catch-all.
         },
     }
+}
+
+/// Walk one bool-match arm and update coverage for the two
+/// reachable values + the wildcard flag. Mirrors
+/// `recordArmCoverage` but for the `bool` primitive — there are
+/// exactly two values (`true`, `false`) so the "covered set" is
+/// just two booleans.
+fn recordBoolArmCoverage(
+    self: *Checker,
+    arm: ast.MatchArm,
+    has_true: *bool,
+    has_false: *bool,
+    has_wildcard: *bool,
+) WalkError!void {
+    if (has_wildcard.*) {
+        try self.emitSpan("E_MATCH_UNREACHABLE_ARM", arm.span, "this arm cannot be reached — a wildcard `_` arm above already handles every remaining case");
+    } else if (has_true.* and has_false.*) {
+        try self.emitSpan("E_MATCH_UNREACHABLE_ARM", arm.span, "this arm cannot be reached — both `true` and `false` are already handled");
+    }
+    try walkBoolArmPattern(self, arm.pattern, has_true, has_false, has_wildcard);
+}
+
+fn walkBoolArmPattern(
+    self: *Checker,
+    pat: *const ast.Pattern,
+    has_true: *bool,
+    has_false: *bool,
+    has_wildcard: *bool,
+) WalkError!void {
+    switch (pat.*) {
+        .wildcard, .ident => {
+            // Bare ident in match-arm position binds the value —
+            // equivalent to `_` from the exhaustiveness POV.
+            has_wildcard.* = true;
+        },
+        .bool_lit => |bl| {
+            const slot = if (bl.value) has_true else has_false;
+            if (slot.*) {
+                const msg = if (bl.value) "`true` is already handled by an earlier arm" else "`false` is already handled by an earlier arm";
+                try self.emitSpan("E_MATCH_UNREACHABLE_ARM", pat.span(), msg);
+            } else {
+                slot.* = true;
+            }
+        },
+        .or_pattern => |op| {
+            for (op.alts) |alt| try walkBoolArmPattern(self, alt, has_true, has_false, has_wildcard);
+        },
+        else => {
+            // Non-bool patterns (literal int, range, variant, …)
+            // get caught elsewhere as a type mismatch — they don't
+            // contribute to bool-value coverage either way.
+        },
+    }
+}
+
+fn checkBoolExhaustiveness(
+    self: *Checker,
+    match_span: ast.Span,
+    has_true: bool,
+    has_false: bool,
+) WalkError!void {
+    if (has_true and has_false) return;
+    const missing: []const u8 = if (!has_true and !has_false)
+        "true, false"
+    else if (!has_true)
+        "true"
+    else
+        "false";
+    const msg = try std.fmt.allocPrint(
+        self.arena,
+        "non-exhaustive match on `bool` — missing: {s}",
+        .{missing},
+    );
+    try self.emitSpan("E_MATCH_NON_EXHAUSTIVE", match_span, msg);
 }
 
 fn checkExhaustiveness(

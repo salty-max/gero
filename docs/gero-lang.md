@@ -1918,10 +1918,20 @@ match item
 end
 ```
 
+`bool` is treated the same way: a `bool` scrutinee must cover both
+`true` and `false`, or fall back to a wildcard.
+
+```
+match flag
+  case true => ...
+  -- ERROR: missing case for `false`
+end
+```
+
 Add a `case _ => ...` to discharge the warning, OR list every
-variant explicitly. For non-enum scrutinees (integers, strings),
-exhaustiveness can't be checked — the compiler requires a wildcard
-arm or warns.
+variant / bool case explicitly. For other primitive scrutinees
+(integers, strings), exhaustiveness can't be checked — the
+compiler requires a wildcard arm or warns.
 
 #### 4.8.4 Worked example
 
