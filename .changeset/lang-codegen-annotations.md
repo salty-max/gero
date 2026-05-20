@@ -56,11 +56,12 @@ are filtered out. Header flag bit 1 is set when the section is
 present, so the disassembler and any external debugger can
 detect it.
 
-Eight new diagnostic codes registered in `lang-diagnostics.md`
+Ten new diagnostic codes registered in `lang-diagnostics.md`
 §5.6 / §6: `E_CLASS_FINAL_EXTENDS`, `E_METHOD_FINAL_OVERRIDE`,
 `E_OVERRIDE_NO_PARENT`, `E_CLASS_ABSTRACT_INSTANTIATE`,
 `E_ABSTRACT_NOT_IMPLEMENTED`, `E_PRIVATE_ACCESS`,
-`E_STATIC_HAS_SELF`, plus the codegen-side `E_ANN_INLINE_RECURSIVE`.
+`E_STATIC_HAS_SELF`, plus the codegen-side `E_ANN_INLINE_RECURSIVE`,
+`E_ANN_INLINE_LAMBDA_BODY`, and `E_ANN_INLINE_ARITY`.
 
 Tests: 12 new typecheck tests cover every OOP enforcement
 (happy + sad paths), plus 7 new codegen tests for the codegen-

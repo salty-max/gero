@@ -1954,7 +1954,7 @@ pub const Emitter = struct {
         defer self.inline_depth -= 1;
 
         if (c.args.len != callee.params.len) {
-            try self.diagFatal(c.span, "E_CODEGEN_INLINE_ARITY", "codegen: `@inline` call arity mismatch — typechecker should have flagged");
+            try self.diagFatal(c.span, "E_ANN_INLINE_ARITY", "codegen: `@inline` call arity mismatch — typechecker should have flagged");
             return;
         }
 

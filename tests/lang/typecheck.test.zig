@@ -1708,6 +1708,24 @@ test "typecheck: @private method rejected from outside the class" {
     , "E_PRIVATE_ACCESS");
 }
 
+test "typecheck: @private parent field not visible from subclass method body" {
+    // Spec §3.7.6: `@private` is class-scoped, not inheritance-scoped —
+    // a subclass walking `self._hp` lands at Base as the owning class,
+    // current_class_name is `Child`, so visibility is denied.
+    try expectCode(
+        \\class Base
+        \\  @private
+        \\  let _hp: i16
+        \\end
+        \\
+        \\class Child extends Base
+        \\  def poke(self)
+        \\    self._hp = 1
+        \\  end
+        \\end
+    , "E_PRIVATE_ACCESS");
+}
+
 test "typecheck: @private member accessed from inside the class is allowed" {
     try expectClean(
         \\class Player
