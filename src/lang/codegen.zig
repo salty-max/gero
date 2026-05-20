@@ -878,6 +878,13 @@ pub const Emitter = struct {
         try self.emitU16Le(self.currentBufferBase() +% target_in_buffer);
     }
 
+    /// `jmp reg` (0x91) — indirect jump via the register's value.
+    /// `ip` becomes whatever the register holds.
+    pub fn jmpReg(self: *Emitter, reg: u8) !void {
+        try self.emitByte(Op.jmp_reg);
+        try self.emitByte(reg);
+    }
+
     /// Base address of the current code buffer in VM memory — used to
     /// turn a buffer-local offset into a `jmp` target.
     /// Base address of the current code buffer in VM memory.
@@ -1116,6 +1123,16 @@ pub const Emitter = struct {
     /// during print / match / store lowering.
     fn isEnumType(self: *const Emitter, ty: *const Type) bool {
         return ty.* == .named and self.enum_decls.contains(ty.named.name);
+    }
+
+    /// Resolve an expression's enum decl when its inferred type is
+    /// a `Named` variant pointing to a registered enum. Used by the
+    /// match-stmt lowerer to decide between jump-table and
+    /// sequential-arm dispatch.
+    pub fn enumDeclForExpr(self: *const Emitter, e: *const ast.Expr) ?*const ast.EnumDecl {
+        const ty = self.typeOf(e) orelse return null;
+        if (ty.* != .named) return null;
+        return self.enum_decls.get(ty.named.name);
     }
 
     /// Scan top-level `def`s, recording each name → its `@bank N`

@@ -1373,6 +1373,132 @@ test "codegen: match on nullary enum dispatches per variant tag" {
     , "3\n");
 }
 
+test "codegen/match: 4-variant nullary enum compiles to a jump table" {
+    // Per AC1 of #195 + spec §4.8.5: "Single-arm tag dispatch (no
+    // payloads) → jump table indexed by tag byte". Verify both
+    // the behavior (last variant routes to the right arm) AND the
+    // emit shape — the dispatch sequence ends with `jmp [reg]`
+    // (0x91), and the table has one `jmp_addr` (0x90) per tag.
+    var compiled = try compileSource(
+        \\enum Event
+        \\  case Quit
+        \\  case Pause
+        \\  case Resume
+        \\  case Tick
+        \\end
+        \\def main()
+        \\  let e: Event = Event.Tick
+        \\  match e
+        \\    case Event.Quit => print 1
+        \\    case Event.Pause => print 2
+        \\    case Event.Resume => print 3
+        \\    case Event.Tick => print 4
+        \\  end
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    // The dispatch sequence emits exactly one `jmp [reg]` (op 0x91)
+    // before the table. The bare `jmp_addr` opcode (0x90) shows up
+    // in many other places (every `end of arm → jmp end` edge), so
+    // we gate on the presence of 0x91 as the distinguishing mark.
+    var saw_jmp_reg = false;
+    for (compiled.image) |b| {
+        if (b == 0x91) {
+            saw_jmp_reg = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_jmp_reg);
+
+    // Functional gate: the scrutinee `Event.Tick` (tag 3) hits the
+    // 4th arm. The jump table must route it correctly.
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+    try std.testing.expectEqualStrings("4\n", writer.written());
+}
+
+test "codegen/match: enum match with a guard falls back to sequential dispatch" {
+    // Guards break the bare-tag-dispatch precondition (the body
+    // must run only if the post-bind guard evaluates truthy). The
+    // sequential cmp-chain handles this; the jump table cannot.
+    // No `jmp [reg]` (0x91) should appear in the emit.
+    var compiled = try compileSource(
+        \\enum Color
+        \\  case Red
+        \\  case Green
+        \\  case Blue
+        \\end
+        \\def main()
+        \\  let c: Color = Color.Green
+        \\  let flag: i16 = 1
+        \\  match c
+        \\    case Color.Red => print 1
+        \\    case Color.Green when flag == 1 => print 2
+        \\    case _ => print 9
+        \\  end
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    for (compiled.image) |b| {
+        try std.testing.expect(b != 0x91);
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+    try std.testing.expectEqualStrings("2\n", writer.written());
+}
+
+test "codegen/match: enum match with trailing wildcard still uses the jump table" {
+    // Wildcards are the spec's "default" — table slots for tags
+    // not in the explicit arms route to the wildcard body. The
+    // dispatch keeps its `jmp [reg]` shape.
+    var compiled = try compileSource(
+        \\enum Color
+        \\  case Red
+        \\  case Green
+        \\  case Blue
+        \\end
+        \\def main()
+        \\  let c: Color = Color.Blue
+        \\  match c
+        \\    case Color.Red => print 1
+        \\    case _ => print 9
+        \\  end
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var saw_jmp_reg = false;
+    for (compiled.image) |b| {
+        if (b == 0x91) {
+            saw_jmp_reg = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_jmp_reg);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+    try std.testing.expectEqualStrings("9\n", writer.written());
+}
+
 test "codegen: undefined enum variant in `is` rhs is rejected" {
     const source =
         \\enum Color

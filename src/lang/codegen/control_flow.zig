@@ -390,11 +390,20 @@ pub fn emitLoopJump(self: *Emitter, j: ast.LoopJumpStmt, kind: LoopJumpKind) !vo
 
 // ---------- match ----------
 
-/// Lower `match scrutinee case … end` as a sequential cmp +
-/// branch decision tree. OR-patterns collapse onto one shared
-/// body label; range patterns emit a single low+high cmp pair;
-/// `when` guards run after the pattern bind.
+/// Lower `match scrutinee case … end`. The fast path is a jump-
+/// table indexed by tag byte, used when every arm is a bare
+/// variant pattern (with an optional trailing wildcard) on a
+/// nullary-payload enum scrutinee, with no guards (spec §4.8.5
+/// "Single-arm tag dispatch"). The fallback is a sequential
+/// `cmp + branch` decision tree: OR-patterns collapse onto one
+/// shared body label, range patterns emit a single low+high cmp
+/// pair, `when` guards run after the pattern bind.
 pub fn emitMatchStmt(self: *Emitter, ms: ast.MatchStmt) !void {
+    if (try tryEmitTagJumpTable(self, ms)) return;
+    try emitMatchSequential(self, ms);
+}
+
+fn emitMatchSequential(self: *Emitter, ms: ast.MatchStmt) !void {
     // Bind the scrutinee to a slot so subsequent arms can re-test
     // it without re-evaluating side effects. Skip the bind if the
     // source already wrote an ident — direct loads stay cheap.
@@ -440,4 +449,171 @@ pub fn emitMatchStmt(self: *Emitter, ms: ast.MatchStmt) !void {
 
     const end_offset = try self.currentOffset();
     for (end_patches.items) |p| try self.patchJumpTo(p, end_offset);
+}
+
+/// Detect the spec §4.8.5 "single-arm tag dispatch" shape and,
+/// when it matches, emit a jump table indexed by tag byte:
+///
+/// ```
+///   ; acu = tag
+///   cmp acu, max_tag                  ; bounds — fall back to default
+///   jgt <default_or_end>
+///   mov_reg_reg acu → r1
+///   shl r1, 1                         ; r1 = 2*tag
+///   add r1, acu                       ; acu = 3*tag (3-byte slots)
+///   mov_imm16 <table>, r1
+///   add r1, acu                       ; acu = table + 3*tag
+///   jmp [acu]
+/// table:
+///   jmp_addr <body_0>                 ; 3 bytes per entry
+///   jmp_addr <body_1>
+///   …
+///   jmp_addr <default_or_end>         ; for unmapped tags
+/// body_0:
+///   …
+/// body_1:
+///   …
+/// ```
+///
+/// Returns `true` when the table was emitted; `false` punts to
+/// the sequential lowerer. Eligibility (all must hold):
+///
+/// - Scrutinee's inferred type resolves to a registered enum
+/// - Every arm pattern is either a bare nullary `EnumName.Variant`
+///   or a `_` / ident wildcard (no payload binders, no OR,
+///   no range, no literal)
+/// - At most one wildcard arm (the implicit "default")
+/// - No arm carries a `when` guard
+/// - The enum has ≤ 32 variants (cap table size; matches the
+///   ISA's `mul reg, reg` semantics without overflow concerns)
+fn tryEmitTagJumpTable(self: *Emitter, ms: ast.MatchStmt) !bool {
+    const enum_decl = self.enumDeclForExpr(ms.scrutinee) orelse return false;
+    if (enum_decl.variants.len == 0) return false;
+    // Cap table size to keep the dispatch sequence trivial. 32
+    // variants × 3 bytes per entry = 96 bytes of table, well
+    // inside any sensible spec budget; larger enums fall back to
+    // the sequential cmp-chain (which is still O(N)) until the
+    // spec promises bigger tables.
+    if (enum_decl.variants.len > 32) return false;
+
+    // Variant tag → arm index in `ms.arms`. `null` = unmapped tag
+    // (will route to wildcard / end).
+    var tag_to_arm: [256]?usize = .{null} ** 256;
+    var wildcard_arm: ?usize = null;
+    var max_tag: u8 = 0;
+
+    for (ms.arms, 0..) |arm, idx| {
+        if (arm.guard != null) return false;
+        switch (arm.pattern.*) {
+            .variant_pattern => |vp| {
+                if (vp.args.len > 0) return false;
+                const path = self.source[vp.path.start..vp.path.end];
+                const dot = std.mem.indexOfScalar(u8, path, '.') orelse return false;
+                const enum_name = path[0..dot];
+                const variant_name = path[dot + 1 ..];
+                // Mixed-enum patterns can't share one tag table.
+                const decl_name = self.source[enum_decl.name.start..enum_decl.name.end];
+                if (!std.mem.eql(u8, enum_name, decl_name)) return false;
+                const tag = self.variantTag(enum_name, variant_name) orelse return false;
+                if (tag_to_arm[tag] != null) return false;
+                tag_to_arm[tag] = idx;
+                if (tag > max_tag) max_tag = tag;
+            },
+            .wildcard, .ident => {
+                // Repeated wildcards or non-trailing wildcards are
+                // dead — let the sequential lowerer handle the
+                // diagnostic / shape.
+                if (wildcard_arm != null) return false;
+                if (idx + 1 != ms.arms.len) return false;
+                wildcard_arm = idx;
+            },
+            else => return false,
+        }
+    }
+
+    // The exhaustiveness check has already gated absence of a
+    // wildcard. Walk every tag 0..max_tag for the table — entries
+    // with no matching arm route to the wildcard arm (if any) or
+    // to the post-match end (which is unreachable when the typecheck
+    // says the match is exhaustive).
+    // @as: widen max_tag (u8) to usize before +1 — the +1 can overflow a u8 (255 → 256).
+    const table_len: usize = @as(usize, max_tag) + 1;
+
+    // ---- emit dispatch prologue ----
+    try self.emitExpr(ms.scrutinee);
+    // Bounds: `tag > max_tag` → fall through to default. Even
+    // exhaustive matches keep this — a stray u8 value past the
+    // last declared variant can still reach here through a cast.
+    try self.cmpRegImm(Reg.acu, max_tag);
+    const bounds_patch = try self.emitJumpPlaceholder(Op.jgt_addr);
+
+    // acu = 3*tag (each table slot is `jmp_addr <body>`, 3 bytes).
+    try self.movRegToReg(Reg.acu, Reg.r1);
+    try self.shlRegImm(Reg.r1, 1); // r1 = 2*tag
+    try self.addRegToAcu(Reg.r1); // acu = 3*tag
+
+    // acu = table_base + 3*tag — patched once the table address is known.
+    try self.emitByte(Op.mov_imm16_reg);
+    const table_base_patch = try self.currentOffset();
+    try self.emitU16Le(0);
+    try self.emitByte(Reg.r1);
+    try self.addRegToAcu(Reg.r1);
+
+    // jmp [acu] — control transfers to the `jmp_addr <body>` at
+    // table_base + 3*tag, which then jumps to the actual body.
+    try self.jmpReg(Reg.acu);
+
+    // ---- emit table ----
+    const table_offset = try self.currentOffset();
+    // Patch the dispatch's `mov_imm16` so r1 = table_base. Same
+    // 2-byte LE address slot as a forward `jmp` patch.
+    try self.patchJumpTo(table_base_patch, table_offset);
+    // Slot per tag in 0..=max_tag. Each is a `jmp_addr <body>`
+    // placeholder; address slot resolves once the body emits.
+    var slot_patches: [256]usize = undefined;
+    var t: usize = 0;
+    while (t < table_len) : (t += 1) {
+        slot_patches[t] = try self.emitJumpPlaceholder(Op.jmp_addr);
+    }
+
+    // ---- emit arm bodies + collect end-of-match jumps ----
+    var arm_offsets: []usize = try self.arena.alloc(usize, ms.arms.len);
+    var end_patches: std.ArrayList(usize) = .empty;
+    defer end_patches.deinit(self.allocator);
+
+    for (ms.arms, 0..) |arm, idx| {
+        arm_offsets[idx] = try self.currentOffset();
+        // The wildcard arm shape `ident` binds the scrutinee to a
+        // local. The bare `_` form binds nothing. Both reach this
+        // body with `acu` still holding the scrutinee value.
+        if (arm.pattern.* == .ident) {
+            const name = self.source[arm.pattern.ident.name.start..arm.pattern.ident.name.end];
+            const dup = try self.arena.dupe(u8, name);
+            const ofs = try self.allocLocal(dup);
+            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+        }
+        try emitScopedBody(self, arm.body);
+        try end_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jmp_addr));
+    }
+
+    // The "default" target is the wildcard arm body when present,
+    // otherwise the post-match end. Unmapped table slots and the
+    // out-of-range bounds branch both land here.
+    const default_offset: usize = if (wildcard_arm) |w| arm_offsets[w] else try self.currentOffset();
+    try self.patchJumpTo(bounds_patch, default_offset);
+
+    // Patch each table slot to its arm's body (or default).
+    t = 0;
+    while (t < table_len) : (t += 1) {
+        // safety: tag_to_arm is indexed 0..=255; t ≤ max_tag ≤ 255.
+        const target = if (tag_to_arm[@intCast(t)]) |arm_idx| arm_offsets[arm_idx] else default_offset;
+        try self.patchJumpTo(slot_patches[t], target);
+    }
+
+    // Every arm body terminates with a `jmp end`. Resolve them all
+    // to the byte after the match statement.
+    const end_offset = try self.currentOffset();
+    for (end_patches.items) |p| try self.patchJumpTo(p, end_offset);
+
+    return true;
 }
