@@ -88,6 +88,9 @@ pub const Op = struct {
 
     /// `jmp addr` — unconditional jump.
     pub const jmp_addr: u8 = 0x90;
+    /// `jmp reg` — indirect jump via register (`ip ← reg`). Used by
+    /// the match-stmt jump-table dispatch.
+    pub const jmp_reg: u8 = 0x91;
     /// `jeq addr` — jump on Z = 1.
     pub const jeq_addr: u8 = 0x92;
     /// `jne addr` — jump on Z = 0.
