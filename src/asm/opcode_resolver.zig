@@ -124,11 +124,13 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "divs", .kinds = &.{ .reg, .reg }, .opcode = 0x4E },
     .{ .mnemonic = "sext", .kinds = &.{.reg}, .opcode = 0x4F },
 
-    // 0x5X — arithmetic carry-propagating
+    // 0x5X — arithmetic extensions (carry-propagating + signed mul)
     .{ .mnemonic = "adc", .kinds = &.{ .imm16, .reg }, .opcode = 0x50 },
     .{ .mnemonic = "adc", .kinds = &.{ .reg, .reg }, .opcode = 0x51 },
     .{ .mnemonic = "sbc", .kinds = &.{ .imm16, .reg }, .opcode = 0x52 },
     .{ .mnemonic = "sbc", .kinds = &.{ .reg, .reg }, .opcode = 0x53 },
+    .{ .mnemonic = "muls", .kinds = &.{ .imm16, .reg }, .opcode = 0x54 },
+    .{ .mnemonic = "muls", .kinds = &.{ .reg, .reg }, .opcode = 0x55 },
 
     // 0x6X — bitwise (logical word ops + single-bit ops).
     // Operand order unified to (src, dst) like every other store /

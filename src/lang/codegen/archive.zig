@@ -9,8 +9,11 @@ const std = @import("std");
 
 /// 4-byte ASCII magic at the top of every `.gx` archive.
 pub const gx_magic = [4]u8{ 'G', 'E', 'R', 'O' };
-/// Format version stored in bytes 4-5 of the header.
-pub const gx_version: u16 = 0x0002;
+/// Format version stored in bytes 4-5 of the header. Minor low,
+/// major high; bumped on every backwards-compatible ISA addition
+/// the lang depends on (most recently `0x0003` for the `muls`
+/// opcode used by the debug overflow trap on `*`).
+pub const gx_version: u16 = 0x0003;
 /// Fixed header size in bytes — every archive starts with this
 /// many bytes before the base image.
 pub const gx_header_size: usize = 16;

@@ -383,10 +383,12 @@ If profiling later shows fixed-point or saturating math is a real
 hot path, native ops can be added later as an additive minor
 version bump (existing code keeps working).
 
-### 5.5 Arithmetic carry-propagating (`adc`, `sbc`) — `0x5X`
+### 5.5 Arithmetic extensions (`adc`, `sbc`, `muls`) — `0x5X`
 
-Add/subtract with carry — the canonical 6502 / Z80 / 8086 primitive
-for arithmetic wider than the native register width.
+Add/subtract with carry (the canonical 6502 / Z80 / 8086 primitive
+for arithmetic wider than the native register width), plus signed
+multiply for languages that need a correct signed-overflow
+detector.
 
 | Opcode | Mnemonic | Schema | Effect |
 |--------|----------|--------|--------|
@@ -394,6 +396,8 @@ for arithmetic wider than the native register width.
 | `0x51` | `adc`    | `Reg, Reg`    | dst ← dst + src + C |
 | `0x52` | `sbc`    | `Imm16, Reg`  | reg ← reg - imm - C (sub with borrow — multi-precision arithmetic) |
 | `0x53` | `sbc`    | `Reg, Reg`    | dst ← dst - src - C |
+| `0x54` | `muls`   | `Imm16, Reg`  | signed mul: `acu:reg ← reg ×s imm` (operands reinterpreted as `i16`; 32-bit signed product, high half in acu) |
+| `0x55` | `muls`   | `Reg, Reg`    | signed mul: `acu:dst ← dst ×s src` |
 
 A 32-bit add via two 16-bit registers:
 
@@ -405,6 +409,18 @@ adc  r2, r4      ; high half + carry-from-low ✨
 Same for 32-bit subtraction with `sub` + `sbc`. Without these,
 multi-precision math requires explicit branch-on-carry sequences
 (slower, larger code).
+
+`muls` complements `mul` — both produce the same 16-bit low half
+(modulo two's complement), but their flag semantics differ:
+
+- `mul` sets `V` and `C` when the *unsigned* product doesn't fit
+  in 16 bits (`high != 0`). Right for unsigned overflow detection;
+  false-positives on legitimate signed products like `(-1) * 5 = -5`
+  (where the unsigned interpretation gives `0xFFFF × 0x0005 = 0x0004FFFB`).
+- `muls` sets `V` and `C` when the *signed* product doesn't fit
+  in `i16` (range `-32768..32767`). Use this when the language
+  needs a one-instruction signed overflow detector — the lang's
+  debug-mode overflow trap on `*` is the canonical consumer.
 
 ### 5.6 Bitwise — `0x6X`
 
@@ -575,7 +591,7 @@ Reserved vectors:
 | `0x02` | Invalid register fault. |
 | `0x03` | Division by zero (`div` / `divs` with divisor = 0). |
 | `0x04` | Heap exhausted (`sys alloc` with cursor + size colliding with the stack, exceeding the heap budget, or `heap_base = 0`). |
-| `0x05` | Arithmetic overflow (currently only emitted by `div` / `divs` when quotient exceeds 16 bits). |
+| `0x05` | Arithmetic overflow. VM raises this on `div` / `divs` when the quotient exceeds 16 bits. Languages targeting gero may also software-raise it (via `int 5`) when their own overflow checks fire — gero-lang does so for `+` / `-` / `*` in debug builds. |
 | `0x06..0x1F` | Reserved (host-defined). |
 | `0x20..0x3F` | Software interrupts (`int N`). |
 
@@ -632,7 +648,7 @@ metadata.
 | Offset | Field          | Size | Notes |
 |--------|----------------|------|-------|
 | `0x00` | magic          | 4    | `'G' 'E' 'R' 'O'` (`0x47 0x45 0x52 0x4F`) |
-| `0x04` | version        | 2    | u16le format version. Currently `0x0002`. |
+| `0x04` | version        | 2    | u16le format version. Currently `0x0003`. |
 | `0x06` | flags          | 2    | u16le bitfield (see below) |
 | `0x08` | entry_point    | 2    | u16le address `ip` is set to at boot |
 | `0x0A` | image_size     | 2    | u16le base-image size in bytes (`0..65535`; max 65535-byte image — programs needing more use banks) |
@@ -726,13 +742,13 @@ behave permissively (read `0xFF`, write dropped; stack wraps).
 
 ## 10. Versioning
 
-This document specifies version `0x0002`. Future ISA changes:
+This document specifies version `0x0003`. Future ISA changes:
 
 - **Patch-level edits to this doc** (clarifying ambiguous behavior,
   fixing typos, documenting reserved bits) do not bump the version.
 - **Backwards-compatible additions** (new opcodes in unused ranges,
   new flag bits, new vector reservations) bump the **minor** field
-  (high byte of version): e.g. `0x0002` would still load `0x0001`
+  (low byte of version): e.g. `0x0003` would still load `0x0002`
   files.
 - **Breaking changes** (changing existing opcode semantics, changing
   encoding, repurposing a register) bump the **major** field (would

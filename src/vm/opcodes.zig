@@ -122,11 +122,13 @@ pub const table: [256]?OpcodeInfo = blk: {
     t[0x4E] = .{ .mnemonic = "divs", .operands = &.{ .reg, .reg } };
     t[0x4F] = .{ .mnemonic = "sext", .operands = &.{.reg} };
 
-    // 0x5X — arithmetic carry-propagating
+    // 0x5X — arithmetic extensions (carry-propagating + signed mul)
     t[0x50] = .{ .mnemonic = "adc", .operands = &.{ .imm16, .reg } };
     t[0x51] = .{ .mnemonic = "adc", .operands = &.{ .reg, .reg } };
     t[0x52] = .{ .mnemonic = "sbc", .operands = &.{ .imm16, .reg } };
     t[0x53] = .{ .mnemonic = "sbc", .operands = &.{ .reg, .reg } };
+    t[0x54] = .{ .mnemonic = "muls", .operands = &.{ .imm16, .reg } };
+    t[0x55] = .{ .mnemonic = "muls", .operands = &.{ .reg, .reg } };
 
     // 0x6X — bitwise (logical word ops + single-bit ops)
     t[0x60] = .{ .mnemonic = "and", .operands = &.{ .imm16, .reg } };

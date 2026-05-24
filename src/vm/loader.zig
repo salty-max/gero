@@ -10,7 +10,7 @@ pub const magic: [4]u8 = .{ 'G', 'E', 'R', 'O' };
 /// ISA version this loader accepts (high byte = major, low =
 /// minor). Files with a higher major are rejected; same major
 /// + higher minor are accepted (backwards-compatible additions).
-pub const version_target: u16 = 0x0002;
+pub const version_target: u16 = 0x0003;
 
 /// Header bytes — fixed 16-byte prefix.
 pub const header_size: usize = 16;

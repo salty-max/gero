@@ -132,11 +132,13 @@ pub const handler_table: [256]Handler = blk: {
     t[0x4E] = arith.divsRegReg;
     t[0x4F] = mov.sextReg;
 
-    // 0x5X — arithmetic carry-propagating
+    // 0x5X — arithmetic extensions (carry-propagating + signed mul)
     t[0x50] = arith.adcImm16Reg;
     t[0x51] = arith.adcRegReg;
     t[0x52] = arith.sbcImm16Reg;
     t[0x53] = arith.sbcRegReg;
+    t[0x54] = arith.mulsImm16Reg;
+    t[0x55] = arith.mulsRegReg;
 
     // 0x6X — bitwise (logical word ops + single-bit ops)
     t[0x60] = bitwise.andRegImm16;

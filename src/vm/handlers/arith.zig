@@ -174,6 +174,67 @@ pub fn mulRegReg(vm: *VM) StepResult {
     return doMul(vm, dst, a, b);
 }
 
+/// Signed-multiply helper. Reinterprets both operands as `i16`,
+/// computes the full 32-bit signed product, stores the low half in
+/// `dst` and the high half in `acu`. Sets `V` (and `C`) when the
+/// signed result doesn't fit in `i16` — i.e., the high half isn't
+/// the sign-extension of the low half. This is the lang's signed-
+/// overflow detector for `*`; `mul` (unsigned) can't be reused
+/// because its V flag is `high != 0`, which false-positives on
+/// legitimate signed products like `(-1) * 5 = -5`.
+fn doMuls(vm: *VM, dst: u8, a: u16, b: u16) StepResult {
+    // safety: reinterpret u16 → i16 (same bit pattern, signed view).
+    const sa_i16: i16 = @bitCast(a);
+    // safety: same bit-pattern reinterpret for b.
+    const sb_i16: i16 = @bitCast(b);
+    // @as: widen i16 → i32 so the full 32-bit signed product fits.
+    const sa: i32 = @as(i32, sa_i16);
+    // @as: widen the second operand the same way.
+    const sb: i32 = @as(i32, sb_i16);
+    const wide: i32 = sa * sb;
+    // @as: truncate the 32-bit product's low 16 bits (signed).
+    const low_signed: i16 = @as(i16, @truncate(wide));
+    // safety: signed → unsigned bit reinterpret for the reg write.
+    const low: u16 = @bitCast(low_signed);
+    // @as: truncate the 32-bit product's high 16 bits (signed).
+    const high_signed: i16 = @as(i16, @truncate(wide >> 16));
+    // safety: signed → unsigned bit reinterpret for the reg write.
+    const high: u16 = @bitCast(high_signed);
+    if (!vm.regs.writeByIndex(dst, low)) return fault(vm, .invalid_register);
+    vm.regs.write(.acu, high);
+    vm.regs.setFlag(.zero, wide == 0);
+    vm.regs.setFlag(.negative, (low & 0x8000) != 0);
+    // Signed overflow: the result fits in i16 iff the high half is
+    // the sign-extension of the low half (all 0s when low ≥ 0, all
+    // 1s when low < 0). Mirror that in C for symmetry with `mul`.
+    const fits = wide >= -32768 and wide <= 32767;
+    vm.regs.setFlag(.overflow, !fits);
+    vm.regs.setFlag(.carry, !fits);
+    return ok;
+}
+
+/// `0x54` — `muls Imm16, Reg` → signed mul, `acu:reg ← reg ×s imm`.
+/// Same shape as `mul` but the operands and product are interpreted
+/// as `i16` → `i32`. `V` is set when the signed result overflows
+/// `i16` (used by the lang's debug overflow trap on `*`).
+pub fn mulsImm16Reg(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const imm = vm.readWord(ip +% 1);
+    const reg = vm.readByte(ip +% 3);
+    const a = vm.regs.readByIndex(reg) orelse return fault(vm, .invalid_register);
+    return doMuls(vm, reg, a, imm);
+}
+
+/// `0x55` — `muls Reg, Reg` → signed mul (asm: `muls src, dst`).
+pub fn mulsRegReg(vm: *VM) StepResult {
+    const ip = vm.regs.read(.ip);
+    const src = vm.readByte(ip +% 1);
+    const dst = vm.readByte(ip +% 2);
+    const a = vm.regs.readByIndex(dst) orelse return fault(vm, .invalid_register);
+    const b = vm.regs.readByIndex(src) orelse return fault(vm, .invalid_register);
+    return doMuls(vm, dst, a, b);
+}
+
 // ---------- inc / dec / neg ----------
 
 /// `0x48` — `inc Reg` → `reg ← reg + 1`. Sets `Z`/`N`/`V`,

@@ -175,6 +175,74 @@ test "mul 0x47 reg,reg" {
     try std.testing.expectEqual(@as(u16, 0x0000), vm.regs.read(.acu));
 }
 
+// ---------- muls (signed mul, lang debug-overflow trap support) ----------
+
+test "muls 0x54 imm16,reg: -1 * 5 = -5, no signed overflow" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0xFFFF); // -1 as i16
+    loadProgram(&vm, &.{ 0x54, 0x05, 0x00, 0x02 }); // muls r1, 5
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 0xFFFB), vm.regs.read(.r1)); // -5 as i16
+    try std.testing.expectEqual(@as(u16, 0xFFFF), vm.regs.read(.acu)); // sign-extended high
+    try std.testing.expect(!flags(&vm).v); // fits in i16
+    try std.testing.expect(!flags(&vm).c);
+    try std.testing.expect(flags(&vm).n); // negative result
+}
+
+test "muls 0x54 imm16,reg: positive overflow sets V" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0x4000); // 16384
+    loadProgram(&vm, &.{ 0x54, 0x03, 0x00, 0x02 }); // 16384 * 3 = 49152 > i16 max
+    _ = gero.vm.step(&vm);
+    try std.testing.expect(flags(&vm).v);
+    try std.testing.expect(flags(&vm).c);
+}
+
+test "muls 0x55 reg,reg: -100 * 200 = -20000, fits in i16" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0xFF9C); // -100 as i16
+    vm.regs.write(.r2, 200);
+    loadProgram(&vm, &.{ 0x55, 0x03, 0x02 }); // muls r2, r1 → r1 *= r2 signed
+    _ = gero.vm.step(&vm);
+    // -20000 = 0xB1E0 (u16 reinterpret)
+    try std.testing.expectEqual(@as(u16, 0xB1E0), vm.regs.read(.r1));
+    try std.testing.expect(!flags(&vm).v); // -20000 fits in i16 (-32768..32767)
+}
+
+test "muls 0x55 reg,reg: two negatives = positive, fits" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.regs.write(.r1, 0xFFF6); // -10
+    vm.regs.write(.r2, 0xFFF6); // -10
+    loadProgram(&vm, &.{ 0x55, 0x03, 0x02 });
+    _ = gero.vm.step(&vm);
+    try std.testing.expectEqual(@as(u16, 100), vm.regs.read(.r1));
+    try std.testing.expect(!flags(&vm).v);
+    try std.testing.expect(!flags(&vm).n);
+}
+
+test "muls vs mul: -1 * 5 — mul falsely flags V; muls correctly clears it" {
+    // The regression that motivated `muls` — `mul` interprets
+    // operands as unsigned, so 0xFFFF * 5 = 0x0004FFFB has nonzero
+    // high half and trips V. `muls` should not.
+    var vm_mul = VM.init(std.testing.allocator);
+    defer vm_mul.deinit();
+    vm_mul.regs.write(.r1, 0xFFFF);
+    loadProgram(&vm_mul, &.{ 0x46, 0x05, 0x00, 0x02 });
+    _ = gero.vm.step(&vm_mul);
+    try std.testing.expect(flags(&vm_mul).v); // unsigned interpretation overflows
+
+    var vm_muls = VM.init(std.testing.allocator);
+    defer vm_muls.deinit();
+    vm_muls.regs.write(.r1, 0xFFFF);
+    loadProgram(&vm_muls, &.{ 0x54, 0x05, 0x00, 0x02 });
+    _ = gero.vm.step(&vm_muls);
+    try std.testing.expect(!flags(&vm_muls).v); // signed -1 * 5 = -5, fits
+}
+
 // ---------- inc / dec / neg ----------
 
 test "inc 0x48 reg: +1 sets Z/N/V, leaves C intact" {
