@@ -2064,3 +2064,12 @@ test "typecheck/suggest: primitive type typo (i17 → i16) surfaces the primitiv
         \\end
     , "E_TYPE_UNDEFINED", "i16");
 }
+
+test "typecheck/suggest: unknown mem.X member surfaces the closest stdlib name" {
+    try expectSuggestion(
+        \\use mem
+        \\def main()
+        \\  let v: u8 = mem.read_u17($2100)
+        \\end
+    , "E_TYPE_UNDEFINED_METHOD", "read_u16");
+}
