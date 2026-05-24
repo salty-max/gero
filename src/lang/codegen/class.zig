@@ -365,6 +365,20 @@ fn findInheritedField(
     }
 }
 
+/// Evaluate `recv` and land the class instance pointer in `acu`.
+/// Auto-derefs once when `recv`'s type is `&T` per spec §3.4.4 —
+/// `&c` produces the address of `c`'s slot, so reaching the heap-
+/// allocated instance needs one extra word load through that
+/// address.
+fn emitInstancePtr(self: *Emitter, recv: *const ast.Expr) !void {
+    try self.emitExpr(recv);
+    const ty = self.typeOf(recv) orelse return;
+    if (ty.* == .reference) {
+        try self.movRegToReg(Reg.acu, Reg.r1);
+        try emitWordLoadAtOffset(self, Reg.r1, 0, Reg.acu);
+    }
+}
+
 /// Lower `recv.field` (class-typed receiver) — evaluate the
 /// receiver into `acu` (instance pointer), then word- or byte-
 /// load at the field's offset.
@@ -384,7 +398,7 @@ pub fn emitFieldLoad(
         return;
     };
 
-    try self.emitExpr(recv);
+    try emitInstancePtr(self, recv);
     // acu = instance ptr; load at acu + field.offset.
     try self.movRegToReg(Reg.acu, Reg.r1);
     if (field.width == 1) {
@@ -415,7 +429,7 @@ pub fn emitFieldStore(
 
     try self.emitExpr(value);
     try self.pushReg(Reg.acu);
-    try self.emitExpr(recv);
+    try emitInstancePtr(self, recv);
     try self.movRegToReg(Reg.acu, Reg.r1);
     try self.popReg(Reg.r2);
     if (field.width == 1) {
@@ -446,8 +460,8 @@ pub fn emitMethodDispatch(
         return;
     };
 
-    // 1. Evaluate receiver, stash instance ptr in r1.
-    try self.emitExpr(recv);
+    // 1. Evaluate receiver (auto-deref if `&T`), stash instance ptr in r1.
+    try emitInstancePtr(self, recv);
     try self.movRegToReg(Reg.acu, Reg.r1);
 
     // 2. Load vtable pointer from [r1+0] into r2.

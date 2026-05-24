@@ -1687,6 +1687,69 @@ test "codegen: undefined mem.X is rejected by typecheck" {
     try std.testing.expect(found);
 }
 
+test "codegen: `&T` auto-derefs for class field read" {
+    try runAndExpect(
+        \\class Counter
+        \\  let n: i16
+        \\
+        \\  def init(self)
+        \\    self.n = 7
+        \\  end
+        \\end
+        \\
+        \\def read(r: &Counter)
+        \\  print r.n
+        \\end
+        \\
+        \\def main()
+        \\  let c = Counter()
+        \\  read(&c)
+        \\end
+    , "7\n");
+}
+
+test "codegen: `&T` mutation through param mutates caller's binding" {
+    try runAndExpect(
+        \\class Counter
+        \\  let n: i16
+        \\
+        \\  def init(self)
+        \\    self.n = 1
+        \\  end
+        \\end
+        \\
+        \\def bump(r: &Counter)
+        \\  r.n = r.n + 10
+        \\end
+        \\
+        \\def main()
+        \\  let c = Counter()
+        \\  bump(&c)
+        \\  bump(&c)
+        \\  print c.n
+        \\end
+    , "21\n");
+}
+
+test "codegen: `&T` auto-derefs for method dispatch" {
+    try runAndExpect(
+        \\class Echo
+        \\  def shout(self)
+        \\    print "hi"
+        \\  end
+        \\end
+        \\
+        \\def yell(r: &Echo)
+        \\  r.shout()
+        \\end
+        \\
+        \\def main()
+        \\  let e = Echo()
+        \\  yell(&e)
+        \\end
+    , "hi\n");
+}
+
 test "codegen: custom entry_name resolves" {
     const source = "def boot() end";
     var stream = try gero.lang.tokenize(alloc, source);

@@ -1410,7 +1410,7 @@ pub const Checker = struct {
                 }
                 const recv_ty = try self.inferExpr(m.receiver, null);
                 try self.checkNotNullableDeref(m.receiver, recv_ty, m.span);
-                return try self.checkMethodCall(m, recv_ty);
+                return try self.checkMethodCall(m, peelReference(recv_ty));
             },
             .field => |f| {
                 // Special receivers (recognized before generic
@@ -1429,7 +1429,7 @@ pub const Checker = struct {
                 }
                 const recv_ty = try self.inferExpr(f.receiver, null);
                 try self.checkNotNullableDeref(f.receiver, recv_ty, f.span);
-                return try self.resolveFieldAccess(f, recv_ty);
+                return try self.resolveFieldAccess(f, peelReference(recv_ty));
             },
             .index => |ix| {
                 _ = try self.inferExpr(ix.receiver, null);
@@ -2444,4 +2444,13 @@ fn isPlaceExpr(e: *const ast.Expr) bool {
         .paren => |p| isPlaceExpr(p.inner),
         else => false,
     };
+}
+
+/// Peel one `&T` layer so field / method resolution sees the pointee
+/// type. Per spec §3.4.4, references auto-deref for `.field` and
+/// `.method()`. `&&T` is rejected at `checkRefOf`, so a single peel
+/// suffices. Pass-through for non-reference and `null` inputs.
+fn peelReference(t: ?*const types.Type) ?*const types.Type {
+    const ty = t orelse return null;
+    return if (ty.* == .reference) ty.reference else ty;
 }
