@@ -1699,8 +1699,14 @@ pub const Emitter = struct {
     /// class-typed lowering and the existing free-fn / enum paths.
     pub fn classNameOf(self: *const Emitter, e: *const ast.Expr) ?[]const u8 {
         const ty = self.typeOf(e) orelse return null;
-        if (ty.* != .named) return null;
-        const name = ty.named.name;
+        // Per spec §3.4.4 `&T` auto-derefs for `.field` / `.method`;
+        // peeling one layer routes `r: &Class` into the same class
+        // dispatch path as a direct `Class` binding. The extra load
+        // through the reference is emitted in `class.emitInstancePtr`.
+        // `&&T` is rejected at typecheck so a single peel suffices.
+        const inner = if (ty.* == .reference) ty.reference else ty;
+        if (inner.* != .named) return null;
+        const name = inner.named.name;
         if (!self.class_decls.contains(name)) return null;
         return name;
     }
