@@ -754,9 +754,21 @@ pub const Emitter = struct {
         try self.emitByte(reg);
     }
 
-    /// `mul src, dst` (0x47) — `dst ← dst * src`.
+    /// `mul src, dst` (0x47) — `dst ← dst * src` (unsigned 32-bit
+    /// product; V/C set when `high != 0`).
     pub fn mulRegReg(self: *Emitter, src: u8, dst: u8) !void {
         try self.emitByte(Op.mul_reg_reg);
+        try self.emitByte(src);
+        try self.emitByte(dst);
+    }
+
+    /// `muls src, dst` (0x55) — signed `dst ← dst * src`. V/C set
+    /// when the signed result overflows `i16` — the lang's debug
+    /// overflow trap on `*` branches on V without false positives
+    /// that the unsigned `mul`'s V flag would produce on legitimate
+    /// negative operands.
+    pub fn mulsRegReg(self: *Emitter, src: u8, dst: u8) !void {
+        try self.emitByte(Op.muls_reg_reg);
         try self.emitByte(src);
         try self.emitByte(dst);
     }

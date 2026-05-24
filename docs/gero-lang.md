@@ -1244,11 +1244,16 @@ no value produced". Go uses the same rule.
 
 **Overflow on arithmetic** (`+`, `-`, `*`):
 
-- **Debug builds** (`gero build`, default): the compiler emits an
-  overflow check. On overflow, the program traps via fault vector
-  `$02` with a diagnostic pointing at the source location.
-- **Release builds** (`gero build --release`): the check is elided
-  and the operation wraps two's-complement.
+- **Debug builds** (default, `--optimize=debug`): the compiler
+  emits a per-op overflow check (`jvc`/`jcc skip; int 5; skip:` —
+  5 extra bytes per op). On overflow the program raises
+  arithmetic-overflow (vector `$05` per ISA §6); the default
+  handler halts the VM with a host-visible fault marker. Signed
+  `*` lowers through `muls` so the `V` flag matches `i16` overflow.
+- **Release builds** (`--optimize=release` / `=size`): the check
+  is elided and the operation wraps two's-complement. Signed `*`
+  also lowers through plain `mul` since wrap-mod-2^16 is correct
+  for both signed and unsigned interpretations of the low half.
 
 This is the Rust model — one set of operators, build mode decides
 the policy. No `+%` / `+|` operator variants: if you genuinely need

@@ -54,12 +54,17 @@ pub const Op = struct {
     pub const sub_imm16_reg: u8 = 0x43;
     /// `sub reg, acu` — acu ← acu - reg.
     pub const sub_reg_acu: u8 = 0x45;
-    /// `mul dst, src` — dst ← dst * src.
+    /// `mul dst, src` — dst ← dst * src (32-bit unsigned product;
+    /// high half lands in acu, sets V/C when `high != 0`).
     pub const mul_reg_reg: u8 = 0x47;
     /// `neg reg` — reg ← -reg.
     pub const neg_reg: u8 = 0x4A;
     /// `divs dst, src` — dst ← dst / src (signed).
     pub const divs_reg_reg: u8 = 0x4E;
+    /// `muls dst, src` — dst ← dst * src (32-bit signed product;
+    /// V/C set when the signed result doesn't fit in `i16`). Used
+    /// by the debug overflow trap on signed `*`.
+    pub const muls_reg_reg: u8 = 0x55;
 
     /// `and dst, src` — dst ← dst & src.
     pub const and_reg_reg: u8 = 0x61;
@@ -103,6 +108,14 @@ pub const Op = struct {
     pub const jgt_addr: u8 = 0x96;
     /// `jge addr` — signed ≥.
     pub const jge_addr: u8 = 0x97;
+    /// `jcc addr` — jump on `C = 0` (no unsigned overflow / no borrow).
+    /// Used by the debug overflow trap on unsigned `+` / `-` to
+    /// skip past the trap when no carry / borrow occurred.
+    pub const jcc_addr: u8 = 0x98;
+    /// `jvc addr` — jump on `V = 0` (no signed overflow). Used by
+    /// the debug overflow trap on signed `+` / `-` / `*` to skip
+    /// past the trap when no signed overflow occurred.
+    pub const jvc_addr: u8 = 0x9A;
 
     /// `bcpy dst, src, len` — memcpy via 3 regs.
     pub const bcpy: u8 = 0x2C;
@@ -124,6 +137,8 @@ pub const Op = struct {
 
     /// `sys id` — host-callback syscall.
     pub const sys: u8 = 0xFB;
+    /// `int imm8` — software interrupt via vector table.
+    pub const int_imm8: u8 = 0xFC;
     /// `hlt` — terminal halt.
     pub const hlt: u8 = 0xFF;
 };

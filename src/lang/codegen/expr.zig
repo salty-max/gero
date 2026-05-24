@@ -10,6 +10,7 @@ const archive = @import("archive.zig");
 const assert_builtin = @import("assert.zig");
 const class = @import("class.zig");
 const lambda = @import("lambda.zig");
+const overflow = @import("overflow.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -210,6 +211,17 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
         self.isPrimitiveType(b.rhs, .fixed) and
         (b.op == .mul or b.op == .div);
 
+    // Per spec §4.2.1, plain `+` / `-` / `*` on integer types trap
+    // on overflow in debug builds and wrap in release. The check
+    // is emitted after the ALU op so the V / C flags reflect the
+    // result. Fixed-point ops keep their wrap-only semantics
+    // (ISA §5.4.1).
+    const lhs_ty = self.typeOf(b.lhs);
+    const rhs_ty = self.typeOf(b.rhs);
+    const integer_arith = !fixed_op and overflow.isIntegerArith(lhs_ty) and overflow.isIntegerArith(rhs_ty) and
+        (b.op == .add or b.op == .sub or b.op == .mul);
+    const signedness = overflow.signednessOf(lhs_ty);
+
     // Standard stack-machine pattern: eval RHS, push, eval LHS,
     // pop RHS into r1, apply op (acu = acu OP r1).
     try emitExpr(self, b.rhs);
@@ -217,15 +229,28 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
     try emitExpr(self, b.lhs);
     try self.popReg(Reg.r1);
     switch (b.op) {
-        .add => try self.addRegToAcu(Reg.r1),
-        .sub => try self.subRegFromAcu(Reg.r1),
+        .add => {
+            try self.addRegToAcu(Reg.r1);
+            if (integer_arith) try overflow.emitOverflowTrap(self, signedness);
+        },
+        .sub => {
+            try self.subRegFromAcu(Reg.r1);
+            if (integer_arith) try overflow.emitOverflowTrap(self, signedness);
+        },
         .mul => {
             // `mul src, dst` writes low(product) → dst AND
             // high(product) → acu. If dst == acu the high half
             // clobbers the low half — so we land the result in
-            // `r2`, then move it back to acu.
+            // `r2`, then move it back to acu. Signed `*` routes
+            // through `muls` so the V flag matches `i16` overflow
+            // (`mul`'s V means `high != 0`, which false-positives
+            // on legitimate negative products).
             try self.movRegToReg(Reg.acu, Reg.r2);
-            try self.mulRegReg(Reg.r1, Reg.r2);
+            if (integer_arith and signedness == .signed and self.optimize == .debug) {
+                try self.mulsRegReg(Reg.r1, Reg.r2);
+            } else {
+                try self.mulRegReg(Reg.r1, Reg.r2);
+            }
             if (fixed_op) {
                 // Q8.8 * Q8.8 — the conceptual Q16.16 product
                 // straddles acu:r2 (acu = high half, r2 = low
@@ -238,9 +263,12 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
                 try self.shlRegImm(Reg.acu, 8);
                 try self.orRegReg(Reg.acu, Reg.r2);
             } else {
-                // Integer mul — drop the high half.
+                // Integer mul — drop the high half. `mov` doesn't
+                // touch flags, so the V/C set by the mul op above
+                // are still live for the overflow check below.
                 try self.movRegToReg(Reg.r2, Reg.acu);
             }
+            if (integer_arith) try overflow.emitOverflowTrap(self, signedness);
         },
         .div => {
             if (fixed_op) {
