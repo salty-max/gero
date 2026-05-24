@@ -32,16 +32,28 @@ test "typecheck/relations: assignable accepts identical primitives" {
     try std.testing.expect(relations.assignable(prim(.str), prim(.str)));
 }
 
-test "typecheck/relations: assignable rejects different-width integers" {
-    // §3.5: no implicit narrowing OR widening. Cast required.
-    try std.testing.expect(!relations.assignable(prim(.i8), prim(.i16)));
-    try std.testing.expect(!relations.assignable(prim(.i16), prim(.i8)));
-    try std.testing.expect(!relations.assignable(prim(.u8), prim(.u16)));
+test "typecheck/relations: assignable accepts integer widening per §3.5.1" {
+    // Lossless conversions — narrower → wider in the same domain,
+    // or unsigned-narrower → signed-wider (range fits).
+    try std.testing.expect(relations.assignable(prim(.i8), prim(.i16)));
+    try std.testing.expect(relations.assignable(prim(.u8), prim(.u16)));
+    try std.testing.expect(relations.assignable(prim(.u8), prim(.i16)));
 }
 
-test "typecheck/relations: assignable rejects signed/unsigned mix at same width" {
+test "typecheck/relations: assignable rejects integer narrowing (precision loss)" {
+    // Narrowing must be explicit via `as` — `checkStoreCompat` in
+    // the Checker upgrades these to `E_CAST_PRECISION_LOSS`
+    // warnings; the relation itself still says "not assignable".
+    try std.testing.expect(!relations.assignable(prim(.i16), prim(.i8)));
+    try std.testing.expect(!relations.assignable(prim(.i16), prim(.u8)));
+    try std.testing.expect(!relations.assignable(prim(.u16), prim(.u8)));
+}
+
+test "typecheck/relations: assignable rejects sign-flip at same width (loses half the range)" {
     try std.testing.expect(!relations.assignable(prim(.i16), prim(.u16)));
+    try std.testing.expect(!relations.assignable(prim(.u16), prim(.i16)));
     try std.testing.expect(!relations.assignable(prim(.u8), prim(.i8)));
+    try std.testing.expect(!relations.assignable(prim(.i8), prim(.u8)));
 }
 
 test "typecheck/relations: assignable rejects across primitive classes" {
@@ -49,7 +61,16 @@ test "typecheck/relations: assignable rejects across primitive classes" {
     try std.testing.expect(!relations.assignable(prim(.i16), prim(.bool_)));
     try std.testing.expect(!relations.assignable(prim(.str), prim(.i16)));
     try std.testing.expect(!relations.assignable(prim(.fixed), prim(.i16)));
-    try std.testing.expect(!relations.assignable(prim(.char), prim(.u8)));
+}
+
+test "typecheck/relations: assignable treats `char` as u8-equivalent (spec §2.5)" {
+    // `char` and `u8` are byte-equivalent per spec table — no-op
+    // conversion in either direction.
+    try std.testing.expect(relations.assignable(prim(.char), prim(.u8)));
+    try std.testing.expect(relations.assignable(prim(.u8), prim(.char)));
+    // `char` widens into the larger integer slots same as u8.
+    try std.testing.expect(relations.assignable(prim(.char), prim(.u16)));
+    try std.testing.expect(relations.assignable(prim(.char), prim(.i16)));
 }
 
 // ---------- assignable: nil → optional ----------

@@ -225,7 +225,6 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_AMBIGUOUS_INFER` | Inference can't pin a single type. |
 | `E_TYPE_RECURSIVE_NO_RET` | Recursive fn missing return annotation. |
 | `E_TYPE_INVALID_CAST` | `as T` between incompatible types. |
-| `E_TYPE_NARROWING` | Implicit narrowing (warning by default). |
 
 **Mockup — type mismatch in let init:**
 
@@ -598,6 +597,29 @@ help: use a `match` with a `case Player { … } =>` arm to extract
       the player-specific shape
 ```
 
+**Mockup — implicit narrowing:**
+
+```
+warning: implicit narrowing from `i16` to `u8` may lose precision —
+        use an explicit `as u8` cast to silence this warning
+        [E_CAST_PRECISION_LOSS]
+  --> src/stats.gr:7:15
+   |
+7  |   let hp: u8 = damage
+   |               ^^^^^^
+   |
+help: add `as u8` if the narrowing is intentional, or change the
+      slot type to `i16` to keep the full range
+```
+
+`E_CAST_PRECISION_LOSS` fires at every "store into a typed
+slot" site: let-init, assignment, call args, returns, and
+struct / class literal fields. Widening conversions
+(`u8 → i16`, `i8 → i16`, `u8 → u16`) are implicit and never
+warn — only conversions whose source range doesn't fit in the
+destination range do (narrower widths, or same-width sign
+flips like `i16 → u16`).
+
 ### 5.10 Loop labels (E_LOOP_*)
 
 Per spec §4.5.5.
@@ -682,7 +704,6 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_AMBIGUOUS_INFER` | Typechecker | v0.3 |
 | `E_TYPE_RECURSIVE_NO_RET` | Typechecker | v0.3 |
 | `E_TYPE_INVALID_CAST` | Typechecker | v0.3 |
-| `E_TYPE_NARROWING` | Typechecker | v0.3 |
 | `E_NULL_DEREF` | Nullable | v0.3 |
 | `E_NULL_NON_POINTER` | Nullable | v0.3 |
 | `E_NULL_NIL_TO_NONNULL` | Nullable | v0.3 |
