@@ -345,10 +345,11 @@ gero check main.gas               # one .gas file
 gero check src/                   # walk recursively for *.gas
 gero check a.gas b.gas src/       # any mix of files + dirs
 gero check                        # project-aware: [build].entry + [test].include
-gero check main.gr                # → "not yet implemented" while gero-lang is not yet implemented
+gero check main.gr                # type-check a gero-lang source
 gero check main.gas --quiet       # suppress per-file lines + summary
 gero check main.gas --verbose     # per-phase timings (single-file only)
 gero check --format=json src/     # editor-friendly JSON diagnostics
+gero check --werror src/          # warnings escalate to exit 4 (CI gate)
 ```
 
 **Project-aware fallback**: invoked with no positional args
@@ -404,8 +405,12 @@ summary, no footer). Stderr stays reserved for host I/O failures
 - The `version` field lets the schema evolve while keeping the
   contract stable.
 
-**Exit:** `0` if clean; `4` on any diagnostic; `1` on host IO
-problem; `2` on usage error.
+**Exit:** `0` if clean; `4` on any fatal diagnostic; `1` on host
+IO problem; `2` on usage error. Warning-severity diagnostics
+print but exit `0` by default — `--werror` escalates any warning
+to a fatal exit code for CI gates that want zero-warning builds.
+(Asm-side diagnostics have no warning severity today; `--werror`
+is a no-op for `.gas` inputs.)
 
 ### 3.10 `gero new <name>` — scaffold a fresh project
 

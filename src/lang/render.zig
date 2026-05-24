@@ -75,16 +75,20 @@ pub fn pretty(
     files: []const FileDiagnostics,
     style: Style,
 ) !void {
-    var total: usize = 0;
-    var files_with_errors: usize = 0;
+    var errors: usize = 0;
+    var warnings: usize = 0;
+    var files_with_diags: usize = 0;
     for (files) |f| {
-        if (f.diagnostics.len > 0) {
-            total += f.diagnostics.len;
-            files_with_errors += 1;
-        }
+        if (f.diagnostics.len == 0) continue;
+        files_with_diags += 1;
+        for (f.diagnostics) |d| switch (d.severity) {
+            .fatal => errors += 1,
+            .warning => warnings += 1,
+            .note => {},
+        };
     }
-    if (total == 0) return;
-    try writeSummaryHeader(writer, style, total, files_with_errors);
+    if (errors + warnings == 0) return;
+    try writeSummaryHeader(writer, style, errors, warnings, files_with_diags);
 
     for (files) |f| {
         if (f.diagnostics.len == 0) continue;
@@ -247,12 +251,31 @@ fn writeRightPadInt(writer: *std.Io.Writer, n: usize, width: usize) !void {
     try writer.print("{d}", .{n});
 }
 
-fn writeSummaryHeader(writer: *std.Io.Writer, style: Style, total: usize, files: usize) !void {
-    const err_noun: []const u8 = if (total == 1) "error" else "errors";
+fn writeSummaryHeader(
+    writer: *std.Io.Writer,
+    style: Style,
+    errors: usize,
+    warnings: usize,
+    files: usize,
+) !void {
     const file_noun: []const u8 = if (files == 1) "file" else "files";
-    try writer.print("{s}{d} {s}{s} in {d} {s}\n", .{
-        style.code, total, err_noun, style.reset, files, file_noun,
-    });
+    // Format mirrors rustc: lead with errors when present, append
+    // "+ N warnings" when warnings tag along; warning-only header
+    // says "warnings" honestly so users aren't told their warning
+    // is an error.
+    try writer.writeAll(style.code);
+    if (errors > 0) {
+        const noun: []const u8 = if (errors == 1) "error" else "errors";
+        try writer.print("{d} {s}", .{ errors, noun });
+        if (warnings > 0) {
+            const w_noun: []const u8 = if (warnings == 1) "warning" else "warnings";
+            try writer.print(" + {d} {s}", .{ warnings, w_noun });
+        }
+    } else {
+        const noun: []const u8 = if (warnings == 1) "warning" else "warnings";
+        try writer.print("{d} {s}", .{ warnings, noun });
+    }
+    try writer.print("{s} in {d} {s}\n", .{ style.reset, files, file_noun });
 }
 
 // ---------- (line, col) + line slice + caret math ----------
