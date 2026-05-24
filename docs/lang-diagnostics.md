@@ -145,8 +145,8 @@ trace lives behind `gero check --verbose`.
 ### 4.3 "Did you mean…?" suggestions
 
 For undefined-identifier errors, the typechecker computes
-Levenshtein distance against all in-scope names and offers
-suggestions when distance ≤ 2:
+Levenshtein distance against the visible candidate pool and
+attaches a `help:` line with the closest match within distance 2:
 
 ```
 error: undefined symbol `lenght` [E_UNDEFINED_SYMBOL]
@@ -158,8 +158,21 @@ error: undefined symbol `lenght` [E_UNDEFINED_SYMBOL]
 help: did you mean `length`?
 ```
 
-Multiple candidates: list up to 3, ordered by distance then
-alphabetically.
+The pool varies by emission site:
+
+- `E_UNDEFINED_SYMBOL` — every binding visible in the scope
+  chain (locals, params, globals, defs, classes, structs, enums).
+- `E_TYPE_UNDEFINED` — the primitive type names plus every
+  registered struct / class / enum.
+- `E_TYPE_UNDEFINED_FIELD` — the resolved type's field list,
+  walking the inheritance chain for class receivers.
+- `E_TYPE_UNDEFINED_METHOD` — the resolved class's method list,
+  walking the inheritance chain.
+
+Single-candidate ranking — the first-iterated match at the
+minimum distance wins. Multi-candidate listing (top-3,
+alphabetical) is a future extension; today's renderer surfaces
+exactly one suggestion or none.
 
 ---
 

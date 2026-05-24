@@ -163,6 +163,7 @@ const predicates = @import("typecheck/predicates.zig");
 const annotations = @import("typecheck/annotations.zig");
 const relations = @import("typecheck/relations.zig");
 const flow = @import("typecheck/flow.zig");
+const suggestions = @import("typecheck/suggestions.zig");
 
 const T = annotations.T;
 
@@ -392,6 +393,97 @@ pub const Checker = struct {
     /// Return the source-text slice for `span`.
     pub fn lexeme(self: *const Checker, span: ast.Span) []const u8 {
         return self.source[span.start..span.end];
+    }
+
+    // ---------- "did you mean…?" suggestions (#257) ----------
+
+    /// Walk the scope chain and every type registry collecting
+    /// candidate names visible at `name`'s use site, then return
+    /// the closest Levenshtein match within `suggestions.max_distance`.
+    /// Used for `E_UNDEFINED_SYMBOL` — covers locals, params,
+    /// globals, defs, classes, structs, enums.
+    fn suggestSymbol(self: *Checker, name: []const u8) WalkError!?[]const u8 {
+        var pool: std.ArrayList([]const u8) = .empty;
+        defer pool.deinit(self.arena);
+        var scope: ?*const Scope = self.current_scope;
+        while (scope) |s| : (scope = s.parent) {
+            var it = s.entries.keyIterator();
+            while (it.next()) |k| try pool.append(self.arena, k.*);
+        }
+        return suggestions.bestMatch(name, pool.items);
+    }
+
+    /// Same pool as `suggestSymbol` plus the primitive type names —
+    /// used by `E_TYPE_UNDEFINED` when an unknown type name shows
+    /// up in an annotation / struct-lit position.
+    fn suggestTypeName(self: *Checker, name: []const u8) WalkError!?[]const u8 {
+        var pool: std.ArrayList([]const u8) = .empty;
+        defer pool.deinit(self.arena);
+        // Primitive types — must be matched first so `let x: i8`
+        // wins over a stray `i9` local. Mirrors `types.primitiveFromName`.
+        const primitives = [_][]const u8{ "i8", "u8", "i16", "u16", "int", "uint", "bool", "nil", "str", "fixed", "char" };
+        for (primitives) |p| try pool.append(self.arena, p);
+        var struct_it = self.struct_registry.keyIterator();
+        while (struct_it.next()) |k| try pool.append(self.arena, k.*);
+        var class_it = self.class_registry.keyIterator();
+        while (class_it.next()) |k| try pool.append(self.arena, k.*);
+        var enum_it = self.enum_registry.keyIterator();
+        while (enum_it.next()) |k| try pool.append(self.arena, k.*);
+        return suggestions.bestMatch(name, pool.items);
+    }
+
+    /// Collect the field names of a struct decl into the candidate
+    /// pool for an `E_TYPE_UNDEFINED_FIELD` suggestion.
+    fn suggestStructField(self: *Checker, sd: *const ast.StructDecl, name: []const u8) WalkError!?[]const u8 {
+        var pool: std.ArrayList([]const u8) = .empty;
+        defer pool.deinit(self.arena);
+        for (sd.fields) |f| try pool.append(self.arena, self.lexeme(f.name));
+        return suggestions.bestMatch(name, pool.items);
+    }
+
+    /// Collect every field reachable from a class via its
+    /// inheritance chain — for `E_TYPE_UNDEFINED_FIELD` on a class
+    /// receiver. Walks parents so suggestions can land on inherited
+    /// fields.
+    fn suggestClassField(self: *Checker, cd: *const ast.ClassDecl, name: []const u8) WalkError!?[]const u8 {
+        var pool: std.ArrayList([]const u8) = .empty;
+        defer pool.deinit(self.arena);
+        var cur: ?*const ast.ClassDecl = cd;
+        while (cur) |c| {
+            for (c.fields) |f| try pool.append(self.arena, self.lexeme(f.name));
+            cur = if (c.extends) |ext| self.class_registry.get(self.lexeme(ext)) else null;
+        }
+        return suggestions.bestMatch(name, pool.items);
+    }
+
+    /// Collect every method reachable from a class via its
+    /// inheritance chain — for `E_TYPE_UNDEFINED_METHOD`.
+    fn suggestClassMethod(self: *Checker, cd: *const ast.ClassDecl, name: []const u8) WalkError!?[]const u8 {
+        var pool: std.ArrayList([]const u8) = .empty;
+        defer pool.deinit(self.arena);
+        var cur: ?*const ast.ClassDecl = cd;
+        while (cur) |c| {
+            for (c.methods) |m| try pool.append(self.arena, self.lexeme(m.name));
+            cur = if (c.extends) |ext| self.class_registry.get(self.lexeme(ext)) else null;
+        }
+        return suggestions.bestMatch(name, pool.items);
+    }
+
+    /// Emit a fatal `Diagnostic` for an undefined-name code,
+    /// attaching a `help: did you mean \`X\`?` line when
+    /// `candidate` is non-null. Centralizes the "look up a
+    /// suggestion → branch on hit/miss" dispatch used by every
+    /// `E_*_UNDEFINED*` / `E_UNDEFINED_SYMBOL` site.
+    fn emitSpanWithSuggestion(
+        self: *Checker,
+        code: []const u8,
+        span: ast.Span,
+        message: []const u8,
+        candidate: ?[]const u8,
+    ) WalkError!void {
+        const name = candidate orelse return self.emitSpan(code, span, message);
+        const help = try std.fmt.allocPrint(self.arena, "did you mean `{s}`?", .{name});
+        try self.emitSpanHelp(code, span, message, help);
     }
 
     // ---------- Pass 1: top-level decl registration ----------
@@ -1272,7 +1364,7 @@ pub const Checker = struct {
                     "undefined type `{s}`",
                     .{name},
                 );
-                try self.emitSpan("E_TYPE_UNDEFINED", n.name, msg);
+                try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED", n.name, msg, try self.suggestTypeName(name));
                 return try types.mkNamed(self.arena, name, n.span);
             },
             .nullable => |n| {
@@ -1417,7 +1509,7 @@ pub const Checker = struct {
                     "undefined symbol `{s}`",
                     .{name},
                 );
-                try self.emitSpan("E_UNDEFINED_SYMBOL", i.span, msg);
+                try self.emitSpanWithSuggestion("E_UNDEFINED_SYMBOL", i.span, msg, try self.suggestSymbol(name));
                 return null;
             },
             .self_expr => |se| {
@@ -1779,7 +1871,17 @@ pub const Checker = struct {
             "type `{s}` has no field `{s}`",
             .{ type_name, field_name },
         );
-        try self.emitSpan("E_TYPE_UNDEFINED_FIELD", span, msg);
+        // Suggestion across struct + class registries — whichever
+        // resolves the type name supplies the field pool. Misses
+        // (no candidate within distance 2, or unknown type) fall
+        // through to the bare diagnostic.
+        const candidate: ?[]const u8 = if (self.struct_registry.get(type_name)) |sd|
+            try self.suggestStructField(sd, field_name)
+        else if (self.class_registry.get(type_name)) |cd|
+            try self.suggestClassField(cd, field_name)
+        else
+            null;
+        try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED_FIELD", span, msg, candidate);
     }
 
     /// Type-check a method call against the class registry.
@@ -1812,7 +1914,7 @@ pub const Checker = struct {
                 "class `{s}` has no method `{s}`",
                 .{ named_name, method_name },
             );
-            try self.emitSpan("E_TYPE_UNDEFINED_METHOD", m.method, msg);
+            try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED_METHOD", m.method, msg, try self.suggestClassMethod(cd, method_name));
             for (m.args) |a| _ = try self.inferExpr(a, null);
             return null;
         };
@@ -1887,7 +1989,7 @@ pub const Checker = struct {
             "undefined type `{s}`",
             .{type_name},
         );
-        try self.emitSpan("E_TYPE_UNDEFINED", sl.type_name, msg);
+        try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED", sl.type_name, msg, try self.suggestTypeName(type_name));
         for (sl.fields) |f| _ = try self.inferExpr(f.value, null);
         return named_ty;
     }

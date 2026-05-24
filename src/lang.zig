@@ -22,6 +22,7 @@ const tc_predicates = @import("lang/typecheck/predicates.zig");
 const tc_annotations = @import("lang/typecheck/annotations.zig");
 const tc_relations = @import("lang/typecheck/relations.zig");
 const tc_flow = @import("lang/typecheck/flow.zig");
+const tc_suggestions = @import("lang/typecheck/suggestions.zig");
 const cg_opcodes = @import("lang/codegen/opcodes.zig");
 const cg_archive = @import("lang/codegen/archive.zig");
 const cg_mem_builtin = @import("lang/codegen/mem_builtin.zig");
@@ -127,6 +128,9 @@ pub const internal = struct {
         pub const match = tc_match;
         /// Internal — `mem.*` stdlib typecheck dispatch.
         pub const mem_builtin = tc_mem_builtin;
+        /// Internal — "did you mean…?" Levenshtein-based suggestion
+        /// pool helpers (#257).
+        pub const suggestions = tc_suggestions;
     };
 
     /// Internal — codegen submodule seams.
