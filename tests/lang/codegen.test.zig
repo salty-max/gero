@@ -3266,6 +3266,125 @@ test "codegen/overflow: same overflowing program halts cleanly in release" {
     );
 }
 
+test "codegen/overflow: same source emits different bytecodes for debug vs release" {
+    // AC: "Build mode change toggles the check (same source, two
+    // bytecodes)". Image-byte equality fails — debug has the
+    // overflow check, release doesn't.
+    const source =
+        \\def main()
+        \\  let a: i16 = 100
+        \\  let b: i16 = 50
+        \\  let c: i16 = a + b
+        \\  print c
+        \\end
+    ;
+    var dbg = try compileWithOptimize(source, .debug);
+    defer dbg.deinit();
+    var rel = try compileWithOptimize(source, .release);
+    defer rel.deinit();
+    try std.testing.expect(dbg.image.len != rel.image.len);
+}
+
+test "codegen/overflow: release image has no `int 5` trap bytes after add/sub/mul" {
+    // AC: "Plain +, -, * wrap silently in release builds (verify
+    // via disasm round-trip — no overflow check)". Scan the
+    // release-mode image for the `int 5` sequence (0xFC 0x05) —
+    // none should appear in this program's code region. The
+    // program has no globals, so the entire base image past
+    // `code_base` is code.
+    var compiled = try compileWithOptimize(
+        \\def main()
+        \\  let a: i16 = 1
+        \\  let b: i16 = 2
+        \\  let c: i16 = a + b
+        \\  let d: i16 = c - a
+        \\  let e: i16 = d * b
+        \\  print e
+        \\end
+    , .release);
+    defer compiled.deinit();
+    const loaded = try gero.vm.parseGx(compiled.image);
+    const code = loaded.image[gero.lang.codegen.code_base..];
+    var saw_trap = false;
+    var i: usize = 0;
+    while (i + 1 < code.len) : (i += 1) {
+        if (code[i] == 0xFC and code[i + 1] == 0x05) {
+            saw_trap = true;
+            break;
+        }
+    }
+    try std.testing.expect(!saw_trap);
+
+    // Same scan against the debug image — the trap MUST be present
+    // there. Acts as a sanity check that the scan is meaningful.
+    var dbg = try compileWithOptimize(
+        \\def main()
+        \\  let a: i16 = 1
+        \\  let b: i16 = 2
+        \\  let c: i16 = a + b
+        \\end
+    , .debug);
+    defer dbg.deinit();
+    const dbg_loaded = try gero.vm.parseGx(dbg.image);
+    const dbg_code = dbg_loaded.image[gero.lang.codegen.code_base..];
+    var dbg_saw_trap = false;
+    var j: usize = 0;
+    while (j + 1 < dbg_code.len) : (j += 1) {
+        if (dbg_code[j] == 0xFC and dbg_code[j + 1] == 0x05) {
+            dbg_saw_trap = true;
+            break;
+        }
+    }
+    try std.testing.expect(dbg_saw_trap);
+}
+
+test "codegen/overflow: custom `@interrupt $05` handler fires on overflow" {
+    // AC: "Source pointer in the trap diagnostic points at the
+    // source location of the offending op". The trap mechanism is
+    // `int 5` + the standard interrupt-entry save sequence — a
+    // custom $05 handler observes the saved ip and can map it to
+    // source via debug symbols. This test verifies the handler is
+    // actually reached when overflow fires (the precision of the
+    // source mapping then depends on the host-side debug-symbol
+    // consumption per spec §4.2.1).
+    var compiled = try compileSource(
+        \\let trap_fired: i16 = 0
+        \\
+        \\@interrupt $05
+        \\def on_overflow()
+        \\  trap_fired = 1
+        \\end
+        \\
+        \\def main()
+        \\  let a: i16 = 30000
+        \\  let b: i16 = 5000
+        \\  let c: i16 = a + b
+        \\  print c
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // The handler wrote `1` to `trap_fired` — find its address via
+    // the debug-symbol section and read it from memory.
+    const header = try gero.disasm.parseHeader(compiled.image);
+    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
+    defer symbols.deinit(alloc);
+    var trap_addr: ?u16 = null;
+    for (symbols.entries) |sym| {
+        if (std.mem.eql(u8, sym.name, "trap_fired")) trap_addr = sym.address;
+    }
+    try std.testing.expect(trap_addr != null);
+    try std.testing.expectEqual(@as(u16, 1), vm.mmap.readWord(trap_addr.?));
+}
+
 test "codegen/overflow: fixed-point `*` wraps in both modes per ISA §5.4.1" {
     // Fixed `*` is explicitly wrap-only — the codegen skips the
     // overflow trap regardless of build mode. Picking values that
