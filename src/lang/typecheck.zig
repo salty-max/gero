@@ -473,8 +473,9 @@ pub const Checker = struct {
     /// attaching a `help: did you mean \`X\`?` line when
     /// `candidate` is non-null. Centralizes the "look up a
     /// suggestion → branch on hit/miss" dispatch used by every
-    /// `E_*_UNDEFINED*` / `E_UNDEFINED_SYMBOL` site.
-    fn emitSpanWithSuggestion(
+    /// `E_*_UNDEFINED*` / `E_UNDEFINED_SYMBOL` site (including
+    /// the `mem.X` resolvers in `typecheck/mem_builtin.zig`).
+    pub fn emitSpanWithSuggestion(
         self: *Checker,
         code: []const u8,
         span: ast.Span,

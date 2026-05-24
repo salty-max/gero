@@ -7,6 +7,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const typecheck = @import("../typecheck.zig");
+const suggestions = @import("suggestions.zig");
 
 const Checker = typecheck.Checker;
 const WalkError = error{OutOfMemory};
@@ -48,6 +49,16 @@ pub fn lookupMemBuiltin(name: []const u8) ?MemBuiltinSig {
     return null;
 }
 
+/// Closest-spelling `mem.X` builtin name within Levenshtein
+/// distance 2, or `null` when nothing qualifies. Backs the
+/// "did you mean…?" help line on `E_TYPE_UNDEFINED_METHOD`
+/// emitted by `checkMemMethodCall` / `resolveMemBuiltin`.
+fn suggestMemBuiltin(name: []const u8) ?[]const u8 {
+    var pool: [mem_builtins.len][]const u8 = undefined;
+    inline for (mem_builtins, 0..) |b, i| pool[i] = b.name;
+    return suggestions.bestMatch(name, &pool);
+}
+
 /// Type-check `mem.X(args)` as a method-call expression. The
 /// stdlib `mem` module is compiler-recognized; the call's
 /// arity + per-arg types are validated against the builtin's
@@ -63,7 +74,7 @@ pub fn checkMemMethodCall(self: *Checker, m: ast.MethodCallExpr) WalkError!?*con
             "stdlib module `mem` has no member `{s}`",
             .{fn_name},
         );
-        try self.emitSpan("E_TYPE_UNDEFINED_METHOD", m.method, msg);
+        try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED_METHOD", m.method, msg, suggestMemBuiltin(fn_name));
         for (m.args) |a| _ = try self.inferExpr(a, null);
         return null;
     }
@@ -114,7 +125,7 @@ pub fn resolveMemBuiltin(self: *Checker, f: ast.FieldExpr) WalkError!?*const typ
             "stdlib module `mem` has no member `{s}`",
             .{fn_name},
         );
-        try self.emitSpan("E_TYPE_UNDEFINED_METHOD", f.field, msg);
+        try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED_METHOD", f.field, msg, suggestMemBuiltin(fn_name));
         return null;
     }
     if (sig.?.is_addr_of) {
