@@ -1925,3 +1925,142 @@ test "typecheck: @static method with `self` param is rejected" {
         \\end
     , "E_STATIC_HAS_SELF");
 }
+
+// ---------- "did you mean…?" suggestions (#257) ----------
+
+/// Assert the named diagnostic fires with a `help:` block
+/// containing the suggestion. Verifies both that the code matches
+/// AND that the rendered help string mentions the candidate name.
+fn expectSuggestion(source: []const u8, code: []const u8, candidate: []const u8) !void {
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    for (checked.diagnostics) |d| {
+        if (!std.mem.eql(u8, d.code, code)) continue;
+        const help = d.help orelse continue;
+        if (std.mem.indexOf(u8, help, candidate) != null) return;
+    }
+    std.debug.print("missing {s} with help mentioning `{s}` for `{s}`; got:\n", .{ code, candidate, source });
+    for (checked.diagnostics) |d| {
+        const help_str = d.help orelse "<none>";
+        std.debug.print("  - {s}: {s}  help=`{s}`\n", .{ d.code, d.message, help_str });
+    }
+    return error.MissingSuggestion;
+}
+
+/// Assert that NO diagnostic of the given code carries a `help:`
+/// block — used to verify "no candidate within distance 2 → no
+/// suggestion" path.
+fn expectNoSuggestion(source: []const u8, code: []const u8) !void {
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var saw_code = false;
+    for (checked.diagnostics) |d| {
+        if (!std.mem.eql(u8, d.code, code)) continue;
+        saw_code = true;
+        if (d.help != null) {
+            std.debug.print("unexpected help on {s} for `{s}`: `{s}`\n", .{ code, source, d.help.? });
+            return error.UnexpectedSuggestion;
+        }
+    }
+    try std.testing.expect(saw_code);
+}
+
+test "typecheck/suggest: undefined ident with a close-spelling local" {
+    try expectSuggestion(
+        \\def main()
+        \\  let helo: i16 = 0
+        \\  let x: i16 = helllo
+        \\end
+    , "E_UNDEFINED_SYMBOL", "helo");
+}
+
+test "typecheck/suggest: no candidate within distance 2 → no help" {
+    try expectNoSuggestion(
+        \\def main()
+        \\  let aaaa: i16 = 0
+        \\  let x: i16 = zzzzzz
+        \\end
+    , "E_UNDEFINED_SYMBOL");
+}
+
+test "typecheck/suggest: undefined struct field surfaces sibling name" {
+    try expectSuggestion(
+        \\struct Stats
+        \\  hp: i16
+        \\  mp: i16
+        \\end
+        \\
+        \\def main()
+        \\  let s: Stats = Stats { hp: 10, mp: 5 }
+        \\  let n: i16 = s.hpp
+        \\end
+    , "E_TYPE_UNDEFINED_FIELD", "hp");
+}
+
+test "typecheck/suggest: undefined class field — walks the inheritance chain" {
+    try expectSuggestion(
+        \\class Entity
+        \\  let health: i16
+        \\end
+        \\
+        \\class Player extends Entity end
+        \\
+        \\def main()
+        \\  let p = Player()
+        \\  let n: i16 = p.helath
+        \\end
+    , "E_TYPE_UNDEFINED_FIELD", "health");
+}
+
+test "typecheck/suggest: undefined class method surfaces sibling name" {
+    try expectSuggestion(
+        \\class Player
+        \\  def attack(self) end
+        \\end
+        \\
+        \\def main()
+        \\  let p = Player()
+        \\  p.attaack()
+        \\end
+    , "E_TYPE_UNDEFINED_METHOD", "attack");
+}
+
+test "typecheck/suggest: undefined type in annotation suggests a registered type" {
+    try expectSuggestion(
+        \\class Player end
+        \\
+        \\def main()
+        \\  let p: Playr = Player()
+        \\end
+    , "E_TYPE_UNDEFINED", "Player");
+}
+
+test "typecheck/suggest: undefined type in struct literal suggests a registered type" {
+    try expectSuggestion(
+        \\struct Stats
+        \\  hp: i16
+        \\end
+        \\
+        \\def main()
+        \\  let s = Stahts { hp: 1 }
+        \\end
+    , "E_TYPE_UNDEFINED", "Stats");
+}
+
+test "typecheck/suggest: primitive type typo (i17 → i16) surfaces the primitive" {
+    try expectSuggestion(
+        \\def main()
+        \\  let x: i17 = 0
+        \\end
+    , "E_TYPE_UNDEFINED", "i16");
+}
