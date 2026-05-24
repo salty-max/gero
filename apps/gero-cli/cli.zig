@@ -77,6 +77,11 @@ pub const Options = struct {
     /// `human` (default) is the caret-style report; `json` is a
     /// machine-parseable shape for editor integration.
     format: Format = .human,
+    /// `--werror` for `gero check` — escalate warning-severity
+    /// diagnostics to a fatal exit code. Off by default so editor
+    /// integrations can surface warnings without blocking the
+    /// build; CI gates set this for zero-warning policies.
+    werror: bool = false,
     /// `--target=<vm|gtx-16>` for `gero build` — overrides the
     /// manifest's `package.target`. `null` = inherit from manifest;
     /// `gtx-16` is reserved (errors with "not yet implemented").
@@ -364,6 +369,7 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .stdin => .{ .sig = "--stdin", .desc = "Read source from stdin, write formatted bytes to stdout." },
         .format => .{ .sig = "--format=<m>", .desc = "human (default) / json. JSON output suppresses human messages." },
         .target => .{ .sig = "--target=<m>", .desc = "vm (default) / gtx-16. Overrides manifest's [package].target." },
+        .werror => .{ .sig = "--werror", .desc = "Treat warnings as errors (escalates exit code to 4)." },
     };
 }
 
@@ -377,7 +383,7 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .info => &.{ .help, .color, .no_color },
         .disasm => &.{ .help, .bank, .no_show_bytes, .check_roundtrip, .quiet, .color, .no_color },
         .test_ => &.{ .help, .verbose, .color, .no_color },
-        .check => &.{ .help, .format, .quiet, .verbose, .color, .no_color },
+        .check => &.{ .help, .format, .werror, .quiet, .verbose, .color, .no_color },
         .fmt => &.{ .help, .check, .stdin, .quiet, .color, .no_color },
         .new => &.{ .help, .quiet, .color, .no_color },
         .init => &.{ .help, .quiet, .color, .no_color },
@@ -411,7 +417,7 @@ fn parseFormat(s: []const u8) ParseError!Format {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, stdin, format, target };
+const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, stdin, format, target, werror };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
@@ -430,6 +436,7 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "stdin")) return .stdin;
     if (std.mem.eql(u8, s, "format")) return .format;
     if (std.mem.eql(u8, s, "target")) return .target;
+    if (std.mem.eql(u8, s, "werror")) return .werror;
     return null;
 }
 
@@ -462,6 +469,7 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .stdin => opts.stdin = true,
         .format => opts.format = try parseFormat(value orelse return error.MissingFlagValue),
         .target => opts.target = value orelse return error.MissingFlagValue,
+        .werror => opts.werror = true,
     }
 }
 
@@ -735,6 +743,14 @@ test "parse: --check-roundtrip defaults off, opts in when set" {
 
     const on_p = try parse(&[_][]const u8{ "disasm", "--check-roundtrip", "x.gx" });
     try testing.expect(on_p.options.check_roundtrip);
+}
+
+test "parse: --werror defaults off, opts in on `gero check --werror`" {
+    const default_p = try parse(&[_][]const u8{ "check", "main.gr" });
+    try testing.expect(!default_p.options.werror);
+
+    const on_p = try parse(&[_][]const u8{ "check", "--werror", "main.gr" });
+    try testing.expect(on_p.options.werror);
 }
 
 test "run: no command prints top help, exit 0" {

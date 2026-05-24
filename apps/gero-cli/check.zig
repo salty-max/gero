@@ -88,21 +88,34 @@ pub fn execute(
     var read_errors: std.ArrayList(diagnostics.ReadErrorEntry) = .empty;
     var pass: usize = 0;
     var failures: std.ArrayList(FileEntry) = .empty;
-    var gr_failures: std.ArrayList(GrFailure) = .empty;
+    var gr_files: std.ArrayList(GrFile) = .empty;
     for (files.items) |path| {
-        // `.gr` files route through the gero-lang pipeline. Failures
-        // collect into `gr_failures` and render via
-        // `gero.lang.render.pretty` after the loop.
+        // `.gr` files route through the gero-lang pipeline. Files
+        // with diagnostics collect into `gr_files`, are rendered
+        // via `gero.lang.render.pretty` after the loop, and the
+        // `is_failure` flag drives the exit-code computation
+        // (warnings don't fail the build unless `--werror`).
         if (std.mem.endsWith(u8, path, ".gr")) {
             const res = try checkOneGr(io, arena, path);
-            if (res.diagnostics.len == 0 and res.parse_errors.len == 0 and !res.read_error) {
-                pass += 1;
-                if (!opts.quiet and !json_mode) try printPassGr(stdout, style, path, single);
-            } else if (res.read_error) {
+            if (res.read_error) {
                 if (!json_mode) try term.err("gero check: cannot read {s}", .{path});
                 try failures.append(arena, .{ .path = path, .info = .read_error });
-            } else {
-                try gr_failures.append(arena, .{ .path = path, .source = res.source, .parse_errors = res.parse_errors, .diagnostics = res.diagnostics });
+                continue;
+            }
+            if (res.diagnostics.len == 0 and res.parse_errors.len == 0) {
+                pass += 1;
+                if (!opts.quiet and !json_mode) try printPassGr(stdout, style, path, single);
+                continue;
+            }
+            // Classify the diagnostics — a file with only warnings
+            // passes the build (exit 0) unless `--werror` escalates
+            // it. Always render the diagnostics so the user sees
+            // the warnings either way.
+            const is_failure = isFailure(res.diagnostics, opts.werror);
+            try gr_files.append(arena, .{ .path = path, .source = res.source, .diagnostics = res.diagnostics, .is_failure = is_failure });
+            if (!is_failure) {
+                pass += 1;
+                if (!opts.quiet and !json_mode) try printPassGr(stdout, style, path, single);
             }
             continue;
         }
@@ -162,7 +175,11 @@ pub fn execute(
         }
     }
 
-    const fail = failures.items.len + gr_failures.items.len;
+    var gr_fail_count: usize = 0;
+    for (gr_files.items) |gf| if (gf.is_failure) {
+        gr_fail_count += 1;
+    };
+    const fail = failures.items.len + gr_fail_count;
 
     // JSON mode emits one object covering every diagnostic + read
     // error, then exits. No human-readable header / summary / footer.
@@ -174,17 +191,18 @@ pub fn execute(
         };
         try diagnostics.printJsonReport(stdout, pipeline_failures.items, read_errors.items, files.items.len, fail);
         // Append lang diagnostics as ndjson lines on the same
-        // stdout — consumers parse line-by-line.
-        if (gr_failures.items.len > 0) {
+        // stdout — consumers parse line-by-line. Includes warning-
+        // only files so editors render the squiggles regardless.
+        if (gr_files.items.len > 0) {
             var lang_files: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
-            for (gr_failures.items) |gf| try lang_files.append(arena, .{
+            for (gr_files.items) |gf| try lang_files.append(arena, .{
                 .path = gf.path,
                 .source = gf.source,
                 .diagnostics = gf.diagnostics,
             });
             try gero.lang.render.json(stdout, lang_files.items);
         }
-        return if (fail > 0 or gr_failures.items.len > 0) 4 else 0;
+        return if (fail > 0) 4 else 0;
     }
 
     // Pass 2: render the merged diagnostic report (if any failure).
@@ -204,11 +222,12 @@ pub fn execute(
         }
     }
 
-    // Pass 2b: render lang-side diagnostics.
-    if (gr_failures.items.len > 0) {
+    // Pass 2b: render lang-side diagnostics — both warning-only
+    // files (so the user sees them) and failures.
+    if (gr_files.items.len > 0) {
         if (!single and !opts.quiet and (pass > 0 or failures.items.len > 0)) try stdout.writeByte('\n');
         var lang_files: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
-        for (gr_failures.items) |gf| try lang_files.append(arena, .{
+        for (gr_files.items) |gf| try lang_files.append(arena, .{
             .path = gf.path,
             .source = gf.source,
             .diagnostics = gf.diagnostics,
@@ -244,13 +263,70 @@ const FileEntry = struct {
 
 /// One `.gr` file's diagnostic context — source bytes + combined
 /// parser + typechecker diagnostics, ready for
-/// `gero.lang.render.pretty` / `.json`.
-const GrFailure = struct {
+/// `gero.lang.render.pretty` / `.json`. `is_failure` is `true` when
+/// the file has a fatal diagnostic OR a warning under `--werror`;
+/// warning-only files without `--werror` still collect here so the
+/// renderer surfaces the diagnostics, but they count as a `pass`.
+const GrFile = struct {
     path: []const u8,
     source: []const u8,
-    parse_errors: []const u8 = "", // placeholder field — kept for symmetry
     diagnostics: []gero.lang.Diagnostic,
+    is_failure: bool,
 };
+
+/// Classify a `.gr` file's diagnostics against the `--werror`
+/// policy. A file is a failure when it has at least one fatal
+/// diagnostic, or when `werror` is set and it has any warning.
+/// Pulled out as its own fn so it can be unit-tested without
+/// running the full pipeline.
+pub fn isFailure(diags: []const gero.lang.Diagnostic, werror: bool) bool {
+    var has_fatal = false;
+    var has_warning = false;
+    for (diags) |d| switch (d.severity) {
+        .fatal => has_fatal = true,
+        .warning => has_warning = true,
+        .note => {},
+    };
+    return has_fatal or (werror and has_warning);
+}
+
+test "isFailure: empty diagnostics → not a failure" {
+    try std.testing.expect(!isFailure(&.{}, false));
+    try std.testing.expect(!isFailure(&.{}, true));
+}
+
+test "isFailure: only fatals → always a failure" {
+    const diags = [_]gero.lang.Diagnostic{
+        .{ .severity = .fatal, .code = "E_X", .message = "", .span = .{ .start = 0, .end = 0 } },
+    };
+    try std.testing.expect(isFailure(&diags, false));
+    try std.testing.expect(isFailure(&diags, true));
+}
+
+test "isFailure: only warnings → pass without --werror, fail with --werror" {
+    const diags = [_]gero.lang.Diagnostic{
+        .{ .severity = .warning, .code = "W_X", .message = "", .span = .{ .start = 0, .end = 0 } },
+    };
+    try std.testing.expect(!isFailure(&diags, false));
+    try std.testing.expect(isFailure(&diags, true));
+}
+
+test "isFailure: fatal + warning → always a failure" {
+    const diags = [_]gero.lang.Diagnostic{
+        .{ .severity = .warning, .code = "W_X", .message = "", .span = .{ .start = 0, .end = 0 } },
+        .{ .severity = .fatal, .code = "E_X", .message = "", .span = .{ .start = 0, .end = 0 } },
+    };
+    try std.testing.expect(isFailure(&diags, false));
+    try std.testing.expect(isFailure(&diags, true));
+}
+
+test "isFailure: only notes → not a failure (notes are informational)" {
+    const diags = [_]gero.lang.Diagnostic{
+        .{ .severity = .note, .code = "N_X", .message = "", .span = .{ .start = 0, .end = 0 } },
+    };
+    try std.testing.expect(!isFailure(&diags, false));
+    try std.testing.expect(!isFailure(&diags, true));
+}
 
 /// Result of running parse + typecheck on one `.gr` source.
 const GrCheckResult = struct {

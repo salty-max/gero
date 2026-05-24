@@ -190,3 +190,57 @@ test "render: pretty skips files with zero diagnostics in multi-file mode" {
     // Clean file must not appear in the report.
     try std.testing.expect(std.mem.indexOf(u8, out, "clean.gr") == null);
 }
+
+test "render: pretty summary names warnings honestly when no errors" {
+    const w = Diagnostic{
+        .severity = .warning,
+        .code = "W_DEBUG_ASSERT_SIDE_EFFECT",
+        .message = "calls in debug_assert are elided in release",
+        .span = .{ .start = 0, .end = 1 },
+    };
+    const file: FileDiagnostics = .{ .path = "x.gr", .source = "x = 1", .diagnostics = &.{w} };
+
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    try gero.lang.render.pretty(&writer.writer, &.{file}, gero.lang.render.Style.none);
+    const out = try writer.toOwnedSlice();
+    defer alloc.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "1 warning in 1 file") != null);
+    // Must NOT call a warning an error.
+    try std.testing.expect(std.mem.indexOf(u8, out, "error in") == null);
+}
+
+test "render: pretty summary mixes `N errors + M warnings` when both present" {
+    const err = Diagnostic{
+        .severity = .fatal,
+        .code = "E_TYPE_MISMATCH",
+        .message = "boom",
+        .span = .{ .start = 0, .end = 1 },
+    };
+    const w1 = Diagnostic{
+        .severity = .warning,
+        .code = "W_X",
+        .message = "a",
+        .span = .{ .start = 0, .end = 1 },
+    };
+    const w2 = Diagnostic{
+        .severity = .warning,
+        .code = "W_Y",
+        .message = "b",
+        .span = .{ .start = 0, .end = 1 },
+    };
+    const file: FileDiagnostics = .{ .path = "x.gr", .source = "x = 1", .diagnostics = &.{ err, w1, w2 } };
+
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    try gero.lang.render.pretty(&writer.writer, &.{file}, gero.lang.render.Style.none);
+    const out = try writer.toOwnedSlice();
+    defer alloc.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "1 error + 2 warnings in 1 file") != null);
+}
