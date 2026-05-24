@@ -37,8 +37,10 @@ pub fn signednessOf(t: ?*const types.Type) Signedness {
     const ty = t orelse return .signed;
     if (ty.* != .primitive) return .signed;
     return switch (ty.primitive) {
-        .u8, .u16 => .unsigned,
-        .i8, .i16, .char => .signed,
+        // `char` is byte-equivalent to `u8` (spec §2.5, §3.5.1 cast
+        // table) — arithmetic on it uses unsigned-overflow semantics.
+        .u8, .u16, .char => .unsigned,
+        .i8, .i16 => .signed,
         else => .signed,
     };
 }
