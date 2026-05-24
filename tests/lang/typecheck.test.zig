@@ -1382,10 +1382,10 @@ test "typecheck: char literal infers as `char` primitive" {
     );
 }
 
-test "typecheck: char literal does not match `u8` annotation (cast required)" {
-    try expectCode(
+test "typecheck: char literal accepts `u8` annotation (char ↔ u8 no-op per §2.5)" {
+    try expectClean(
         \\let c: u8 = 'A'
-    , "E_TYPE_MISMATCH");
+    );
 }
 
 test "typecheck: char ↔ u8 explicit cast accepts" {
@@ -1393,6 +1393,106 @@ test "typecheck: char ↔ u8 explicit cast accepts" {
         \\let c: char = 'A'
         \\let b: u8 = c as u8
     );
+}
+
+// ---------- E_CAST_PRECISION_LOSS (§3.5.1, narrowing warning) ----------
+
+/// Assert at least one diagnostic with `code` AND severity fires.
+fn expectCodeAndSeverity(
+    source: []const u8,
+    code: []const u8,
+    severity: gero.lang.Severity,
+) !void {
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    for (checked.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, code) and d.severity == severity) return;
+    }
+    std.debug.print("missing {s} `{s}` for `{s}`; got:\n", .{ @tagName(severity), code, source });
+    for (checked.diagnostics) |d| {
+        std.debug.print("  - [{s}] {s}: {s}\n", .{ @tagName(d.severity), d.code, d.message });
+    }
+    return error.MissingDiagnosticCode;
+}
+
+test "typecheck: let with narrowing init emits E_CAST_PRECISION_LOSS warning" {
+    try expectCodeAndSeverity(
+        \\def main()
+        \\  let a: i16 = 0
+        \\  let b: u8 = a
+        \\end
+    , "E_CAST_PRECISION_LOSS", .warning);
+}
+
+test "typecheck: explicit `as` cast suppresses the narrowing warning" {
+    try expectClean(
+        \\def main()
+        \\  let a: i16 = 0
+        \\  let b: u8 = a as u8
+        \\end
+    );
+}
+
+test "typecheck: widening init (u8 → i16) accepts without warning" {
+    try expectClean(
+        \\def main()
+        \\  let a: u8 = 0
+        \\  let b: i16 = a
+        \\end
+    );
+}
+
+test "typecheck: assignment with narrowing RHS emits the warning" {
+    try expectCodeAndSeverity(
+        \\def main()
+        \\  let a: i16 = 0
+        \\  let b: u8 = 0
+        \\  b = a
+        \\end
+    , "E_CAST_PRECISION_LOSS", .warning);
+}
+
+test "typecheck: call arg narrowing emits the warning" {
+    try expectCodeAndSeverity(
+        \\def take(b: u8) end
+        \\
+        \\def main()
+        \\  let a: i16 = 0
+        \\  take(a)
+        \\end
+    , "E_CAST_PRECISION_LOSS", .warning);
+}
+
+test "typecheck: return value narrowing emits the warning" {
+    try expectCodeAndSeverity(
+        \\def shrink(a: i16) -> u8
+        \\  return a
+        \\end
+    , "E_CAST_PRECISION_LOSS", .warning);
+}
+
+test "typecheck: sign-flip at same width (i16 → u16) emits the warning" {
+    try expectCodeAndSeverity(
+        \\def main()
+        \\  let a: i16 = 0
+        \\  let b: u16 = a
+        \\end
+    , "E_CAST_PRECISION_LOSS", .warning);
+}
+
+test "typecheck: narrowing class-or-string mismatch stays a hard E_TYPE_MISMATCH" {
+    // Non-integer mismatches don't get the friendlier narrowing
+    // treatment — they're outright type errors.
+    try expectCode(
+        \\def main()
+        \\  let b: u8 = "hi"
+        \\end
+    , "E_TYPE_MISMATCH");
 }
 
 // ---------- slice 7: annotation validation (§3.7) ----------

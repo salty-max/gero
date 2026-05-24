@@ -342,6 +342,53 @@ pub const Checker = struct {
         try self.emitSpan("E_TYPE_MISMATCH", span, msg);
     }
 
+    /// Combined assignability + narrowing check for "store into a
+    /// typed slot" sites (let-init, assignment, call arg, return).
+    /// Routes the diagnostic per spec §3.5.1:
+    ///
+    /// - Assignable (`Type.eql`, `T → T?`, or integer widening) →
+    ///   no diagnostic.
+    /// - Integer / `char` narrowing without explicit `as` →
+    ///   `E_CAST_PRECISION_LOSS` (warning).
+    /// - Anything else → `E_TYPE_MISMATCH` (fatal).
+    ///
+    /// Keeps the four call sites uniform — none of them know about
+    /// the precision-loss case directly.
+    fn checkStoreCompat(
+        self: *Checker,
+        span: ast.Span,
+        expected: *const types.Type,
+        actual: *const types.Type,
+    ) WalkError!void {
+        if (relations.assignable(actual.*, expected.*)) return;
+        if (relations.isNarrowingInt(actual.*, expected.*)) {
+            try self.emitNarrowingWarning(span, expected, actual);
+            return;
+        }
+        try self.emitMismatch(span, expected, actual);
+    }
+
+    fn emitNarrowingWarning(
+        self: *Checker,
+        span: ast.Span,
+        expected_ty: *const types.Type,
+        actual_ty: *const types.Type,
+    ) WalkError!void {
+        const expected_s = try types.render(self.arena, expected_ty.*);
+        const actual_s = try types.render(self.arena, actual_ty.*);
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "implicit narrowing from `{s}` to `{s}` may lose precision — use an explicit `as {s}` cast to silence this warning",
+            .{ actual_s, expected_s, expected_s },
+        );
+        try self.diagnostics.append(self.diag_alloc, .{
+            .severity = .warning,
+            .code = "E_CAST_PRECISION_LOSS",
+            .message = msg,
+            .span = span,
+        });
+    }
+
     /// Return the source-text slice for `span`.
     pub fn lexeme(self: *const Checker, span: ast.Span) []const u8 {
         return self.source[span.start..span.end];
@@ -596,9 +643,7 @@ pub const Checker = struct {
         else
             null;
         if (ann_ty != null and init_ty != null) {
-            if (!relations.assignable(init_ty.?.*, ann_ty.?.*)) {
-                try self.emitMismatch(d.init.?.span(), ann_ty.?, init_ty.?);
-            }
+            try self.checkStoreCompat(d.init.?.span(), ann_ty.?, init_ty.?);
         }
         switch (d.pattern.*) {
             .ident => |i| {
@@ -690,8 +735,8 @@ pub const Checker = struct {
             null;
         const init_ty = try self.inferExpr(d.init, ann_ty);
         const final = ann_ty orelse init_ty;
-        if (ann_ty != null and init_ty != null and !relations.assignable(init_ty.?.*, ann_ty.?.*)) {
-            try self.emitMismatch(d.init.span(), ann_ty.?, init_ty.?);
+        if (ann_ty != null and init_ty != null) {
+            try self.checkStoreCompat(d.init.span(), ann_ty.?, init_ty.?);
         }
         if (final) |t| {
             self.current_scope.setType(self.lexeme(d.name), t) catch {
@@ -715,8 +760,8 @@ pub const Checker = struct {
         // Compound `op=` is sugar for `target = target op value`; the
         // target's type is the hint for the rhs in either form.
         const val_ty = try self.inferExpr(a.value, tgt_ty);
-        if (tgt_ty != null and val_ty != null and !relations.assignable(val_ty.?.*, tgt_ty.?.*)) {
-            try self.emitMismatch(a.value.span(), tgt_ty.?, val_ty.?);
+        if (tgt_ty != null and val_ty != null) {
+            try self.checkStoreCompat(a.value.span(), tgt_ty.?, val_ty.?);
         }
     }
 
@@ -865,8 +910,8 @@ pub const Checker = struct {
             try self.checkReturnStackLifetime(v);
             const v_ty = try self.inferExpr(v, self.current_ret_ty);
             if (self.current_ret_ty) |rt| if (v_ty) |vt| {
-                if (!relations.assignable(vt.*, rt.*) and !predicates.isNilType(rt.*)) {
-                    try self.emitMismatch(v.span(), rt, vt);
+                if (!predicates.isNilType(rt.*)) {
+                    try self.checkStoreCompat(v.span(), rt, vt);
                 }
             };
         }
@@ -1807,8 +1852,8 @@ pub const Checker = struct {
                     null;
                 const skip = if (param_ty) |pt| predicates.isNilType(pt.*) else true;
                 const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
-                if (!skip and param_ty != null and arg_ty != null and !relations.assignable(arg_ty.?.*, param_ty.?.*)) {
-                    try self.emitMismatch(arg.span(), param_ty.?, arg_ty.?);
+                if (!skip and param_ty != null and arg_ty != null) {
+                    try self.checkStoreCompat(arg.span(), param_ty.?, arg_ty.?);
                 }
             }
         }
@@ -1864,9 +1909,7 @@ pub const Checker = struct {
             };
             const expected_ty = try self.resolveType(decl_field.type_ann);
             const actual_ty = try self.inferExpr(lit_field.value, expected_ty);
-            if (actual_ty) |at| if (!relations.assignable(at.*, expected_ty.*)) {
-                try self.emitMismatch(lit_field.value.span(), expected_ty, at);
-            };
+            if (actual_ty) |at| try self.checkStoreCompat(lit_field.value.span(), expected_ty, at);
             _ = try seen.put(self.arena, field_name, {});
         }
         // Missing fields.
@@ -1900,9 +1943,7 @@ pub const Checker = struct {
                 continue;
             }
             const actual_ty = try self.inferExpr(lit_field.value, expected_ty);
-            if (expected_ty) |et| if (actual_ty) |at| if (!relations.assignable(at.*, et.*)) {
-                try self.emitMismatch(lit_field.value.span(), et, at);
-            };
+            if (expected_ty) |et| if (actual_ty) |at| try self.checkStoreCompat(lit_field.value.span(), et, at);
         }
         // Class literals don't require every field to be set
         // (constructors fill defaults). Slice 7 may tighten this
@@ -2295,8 +2336,8 @@ pub const Checker = struct {
             // those params accept any caller-supplied type.
             const skip = predicates.isNilType(param_ty.*);
             const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
-            if (!skip and arg_ty != null and !relations.assignable(arg_ty.?.*, param_ty.*)) {
-                try self.emitMismatch(arg.span(), param_ty, arg_ty.?);
+            if (!skip and arg_ty != null) {
+                try self.checkStoreCompat(arg.span(), param_ty, arg_ty.?);
             }
         }
         return f.ret;
@@ -2394,8 +2435,8 @@ pub const Checker = struct {
             const param_ty = f.params[i];
             const skip = predicates.isNilType(param_ty.*);
             const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
-            if (!skip and arg_ty != null and !relations.assignable(arg_ty.?.*, param_ty.*)) {
-                try self.emitMismatch(arg.span(), param_ty, arg_ty.?);
+            if (!skip and arg_ty != null) {
+                try self.checkStoreCompat(arg.span(), param_ty, arg_ty.?);
             }
         }
         // Variadic slot: all trailing args must share a type.

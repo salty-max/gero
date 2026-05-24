@@ -7,9 +7,10 @@ const predicates = @import("predicates.zig");
 
 /// `true` when an `actual` typed value can be stored / returned /
 /// passed into an `expected` slot. Wider than `Type.eql` — allows
-/// `T → T?` (non-nil to nullable) and recurses into tuples for
-/// per-slot assignability. Used by return / let-init / assignment
-/// / call-arg checks; operator arms keep strict equality.
+/// `T → T?` (non-nil to nullable), integer widening conversions
+/// (e.g. `u8 → i16`) per spec §3.5.1, and recurses into tuples
+/// for per-slot assignability. Used by return / let-init /
+/// assignment / call-arg checks; operator arms keep strict equality.
 pub fn assignable(actual: types.Type, expected: types.Type) bool {
     if (actual.eql(expected)) return true;
     if (expected == .optional) {
@@ -22,7 +23,61 @@ pub fn assignable(actual: types.Type, expected: types.Type) bool {
         }
         return true;
     }
+    if (actual == .primitive and expected == .primitive and
+        isWideningInt(actual.primitive, expected.primitive))
+    {
+        return true;
+    }
     return false;
+}
+
+/// `true` when implicitly converting an integer / `char` of type
+/// `from` to type `to` is lossless — `from`'s value range is a
+/// subset of `to`'s. Per spec §3.5.1: signed widening sign-
+/// extends, unsigned widening zero-extends, and `u8 ↔ char` is a
+/// no-op. Same-type pairs return `false` because `eql` catches
+/// them earlier; callers should never see them here.
+pub fn isWideningInt(from: types.Primitive, to: types.Primitive) bool {
+    const f = normalizeCharToU8(from);
+    const t = normalizeCharToU8(to);
+    if (f == t) return true; // u8 ↔ char
+    const fr = primitiveIntRange(f) orelse return false;
+    const tr = primitiveIntRange(t) orelse return false;
+    return fr.min >= tr.min and fr.max <= tr.max;
+}
+
+/// `true` when assigning `actual` into `expected` loses precision
+/// — both are integer / `char` primitives and `actual`'s range
+/// doesn't fit in `expected`'s. Distinct from `assignable`'s
+/// widening rule: callers check `isNarrowingInt` only when
+/// `assignable` already returned `false`, so this picks up the
+/// integer-mismatch cases (`i16 → u8`, sign-flips at equal
+/// widths, etc.) without disturbing aggregate / reference shapes.
+pub fn isNarrowingInt(actual: types.Type, expected: types.Type) bool {
+    if (actual != .primitive or expected != .primitive) return false;
+    const a = normalizeCharToU8(actual.primitive);
+    const e = normalizeCharToU8(expected.primitive);
+    if (primitiveIntRange(a) == null or primitiveIntRange(e) == null) return false;
+    return !isWideningInt(a, e);
+}
+
+fn normalizeCharToU8(p: types.Primitive) types.Primitive {
+    return if (p == .char) .u8 else p;
+}
+
+const IntRange = struct { min: i32, max: i32 };
+
+/// Value range of the fixed-width integer primitives. `null` for
+/// non-integer primitives. Widened to `i32` so the four ranges
+/// share one comparison shape regardless of sign / width.
+fn primitiveIntRange(p: types.Primitive) ?IntRange {
+    return switch (p) {
+        .i8 => .{ .min = -128, .max = 127 },
+        .u8 => .{ .min = 0, .max = 255 },
+        .i16 => .{ .min = -32768, .max = 32767 },
+        .u16 => .{ .min = 0, .max = 65535 },
+        else => null,
+    };
 }
 
 /// Spec §3.5.1 conversion table. Allows integer ↔ integer (any
