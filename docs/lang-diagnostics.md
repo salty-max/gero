@@ -632,6 +632,15 @@ Per spec §4.10.
 | `E_DEFER_CONTROL_FLOW` | `defer return / break / continue` rejected. |
 | `E_DEFER_NESTED` | `defer defer ...` (pointless, doesn't compose). |
 
+### 5.12 Assert builtins (E_ASSERT_* / W_DEBUG_ASSERT_*)
+
+Per spec §5.3.
+
+| Code | Meaning |
+|------|---------|
+| `E_ASSERT_ARG_COUNT` | `assert` / `debug_assert` called with 0 or >2 args. |
+| `W_DEBUG_ASSERT_SIDE_EFFECT` | A `debug_assert` arg contains a function call; the call is elided in release. (Warning, not fatal.) |
+
 **Mockup — defer with return:**
 
 ```
@@ -715,6 +724,8 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_LOOP_OUTSIDE` | Loop labels | v0.3 |
 | `E_DEFER_CONTROL_FLOW` | Defer | v0.3 |
 | `E_DEFER_NESTED` | Defer | v0.3 |
+| `E_ASSERT_ARG_COUNT` | Assert builtins | v0.3 |
+| `W_DEBUG_ASSERT_SIDE_EFFECT` | Assert builtins | v0.3 |
 | `E_UNDEFINED_SYMBOL` | Name resolution | v0.3 |
 
 ---

@@ -2915,3 +2915,216 @@ test "codegen/debug-symbols: section omitted when opts.debug_symbols=false" {
     const flags = (@as(u16, compiled.image[7]) << 8) | @as(u16, compiled.image[6]);
     try std.testing.expect((flags & 0x0002) == 0);
 }
+
+// ---------- assert / debug_assert builtins (§5.3) ----------
+
+/// Compile `source` with the given optimize mode; helper for the
+/// assert tests that need to flip between debug and release.
+fn compileWithOptimize(source: []const u8, optimize: gero.lang.Optimize) !gero.lang.Compiled {
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+    return gero.lang.compile(alloc, source, &checked, .{ .optimize = optimize });
+}
+
+test "codegen/assert: passing assert lets execution continue" {
+    try runAndExpect(
+        \\def main()
+        \\  assert(1 == 1)
+        \\  print "ok"
+        \\end
+    , "ok\n");
+}
+
+test "codegen/assert: failing assert halts after printing message" {
+    try runAndExpect(
+        \\def main()
+        \\  assert(1 == 2, "math broke")
+        \\  print "unreached"
+        \\end
+    , "math broke");
+}
+
+test "codegen/assert: failing assert without message halts silently" {
+    try runAndExpect(
+        \\def main()
+        \\  print "before"
+        \\  assert(false)
+        \\  print "after"
+        \\end
+    , "before\n");
+}
+
+test "codegen/debug_assert: fires in debug mode" {
+    try runAndExpect(
+        \\def main()
+        \\  debug_assert(false, "dev-time")
+        \\  print "unreached"
+        \\end
+    , "dev-time");
+}
+
+test "codegen/debug_assert: elided in release mode" {
+    var compiled = try compileWithOptimize(
+        \\def main()
+        \\  debug_assert(false, "should not print")
+        \\  print "ok"
+        \\end
+    , .release);
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("ok\n", writer.written());
+}
+
+test "codegen/debug_assert: identical bytecode to assert in debug mode" {
+    const assert_src =
+        \\def main()
+        \\  let x = 1
+        \\  assert(x == 1, "eq")
+        \\end
+    ;
+    const debug_assert_src =
+        \\def main()
+        \\  let x = 1
+        \\  debug_assert(x == 1, "eq")
+        \\end
+    ;
+    var a = try compileWithOptimize(assert_src, .debug);
+    defer a.deinit();
+    var b = try compileWithOptimize(debug_assert_src, .debug);
+    defer b.deinit();
+    try std.testing.expectEqualSlices(u8, a.image, b.image);
+}
+
+test "codegen/assert: identical bytecode in debug + release modes" {
+    const source =
+        \\def main()
+        \\  let x = 1
+        \\  assert(x == 1, "eq")
+        \\end
+    ;
+    var a = try compileWithOptimize(source, .debug);
+    defer a.deinit();
+    var b = try compileWithOptimize(source, .release);
+    defer b.deinit();
+    try std.testing.expectEqualSlices(u8, a.image, b.image);
+}
+
+test "codegen/debug_assert: release image matches debug_assert-stripped source" {
+    const with_da =
+        \\def main()
+        \\  let x = 1
+        \\  debug_assert(x == 1, "eq")
+        \\end
+    ;
+    const without =
+        \\def main()
+        \\  let x = 1
+        \\end
+    ;
+    var a = try compileWithOptimize(with_da, .release);
+    defer a.deinit();
+    var b = try compileWithOptimize(without, .release);
+    defer b.deinit();
+    try std.testing.expectEqualSlices(u8, a.image, b.image);
+}
+
+test "codegen/assert: 0 args rejected with E_ASSERT_ARG_COUNT" {
+    const source =
+        \\def main()
+        \\  assert()
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var found = false;
+    for (checked.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_ASSERT_ARG_COUNT")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen/assert: 3 args rejected with E_ASSERT_ARG_COUNT" {
+    const source =
+        \\def main()
+        \\  assert(true, "msg", 42)
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var found = false;
+    for (checked.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_ASSERT_ARG_COUNT")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen/debug_assert: warns when arg contains a call" {
+    const source =
+        \\def helper() -> bool
+        \\  return true
+        \\end
+        \\
+        \\def main()
+        \\  debug_assert(helper(), "calls have effects")
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var saw_warn = false;
+    for (checked.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "W_DEBUG_ASSERT_SIDE_EFFECT")) {
+            saw_warn = true;
+            try std.testing.expectEqual(gero.lang.Severity.warning, d.severity);
+        }
+    }
+    try std.testing.expect(saw_warn);
+}
+
+test "codegen/assert: plain `assert(call())` does NOT warn" {
+    const source =
+        \\def helper() -> bool
+        \\  return true
+        \\end
+        \\
+        \\def main()
+        \\  assert(helper())
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    for (checked.diagnostics) |d| {
+        try std.testing.expect(!std.mem.eql(u8, d.code, "W_DEBUG_ASSERT_SIDE_EFFECT"));
+    }
+}
