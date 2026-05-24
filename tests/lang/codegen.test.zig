@@ -3107,6 +3107,184 @@ test "codegen/debug_assert: warns when arg contains a call" {
     try std.testing.expect(saw_warn);
 }
 
+// ---------- overflow trap on `+` / `-` / `*` (§4.2.1) ----------
+
+/// Compile + boot + run; return the final `StepResult` so tests
+/// can distinguish a clean `halted` from a `halted_on_fault`
+/// (which is what the debug overflow trap raises when vector $05
+/// is unset, the default at boot).
+fn runForFault(source: []const u8, optimize: gero.lang.Optimize) !gero.vm.StepResult {
+    var compiled = try compileWithOptimize(source, optimize);
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+    const loaded = try gero.vm.parseGx(compiled.image);
+    var vm = gero.vm.VM.init(alloc);
+    defer vm.deinit();
+    try vm.boot(alloc, loaded);
+    return gero.vm.run(&vm);
+}
+
+test "codegen/overflow: signed `+` traps on i16 overflow in debug" {
+    try std.testing.expectEqual(
+        gero.vm.StepResult.halted_on_fault,
+        try runForFault(
+            \\def main()
+            \\  let a: i16 = 30000
+            \\  let b: i16 = 5000
+            \\  let c: i16 = a + b
+            \\  print c
+            \\end
+        , .debug),
+    );
+}
+
+test "codegen/overflow: signed `+` wraps silently in release" {
+    try std.testing.expectEqual(
+        gero.vm.StepResult.halted,
+        try runForFault(
+            \\def main()
+            \\  let a: i16 = 30000
+            \\  let b: i16 = 5000
+            \\  let c: i16 = a + b
+            \\  print c
+            \\end
+        , .release),
+    );
+}
+
+test "codegen/overflow: signed `-` traps on i16 underflow in debug" {
+    try std.testing.expectEqual(
+        gero.vm.StepResult.halted_on_fault,
+        try runForFault(
+            \\def main()
+            \\  let a: i16 = -30000
+            \\  let b: i16 = 5000
+            \\  let c: i16 = a - b
+            \\  print c
+            \\end
+        , .debug),
+    );
+}
+
+test "codegen/overflow: unsigned `+` traps on u16 carry in debug" {
+    try std.testing.expectEqual(
+        gero.vm.StepResult.halted_on_fault,
+        try runForFault(
+            \\def main()
+            \\  let a: u16 = 50000
+            \\  let b: u16 = 20000
+            \\  let c: u16 = a + b
+            \\  print c
+            \\end
+        , .debug),
+    );
+}
+
+test "codegen/overflow: unsigned `-` traps on u16 borrow in debug" {
+    try std.testing.expectEqual(
+        gero.vm.StepResult.halted_on_fault,
+        try runForFault(
+            \\def main()
+            \\  let a: u16 = 5
+            \\  let b: u16 = 10
+            \\  let c: u16 = a - b
+            \\  print c
+            \\end
+        , .debug),
+    );
+}
+
+test "codegen/overflow: signed `*` traps via `muls` in debug" {
+    try std.testing.expectEqual(
+        gero.vm.StepResult.halted_on_fault,
+        try runForFault(
+            \\def main()
+            \\  let a: i16 = 16384
+            \\  let b: i16 = 3
+            \\  let c: i16 = a * b
+            \\  print c
+            \\end
+        , .debug),
+    );
+}
+
+test "codegen/overflow: signed `*` of negative operands does NOT trap" {
+    // The motivating regression — `(-1) * 5 = -5` fits in i16 and
+    // must not trip the trap. Plain `mul` would set V here (high
+    // half = 0xFFFF for the unsigned interpretation), so this test
+    // verifies the codegen actually routes through `muls`.
+    try runAndExpect(
+        \\def main()
+        \\  let a: i16 = -1
+        \\  let b: i16 = 5
+        \\  let c: i16 = a * b
+        \\  print c
+        \\end
+    , "-5\n");
+}
+
+test "codegen/overflow: unsigned `*` traps when high half nonzero in debug" {
+    try std.testing.expectEqual(
+        gero.vm.StepResult.halted_on_fault,
+        try runForFault(
+            \\def main()
+            \\  let a: u16 = 1000
+            \\  let b: u16 = 1000
+            \\  let c: u16 = a * b
+            \\  print c
+            \\end
+        , .debug),
+    );
+}
+
+test "codegen/overflow: arithmetic without overflow runs cleanly in debug" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: i16 = 100
+        \\  let b: i16 = 50
+        \\  print a + b
+        \\  print a - b
+        \\  print a * b
+        \\end
+    , "150\n50\n5000\n");
+}
+
+test "codegen/overflow: same overflowing program halts cleanly in release" {
+    // `30000 + 5000` wraps to `-30536` in i16 two's-complement;
+    // the program completes and prints the wrapped value rather
+    // than trapping.
+    try std.testing.expectEqual(
+        gero.vm.StepResult.halted,
+        try runForFault(
+            \\def main()
+            \\  let a: i16 = 30000
+            \\  let b: i16 = 5000
+            \\  let c: i16 = a + b
+            \\  print c
+            \\end
+        , .release),
+    );
+}
+
+test "codegen/overflow: fixed-point `*` wraps in both modes per ISA §5.4.1" {
+    // Fixed `*` is explicitly wrap-only — the codegen skips the
+    // overflow trap regardless of build mode. Picking values that
+    // would overflow if the trap were inserted: 100.0 * 100.0 in
+    // Q8.8 produces a Q16.16 product > i16 range. The program
+    // must complete (no fault) in both debug and release.
+    try std.testing.expectEqual(
+        gero.vm.StepResult.halted,
+        try runForFault(
+            \\def main()
+            \\  let a: fixed = 100.0
+            \\  let b: fixed = 100.0
+            \\  let c: fixed = a * b
+            \\  print c
+            \\end
+        , .debug),
+    );
+}
+
 test "codegen/assert: plain `assert(call())` does NOT warn" {
     const source =
         \\def helper() -> bool
