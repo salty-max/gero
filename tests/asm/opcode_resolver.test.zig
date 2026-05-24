@@ -28,6 +28,24 @@ test "opres: hlt resolves to 0xFF (zero-operand sentinel)" {
     try std.testing.expectEqual(@as(u8, 0xFF), cg.image[16]);
 }
 
+test "opres: muls reg,reg resolves to opcode 0x55" {
+    var pt = try gero.asm_.parse(alloc, "muls r1, r2\n");
+    defer pt.deinit();
+    var cg = try gero.asm_.assemble(alloc, "muls r1, r2\n", pt, .{});
+    defer cg.deinit();
+    try std.testing.expect(!cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0x55), cg.image[16]);
+}
+
+test "opres: muls imm16,reg resolves to opcode 0x54" {
+    var pt = try gero.asm_.parse(alloc, "muls $0005, r1\n");
+    defer pt.deinit();
+    var cg = try gero.asm_.assemble(alloc, "muls $0005, r1\n", pt, .{});
+    defer cg.deinit();
+    try std.testing.expect(!cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0x54), cg.image[16]);
+}
+
 test "opres: cmp reg, label_ref(const) uses imm16 form (0x80)" {
     // `TARGET` is a const → label_ref resolves to imm16, picking
     // 0x80 (cmp Reg, Imm16) over a hypothetical addr form.

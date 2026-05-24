@@ -57,7 +57,7 @@ pub const Symbols = struct {
 /// One file's worth of decoded header info + section slices, all
 /// borrowed from the caller's `bytes` buffer.
 pub const Header = struct {
-    /// Bytecode format version — currently `0x0002`.
+    /// Bytecode format version — currently `0x0003`.
     version: u16,
     /// Bit-set per ISA §7.1 (bit 0 = banked, bit 1 = has-debug).
     flags: u16,
