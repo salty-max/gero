@@ -1495,6 +1495,17 @@ test "typecheck: narrowing class-or-string mismatch stays a hard E_TYPE_MISMATCH
     , "E_TYPE_MISMATCH");
 }
 
+test "typecheck: narrowing through `char` slot (i16 → char) emits the warning" {
+    // `char` is u8-equivalent — narrowing i16 → char loses the
+    // upper byte just like narrowing i16 → u8 does.
+    try expectCodeAndSeverity(
+        \\def main()
+        \\  let a: i16 = 0
+        \\  let c: char = a
+        \\end
+    , "E_CAST_PRECISION_LOSS", .warning);
+}
+
 // ---------- slice 7: annotation validation (§3.7) ----------
 
 test "typecheck: unknown annotation errors with E_ANN_UNKNOWN" {

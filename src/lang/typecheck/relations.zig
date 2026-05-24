@@ -35,12 +35,15 @@ pub fn assignable(actual: types.Type, expected: types.Type) bool {
 /// `from` to type `to` is lossless — `from`'s value range is a
 /// subset of `to`'s. Per spec §3.5.1: signed widening sign-
 /// extends, unsigned widening zero-extends, and `u8 ↔ char` is a
-/// no-op. Same-type pairs return `false` because `eql` catches
-/// them earlier; callers should never see them here.
+/// no-op. Same-primitive pairs are trivially lossless (returns
+/// `true`) — `assignable`'s `eql` short-circuit usually catches
+/// them, but `assignable` also reaches here for the `char ↔ u8`
+/// path where the source / dest primitive tags differ before
+/// normalization.
 pub fn isWideningInt(from: types.Primitive, to: types.Primitive) bool {
     const f = normalizeCharToU8(from);
     const t = normalizeCharToU8(to);
-    if (f == t) return true; // u8 ↔ char
+    if (f == t) return true; // u8 ↔ char, plus same-primitive identity
     const fr = primitiveIntRange(f) orelse return false;
     const tr = primitiveIntRange(t) orelse return false;
     return fr.min >= tr.min and fr.max <= tr.max;
@@ -53,6 +56,12 @@ pub fn isWideningInt(from: types.Primitive, to: types.Primitive) bool {
 /// `assignable` already returned `false`, so this picks up the
 /// integer-mismatch cases (`i16 → u8`, sign-flips at equal
 /// widths, etc.) without disturbing aggregate / reference shapes.
+///
+/// Does NOT peel optional layers — integer-optional types
+/// (`u8?`, `i16?`) are rejected separately by the nullable rule
+/// (§3.4.1: `T?` only applies to pointer-like types), so the
+/// narrowing-into-nullable case never arises in a well-typed
+/// program.
 pub fn isNarrowingInt(actual: types.Type, expected: types.Type) bool {
     if (actual != .primitive or expected != .primitive) return false;
     const a = normalizeCharToU8(actual.primitive);
