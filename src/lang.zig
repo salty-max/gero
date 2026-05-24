@@ -81,8 +81,11 @@ pub const render = render_mod;
 
 /// Re-export: codegen output (`.gx` image + diagnostics).
 pub const Compiled = codegen_mod.Compiled;
-/// Re-export: codegen knobs (`entry_name`, `debug_symbols`).
+/// Re-export: codegen knobs (`entry_name`, `debug_symbols`,
+/// `optimize`).
 pub const CompileOptions = codegen_mod.Options;
+/// Re-export: build-mode selector consumed by `CompileOptions.optimize`.
+pub const Optimize = codegen_mod.Optimize;
 /// Re-export: errors `compile` can return (host-failure family —
 /// semantic errors land in `Compiled.diagnostics`).
 pub const CompileError = codegen_mod.CompileError;

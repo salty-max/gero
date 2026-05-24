@@ -7,6 +7,7 @@ const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const archive = @import("archive.zig");
+const assert_builtin = @import("assert.zig");
 const class = @import("class.zig");
 const lambda = @import("lambda.zig");
 
@@ -459,6 +460,13 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     // declared. The instance address lands in `acu`.
     if (c.callee.* == .ident) {
         const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
+        // `assert` / `debug_assert` always-in-scope builtins
+        // (§5.3) intercept before the free-fn path — they have no
+        // top-level def behind them.
+        if (assert_builtin.isAssertBuiltin(callee_name)) {
+            try assert_builtin.emitAssertCall(self, c, callee_name);
+            return;
+        }
         if (class.isClassName(self, callee_name)) {
             try class.emitConstructor(self, callee_name, c);
             return;

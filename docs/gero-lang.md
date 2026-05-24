@@ -2207,14 +2207,17 @@ solves one concrete need:
 `assert` and `debug_assert` are **always in scope** without import —
 both are built-in pseudo-functions:
 
-- `assert(cond, msg?)` — always evaluated, in every build mode. On
-  `false`, traps via fault vector `$02` with the optional message
-  in the diagnostic. Use for invariants that **must never fail**
-  in production code.
+- `assert(cond, msg?)` — always evaluated, in every build mode.
+  On `false`, prints the optional message via the host print
+  channel and halts the VM. Use for invariants that **must never
+  fail** in production code.
 - `debug_assert(cond, msg?)` — evaluated in debug builds only.
-  Elided entirely (zero bytecode emitted) under `gero build
-  --release`. Use for pedagogical / development-time checks that
-  shouldn't carry shipping cost.
+  Elided entirely (zero bytecode emitted, args not evaluated)
+  under `gero compile --optimize=release` / `=size`. Use for
+  pedagogical / development-time checks that shouldn't carry
+  shipping cost. The typechecker emits
+  `W_DEBUG_ASSERT_SIDE_EFFECT` when an arg contains a call, since
+  observable effects in that arg disappear in release.
 
 ```
 assert(self.hp >= 0, "hp went negative")        -- always live

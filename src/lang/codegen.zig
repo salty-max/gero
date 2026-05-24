@@ -112,6 +112,12 @@ pub const Compiled = struct {
     }
 };
 
+/// Build-mode selector. Mirrors the CLI's `--optimize=<m>` values
+/// per `docs/cli.md` §2. The lang doesn't itself depend on the CLI
+/// — the CLI plumbs its parsed value into `Options.optimize` when
+/// invoking `compile`.
+pub const Optimize = enum { debug, release, size };
+
 /// Knobs for `compile`. Mirrors `gero.asm_.Options` so callers
 /// can wrap both pipelines uniformly.
 pub const Options = struct {
@@ -121,6 +127,11 @@ pub const Options = struct {
     /// When `true` reserves a flag bit + section for debug
     /// symbols (per ISA §7.3). Slice M1 doesn't emit the body yet.
     debug_symbols: bool = true,
+    /// Build mode. Controls debug-only lowering decisions such as
+    /// `debug_assert` elision (§5.3) and overflow trap insertion
+    /// (§4.2.1). Defaults to `.debug` — release / size modes drop
+    /// debug-only checks.
+    optimize: Optimize = .debug,
 };
 
 /// Errors `compile` can return. Grammar / semantic errors land in
@@ -204,6 +215,7 @@ pub fn compile(
         .block_stack = .empty,
         .loop_stack = .empty,
         .diagnostics = &diagnostics,
+        .optimize = opts.optimize,
     };
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
@@ -563,6 +575,10 @@ pub const Emitter = struct {
     loop_stack: std.ArrayList(LoopFrame),
     /// Sink for codegen-time diagnostics.
     diagnostics: *std.ArrayList(Diagnostic),
+    /// Active build mode — drives debug-only lowering decisions
+    /// (`debug_assert` elision per §5.3; overflow trap insertion
+    /// per §4.2.1 once it lands).
+    optimize: Optimize,
 
     /// Mutually recursive emit fns need an explicit error set to
     /// break Zig's inferred-set deadlock.

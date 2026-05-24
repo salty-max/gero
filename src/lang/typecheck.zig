@@ -2225,6 +2225,15 @@ pub const Checker = struct {
 
     fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
         _ = hint;
+        // `assert` / `debug_assert` always-in-scope builtins
+        // (§5.3) — no underlying `def`, so they skip the regular
+        // callee-resolution path.
+        if (c.callee.* == .ident) {
+            const callee_name = self.lexeme(c.callee.ident.span);
+            if (isAssertBuiltinName(callee_name)) {
+                return try self.checkAssertBuiltin(c, callee_name);
+            }
+        }
         // Abstract-class instantiation: `ClassName(args)` where
         // `ClassName` is abstract is rejected.
         if (c.callee.* == .ident) {
@@ -2291,6 +2300,58 @@ pub const Checker = struct {
             }
         }
         return f.ret;
+    }
+
+    // ---------- assert builtins (§5.3) ----------
+
+    /// Type-check `assert(cond, msg?)` / `debug_assert(cond, msg?)`.
+    /// Validates arity (1 or 2 args), bool cond, str msg, and
+    /// warns when a `debug_assert` arg looks side-effecting (any
+    /// nested `CallExpr` is the proxy). Returns `nil` — the
+    /// builtins are statement-shaped even when called in expression
+    /// position.
+    fn checkAssertBuiltin(
+        self: *Checker,
+        c: ast.CallExpr,
+        name: []const u8,
+    ) WalkError!?*const types.Type {
+        if (c.args.len == 0 or c.args.len > 2) {
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "`{s}` takes 1 or 2 arguments (cond, msg?), called with {d}",
+                .{ name, c.args.len },
+            );
+            try self.emitSpan("E_ASSERT_ARG_COUNT", c.span, msg);
+            for (c.args) |a| _ = try self.inferExpr(a, null);
+            return try self.primitive(.nil_);
+        }
+        const bool_ty = try self.primitive(.bool_);
+        const cond_ty = try self.inferExpr(c.args[0], bool_ty);
+        if (cond_ty != null and !relations.assignable(cond_ty.?.*, bool_ty.*)) {
+            try self.emitMismatch(c.args[0].span(), bool_ty, cond_ty.?);
+        }
+        if (c.args.len == 2) {
+            const str_ty = try self.primitive(.str);
+            const msg_ty = try self.inferExpr(c.args[1], str_ty);
+            if (msg_ty != null and !relations.assignable(msg_ty.?.*, str_ty.*)) {
+                try self.emitMismatch(c.args[1].span(), str_ty, msg_ty.?);
+            }
+        }
+        // `debug_assert` is elided in release — surface any
+        // observable side effect (a nested call) so the user
+        // doesn't rely on it firing in shipped builds.
+        if (std.mem.eql(u8, name, "debug_assert")) {
+            for (c.args) |a| if (exprContainsCall(a)) {
+                try self.diagnostics.append(self.diag_alloc, .{
+                    .severity = .warning,
+                    .code = "W_DEBUG_ASSERT_SIDE_EFFECT",
+                    .message = "`debug_assert` arguments are elided in release builds — any side effects here will not occur",
+                    .span = a.span(),
+                });
+                break;
+            };
+        }
+        return try self.primitive(.nil_);
     }
 
     // ---------- variadic (§4.6.2) ----------
@@ -2453,4 +2514,31 @@ fn isPlaceExpr(e: *const ast.Expr) bool {
 fn peelReference(t: ?*const types.Type) ?*const types.Type {
     const ty = t orelse return null;
     return if (ty.* == .reference) ty.reference else ty;
+}
+
+/// `true` when `name` is one of the always-in-scope assert
+/// builtins per spec §5.3. Recognized at call sites before any
+/// generic callee resolution.
+fn isAssertBuiltinName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "assert") or std.mem.eql(u8, name, "debug_assert");
+}
+
+/// `true` when `e` contains a `CallExpr` anywhere in its
+/// sub-tree. Used as a side-effect proxy for the
+/// `W_DEBUG_ASSERT_SIDE_EFFECT` warning — observable mutations
+/// happen through function calls in gero, so any call inside a
+/// `debug_assert` arg is worth flagging.
+fn exprContainsCall(e: *const ast.Expr) bool {
+    return switch (e.*) {
+        .call, .method_call => true,
+        .paren => |p| exprContainsCall(p.inner),
+        .unary => |u| exprContainsCall(u.operand),
+        .binary => |b| exprContainsCall(b.lhs) or exprContainsCall(b.rhs),
+        .field => |f| exprContainsCall(f.receiver),
+        .index => |ix| exprContainsCall(ix.receiver) or exprContainsCall(ix.index),
+        .cast => |c| exprContainsCall(c.inner),
+        .ref_of => |r| exprContainsCall(r.inner),
+        .is_test => |it| exprContainsCall(it.lhs),
+        else => false,
+    };
 }
