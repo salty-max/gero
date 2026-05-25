@@ -980,6 +980,124 @@ const Evaluator = struct {
     }
 };
 
+/// Compute the byte width of a `BakeValue` when serialized into
+/// static data. Mirrors the runtime layout the typechecker's
+/// `widthOfTypeAnn` would produce for the same shape, with
+/// aggregate sizes summed from the actual values. Used by the
+/// codegen to allocate the right number of bytes in the data
+/// region before writing the serialized blob.
+pub fn widthOf(v: BakeValue) usize {
+    return switch (v) {
+        .int_, .fixed_ => 2,
+        .bool_, .byte, .nil_ => 1,
+        .str => 2, // interned string pointer (placeholder — codegen interns the bytes).
+        .array => |xs| if (xs.len == 0) 0 else widthOf(xs[0]) * xs.len,
+        .tuple => |xs| blk: {
+            var total: usize = 0;
+            for (xs) |elem| total += widthOf(elem);
+            break :blk total;
+        },
+        .struct_ => |flds| blk: {
+            var total: usize = 0;
+            for (flds) |f| total += widthOf(f.value);
+            break :blk total;
+        },
+    };
+}
+
+/// Serialize a `BakeValue` into little-endian bytes per the
+/// runtime layout (ISA §5). Writes into `out` starting at index
+/// 0 and returns the number of bytes written. Caller sizes `out`
+/// via `widthOf` first.
+pub fn serialize(v: BakeValue, out: []u8) usize {
+    return switch (v) {
+        .int_ => |x| writeLeU16(out, x),
+        .fixed_ => |x| writeLeU16(out, x),
+        .byte => |x| writeLeU8(out, x),
+        .bool_ => |x| writeLeU8(out, if (x) 1 else 0),
+        .nil_ => writeLeU8(out, 0),
+        // Strings are pointer-width — the codegen handles
+        // pool resolution before the value reaches `serialize`
+        // (slice-N+1 follow-up). For now the slot stays zero.
+        .str => writeLeU16(out, 0),
+        .array => |xs| writeSlice(xs, out),
+        .tuple => |xs| writeSlice(xs, out),
+        .struct_ => |flds| blk: {
+            var off: usize = 0;
+            for (flds) |f| off += serialize(f.value, out[off..]);
+            break :blk off;
+        },
+    };
+}
+
+fn writeLeU16(out: []u8, v: u16) usize {
+    // safety: u16 → two LE bytes; truncate is bit-mask, no loss.
+    out[0] = @truncate(v & 0xFF);
+    // safety: high byte of the u16.
+    out[1] = @truncate(v >> 8);
+    return 2;
+}
+
+fn writeLeU8(out: []u8, v: u8) usize {
+    out[0] = v;
+    return 1;
+}
+
+fn writeSlice(xs: []const BakeValue, out: []u8) usize {
+    var off: usize = 0;
+    for (xs) |v| off += serialize(v, out[off..]);
+    return off;
+}
+
+/// Best-effort conversion of a literal expression to a
+/// `BakeValue` — used by the codegen when a top-level
+/// `const X = bake_def(args)` init needs to evaluate `args`
+/// without standing up a full evaluator. Returns `null` for any
+/// non-literal shape; the caller then emits a clear diagnostic.
+pub fn literalAsBakeValue(source: []const u8, e: *const ast.Expr) ?BakeValue {
+    _ = source;
+    return switch (e.*) {
+        // safety: parser stores int literals as i32; truncate to i16 then bit-cast to u16 for the storage value.
+        .int_lit => |l| .{ .int_ = @bitCast(@as(i16, @truncate(l.value))) },
+        // safety: fixed literal same i32 → i16 truncate pattern.
+        .fixed_lit => |l| .{ .fixed_ = @bitCast(@as(i16, @truncate(l.value))) },
+        .bool_lit => |l| .{ .bool_ = l.value },
+        .char_lit => |l| .{ .byte = l.value },
+        .nil_lit => .nil_,
+        else => null,
+    };
+}
+
+/// Deep-clone a `BakeValue` into the destination allocator. The
+/// interpreter's diag arena owns the temporaries during
+/// evaluation; once we return to the codegen we re-allocate
+/// onto the codegen's arena so the value survives past
+/// `Result.deinit`.
+pub fn cloneBakeValue(arena: std.mem.Allocator, v: BakeValue) BakeError!BakeValue {
+    return switch (v) {
+        .int_, .fixed_, .bool_, .nil_, .byte => v,
+        .str => |s| .{ .str = try arena.dupe(u8, s) },
+        .array => |xs| blk: {
+            const out = try arena.alloc(BakeValue, xs.len);
+            for (xs, 0..) |elem, i| out[i] = try cloneBakeValue(arena, elem);
+            break :blk .{ .array = out };
+        },
+        .tuple => |xs| blk: {
+            const out = try arena.alloc(BakeValue, xs.len);
+            for (xs, 0..) |elem, i| out[i] = try cloneBakeValue(arena, elem);
+            break :blk .{ .tuple = out };
+        },
+        .struct_ => |flds| blk: {
+            const out = try arena.alloc(BakeValue.Field, flds.len);
+            for (flds, 0..) |f, i| out[i] = .{
+                .name = try arena.dupe(u8, f.name),
+                .value = try cloneBakeValue(arena, f.value),
+            };
+            break :blk .{ .struct_ = out };
+        },
+    };
+}
+
 fn bakeEql(a: BakeValue, b: BakeValue) bool {
     return switch (a) {
         .int_ => |x| b == .int_ and b.int_ == x,

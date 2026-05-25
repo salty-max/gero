@@ -57,6 +57,7 @@ const expr_emit = @import("codegen/expr.zig");
 const control_flow = @import("codegen/control_flow.zig");
 const class = @import("codegen/class.zig");
 const lambda = @import("codegen/lambda.zig");
+const bake_mod = @import("bake.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const CheckedProgram = typecheck_mod.CheckedProgram;
@@ -216,9 +217,13 @@ pub fn compile(
         .loop_stack = .empty,
         .diagnostics = &diagnostics,
         .optimize = opts.optimize,
+        .bake_inits = .{},
+        .bake_defs = .{},
     };
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
+    defer emitter.bake_inits.deinit(allocator);
+    defer emitter.bake_defs.deinit(allocator);
     defer emitter.vtable_patches.deinit(allocator);
     defer emitter.lambda_patches.deinit(allocator);
     defer emitter.strings.deinit(allocator);
@@ -235,13 +240,28 @@ pub fn compile(
     try emitter.emitProgram(checked.program, opts.entry_name);
 
     // Build base image: zeros from 0x0000 up to `code_base`, then
-    // the emitted bytes.
-    // @as: widen u16 code_base to usize for the byte-length math (image stays ≤ 64 KiB by ISA).
-    const total_image_bytes: usize = @as(usize, code_base) + emitter.code.items.len;
+    // the emitted code. The static-data region gets folded in only
+    // when at least one global carries `bake`-init bytes — without
+    // bake initializers the runtime sees zero-filled RAM at boot
+    // for free, so we keep images small for plain programs.
+    // @as: widen u16 code_base / data_cursor to usize for the byte-length math (image stays ≤ 64 KiB by ISA).
+    const code_end: usize = @as(usize, code_base) + emitter.code.items.len;
+    const has_bake_inits = emitter.bake_inits.count() > 0;
+    const data_end: usize = if (has_bake_inits) emitter.data_cursor else 0;
+    const total_image_bytes: usize = @max(code_end, data_end);
     var base_image = try allocator.alloc(u8, total_image_bytes);
     errdefer allocator.free(base_image);
     @memset(base_image, 0);
     @memcpy(base_image[code_base..][0..emitter.code.items.len], emitter.code.items);
+    // Write each `bake` global's serialized bytes into the image
+    // at its allocated address. Globals without a bake initializer
+    // leave the data region at zero (their existing behavior).
+    var bake_it = emitter.bake_inits.iterator();
+    while (bake_it.next()) |entry| {
+        const addr: usize = entry.key_ptr.*;
+        const bytes = entry.value_ptr.*;
+        @memcpy(base_image[addr..][0..bytes.len], bytes);
+    }
 
     const debug_blob: ?[]u8 = if (opts.debug_symbols)
         try emitter.buildDebugSymbolSection()
@@ -388,10 +408,12 @@ const Global = struct {
     /// Resolved absolute address in the 64 KiB address space.
     address: u16,
     /// Byte width — `1` for `u8` / `bool` / `char`, `2` for the
-    /// 16-bit primitives and references. Slice-M1 doesn't emit
-    /// init values; the slot is undefined-zero at boot for the
-    /// data region, undefined for `@addr`-pinned bindings.
-    width: u8,
+    /// 16-bit primitives and references, larger for aggregate
+    /// types (e.g. `[i16; 256]` = 512 bytes when initialized
+    /// from a `bake` block). The data region grows monotonically
+    /// from `data_cursor`; the resolved bytes are written
+    /// directly into the base image at `address`.
+    width: u16,
     /// Placement family — drives which addressing mode the
     /// ident-load / assignment emits (`mov zp` is 1 byte cheaper
     /// per access than `mov addr`).
@@ -579,6 +601,16 @@ pub const Emitter = struct {
     /// (`debug_assert` elision per §5.3; overflow trap insertion
     /// per §4.2.1 once it lands).
     optimize: Optimize,
+    /// Per-global init bytes produced by the `bake` evaluator.
+    /// Keyed by data-region address; written into `base_image`
+    /// in `compile()` after the code region is laid out so the
+    /// runtime sees the baked value at boot with zero runtime
+    /// cost.
+    bake_inits: std.AutoHashMapUnmanaged(u16, []const u8),
+    /// Index of every `bake def` in the program — populated by
+    /// the pre-pass so a `const X = bake_def_name()` init can
+    /// look the callee up at codegen time without re-walking.
+    bake_defs: std.StringHashMapUnmanaged(*const ast.DefDecl),
 
     /// Mutually recursive emit fns need an explicit error set to
     /// break Zig's inferred-set deadlock.
@@ -1025,6 +1057,9 @@ pub const Emitter = struct {
         // method addresses exist.
         try class.collectClassDecls(self, program);
         try class.computeLayouts(self);
+        // Pre-pass 0c: collect `bake def`s so global-init
+        // resolution can call them at codegen time.
+        try self.collectBakeDefs(program);
         // Pre-pass 1: register globals (top-level let/const).
         try self.registerGlobals(program);
         // Pre-pass 2: collect each def's bank so `emitCall` can
@@ -1120,6 +1155,22 @@ pub const Emitter = struct {
                 const name = self.source[ed.name.start..ed.name.end];
                 const dup = try self.arena.dupe(u8, name);
                 try self.enum_decls.put(self.arena, dup, &stmt.enum_decl);
+            },
+            else => {},
+        };
+    }
+
+    /// Pre-pass: collect every `bake def` so a `const X =
+    /// some_bake_def(args)` init can look the callee up at
+    /// `registerGlobalConst` time. Also seeds the call-dispatch
+    /// registry the bake evaluator threads through `Options.bake_defs`.
+    fn collectBakeDefs(self: *Emitter, program: *const ast.Program) !void {
+        for (program.statements) |*stmt| switch (stmt.*) {
+            .def_decl => |*dd| {
+                if (!dd.is_bake) continue;
+                const name = self.source[dd.name.start..dd.name.end];
+                const dup = try self.arena.dupe(u8, name);
+                try self.bake_defs.put(self.allocator, dup, dd);
             },
             else => {},
         };
@@ -1285,14 +1336,121 @@ pub const Emitter = struct {
 
     fn registerGlobalConst(self: *Emitter, d: *const ast.ConstDecl) !void {
         const name = self.source[d.name.start..d.name.end];
-        const width = self.widthOfConstDecl(d);
+        // Run the bake evaluator first so the resulting value
+        // tells us both the storage width AND the bytes to write
+        // into the data region. Non-bake initializers fall back
+        // to the type-annotation-driven width path.
+        const baked: ?bake_mod.BakeValue = try self.evalConstIfBake(d);
+        const width: u16 = if (baked) |v| @intCast(bake_mod.widthOf(v)) else self.widthOfConstDecl(d);
         try self.placeGlobal(name, width, d.annotations, d.name);
+
+        if (baked) |v| {
+            const g = self.globals.get(name) orelse return;
+            const bytes = try self.arena.alloc(u8, bake_mod.widthOf(v));
+            _ = bake_mod.serialize(v, bytes);
+            try self.bake_inits.put(self.allocator, g.address, bytes);
+        }
+    }
+
+    /// Evaluate a `const X = …` init at compile time when the
+    /// RHS is a `bake do … end` block or a call to a `bake def`.
+    /// Returns `null` for non-bake initializers, which keeps the
+    /// existing zero-init behavior for plain `const X = 42`-style
+    /// decls (codegen for those lands later — today they
+    /// allocate a slot only).
+    fn evalConstIfBake(self: *Emitter, d: *const ast.ConstDecl) !?bake_mod.BakeValue {
+        switch (d.init.*) {
+            .do_expr => |do| {
+                if (!do.is_bake) return null;
+                return try self.runBake(d.span, .{ .do_expr = &d.init.do_expr });
+            },
+            .call => |c| {
+                if (c.callee.* != .ident) return null;
+                const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
+                const decl = self.bake_defs.get(callee_name) orelse return null;
+                // Args inside a `const = bake_def(args)` init are
+                // evaluated against an empty scope — they must be
+                // literal / const-foldable. The bake evaluator
+                // walks them itself when we recurse from a parent
+                // bake block, but a top-level entry call passes
+                // already-resolved BakeValues.
+                const args = try self.arena.alloc(bake_mod.BakeValue, c.args.len);
+                for (c.args, 0..) |a, i| {
+                    args[i] = bake_mod.literalAsBakeValue(self.source, a) orelse {
+                        try self.diagFatal(a.span(), "E_BAKE_UNSUPPORTED", "bake-call args at top-level must be literal values");
+                        return null;
+                    };
+                }
+                return try self.runBakeDef(d.span, decl, args);
+            },
+            else => return null,
+        }
+    }
+
+    /// Tagged input to `runBake` — pick the entry shape so a
+    /// single helper handles the diagnostic plumbing.
+    const BakeEntry = union(enum) {
+        do_expr: *const ast.DoExpr,
+    };
+
+    fn runBake(self: *Emitter, span: ast.Span, entry: BakeEntry) !?bake_mod.BakeValue {
+        const opts: bake_mod.Options = .{ .bake_defs = &self.bakeDefsAdapter() };
+        var result = switch (entry) {
+            .do_expr => |de| try bake_mod.evaluateDo(self.allocator, self.source, de, opts),
+        };
+        defer result.deinit(self.allocator);
+        for (result.diagnostics) |diag| {
+            try self.diagnostics.append(self.allocator, .{
+                .severity = diag.severity,
+                .code = diag.code,
+                .message = try self.diag_arena.dupe(u8, diag.message),
+                .span = diag.span,
+            });
+        }
+        if (result.value == null) {
+            try self.diagFatal(span, "E_BAKE_UNSUPPORTED", "bake evaluation failed; see diagnostics above");
+            return null;
+        }
+        return try bake_mod.cloneBakeValue(self.arena, result.value.?);
+    }
+
+    fn runBakeDef(self: *Emitter, span: ast.Span, decl: *const ast.DefDecl, args: []const bake_mod.BakeValue) !?bake_mod.BakeValue {
+        const adapter = self.bakeDefsAdapter();
+        const opts: bake_mod.Options = .{ .bake_defs = &adapter };
+        var result = try bake_mod.evaluateDef(self.allocator, self.source, decl, args, opts);
+        defer result.deinit(self.allocator);
+        for (result.diagnostics) |diag| {
+            try self.diagnostics.append(self.allocator, .{
+                .severity = diag.severity,
+                .code = diag.code,
+                .message = try self.diag_arena.dupe(u8, diag.message),
+                .span = diag.span,
+            });
+        }
+        if (result.value == null) {
+            try self.diagFatal(span, "E_BAKE_UNSUPPORTED", "bake evaluation failed; see diagnostics above");
+            return null;
+        }
+        return try bake_mod.cloneBakeValue(self.arena, result.value.?);
+    }
+
+    /// Snapshot the bake-def index into the std-StringHashMap
+    /// shape the evaluator expects. The evaluator borrows the
+    /// map for the duration of one call; we rebuild the snapshot
+    /// each time so any future bake-def discovery stays visible.
+    fn bakeDefsAdapter(self: *Emitter) std.StringHashMap(*const ast.DefDecl) {
+        var map = std.StringHashMap(*const ast.DefDecl).init(self.arena);
+        var it = self.bake_defs.iterator();
+        while (it.next()) |e| {
+            map.put(e.key_ptr.*, e.value_ptr.*) catch unreachable; // allow-strict: copies fit in the same arena that owns `bake_defs`; OOM here would have surfaced upstream.
+        }
+        return map;
     }
 
     fn placeGlobal(
         self: *Emitter,
         name: []const u8,
-        width: u8,
+        width: u16,
         annotations: []const ast.Annotation,
         decl_span: ast.Span,
     ) !void {
@@ -1350,13 +1508,13 @@ pub const Emitter = struct {
     /// resolution is purely lexical against the type annotation;
     /// the typechecker has already validated that the name refers
     /// to a primitive or a registered user-type.
-    fn widthOfLetDecl(self: *const Emitter, d: *const ast.LetDecl) u8 {
+    fn widthOfLetDecl(self: *const Emitter, d: *const ast.LetDecl) u16 {
         if (d.type_ann) |t| return self.widthOfTypeAnn(t.*);
         // No annotation — default to the widest primitive (2 bytes).
         return 2;
     }
 
-    fn widthOfConstDecl(self: *const Emitter, d: *const ast.ConstDecl) u8 {
+    fn widthOfConstDecl(self: *const Emitter, d: *const ast.ConstDecl) u16 {
         if (d.type_ann) |t| return self.widthOfTypeAnn(t.*);
         return 2;
     }
@@ -1422,7 +1580,7 @@ pub const Emitter = struct {
     /// types, aggregates). Public so the class-layout pass in
     /// `codegen/class.zig` can size class fields with the same
     /// rule the global-placement path uses.
-    pub fn widthOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) u8 {
+    pub fn widthOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) u16 {
         return switch (t) {
             .named => |n| blk: {
                 const name = self.source[n.name.start..n.name.end];
@@ -1434,6 +1592,25 @@ pub const Emitter = struct {
                     break :blk 1;
                 }
                 break :blk 2;
+            },
+            .array => |a| blk: {
+                const elem_w = self.widthOfTypeAnn(a.elem.*);
+                // Parser stores array lengths as an int-literal
+                // expression. Bake initializers + ordinary
+                // bindings both rely on the literal-int form per
+                // spec §3.4; non-literal lengths fall back to 0
+                // (the typecheck flags those as `E_TYPE_*`).
+                if (a.len_expr.* == .int_lit) {
+                    // safety: parser stores length as i32; spec §3.4 caps at the address space (u16). Truncate-cast.
+                    const len: u16 = @intCast(@as(u32, @bitCast(a.len_expr.int_lit.value)) & 0xFFFF);
+                    break :blk elem_w *% len;
+                }
+                break :blk 0;
+            },
+            .tuple => |xs| blk: {
+                var total: u16 = 0;
+                for (xs.elems) |elem| total +%= self.widthOfTypeAnn(elem.*);
+                break :blk total;
             },
             else => 2,
         };

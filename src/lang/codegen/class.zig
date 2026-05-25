@@ -132,10 +132,15 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
     // The parent's slot remains in memory (instance_size already
     // counted it) and stays reachable via `super.X`.
     for (cd.fields) |field| {
-        const width: u8 = if (field.type_ann) |t|
+        // Class fields are primitive-width (1) or pointer-width
+        // (2) — aggregates aren't supported as class field types
+        // by the typechecker. Truncate the typecheck-wide u16
+        // back to u8 for the layout entry.
+        // safety: class field widths bounded to 1 or 2 by the typechecker; the truncate is a no-op for that range.
+        const width: u8 = @truncate(if (field.type_ann) |t|
             self.widthOfTypeAnn(t.*)
         else
-            2;
+            2);
         const fname = self.source[field.name.start..field.name.end];
         const dup_f = try self.arena.dupe(u8, fname);
         try layout.field_offsets.put(self.arena, dup_f, .{
