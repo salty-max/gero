@@ -6,7 +6,7 @@
 /// static-data bytes the codegen interns.
 ///
 /// Restricted on purpose: bake bodies are a strict subset of the
-/// runtime. No allocator beyond the typecheck arena, no host I/O,
+/// runtime. No allocator beyond the arena passed in, no host I/O,
 /// no FFI. The interpreter trades runtime efficiency for
 /// determinism — `gero check` must produce identical baked bytes
 /// across machines and build modes.
@@ -75,9 +75,20 @@ pub const BakeError = error{OutOfMemory};
 /// Outcome of running the interpreter on one `bake def` /
 /// `bake do` site. `value` is `null` when evaluation failed; the
 /// caller treats that as a hard stop and skips the codegen path.
+///
+/// `diag_arena` backs every `Diagnostic.message` string that the
+/// evaluator built via formatting — call `deinit(alloc)` once
+/// done. The slice itself was allocated through the same `alloc`,
+/// so a single deinit releases both.
 pub const Result = struct {
     value: ?BakeValue,
     diagnostics: []const Diagnostic,
+    diag_arena: std.heap.ArenaAllocator,
+
+    pub fn deinit(self: *Result, alloc: std.mem.Allocator) void {
+        alloc.free(self.diagnostics);
+        self.diag_arena.deinit();
+    }
 };
 
 /// Knobs for one interpreter run. The codegen plumbs `budget`
@@ -87,10 +98,29 @@ pub const Options = struct {
     budget: u32 = default_budget,
 };
 
-/// Walk a `bake def` body against the supplied argument values.
-/// Stub for the scaffolding commit — every shape currently
-/// returns `E_BAKE_UNSUPPORTED` until subsequent commits wire in
-/// arithmetic, control flow, aggregates, and call dispatch.
+/// Evaluate a `bake do … end` block against an empty initial
+/// scope. The block's value is the value of its last expression
+/// (or `nil` when the body has no trailing expression).
+pub fn evaluateDo(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    do: *const ast.DoExpr,
+    opts: Options,
+) BakeError!Result {
+    var ev = try Evaluator.init(allocator, source, opts);
+    defer ev.deinit();
+
+    const value = ev.runBlock(do.body) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Fault => null,
+    };
+    return ev.finalize(value);
+}
+
+/// Evaluate a `bake def name(…) -> T body end` invocation.
+/// `args` binds in declaration order. The body runs against a
+/// fresh scope; a `return expr` stops the walk and produces the
+/// returned value.
 pub fn evaluateDef(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -98,44 +128,456 @@ pub fn evaluateDef(
     args: []const BakeValue,
     opts: Options,
 ) BakeError!Result {
-    _ = source;
-    _ = args;
-    _ = opts;
-    var diagnostics: std.ArrayList(Diagnostic) = .empty;
-    errdefer diagnostics.deinit(allocator);
-    try diagnostics.append(allocator, .{
-        .severity = .fatal,
-        .code = "E_BAKE_UNSUPPORTED",
-        .message = "bake interpreter scaffolding only — `def`-form evaluation not yet wired",
-        .span = decl.name,
-    });
-    return .{
-        .value = null,
-        .diagnostics = try diagnostics.toOwnedSlice(allocator),
+    var ev = try Evaluator.init(allocator, source, opts);
+    defer ev.deinit();
+
+    if (args.len != decl.params.len) {
+        try ev.diagFatal(decl.name, "E_BAKE_ARG_COUNT", "argument count mismatch on bake def call");
+        return ev.finalize(null);
+    }
+    ev.pushScope();
+    defer ev.popScope();
+    for (decl.params, args) |p, v| try ev.bind(ev.lexeme(p.name), v);
+
+    const value = ev.runBlock(decl.body) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Fault => null,
     };
+    return ev.finalize(value);
 }
 
-/// Walk a `bake do … end` block. Same scaffolding-stage shape as
-/// `evaluateDef` — replaced by the real interpreter in later
-/// commits within this PR.
-pub fn evaluateDo(
+// ---------- internal evaluator ----------
+
+const StepError = error{ OutOfMemory, Fault };
+
+/// One lexical scope inside the bake interpreter — `let` and
+/// `const` bindings, params, induction variables for `for` loops.
+const Scope = std.StringHashMapUnmanaged(BakeValue);
+
+const Evaluator = struct {
     allocator: std.mem.Allocator,
     source: []const u8,
-    do: *const ast.DoExpr,
-    opts: Options,
-) BakeError!Result {
-    _ = source;
-    _ = opts;
-    var diagnostics: std.ArrayList(Diagnostic) = .empty;
-    errdefer diagnostics.deinit(allocator);
-    try diagnostics.append(allocator, .{
-        .severity = .fatal,
-        .code = "E_BAKE_UNSUPPORTED",
-        .message = "bake interpreter scaffolding only — `do`-form evaluation not yet wired",
-        .span = do.span,
-    });
-    return .{
-        .value = null,
-        .diagnostics = try diagnostics.toOwnedSlice(allocator),
+    scopes: std.ArrayList(Scope),
+    diagnostics: std.ArrayList(Diagnostic),
+    diag_arena: std.heap.ArenaAllocator,
+    budget_remaining: u32,
+    /// Set when a `return` statement fires inside the running
+    /// body. `runBlock` propagates the value upward; the
+    /// outermost block transparently surfaces it.
+    return_value: ?BakeValue,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        source: []const u8,
+        opts: Options,
+    ) BakeError!Evaluator {
+        var ev: Evaluator = .{
+            .allocator = allocator,
+            .source = source,
+            .scopes = .empty,
+            .diagnostics = .empty,
+            .diag_arena = std.heap.ArenaAllocator.init(allocator),
+            .budget_remaining = opts.budget,
+            .return_value = null,
+        };
+        try ev.scopes.append(allocator, .{});
+        return ev;
+    }
+
+    fn deinit(self: *Evaluator) void {
+        for (self.scopes.items) |*s| s.deinit(self.allocator);
+        self.scopes.deinit(self.allocator);
+        // `diagnostics` slice + `diag_arena` belong to the
+        // returned `Result` after `finalize`.
+    }
+
+    fn finalize(self: *Evaluator, value: ?BakeValue) BakeError!Result {
+        return .{
+            .value = value,
+            .diagnostics = try self.diagnostics.toOwnedSlice(self.allocator),
+            .diag_arena = self.diag_arena,
+        };
+    }
+
+    fn pushScope(self: *Evaluator) void {
+        self.scopes.append(self.allocator, .{}) catch unreachable; // allow-strict: arena failures already surface through `init` budget; this path is hit only during nested-block walks and inherits the same allocator contract.
+    }
+
+    fn popScope(self: *Evaluator) void {
+        var s = self.scopes.pop().?;
+        s.deinit(self.allocator);
+    }
+
+    fn bind(self: *Evaluator, name: []const u8, value: BakeValue) BakeError!void {
+        var top = &self.scopes.items[self.scopes.items.len - 1];
+        try top.put(self.allocator, name, value);
+    }
+
+    fn lookup(self: *Evaluator, name: []const u8) ?BakeValue {
+        var i = self.scopes.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.scopes.items[i].get(name)) |v| return v;
+        }
+        return null;
+    }
+
+    fn assignLocal(self: *Evaluator, name: []const u8, value: BakeValue) BakeError!bool {
+        var i = self.scopes.items.len;
+        while (i > 0) {
+            i -= 1;
+            const slot = self.scopes.items[i].getPtr(name);
+            if (slot != null) {
+                slot.?.* = value;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn lexeme(self: *const Evaluator, span: ast.Span) []const u8 {
+        return self.source[span.start..span.end];
+    }
+
+    fn tickBudget(self: *Evaluator, span: ast.Span) StepError!void {
+        if (self.budget_remaining == 0) {
+            try self.diagFatal(span, "E_BAKE_BUDGET_EXCEEDED", "bake instruction budget exhausted — loop or recursion may be unbounded");
+            return error.Fault;
+        }
+        self.budget_remaining -= 1;
+    }
+
+    fn diagFatal(
+        self: *Evaluator,
+        span: ast.Span,
+        code: []const u8,
+        message: []const u8,
+    ) BakeError!void {
+        try self.diagnostics.append(self.allocator, .{
+            .severity = .fatal,
+            .code = code,
+            .message = message,
+            .span = span,
+        });
+    }
+
+    /// Format-allocated variant for diagnostics that need
+    /// interpolation. Caller passes the format string + args; we
+    /// dupe the result onto the diagnostic arena (the caller's
+    /// `allocator`, since the interpreter's diagnostics outlive
+    /// it via `finalize`).
+    fn diagFmt(
+        self: *Evaluator,
+        span: ast.Span,
+        code: []const u8,
+        comptime fmt: []const u8,
+        args: anytype,
+    ) BakeError!void {
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), fmt, args);
+        try self.diagnostics.append(self.allocator, .{
+            .severity = .fatal,
+            .code = code,
+            .message = msg,
+            .span = span,
+        });
+    }
+
+    /// Walk a statement list returning the value of the final
+    /// expression statement (or `nil` for empty / non-expression
+    /// tails). A `return` inside `body` short-circuits and
+    /// surfaces its payload as the block's value.
+    fn runBlock(self: *Evaluator, body: []const ast.Statement) StepError!BakeValue {
+        var last: BakeValue = .nil_;
+        for (body) |stmt| {
+            try self.tickBudget(stmt.span());
+            switch (stmt) {
+                .let_decl => |d| try self.runLet(d),
+                .const_decl => |d| try self.runConst(d),
+                .return_stmt => |r| {
+                    const v: BakeValue = if (r.value) |e| try self.evalExpr(e) else .nil_;
+                    self.return_value = v;
+                    return v;
+                },
+                .expr_stmt => |s| last = try self.evalExpr(s.expr),
+                .assign => |a| try self.runAssign(a),
+                .discard => |d| {
+                    _ = try self.evalExpr(d.expr);
+                },
+                else => {
+                    try self.diagFmt(stmt.span(), "E_BAKE_UNSUPPORTED", "bake interpreter does not yet support `{s}` statements", .{@tagName(stmt)});
+                    return error.Fault;
+                },
+            }
+            if (self.return_value) |rv| return rv;
+        }
+        return last;
+    }
+
+    fn runLet(self: *Evaluator, d: ast.LetDecl) StepError!void {
+        const init_expr = d.init orelse {
+            // Uninit `let x: T` binds `nil_` until the first assign.
+            try self.bindFromPattern(d.pattern, .nil_, d.span);
+            return;
+        };
+        const value = try self.evalExpr(init_expr);
+        try self.bindFromPattern(d.pattern, value, d.span);
+    }
+
+    fn runConst(self: *Evaluator, d: ast.ConstDecl) StepError!void {
+        const value = try self.evalExpr(d.init);
+        try self.bind(self.lexeme(d.name), value);
+    }
+
+    fn bindFromPattern(self: *Evaluator, pat: *const ast.Pattern, value: BakeValue, span: ast.Span) StepError!void {
+        switch (pat.*) {
+            .ident => |i| try self.bind(self.lexeme(i.name), value),
+            else => {
+                try self.diagFmt(span, "E_BAKE_UNSUPPORTED", "bake interpreter only supports ident patterns in `let` (got `{s}`)", .{@tagName(pat.*)});
+                return error.Fault;
+            },
+        }
+    }
+
+    fn runAssign(self: *Evaluator, a: ast.AssignStmt) StepError!void {
+        // The typecheck pass already rejected non-ident assignment
+        // targets inside bake bodies; recheck defensively so a
+        // future codegen / typecheck regression surfaces here.
+        if (a.target.* != .ident) {
+            try self.diagFatal(a.span, "E_BAKE_UNSUPPORTED", "bake `=` only supports ident targets at this slice");
+            return error.Fault;
+        }
+        const value = try self.evalExpr(a.value);
+        const name = self.lexeme(a.target.ident.span);
+        const ok = try self.assignLocal(name, value);
+        if (!ok) {
+            try self.diagFmt(a.span, "E_UNDEFINED_SYMBOL", "bake: `{s}` is not bound in any enclosing scope", .{name});
+            return error.Fault;
+        }
+    }
+
+    // ---------- expressions ----------
+
+    fn evalExpr(self: *Evaluator, e: *const ast.Expr) StepError!BakeValue {
+        try self.tickBudget(e.span());
+        return switch (e.*) {
+            .int_lit => |l| .{ .int_ = @bitCast(@as(i16, @truncate(l.value))) },
+            .fixed_lit => |l| .{ .fixed_ = @bitCast(@as(i16, @truncate(l.value))) },
+            .bool_lit => |l| .{ .bool_ = l.value },
+            .char_lit => |l| .{ .byte = l.value },
+            .nil_lit => .nil_,
+            .ident => |i| blk: {
+                const name = self.lexeme(i.span);
+                if (self.lookup(name)) |v| break :blk v;
+                try self.diagFmt(i.span, "E_UNDEFINED_SYMBOL", "bake: `{s}` is not bound", .{name});
+                return error.Fault;
+            },
+            .paren => |p| try self.evalExpr(p.inner),
+            .unary => |u| try self.evalUnary(u),
+            .binary => |b| try self.evalBinary(b),
+            .do_expr => |d| try self.runDoExpr(d),
+            else => {
+                try self.diagFmt(e.span(), "E_BAKE_UNSUPPORTED", "bake interpreter does not yet support `{s}` expressions", .{@tagName(e.*)});
+                return error.Fault;
+            },
+        };
+    }
+
+    fn runDoExpr(self: *Evaluator, d: ast.DoExpr) StepError!BakeValue {
+        self.pushScope();
+        defer self.popScope();
+        return try self.runBlock(d.body);
+    }
+
+    fn evalUnary(self: *Evaluator, u: ast.UnaryExpr) StepError!BakeValue {
+        const v = try self.evalExpr(u.operand);
+        return switch (u.op) {
+            .neg => switch (v) {
+                // safety: two's-complement wrap is the runtime semantics; the bit pattern after `0 -% x` matches the runtime `neg` opcode.
+                .int_ => |x| .{ .int_ = 0 -% x },
+                // safety: same bit-wise negation for Q8.8.
+                .fixed_ => |x| .{ .fixed_ = 0 -% x },
+                else => {
+                    try self.diagFatal(u.span, "E_BAKE_TYPE", "bake: unary `-` requires int or fixed");
+                    return error.Fault;
+                },
+            },
+            .log_not => switch (v) {
+                .bool_ => |x| .{ .bool_ = !x },
+                else => {
+                    try self.diagFatal(u.span, "E_BAKE_TYPE", "bake: unary `not` requires bool");
+                    return error.Fault;
+                },
+            },
+            .bit_not => switch (v) {
+                .int_ => |x| .{ .int_ = ~x },
+                .byte => |x| .{ .byte = ~x },
+                else => {
+                    try self.diagFatal(u.span, "E_BAKE_TYPE", "bake: unary `~` requires integer");
+                    return error.Fault;
+                },
+            },
+        };
+    }
+
+    fn evalBinary(self: *Evaluator, b: ast.BinaryExpr) StepError!BakeValue {
+        // Short-circuit logical ops — the rhs is only evaluated
+        // when the lhs doesn't decide the result.
+        switch (b.op) {
+            .log_and => {
+                const lhs = try self.expectBool(b.lhs, b.span);
+                if (!lhs) return .{ .bool_ = false };
+                return .{ .bool_ = try self.expectBool(b.rhs, b.span) };
+            },
+            .log_or => {
+                const lhs = try self.expectBool(b.lhs, b.span);
+                if (lhs) return .{ .bool_ = true };
+                return .{ .bool_ = try self.expectBool(b.rhs, b.span) };
+            },
+            else => {},
+        }
+
+        const lhs = try self.evalExpr(b.lhs);
+        const rhs = try self.evalExpr(b.rhs);
+
+        // Comparison arms first — they accept every primitive
+        // shape that's `eql`-comparable, no integer-only restrictions.
+        switch (b.op) {
+            .eq => return .{ .bool_ = bakeEql(lhs, rhs) },
+            .neq => return .{ .bool_ = !bakeEql(lhs, rhs) },
+            .lt, .lte, .gt, .gte => return try self.evalOrderingOp(b.op, lhs, rhs, b.span),
+            else => {},
+        }
+
+        // Numeric arms — int + fixed, with int-int / fixed-fixed
+        // separation per spec §4.2.1 (no implicit cross-shape mix).
+        if (lhs == .int_ and rhs == .int_) return try self.evalIntArith(b.op, lhs.int_, rhs.int_, b.span);
+        if (lhs == .fixed_ and rhs == .fixed_) return try self.evalFixedArith(b.op, lhs.fixed_, rhs.fixed_, b.span);
+        try self.diagFatal(b.span, "E_BAKE_TYPE", "bake: binary op requires same-shape numeric operands (mixed `int`/`fixed` needs an explicit cast)");
+        return error.Fault;
+    }
+
+    fn expectBool(self: *Evaluator, e: *const ast.Expr, span: ast.Span) StepError!bool {
+        const v = try self.evalExpr(e);
+        return switch (v) {
+            .bool_ => |x| x,
+            else => {
+                try self.diagFatal(span, "E_BAKE_TYPE", "bake: expected `bool` operand");
+                return error.Fault;
+            },
+        };
+    }
+
+    fn evalIntArith(self: *Evaluator, op: ast.BinaryOp, a: u16, c: u16, span: ast.Span) StepError!BakeValue {
+        return switch (op) {
+            .add => .{ .int_ = a +% c },
+            .sub => .{ .int_ = a -% c },
+            .mul => .{ .int_ = a *% c },
+            .div, .mod => blk: {
+                if (c == 0) {
+                    try self.diagFatal(span, "E_BAKE_DIV_BY_ZERO", "bake: integer divide / modulo by zero");
+                    return error.Fault;
+                }
+                // safety: signed division — reinterpret both sides as i16 so the result matches `divs`'s runtime semantics.
+                const sa: i16 = @bitCast(a);
+                // safety: same for the divisor.
+                const sc: i16 = @bitCast(c);
+                const q: i16 = @divTrunc(sa, sc);
+                const r: i16 = @rem(sa, sc);
+                break :blk if (op == .div) .{ .int_ = @bitCast(q) } else .{ .int_ = @bitCast(r) };
+            },
+            // safety: shift count masked to the low 4 bits so a >16 shift doesn't UB the host.
+            .shl => .{ .int_ = a << @truncate(c & 0x0F) },
+            .shr => .{ .int_ = a >> @truncate(c & 0x0F) },
+            .bit_and => .{ .int_ = a & c },
+            .bit_or => .{ .int_ = a | c },
+            .bit_xor => .{ .int_ = a ^ c },
+            else => {
+                try self.diagFatal(span, "E_BAKE_TYPE", "bake: operator not valid for integer operands");
+                return error.Fault;
+            },
+        };
+    }
+
+    fn evalFixedArith(self: *Evaluator, op: ast.BinaryOp, a: u16, c: u16, span: ast.Span) StepError!BakeValue {
+        return switch (op) {
+            // safety: Q8.8 add / sub align without rescaling.
+            .add => .{ .fixed_ = a +% c },
+            .sub => .{ .fixed_ = a -% c },
+            .mul => blk: {
+                // @as: widen u16 ops to i32 for the Q8.8 * Q8.8 → Q8.8 dance (shr 8 renormalize per ISA §5.4.1).
+                const sa: i32 = @as(i32, @as(i16, @bitCast(a)));
+                // @as: widen the second operand for the wide multiply.
+                const sc: i32 = @as(i32, @as(i16, @bitCast(c)));
+                const wide: i32 = sa * sc;
+                // safety: shift-right by 8 to renormalize Q8.8 product; result fits in i16 by spec convention (overflow wraps).
+                const shifted: i16 = @truncate(wide >> 8);
+                break :blk .{ .fixed_ = @bitCast(shifted) };
+            },
+            .div => blk: {
+                if (c == 0) {
+                    try self.diagFatal(span, "E_BAKE_DIV_BY_ZERO", "bake: fixed-point divide by zero");
+                    return error.Fault;
+                }
+                // @as: pre-scale dividend by 2^8 (Q16.16 numerator) so the i32/i32 quotient lands back in Q8.8.
+                const sa: i32 = @as(i32, @as(i16, @bitCast(a)));
+                // @as: signed divisor.
+                const sc: i32 = @as(i32, @as(i16, @bitCast(c)));
+                const wide: i32 = (sa << 8);
+                // safety: truncating the i32 quotient back to i16 mirrors the runtime `divs` semantics.
+                const q: i16 = @truncate(@divTrunc(wide, sc));
+                break :blk .{ .fixed_ = @bitCast(q) };
+            },
+            else => {
+                try self.diagFatal(span, "E_BAKE_TYPE", "bake: operator not valid for fixed-point operands (only `+ - * /`)");
+                return error.Fault;
+            },
+        };
+    }
+
+    fn evalOrderingOp(self: *Evaluator, op: ast.BinaryOp, lhs: BakeValue, rhs: BakeValue, span: ast.Span) StepError!BakeValue {
+        const order: std.math.Order = switch (lhs) {
+            .int_ => |x| switch (rhs) {
+                // safety: signed compare — runtime `cmp` interprets registers as signed by default for `<` / `<=` / `>` / `>=`.
+                .int_ => |y| std.math.order(@as(i16, @bitCast(x)), @as(i16, @bitCast(y))),
+                else => return self.orderMismatch(span),
+            },
+            .fixed_ => |x| switch (rhs) {
+                // safety: same signed interpretation for Q8.8 ordering.
+                .fixed_ => |y| std.math.order(@as(i16, @bitCast(x)), @as(i16, @bitCast(y))),
+                else => return self.orderMismatch(span),
+            },
+            .byte => |x| switch (rhs) {
+                .byte => |y| std.math.order(x, y),
+                else => return self.orderMismatch(span),
+            },
+            else => return self.orderMismatch(span),
+        };
+        const r: bool = switch (op) {
+            .lt => order == .lt,
+            .lte => order != .gt,
+            .gt => order == .gt,
+            .gte => order != .lt,
+            else => unreachable, // allow-strict: only the four ordering ops route into this fn.
+        };
+        return .{ .bool_ = r };
+    }
+
+    fn orderMismatch(self: *Evaluator, span: ast.Span) StepError!BakeValue {
+        try self.diagFatal(span, "E_BAKE_TYPE", "bake: ordering compare requires same-shape numeric operands");
+        return error.Fault;
+    }
+};
+
+fn bakeEql(a: BakeValue, b: BakeValue) bool {
+    return switch (a) {
+        .int_ => |x| b == .int_ and b.int_ == x,
+        .fixed_ => |x| b == .fixed_ and b.fixed_ == x,
+        .bool_ => |x| b == .bool_ and b.bool_ == x,
+        .nil_ => b == .nil_,
+        .byte => |x| b == .byte and b.byte == x,
+        .str => |x| b == .str and std.mem.eql(u8, x, b.str),
+        // Aggregate equality is not exercised by the language's
+        // `==` arms today; bake matches that behavior.
+        .array, .tuple, .struct_ => false,
     };
 }
