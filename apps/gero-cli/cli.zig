@@ -21,6 +21,7 @@ pub const Command = enum {
     build,
     disasm,
     info,
+    repl,
 };
 
 /// `--optimize` values per `cli.md` §2.
@@ -138,6 +139,7 @@ fn commandFromStr(s: []const u8) ?Command {
     if (std.mem.eql(u8, s, "build")) return .build;
     if (std.mem.eql(u8, s, "disasm")) return .disasm;
     if (std.mem.eql(u8, s, "info")) return .info;
+    if (std.mem.eql(u8, s, "repl")) return .repl;
     return null;
 }
 
@@ -155,6 +157,7 @@ pub fn commandName(cmd: Command) []const u8 {
         .build => "build",
         .disasm => "disasm",
         .info => "info",
+        .repl => "repl",
     };
 }
 
@@ -172,6 +175,7 @@ fn commandSummary(cmd: Command) []const u8 {
         .build => "Resolve + asm + compile a project",
         .disasm => "Disassemble a .gx into asm",
         .info => "Print the .gx file header",
+        .repl => "Interactive gero-lang prompt",
     };
 }
 
@@ -180,7 +184,7 @@ fn commandSummary(cmd: Command) []const u8 {
 /// discoverable, but split into a separate "planned" section.
 fn commandIsImplemented(cmd: Command) bool {
     return switch (cmd) {
-        .asm_, .run, .info, .disasm, .test_, .check, .fmt, .new, .init, .build => true,
+        .asm_, .run, .info, .disasm, .test_, .check, .fmt, .new, .init, .build, .repl => true,
         .compile, .bench => false,
     };
 }
@@ -337,7 +341,16 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero build --target=vm{s}          {s}# explicit target override (default is the manifest's){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("\nResolves gero.toml via ancestor walk. Run `gero new <name>` to scaffold.\n", .{});
         },
-        else => unreachable, // allow-strict: commandIsImplemented() filtered above
+        .repl => {
+            try out.print("  {s}gero repl{s}\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}META-COMMANDS{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}.help{s}                            {s}# this list{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}.quit{s}                            {s}# leave the session{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}.reset{s}                           {s}# drop every binding, start fresh{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}.dump <name>{s}                     {s}# print the source of a previously-defined name{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+        },
+        // allow-strict: commandIsImplemented() filtered above
+        else => unreachable,
     }
 
     try out.print("\n{s}FLAGS{s}\n", .{ a.yellow, a.reset });
@@ -388,6 +401,7 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .new => &.{ .help, .quiet, .color, .no_color },
         .init => &.{ .help, .quiet, .color, .no_color },
         .build => &.{ .help, .target, .quiet, .verbose, .color, .no_color },
+        .repl => &.{ .help, .color, .no_color },
         .compile, .bench => &.{.help},
     };
 }
