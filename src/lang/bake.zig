@@ -96,6 +96,12 @@ pub const Result = struct {
 /// touching the global default.
 pub const Options = struct {
     budget: u32 = default_budget,
+    /// Map of `bake def` names → AST nodes available for
+    /// in-bake calls. `null` (default) disables call dispatch;
+    /// any `call_expr` against an ident callee then faults with
+    /// `E_BAKE_FORBIDDEN_CALL`. The codegen wires the program's
+    /// `bake def` registry through this slot.
+    bake_defs: ?*const std.StringHashMap(*const ast.DefDecl) = null,
 };
 
 /// Evaluate a `bake do … end` block against an empty initial
@@ -131,15 +137,7 @@ pub fn evaluateDef(
     var ev = try Evaluator.init(allocator, source, opts);
     defer ev.deinit();
 
-    if (args.len != decl.params.len) {
-        try ev.diagFatal(decl.name, "E_BAKE_ARG_COUNT", "argument count mismatch on bake def call");
-        return ev.finalize(null);
-    }
-    ev.pushScope();
-    defer ev.popScope();
-    for (decl.params, args) |p, v| try ev.bind(ev.lexeme(p.name), v);
-
-    const value = ev.runBlock(decl.body) catch |err| switch (err) {
+    const value = ev.runDefCall(decl, args) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Fault => null,
     };
@@ -167,6 +165,10 @@ const Evaluator = struct {
     diagnostics: std.ArrayList(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
     budget_remaining: u32,
+    /// Map of in-scope `bake def` declarations. Lookup is by
+    /// callee ident; `null` means no calls allowed (every call
+    /// site faults with `E_BAKE_FORBIDDEN_CALL`).
+    bake_defs: ?*const std.StringHashMap(*const ast.DefDecl),
     /// Set when a `return` statement fires inside the running
     /// body. `runBlock` propagates the value upward; the
     /// outermost block transparently surfaces it.
@@ -189,6 +191,7 @@ const Evaluator = struct {
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(allocator),
             .budget_remaining = opts.budget,
+            .bake_defs = opts.bake_defs,
             .return_value = null,
             .loop_signal = .none,
         };
@@ -613,6 +616,7 @@ const Evaluator = struct {
             .struct_lit => |sl| try self.evalStructLit(sl),
             .index => |ix| try self.evalIndex(ix),
             .field => |f| try self.evalField(f),
+            .call => |c| try self.evalCall(c),
             else => {
                 try self.diagFmt(e.span(), "E_BAKE_UNSUPPORTED", "bake interpreter does not yet support `{s}` expressions", .{@tagName(e.*)});
                 return error.Fault;
@@ -922,6 +926,57 @@ const Evaluator = struct {
                 break :blk error.Fault;
             },
         };
+    }
+
+    /// Dispatch a `call_expr` to a bake def lookup. The
+    /// typechecker has already rejected non-`bake` callees with
+    /// `E_BAKE_FORBIDDEN_CALL`; this defensively re-checks here.
+    /// Stdlib allowlist is empty in this PR — `math.*` joins via
+    /// the follow-up issue #284.
+    fn evalCall(self: *Evaluator, c: ast.CallExpr) StepError!BakeValue {
+        if (c.callee.* != .ident) {
+            try self.diagFatal(c.span, "E_BAKE_UNSUPPORTED", "bake: only ident callees are supported (no method dispatch / closures)");
+            return error.Fault;
+        }
+        const name = self.lexeme(c.callee.ident.span);
+        const defs = self.bake_defs orelse {
+            try self.diagFmt(c.span, "E_BAKE_FORBIDDEN_CALL", "bake: call to `{s}` — no bake-def registry available in this context", .{name});
+            return error.Fault;
+        };
+        const decl = defs.get(name) orelse {
+            try self.diagFmt(c.span, "E_BAKE_FORBIDDEN_CALL", "bake: `{s}` is not a `bake def`", .{name});
+            return error.Fault;
+        };
+
+        // Evaluate args left-to-right into a scratch slice so the
+        // callee's parameter scope binds against fully-resolved
+        // BakeValues.
+        const arg_buf = try self.diag_arena.allocator().alloc(BakeValue, c.args.len);
+        for (c.args, 0..) |a, i| arg_buf[i] = try self.evalExpr(a);
+        return try self.runDefCall(decl, arg_buf);
+    }
+
+    /// Push a fresh scope, bind parameters, walk the def body.
+    /// Shared between the public `evaluateDef` entry point and
+    /// in-bake `evalCall` dispatch — both want the same arg
+    /// binding + return-value reset semantics.
+    fn runDefCall(self: *Evaluator, decl: *const ast.DefDecl, args: []const BakeValue) StepError!BakeValue {
+        if (args.len != decl.params.len) {
+            try self.diagFmt(decl.name, "E_BAKE_ARG_COUNT", "bake: argument count mismatch on `{s}` (expected {d}, got {d})", .{ self.lexeme(decl.name), decl.params.len, args.len });
+            return error.Fault;
+        }
+        // Save / restore the return-value slot so a callee's
+        // `return` doesn't escape to the caller's body.
+        const saved_return = self.return_value;
+        self.return_value = null;
+        defer self.return_value = saved_return;
+
+        self.pushScope();
+        defer self.popScope();
+        for (decl.params, args) |p, v| try self.bind(self.lexeme(p.name), v);
+
+        const tail = try self.runBlock(decl.body);
+        return self.return_value orelse tail;
     }
 };
 
