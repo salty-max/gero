@@ -23,6 +23,7 @@ const tc_annotations = @import("lang/typecheck/annotations.zig");
 const tc_relations = @import("lang/typecheck/relations.zig");
 const tc_flow = @import("lang/typecheck/flow.zig");
 const tc_suggestions = @import("lang/typecheck/suggestions.zig");
+const bake_mod = @import("lang/bake.zig");
 const cg_opcodes = @import("lang/codegen/opcodes.zig");
 const cg_archive = @import("lang/codegen/archive.zig");
 const cg_mem_builtin = @import("lang/codegen/mem_builtin.zig");
@@ -95,6 +96,14 @@ pub const CompileError = codegen_mod.CompileError;
 /// Re-export: walk a `CheckedProgram` through codegen to a `.gx`
 /// image.
 pub const compile = codegen_mod.compile;
+
+// ---------- bake (compile-time evaluator) ----------
+
+/// Re-export: compile-time evaluator interface per spec §3.8.
+/// `bake def` and `bake do` route through `evaluateDef` /
+/// `evaluateDo`; codegen serializes the returned `BakeValue` into
+/// the data segment.
+pub const bake = bake_mod;
 
 /// Codegen-namespaced boot-layout constants per ISA §7.
 pub const codegen = struct {
