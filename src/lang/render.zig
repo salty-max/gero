@@ -16,6 +16,7 @@ const diag_mod = @import("diagnostic.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 const Severity = diag_mod.Severity;
+const SpanLabel = diag_mod.SpanLabel;
 
 /// ANSI escape codes for colorized output. `Style.none` strips
 /// all escapes for plain-text mode (no tty, `--no-color`, JSON).
@@ -161,7 +162,8 @@ fn writeDiagnosticFull(
         lc.line,        lc.col,
         style.reset,
     });
-    try writeExcerpt(writer, source, d.span, lc, style);
+    try writeExcerpt(writer, source, d.span, lc, d.secondary, style);
+    try writeCrossLineSecondaries(writer, path, source, d.span, d.secondary, style);
     if (d.help) |h| try writeHelp(writer, h, style);
     try writer.writeByte('\n');
 }
@@ -182,7 +184,8 @@ fn writeDiagnosticBody(
         lc.line,        lc.col,
         style.reset,
     });
-    try writeExcerpt(writer, source, d.span, lc, style);
+    try writeExcerpt(writer, source, d.span, lc, d.secondary, style);
+    try writeCrossLineSecondaries(writer, path, source, d.span, d.secondary, style);
     if (d.help) |h| try writeHelp(writer, h, style);
     try writer.writeByte('\n');
 }
@@ -205,6 +208,7 @@ fn writeExcerpt(
     source: []const u8,
     span: ast.Span,
     lc: LineCol,
+    secondary: []const SpanLabel,
     style: Style,
 ) !void {
     const line_slice = lineAt(source, span.start);
@@ -216,18 +220,202 @@ fn writeExcerpt(
     try writer.writeAll(style.gutter);
     try writeRightPadInt(writer, lc.line, gutter_w);
     try writer.print(" |{s} {s}\n", .{ style.reset, line_slice });
-    // Caret line — pad + carets + maybe a trailing label later.
+    // Caret line — primary carets plus same-line secondary decorations.
+    const primary_col_start: usize = lc.col;
+    const primary_caret_len = caretLength(source, span);
+    const primary_col_end_exclusive: usize = primary_col_start + primary_caret_len;
+    try writeMergedCaretLine(
+        writer,
+        source,
+        gutter_w,
+        primary_col_start,
+        primary_col_end_exclusive,
+        lc.line,
+        secondary,
+        style,
+    );
+    // Stack `|` pointer + label rows under each same-line secondary,
+    // in source order so the first-declared appears closest.
+    try writeSecondaryLabelStack(writer, source, gutter_w, lc.line, secondary, style);
+}
+
+/// Emit the caret / underline row covering both the primary span
+/// and every same-line secondary. Each output column picks its
+/// glyph by source order: primary wins where it overlaps a
+/// secondary; otherwise the first secondary covering the column
+/// supplies the dash / caret.
+fn writeMergedCaretLine(
+    writer: *std.Io.Writer,
+    source: []const u8,
+    gutter_w: usize,
+    primary_start: usize,
+    primary_end_exclusive: usize,
+    line: usize,
+    secondary: []const SpanLabel,
+    style: Style,
+) !void {
+    // Compute the max column the row needs to cover so the trailing
+    // spaces don't run forever — past the last decorated column we
+    // stop emitting characters.
+    var max_col: usize = primary_end_exclusive;
+    for (secondary) |sl| {
+        if (lineOf(source, sl.span.start) != line) continue;
+        const sc = lineColAt(source, sl.span.start);
+        const slen = caretLength(source, sl.span);
+        const end_exc = sc.col + slen;
+        if (end_exc > max_col) max_col = end_exc;
+    }
+
     try writePadGutter(writer, gutter_w, style);
     try writer.writeAll(" | ");
-    // Pad with spaces up to the caret column.
+    var col: usize = 1;
+    var in_caret_style = false;
+    while (col < max_col) : (col += 1) {
+        const in_primary = col >= primary_start and col < primary_end_exclusive;
+        const sec = if (!in_primary) secondaryCovering(source, line, col, secondary) else null;
+        if (in_primary or sec != null) {
+            if (!in_caret_style) {
+                try writer.writeAll(style.caret);
+                in_caret_style = true;
+            }
+            const ch: u8 = if (in_primary) '^' else switch (sec.?.decoration) {
+                .underline => '-',
+                .point => '^',
+            };
+            try writer.writeByte(ch);
+        } else {
+            if (in_caret_style) {
+                try writer.writeAll(style.reset);
+                in_caret_style = false;
+            }
+            try writer.writeByte(' ');
+        }
+    }
+    if (in_caret_style) try writer.writeAll(style.reset);
+    try writer.writeByte('\n');
+}
+
+/// For each same-line secondary, emit a `|` pointer row (carrying
+/// the vertical from the underline upward to its label) and the
+/// label row itself. Pointer rows stack so multiple secondaries
+/// can coexist without their labels colliding.
+fn writeSecondaryLabelStack(
+    writer: *std.Io.Writer,
+    source: []const u8,
+    gutter_w: usize,
+    line: usize,
+    secondary: []const SpanLabel,
+    style: Style,
+) !void {
+    for (secondary) |sl| {
+        if (lineOf(source, sl.span.start) != line) continue;
+        const sc = lineColAt(source, sl.span.start);
+
+        // Pointer row: spaces up to col-1, then `|`.
+        try writePadGutter(writer, gutter_w, style);
+        try writer.writeAll(" | ");
+        var i: usize = 1;
+        while (i < sc.col) : (i += 1) try writer.writeByte(' ');
+        try writer.writeAll(style.caret);
+        try writer.writeByte('|');
+        try writer.writeAll(style.reset);
+        try writer.writeByte('\n');
+
+        // Label row: spaces up to col-1, then the message body.
+        try writePadGutter(writer, gutter_w, style);
+        try writer.writeAll(" | ");
+        i = 1;
+        while (i < sc.col) : (i += 1) try writer.writeByte(' ');
+        try writer.writeAll(style.caret);
+        try writer.writeAll(sl.message);
+        try writer.writeAll(style.reset);
+        try writer.writeByte('\n');
+    }
+}
+
+/// Cross-line secondaries (`note: …` blocks the spec mockup
+/// shows) get their own `--> path:line:col` excerpt below the
+/// primary block. Each carries a `--> path:line:col`, source line,
+/// underline + the label, mirroring the primary block's shape so
+/// the eye can track which span is which.
+fn writeCrossLineSecondaries(
+    writer: *std.Io.Writer,
+    path: []const u8,
+    source: []const u8,
+    primary: ast.Span,
+    secondary: []const SpanLabel,
+    style: Style,
+) !void {
+    const primary_line = lineOf(source, primary.start);
+    for (secondary) |sl| {
+        const sl_line = lineOf(source, sl.span.start);
+        if (sl_line == primary_line) continue;
+        try writeOneCrossLineSecondary(writer, path, source, sl, style);
+    }
+}
+
+fn writeOneCrossLineSecondary(
+    writer: *std.Io.Writer,
+    path: []const u8,
+    source: []const u8,
+    sl: SpanLabel,
+    style: Style,
+) !void {
+    const lc = lineColAt(source, sl.span.start);
+    const line_slice = lineAt(source, sl.span.start);
+    const gutter_w: usize = digitsOf(lc.line);
+
+    try writer.print("  {s}-->{s} {s}{s}:{d}:{d}{s}\n", .{
+        style.location, style.reset,
+        style.location, path,
+        lc.line,        lc.col,
+        style.reset,
+    });
+    try writePadGutter(writer, gutter_w, style);
+    try writer.writeAll(" |\n");
+    try writer.writeAll(style.gutter);
+    try writeRightPadInt(writer, lc.line, gutter_w);
+    try writer.print(" |{s} {s}\n", .{ style.reset, line_slice });
+
+    try writePadGutter(writer, gutter_w, style);
+    try writer.writeAll(" | ");
     var i: usize = 1;
     while (i < lc.col) : (i += 1) try writer.writeByte(' ');
     try writer.writeAll(style.caret);
-    const caret_len = caretLength(source, span);
+    const dec_char: u8 = switch (sl.decoration) {
+        .underline => '-',
+        .point => '^',
+    };
+    const caret_len = caretLength(source, sl.span);
     var c: usize = 0;
-    while (c < caret_len) : (c += 1) try writer.writeByte('^');
+    while (c < caret_len) : (c += 1) try writer.writeByte(dec_char);
+    try writer.writeByte(' ');
+    try writer.writeAll(sl.message);
     try writer.writeAll(style.reset);
     try writer.writeByte('\n');
+}
+
+/// Source line containing `byte` — same accounting as `lineColAt`
+/// but cheap to call from the per-column merge loop.
+fn lineOf(source: []const u8, byte: u32) usize {
+    return lineColAt(source, byte).line;
+}
+
+/// First secondary span (in source order) that covers column `col`
+/// on `line`. `null` when no same-line secondary overlaps.
+fn secondaryCovering(
+    source: []const u8,
+    line: usize,
+    col: usize,
+    secondary: []const SpanLabel,
+) ?SpanLabel {
+    for (secondary) |sl| {
+        if (lineOf(source, sl.span.start) != line) continue;
+        const sc = lineColAt(source, sl.span.start);
+        const end = sc.col + caretLength(source, sl.span);
+        if (col >= sc.col and col < end) return sl;
+    }
+    return null;
 }
 
 fn writeHelp(writer: *std.Io.Writer, help_msg: []const u8, style: Style) !void {

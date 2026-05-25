@@ -242,17 +242,19 @@ Raised by the typechecker after parsing succeeds.
 **Mockup — type mismatch in let init:**
 
 ```
-error: type mismatch [E_TYPE_MISMATCH]
+error: type mismatch: expected `i16`, found `str` [E_TYPE_MISMATCH]
   --> src/foo.gr:12:18
    |
 12 |   let x: i16 = "hello"
-   |          ---   ^^^^^^^ found `str`
+   |          ---   ^^^^^^^
    |          |
    |          expected `i16` because of this annotation
-   |
-help: parse the string with `str.to_i16("hello")` or change `x`'s
-      annotation to `str`
 ```
+
+The expected / found names live in the header message rather than
+as inline labels next to the carets. Inline primary-span labels
+(`found \`str\`` next to the carets) are a future extension; the
+header carries the information today.
 
 **Mockup — wrong arg count:**
 

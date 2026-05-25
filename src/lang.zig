@@ -72,6 +72,8 @@ pub const MemBuiltinSig = tc_mem_builtin.MemBuiltinSig;
 pub const lookupMemBuiltin = tc_mem_builtin.lookupMemBuiltin;
 /// Re-export: rich diagnostic shape carried by `CheckedProgram`.
 pub const Diagnostic = diag_mod.Diagnostic;
+/// Re-export: annotated context span attached to a `Diagnostic`.
+pub const SpanLabel = diag_mod.SpanLabel;
 /// Re-export: severity classification on a `Diagnostic`.
 pub const Severity = diag_mod.Severity;
 /// Re-export: diagnostic-rendering primitives (pretty + JSON).
