@@ -150,6 +150,12 @@ pub fn evaluateDef(
 
 const StepError = error{ OutOfMemory, Fault };
 
+/// Signal propagated by `runBlock` when control flow exits the
+/// loop body. The loop driver intercepts it; non-loop blocks
+/// surface it as a fault (the typechecker rejects bare `break`
+/// / `continue` outside a loop too).
+const LoopSignal = enum { none, break_, continue_ };
+
 /// One lexical scope inside the bake interpreter — `let` and
 /// `const` bindings, params, induction variables for `for` loops.
 const Scope = std.StringHashMapUnmanaged(BakeValue);
@@ -165,6 +171,11 @@ const Evaluator = struct {
     /// body. `runBlock` propagates the value upward; the
     /// outermost block transparently surfaces it.
     return_value: ?BakeValue,
+    /// `break` / `continue` flag — set by the matching statement
+    /// and cleared by the enclosing loop driver. Labeled loops
+    /// aren't supported yet inside bake; the typechecker hasn't
+    /// surfaced a use case past the spec example set.
+    loop_signal: LoopSignal,
 
     fn init(
         allocator: std.mem.Allocator,
@@ -179,6 +190,7 @@ const Evaluator = struct {
             .diag_arena = std.heap.ArenaAllocator.init(allocator),
             .budget_remaining = opts.budget,
             .return_value = null,
+            .loop_signal = .none,
         };
         try ev.scopes.append(allocator, .{});
         return ev;
@@ -303,14 +315,156 @@ const Evaluator = struct {
                 .discard => |d| {
                     _ = try self.evalExpr(d.expr);
                 },
+                .if_stmt => |s| try self.runIfChain(s.arms, s.else_body),
+                .while_stmt => |s| try self.runWhile(s),
+                .for_stmt => |s| try self.runFor(s),
+                .repeat_stmt => |s| try self.runRepeat(s),
+                .break_stmt => self.loop_signal = .break_,
+                .continue_stmt => self.loop_signal = .continue_,
+                .block => |s| {
+                    self.pushScope();
+                    defer self.popScope();
+                    last = try self.runBlock(s.body);
+                },
                 else => {
                     try self.diagFmt(stmt.span(), "E_BAKE_UNSUPPORTED", "bake interpreter does not yet support `{s}` statements", .{@tagName(stmt)});
                     return error.Fault;
                 },
             }
-            if (self.return_value) |rv| return rv;
+            if (self.return_value != null or self.loop_signal != .none) return last;
         }
         return last;
+    }
+
+    fn runIfChain(self: *Evaluator, arms: []const ast.IfArm, else_body: ?[]const ast.Statement) StepError!void {
+        for (arms) |arm| {
+            // `if let` shapes aren't a bake idiom yet — the
+            // typechecker's nullable rule rejects integer-optional
+            // bindings, the main use case for `if let`. Plain
+            // `cond` form is the supported shape.
+            if (arm.cond == null) {
+                try self.diagFatal(arm.span, "E_BAKE_UNSUPPORTED", "bake interpreter does not yet support `if let …` arms");
+                return error.Fault;
+            }
+            const cond_val = try self.evalExpr(arm.cond.?);
+            if (cond_val != .bool_) {
+                try self.diagFatal(arm.span, "E_BAKE_TYPE", "bake: `if` condition must be `bool`");
+                return error.Fault;
+            }
+            if (cond_val.bool_) {
+                self.pushScope();
+                defer self.popScope();
+                _ = try self.runBlock(arm.body);
+                return;
+            }
+        }
+        if (else_body) |eb| {
+            self.pushScope();
+            defer self.popScope();
+            _ = try self.runBlock(eb);
+        }
+    }
+
+    fn runWhile(self: *Evaluator, s: ast.WhileStmt) StepError!void {
+        if (s.cond == null) {
+            try self.diagFatal(s.span, "E_BAKE_UNSUPPORTED", "bake interpreter does not yet support `while let …` loops");
+            return error.Fault;
+        }
+        while (true) {
+            try self.tickBudget(s.span);
+            const cond_val = try self.evalExpr(s.cond.?);
+            if (cond_val != .bool_) {
+                try self.diagFatal(s.span, "E_BAKE_TYPE", "bake: `while` condition must be `bool`");
+                return error.Fault;
+            }
+            if (!cond_val.bool_) return;
+            self.pushScope();
+            _ = try self.runBlock(s.body);
+            self.popScope();
+            if (self.return_value != null) return;
+            if (self.loop_signal == .break_) {
+                self.loop_signal = .none;
+                return;
+            }
+            self.loop_signal = .none; // continue resets to fall-through
+        }
+    }
+
+    fn runRepeat(self: *Evaluator, s: ast.RepeatStmt) StepError!void {
+        while (true) {
+            try self.tickBudget(s.span);
+            self.pushScope();
+            _ = try self.runBlock(s.body);
+            self.popScope();
+            if (self.return_value != null) return;
+            if (self.loop_signal == .break_) {
+                self.loop_signal = .none;
+                return;
+            }
+            self.loop_signal = .none;
+            const cond_val = try self.evalExpr(s.cond);
+            if (cond_val != .bool_) {
+                try self.diagFatal(s.span, "E_BAKE_TYPE", "bake: `repeat … until` condition must be `bool`");
+                return error.Fault;
+            }
+            if (cond_val.bool_) return;
+        }
+    }
+
+    fn runFor(self: *Evaluator, s: ast.ForStmt) StepError!void {
+        // Only range iterators are supported in this slice;
+        // array / Vec / iterator-protocol iteration lands with
+        // aggregate codegen (commit 5+).
+        if (s.iter.* != .range) {
+            try self.diagFatal(s.span, "E_BAKE_UNSUPPORTED", "bake `for` only supports range iterators (`start..end` / `start..=end`) at this slice");
+            return error.Fault;
+        }
+        const range = s.iter.range;
+        const start = try self.evalExpr(range.start);
+        const end = try self.evalExpr(range.end);
+        if (start != .int_ or end != .int_) {
+            try self.diagFatal(s.span, "E_BAKE_TYPE", "bake: range bounds must be integer");
+            return error.Fault;
+        }
+        // safety: reinterpret u16 → i16 so signed bounds (`for i in -1..1`) walk the right direction.
+        const start_signed: i32 = @as(i32, @as(i16, @bitCast(start.int_)));
+        // safety: same for the end bound.
+        const end_signed: i32 = @as(i32, @as(i16, @bitCast(end.int_)));
+        const step_value: i32 = if (s.step) |st| step_blk: {
+            const v = try self.evalExpr(st);
+            if (v != .int_) {
+                try self.diagFatal(s.span, "E_BAKE_TYPE", "bake: `step` value must be integer");
+                return error.Fault;
+            }
+            // safety: signed step reinterpret.
+            break :step_blk @as(i32, @as(i16, @bitCast(v.int_)));
+        } else 1;
+        if (step_value == 0) {
+            try self.diagFatal(s.span, "E_BAKE_TYPE", "bake: `for` step cannot be zero");
+            return error.Fault;
+        }
+
+        const name = self.lexeme(s.binding);
+        var i: i32 = start_signed;
+        while ((step_value > 0 and (if (range.inclusive) i <= end_signed else i < end_signed)) or
+            (step_value < 0 and (if (range.inclusive) i >= end_signed else i > end_signed)))
+        {
+            try self.tickBudget(s.span);
+            self.pushScope();
+            // safety: i fits in i16 inside the loop range; truncate back to runtime width.
+            const i16_val: i16 = @truncate(i);
+            // safety: signed → unsigned bit reinterpret for storage.
+            try self.bind(name, .{ .int_ = @bitCast(i16_val) });
+            _ = try self.runBlock(s.body);
+            self.popScope();
+            if (self.return_value != null) return;
+            if (self.loop_signal == .break_) {
+                self.loop_signal = .none;
+                return;
+            }
+            self.loop_signal = .none;
+            i += step_value;
+        }
     }
 
     fn runLet(self: *Evaluator, d: ast.LetDecl) StepError!void {
@@ -375,6 +529,7 @@ const Evaluator = struct {
             .unary => |u| try self.evalUnary(u),
             .binary => |b| try self.evalBinary(b),
             .do_expr => |d| try self.runDoExpr(d),
+            .if_expr => |ie| try self.runIfExpr(ie),
             else => {
                 try self.diagFmt(e.span(), "E_BAKE_UNSUPPORTED", "bake interpreter does not yet support `{s}` expressions", .{@tagName(e.*)});
                 return error.Fault;
@@ -386,6 +541,35 @@ const Evaluator = struct {
         self.pushScope();
         defer self.popScope();
         return try self.runBlock(d.body);
+    }
+
+    /// Expression form of `if … then … [elif] [else] end`. The
+    /// taken arm's block produces the value; an absent `else`
+    /// with all-false arms surfaces `nil_` (matching the
+    /// statement form's behavior).
+    fn runIfExpr(self: *Evaluator, ie: ast.IfExpr) StepError!BakeValue {
+        for (ie.arms) |arm| {
+            if (arm.cond == null) {
+                try self.diagFatal(arm.span, "E_BAKE_UNSUPPORTED", "bake interpreter does not yet support `if let …` arms");
+                return error.Fault;
+            }
+            const cond_val = try self.evalExpr(arm.cond.?);
+            if (cond_val != .bool_) {
+                try self.diagFatal(arm.span, "E_BAKE_TYPE", "bake: `if` condition must be `bool`");
+                return error.Fault;
+            }
+            if (cond_val.bool_) {
+                self.pushScope();
+                defer self.popScope();
+                return try self.runBlock(arm.body);
+            }
+        }
+        if (ie.else_body) |eb| {
+            self.pushScope();
+            defer self.popScope();
+            return try self.runBlock(eb);
+        }
+        return .nil_;
     }
 
     fn evalUnary(self: *Evaluator, u: ast.UnaryExpr) StepError!BakeValue {
