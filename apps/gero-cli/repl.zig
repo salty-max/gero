@@ -95,6 +95,20 @@ pub fn execute(
 ///
 /// Errors during evaluation print diagnostics + leave both
 /// buffers untouched so the user's session survives mistakes.
+///
+/// Known limitations (deferred follow-ups, not in the v0.3 AC):
+///
+/// - The session arena grows monotonically — every parse /
+///   typecheck / codegen accumulates and the REPL never resets.
+///   Fine for typical interactive sessions; long-running editor
+///   integrations may want a per-iteration scratch arena.
+/// - `const X = bake do …` at REPL routes to the prelude
+///   (local-const inside `__repl_main`). Bake codegen only
+///   handles `bake do` at module-scope const-init, so the
+///   compound surfaces `E_CODEGEN_UNSUPPORTED`. Workaround:
+///   define a `bake def` separately, then `const X = my_def()`
+///   at the prompt — the call dispatches through the bake-init
+///   path correctly.
 const Session = struct {
     arena: std.mem.Allocator,
     stdout: *std.Io.Writer,
@@ -427,11 +441,25 @@ fn classifyInput(stripped: []const u8) Session.InputKind {
     if (startsWithToken(stripped, "let") or startsWithToken(stripped, "const")) {
         return .prelude;
     }
-    const decl_heads = [_][]const u8{ "def", "class", "struct", "enum", "use", "bake", "local" };
+    // `bake def …` is a top-level decl; `bake do … end` is an
+    // expression that should run in __repl_main body (the
+    // auto-wrap then surfaces its value via `print`). Peek the
+    // token after `bake` to pick.
+    if (startsWithToken(stripped, "bake")) {
+        const after = trimLeadingWhitespace(stripped["bake".len..]);
+        return if (startsWithToken(after, "def")) .decl else .body;
+    }
+    const decl_heads = [_][]const u8{ "def", "class", "struct", "enum", "use", "local" };
     for (decl_heads) |h| {
         if (startsWithToken(stripped, h)) return .decl;
     }
     return .body;
+}
+
+fn trimLeadingWhitespace(s: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < s.len and (s[i] == ' ' or s[i] == '\t' or s[i] == '\n' or s[i] == '\r')) i += 1;
+    return s[i..];
 }
 
 /// `true` when `stripped` is a statement-shape codegen handles
@@ -557,6 +585,13 @@ test "repl/classifyInput: top-level decls route to .decl" {
     try testing.expectEqual(Session.InputKind.decl, classifyInput("use mem"));
     try testing.expectEqual(Session.InputKind.decl, classifyInput("@cold"));
     try testing.expectEqual(Session.InputKind.decl, classifyInput("bake def t() -> i16 return 0 end"));
+}
+
+test "repl/classifyInput: `bake do` is an expression, routes to .body" {
+    // `bake do … end` produces a value; the REPL's auto-wrap
+    // surfaces it via `print`. Only `bake def` is a decl.
+    try testing.expectEqual(Session.InputKind.body, classifyInput("bake do 1 + 2 end"));
+    try testing.expectEqual(Session.InputKind.body, classifyInput("bake do"));
 }
 
 test "repl/classifyInput: `let` / `const` route to .prelude" {
