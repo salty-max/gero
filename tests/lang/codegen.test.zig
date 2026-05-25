@@ -3425,3 +3425,87 @@ test "codegen/assert: plain `assert(call())` does NOT warn" {
         try std.testing.expect(!std.mem.eql(u8, d.code, "W_DEBUG_ASSERT_SIDE_EFFECT"));
     }
 }
+
+// ---------- bake (compile-time evaluator) ----------
+
+test "codegen/bake: `const X = bake do … end` writes serialized bytes into the image" {
+    // Compute `1 + 2 + … + 10 = 55` at compile time; the resulting
+    // i16 lives at the global's allocated data-region address.
+    var compiled = try compileSource(
+        \\const X = bake do
+        \\  let n = 0
+        \\  for i in 1..=10
+        \\    n = n + i
+        \\  end
+        \\  n
+        \\end
+        \\
+        \\def main() end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    // Image must extend past `data_base` (0x2000) so the runtime
+    // sees the baked value at boot.
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try std.testing.expect(loaded.image.len > gero.lang.codegen.data_base);
+    // First baked global lands at the start of the data region —
+    // the bytes there should encode `55` as little-endian i16.
+    const lo = loaded.image[gero.lang.codegen.data_base];
+    const hi = loaded.image[gero.lang.codegen.data_base + 1];
+    try std.testing.expectEqual(@as(u16, 55), @as(u16, lo) | (@as(u16, hi) << 8));
+}
+
+test "codegen/bake: `const X = bake_def_name()` resolves through the call form" {
+    var compiled = try compileSource(
+        \\bake def square(x: i16) -> i16
+        \\  return x * x
+        \\end
+        \\
+        \\const X = square(9)
+        \\
+        \\def main() end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    const loaded = try gero.vm.parseGx(compiled.image);
+    const lo = loaded.image[gero.lang.codegen.data_base];
+    const hi = loaded.image[gero.lang.codegen.data_base + 1];
+    try std.testing.expectEqual(@as(u16, 81), @as(u16, lo) | (@as(u16, hi) << 8));
+}
+
+test "codegen/bake: array baked into static data" {
+    // `[i16; 5]` = 10 bytes; values 0, 2, 4, 6, 8 (i * 2).
+    var compiled = try compileSource(
+        \\const TABLE = bake do
+        \\  let t: [i16; 5] = [0; 5]
+        \\  for i in 0..5
+        \\    t[i] = i * 2
+        \\  end
+        \\  t
+        \\end
+        \\
+        \\def main() end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    const loaded = try gero.vm.parseGx(compiled.image);
+    const base: usize = gero.lang.codegen.data_base;
+    for (0..5) |i| {
+        const lo = loaded.image[base + i * 2];
+        const hi = loaded.image[base + i * 2 + 1];
+        try std.testing.expectEqual(@as(u16, @intCast(i * 2)), @as(u16, lo) | (@as(u16, hi) << 8));
+    }
+}
+
+test "codegen/bake: program without bake stays small (image doesn't grow to data region)" {
+    // Regression: extending the image to cover the data region
+    // should only happen when bake-init bytes need to ship.
+    var compiled = try compileSource("def main() end");
+    defer compiled.deinit();
+    // Image is much smaller than `data_base = 0x2000` for a
+    // hlt-only program.
+    try std.testing.expect(compiled.image.len < gero.lang.codegen.data_base);
+}
