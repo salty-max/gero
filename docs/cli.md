@@ -19,9 +19,9 @@ Discover the command list with `gero --help`. Discover per-command
 flags with `gero <cmd> --help`.
 
 A single `gero` binary covers asm, compile, run, test, bench, fmt,
-check, build, disasm, info. The bare-VM runtime is the only target
-this repo produces — fantasy-console hosts (e.g. gtx-16) live
-downstream and consume `.gx` files as library inputs.
+check, build, disasm, info, repl. The bare-VM runtime is the only
+target this repo produces — fantasy-console hosts (e.g. gtx-16)
+live downstream and consume `.gx` files as library inputs.
 
 ---
 
@@ -538,6 +538,49 @@ prints `not yet implemented` and exits non-zero.
 | `gero debug <file.gx>` | Interactive debugger — needs a real-mode UX design pass. |
 | `gero repl` | REPL on a 16-bit VM is awkward — no clear use case yet. |
 | `gero doc` | Docgen from `///` comments — waits for a substantial stdlib. |
+
+---
+
+### 3.13 `gero repl` — interactive gero-lang prompt
+
+Read-eval-print loop for gero-lang. Reads stdin lines into a
+session source buffer, recompiles + runs each input on a fresh
+VM. State persists across inputs.
+
+```bash
+gero repl                          # interactive prompt; .quit / EOF to leave
+```
+
+**Input classification**:
+
+- `def` / `class` / `struct` / `enum` / `use` / `bake def` / `@ann`
+  → module-scope declaration; persists across the session.
+- `let` / `const` → re-run on every subsequent input so the
+  binding stays visible.
+- Anything else → runs once in the current iteration's
+  `__repl_main` body. Bare expressions get auto-wrapped in
+  `print` so the value lands on stdout; `name(args)` calls don't
+  wrap (their own `print`s surface the result).
+
+**Multi-line input**: while open-block keywords (`def`, `do`, `if`,
+`while`, `for`, `repeat`, `class`, `struct`, `enum`, `match`)
+exceed close keywords (`end`, `until`), the prompt switches to
+`... ` and accumulates more lines.
+
+**Meta-commands** — all begin with a `.`:
+
+| Command | Effect |
+|---------|--------|
+| `.help` | Print the meta-command list. |
+| `.quit` / `.exit` | Leave the session (EOF also works). |
+| `.reset` | Drop every committed binding. |
+| `.dump <name>` | Print the source of a previously-defined name. |
+
+**Error handling**: parse / typecheck / codegen failures print
+diagnostics and leave the session source untouched, so the user
+keeps typing without restarting.
+
+**Exit**: `0` on clean `.quit` / EOF.
 
 ---
 

@@ -14,6 +14,7 @@ const fmt_cmd = @import("fmt.zig");
 const new_cmd = @import("new.zig");
 const init_cmd = @import("init.zig");
 const build_cmd = @import("build.zig");
+const repl_cmd = @import("repl.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
@@ -87,6 +88,7 @@ pub fn main(init: std.process.Init) !u8 {
         .new => new_cmd.execute(io, arena, parsed.options, stdout, &term),
         .init => init_cmd.execute(io, arena, parsed.options, stdout, &term),
         .build => build_cmd.execute(io, arena, parsed.options, stdout, &term),
+        .repl => repl_cmd.execute(io, arena, parsed.options, stdout, &term),
         else => blk: {
             try term.err("gero {s}: not yet implemented", .{cli.commandName(cmd)});
             break :blk 1;
