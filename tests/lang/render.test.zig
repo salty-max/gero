@@ -213,6 +213,84 @@ test "render: pretty summary names warnings honestly when no errors" {
     try std.testing.expect(std.mem.indexOf(u8, out, "error in") == null);
 }
 
+// ---------- multi-span rendering (#254) ----------
+
+test "render: same-line secondary draws `---` underline + stacked label" {
+    // `let x: i16 = "hi"`
+    //  0    5  8   13  17
+    const source = "let x: i16 = \"hi\"";
+    const d = Diagnostic{
+        .severity = .fatal,
+        .code = "E_TYPE_MISMATCH",
+        .message = "type mismatch: expected `i16`, found `str`",
+        .span = .{ .start = 13, .end = 17 },
+        .secondary = &[_]gero.lang.SpanLabel{
+            .{
+                .span = .{ .start = 7, .end = 10 },
+                .message = "expected `i16` because of this annotation",
+            },
+        },
+    };
+    const file: FileDiagnostics = .{ .path = "x.gr", .source = source, .diagnostics = &.{d} };
+    const out = try renderPretty(file);
+    defer alloc.free(out);
+
+    // Primary carets + secondary dashes on the same line.
+    try std.testing.expect(std.mem.indexOf(u8, out, "---") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "^^^^") != null);
+    // Pointer (`|`) line then the label line stacked under it.
+    // Order matters: pointer first, label second.
+    const ptr_idx = std.mem.indexOf(u8, out, "|\n").?;
+    const label_idx = std.mem.indexOf(u8, out, "expected `i16` because of this annotation").?;
+    try std.testing.expect(label_idx > ptr_idx);
+}
+
+test "render: cross-line secondary emits its own `-->` excerpt block" {
+    const source = "let foo: i16 = 1\nlet foo: i16 = 2";
+    // Primary at the SECOND `foo` (offset 21..24), secondary at the FIRST (offset 4..7).
+    const d = Diagnostic{
+        .severity = .fatal,
+        .code = "E_TYPE_REDEFINED",
+        .message = "`foo` is already defined in this scope",
+        .span = .{ .start = 21, .end = 24 },
+        .secondary = &[_]gero.lang.SpanLabel{
+            .{ .span = .{ .start = 4, .end = 7 }, .message = "previous definition here" },
+        },
+    };
+    const file: FileDiagnostics = .{ .path = "x.gr", .source = source, .diagnostics = &.{d} };
+    const out = try renderPretty(file);
+    defer alloc.free(out);
+
+    // Two `-->` blocks — one for the primary, one for the secondary.
+    const first_arrow = std.mem.indexOf(u8, out, "-->").?;
+    try std.testing.expect(std.mem.indexOf(u8, out[first_arrow + 1 ..], "-->") != null);
+    // Inline label after the secondary's dashes.
+    try std.testing.expect(std.mem.indexOf(u8, out, "previous definition here") != null);
+}
+
+test "render: empty `secondary` keeps the existing single-span layout" {
+    const source = "let x: i16 = \"hi\"";
+    const d = Diagnostic{
+        .severity = .fatal,
+        .code = "E_TYPE_MISMATCH",
+        .message = "type mismatch",
+        .span = .{ .start = 13, .end = 17 },
+    };
+    const file: FileDiagnostics = .{ .path = "x.gr", .source = source, .diagnostics = &.{d} };
+    const out = try renderPretty(file);
+    defer alloc.free(out);
+
+    // No secondary → no underline, no second `-->`.
+    try std.testing.expect(std.mem.indexOf(u8, out, "---") == null);
+    var arrow_count: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOf(u8, out[search_from..], "-->")) |idx| {
+        arrow_count += 1;
+        search_from += idx + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), arrow_count);
+}
+
 test "render: pretty summary mixes `N errors + M warnings` when both present" {
     const err = Diagnostic{
         .severity = .fatal,

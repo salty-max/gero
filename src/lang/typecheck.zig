@@ -343,6 +343,54 @@ pub const Checker = struct {
         try self.emitSpan("E_TYPE_MISMATCH", span, msg);
     }
 
+    /// Same as `emitMismatch` plus a secondary span pinned to the
+    /// `: T` annotation that drove the expected type. Renderer
+    /// surfaces it as the "expected `T` because of this annotation"
+    /// label under the source line.
+    fn emitMismatchAnnotated(
+        self: *Checker,
+        span: ast.Span,
+        expected_ty: *const types.Type,
+        actual_ty: *const types.Type,
+        annotation_span: ast.Span,
+    ) WalkError!void {
+        const expected_s = try types.render(self.arena, expected_ty.*);
+        const actual_s = try types.render(self.arena, actual_ty.*);
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "type mismatch: expected `{s}`, found `{s}`",
+            .{ expected_s, actual_s },
+        );
+        const label_msg = try std.fmt.allocPrint(
+            self.arena,
+            "expected `{s}` because of this annotation",
+            .{expected_s},
+        );
+        const sec = try self.singleSecondary(annotation_span, label_msg, .underline);
+        try self.diagnostics.append(self.diag_alloc, .{
+            .severity = .fatal,
+            .code = "E_TYPE_MISMATCH",
+            .message = msg,
+            .span = span,
+            .secondary = sec,
+        });
+    }
+
+    /// Allocate a single-element `SpanLabel` slice on `self.arena`
+    /// — the typical shape for diagnostics with one context span.
+    /// Lives long enough to back the `Diagnostic.secondary` field
+    /// (arena released by `CheckedProgram.deinit`).
+    fn singleSecondary(
+        self: *Checker,
+        span: ast.Span,
+        message: []const u8,
+        decoration: diag_mod.SpanLabel.Decoration,
+    ) WalkError![]const diag_mod.SpanLabel {
+        const sec = try self.arena.alloc(diag_mod.SpanLabel, 1);
+        sec[0] = .{ .span = span, .message = message, .decoration = decoration };
+        return sec;
+    }
+
     /// Combined assignability + narrowing check for "store into a
     /// typed slot" sites (let-init, assignment, call arg, return).
     /// Routes the diagnostic per spec §3.5.1:
@@ -589,8 +637,14 @@ pub const Checker = struct {
                     "`{s}` is already defined in this scope",
                     .{name},
                 );
-                try self.emitSpan("E_TYPE_REDEFINED", info.decl_span, msg);
-                _ = existing;
+                const sec = try self.singleSecondary(existing.decl_span, "previous definition here", .underline);
+                try self.diagnostics.append(self.diag_alloc, .{
+                    .severity = .fatal,
+                    .code = "E_TYPE_REDEFINED",
+                    .message = msg,
+                    .span = info.decl_span,
+                    .secondary = sec,
+                });
                 return;
             },
             error.OutOfMemory => return error.OutOfMemory,
@@ -736,7 +790,19 @@ pub const Checker = struct {
         else
             null;
         if (ann_ty != null and init_ty != null) {
-            try self.checkStoreCompat(d.init.?.span(), ann_ty.?, init_ty.?);
+            // Hard mismatches on an annotated `let` attach the
+            // annotation as a secondary span so the renderer
+            // surfaces "expected `T` because of this annotation"
+            // — sole call site that overrides the plain
+            // `checkStoreCompat` path (#254 AC).
+            if (!relations.assignable(init_ty.?.*, ann_ty.?.*) and
+                !relations.isNarrowingInt(init_ty.?.*, ann_ty.?.*) and
+                d.type_ann != null)
+            {
+                try self.emitMismatchAnnotated(d.init.?.span(), ann_ty.?, init_ty.?, d.type_ann.?.span());
+            } else {
+                try self.checkStoreCompat(d.init.?.span(), ann_ty.?, init_ty.?);
+            }
         }
         switch (d.pattern.*) {
             .ident => |i| {
@@ -1875,14 +1941,34 @@ pub const Checker = struct {
         // Suggestion across struct + class registries — whichever
         // resolves the type name supplies the field pool. Misses
         // (no candidate within distance 2, or unknown type) fall
-        // through to the bare diagnostic.
-        const candidate: ?[]const u8 = if (self.struct_registry.get(type_name)) |sd|
-            try self.suggestStructField(sd, field_name)
-        else if (self.class_registry.get(type_name)) |cd|
-            try self.suggestClassField(cd, field_name)
+        // through to the bare diagnostic. The same lookup yields
+        // the type's declaration span, which doubles as the
+        // secondary "type defined here" anchor.
+        var candidate: ?[]const u8 = null;
+        var type_decl_span: ?ast.Span = null;
+        if (self.struct_registry.get(type_name)) |sd| {
+            candidate = try self.suggestStructField(sd, field_name);
+            type_decl_span = sd.name;
+        } else if (self.class_registry.get(type_name)) |cd| {
+            candidate = try self.suggestClassField(cd, field_name);
+            type_decl_span = cd.name;
+        }
+        const help: ?[]const u8 = if (candidate) |c|
+            try std.fmt.allocPrint(self.arena, "did you mean `{s}`?", .{c})
         else
             null;
-        try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED_FIELD", span, msg, candidate);
+        const secondary: []const diag_mod.SpanLabel = if (type_decl_span) |ts|
+            try self.singleSecondary(ts, try std.fmt.allocPrint(self.arena, "type `{s}` defined here", .{type_name}), .underline)
+        else
+            &.{};
+        try self.diagnostics.append(self.diag_alloc, .{
+            .severity = .fatal,
+            .code = "E_TYPE_UNDEFINED_FIELD",
+            .message = msg,
+            .span = span,
+            .help = help,
+            .secondary = secondary,
+        });
     }
 
     /// Type-check a method call against the class registry.
