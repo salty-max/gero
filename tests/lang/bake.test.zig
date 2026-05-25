@@ -311,8 +311,6 @@ test "bake: `if` expression returns the taken arm's value" {
     try std.testing.expectEqual(@as(u16, 42), res.value.?.int_);
 }
 
-// ---------- instruction budget ----------
-
 // ---------- aggregates ----------
 
 test "bake: list literal evaluates each element" {
@@ -389,6 +387,111 @@ test "bake: out-of-bounds index emits E_BAKE_INDEX_OUT_OF_BOUNDS" {
     defer res.deinit(alloc);
     try std.testing.expect(res.value == null);
     try std.testing.expectEqualStrings("E_BAKE_INDEX_OUT_OF_BOUNDS", res.diagnostics[0].code);
+}
+
+// ---------- bake def calls ----------
+
+/// Parse `source` and pluck both a named `bake def` and the
+/// `bake do` block (the harness usually compiles a small
+/// program with one of each). Used by the call-dispatch tests.
+fn parseDefAndDo(source: []const u8) !struct {
+    tree: gero.lang.ParseTree,
+    defs: std.StringHashMap(*const gero.lang.ast.DefDecl),
+    do: *const gero.lang.ast.DoExpr,
+} {
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    errdefer tree.deinit();
+
+    var defs = std.StringHashMap(*const gero.lang.ast.DefDecl).init(alloc);
+    errdefer defs.deinit();
+    var do_ptr: ?*const gero.lang.ast.DoExpr = null;
+    for (tree.program.statements) |*stmt| {
+        switch (stmt.*) {
+            .def_decl => |*dd| {
+                if (!dd.is_bake) continue;
+                const name = source[dd.name.start..dd.name.end];
+                try defs.put(name, dd);
+            },
+            .const_decl => |cd| {
+                if (cd.init.* != .do_expr) continue;
+                if (!cd.init.do_expr.is_bake) continue;
+                do_ptr = &cd.init.do_expr;
+            },
+            else => {},
+        }
+    }
+    if (do_ptr == null) {
+        defs.deinit();
+        return error.NoBakeDoFound;
+    }
+    return .{ .tree = tree, .defs = defs, .do = do_ptr.? };
+}
+
+test "bake: calling a `bake def` from inside `bake do` returns its value" {
+    const source =
+        \\bake def square(x: i16) -> i16
+        \\  return x * x
+        \\end
+        \\
+        \\const X = bake do
+        \\  square(7)
+        \\end
+    ;
+    var parsed = try parseDefAndDo(source);
+    defer parsed.tree.deinit();
+    defer parsed.defs.deinit();
+    var res = try gero.lang.bake.evaluateDo(alloc, source, parsed.do, .{ .bake_defs = &parsed.defs });
+    defer res.deinit(alloc);
+    try std.testing.expectEqual(@as(u16, 49), res.value.?.int_);
+}
+
+test "bake: bake def can call another bake def" {
+    const source =
+        \\bake def add(a: i16, b: i16) -> i16
+        \\  return a + b
+        \\end
+        \\
+        \\bake def triangular(n: i16) -> i16
+        \\  let acc = 0
+        \\  for i in 1..=n
+        \\    acc = add(acc, i)
+        \\  end
+        \\  return acc
+        \\end
+        \\
+        \\const X = bake do
+        \\  triangular(10)
+        \\end
+    ;
+    var parsed = try parseDefAndDo(source);
+    defer parsed.tree.deinit();
+    defer parsed.defs.deinit();
+    var res = try gero.lang.bake.evaluateDo(alloc, source, parsed.do, .{ .bake_defs = &parsed.defs });
+    defer res.deinit(alloc);
+    // T(10) = 55
+    try std.testing.expectEqual(@as(u16, 55), res.value.?.int_);
+}
+
+test "bake: call to unknown name emits E_BAKE_FORBIDDEN_CALL" {
+    const source =
+        \\const X = bake do
+        \\  bogus(1, 2)
+        \\end
+    ;
+    var parsed = try parseFirstBakeDo(source);
+    defer parsed.tree.deinit();
+    var defs = std.StringHashMap(*const gero.lang.ast.DefDecl).init(alloc);
+    defer defs.deinit();
+    var res = try gero.lang.bake.evaluateDo(alloc, source, parsed.do, .{ .bake_defs = &defs });
+    defer res.deinit(alloc);
+    try std.testing.expect(res.value == null);
+    var saw_forbidden = false;
+    for (res.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_BAKE_FORBIDDEN_CALL")) saw_forbidden = true;
+    }
+    try std.testing.expect(saw_forbidden);
 }
 
 // ---------- instruction budget ----------
