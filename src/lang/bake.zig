@@ -60,6 +60,9 @@ pub const BakeValue = union(enum) {
     /// `fields[i].value` the bound value.
     struct_: []const Field,
 
+    /// One named slot inside a `struct_` value. `name` borrows
+    /// from the source buffer; `value` lives on the evaluator's
+    /// diag arena until the codegen clones it onto its own.
     pub const Field = struct {
         name: []const u8,
         value: BakeValue,
@@ -85,6 +88,9 @@ pub const Result = struct {
     diagnostics: []const Diagnostic,
     diag_arena: std.heap.ArenaAllocator,
 
+    /// Release the diagnostics slice + the diag-message arena.
+    /// Pass the same allocator that was handed to `evaluateDo` /
+    /// `evaluateDef` so the slice frees through its owner.
     pub fn deinit(self: *Result, alloc: std.mem.Allocator) void {
         alloc.free(self.diagnostics);
         self.diag_arena.deinit();
@@ -215,7 +221,8 @@ const Evaluator = struct {
     }
 
     fn pushScope(self: *Evaluator) void {
-        self.scopes.append(self.allocator, .{}) catch unreachable; // allow-strict: arena failures already surface through `init` budget; this path is hit only during nested-block walks and inherits the same allocator contract.
+        // allow-strict: arena failures already surface through `init` budget; this path is hit only during nested-block walks and inherits the same allocator contract.
+        self.scopes.append(self.allocator, .{}) catch unreachable;
     }
 
     fn popScope(self: *Evaluator) void {
@@ -429,18 +436,24 @@ const Evaluator = struct {
             try self.diagFatal(s.span, "E_BAKE_TYPE", "bake: range bounds must be integer");
             return error.Fault;
         }
-        // safety: reinterpret u16 → i16 so signed bounds (`for i in -1..1`) walk the right direction.
-        const start_signed: i32 = @as(i32, @as(i16, @bitCast(start.int_)));
-        // safety: same for the end bound.
-        const end_signed: i32 = @as(i32, @as(i16, @bitCast(end.int_)));
+        // safety: reinterpret u16 → i16 for the signed range bound.
+        const start_i16: i16 = @bitCast(start.int_);
+        // @as: widen i16 → i32 so the step loop holds large bounds.
+        const start_signed: i32 = @as(i32, start_i16);
+        // safety: same i16 reinterpret for the end bound.
+        const end_i16: i16 = @bitCast(end.int_);
+        // @as: widen i16 → i32 to match the start range.
+        const end_signed: i32 = @as(i32, end_i16);
         const step_value: i32 = if (s.step) |st| step_blk: {
             const v = try self.evalExpr(st);
             if (v != .int_) {
                 try self.diagFatal(s.span, "E_BAKE_TYPE", "bake: `step` value must be integer");
                 return error.Fault;
             }
-            // safety: signed step reinterpret.
-            break :step_blk @as(i32, @as(i16, @bitCast(v.int_)));
+            // safety: signed reinterpret for the step value.
+            const step_i16: i16 = @bitCast(v.int_);
+            // @as: widen i16 → i32 to match start / end.
+            break :step_blk @as(i32, step_i16);
         } else 1;
         if (step_value == 0) {
             try self.diagFatal(s.span, "E_BAKE_TYPE", "bake: `for` step cannot be zero");
@@ -594,8 +607,18 @@ const Evaluator = struct {
     fn evalExpr(self: *Evaluator, e: *const ast.Expr) StepError!BakeValue {
         try self.tickBudget(e.span());
         return switch (e.*) {
-            .int_lit => |l| .{ .int_ = @bitCast(@as(i16, @truncate(l.value))) },
-            .fixed_lit => |l| .{ .fixed_ = @bitCast(@as(i16, @truncate(l.value))) },
+            .int_lit => |l| blk: {
+                // @as: parser stores int_lit as i32; truncate to i16 then reinterpret as u16 for storage.
+                const truncated: i16 = @truncate(l.value);
+                // safety: signed → unsigned bit reinterpret matches the runtime register layout.
+                break :blk .{ .int_ = @bitCast(truncated) };
+            },
+            .fixed_lit => |l| blk: {
+                // @as: same i32 → i16 truncate for the Q8.8 literal.
+                const truncated: i16 = @truncate(l.value);
+                // safety: signed → unsigned bit reinterpret.
+                break :blk .{ .fixed_ = @bitCast(truncated) };
+            },
             .bool_lit => |l| .{ .bool_ = l.value },
             .char_lit => |l| .{ .byte = l.value },
             .nil_lit => .nil_,
@@ -754,7 +777,11 @@ const Evaluator = struct {
                 const sc: i16 = @bitCast(c);
                 const q: i16 = @divTrunc(sa, sc);
                 const r: i16 = @rem(sa, sc);
-                break :blk if (op == .div) .{ .int_ = @bitCast(q) } else .{ .int_ = @bitCast(r) };
+                // safety: signed → unsigned bit reinterpret for the storage cell.
+                const q_u: u16 = @bitCast(q);
+                // safety: same for the remainder.
+                const r_u: u16 = @bitCast(r);
+                break :blk if (op == .div) .{ .int_ = q_u } else .{ .int_ = r_u };
             },
             // safety: shift count masked to the low 4 bits so a >16 shift doesn't UB the host.
             .shl => .{ .int_ = a << @truncate(c & 0x0F) },
@@ -775,13 +802,18 @@ const Evaluator = struct {
             .add => .{ .fixed_ = a +% c },
             .sub => .{ .fixed_ = a -% c },
             .mul => blk: {
-                // @as: widen u16 ops to i32 for the Q8.8 * Q8.8 → Q8.8 dance (shr 8 renormalize per ISA §5.4.1).
-                const sa: i32 = @as(i32, @as(i16, @bitCast(a)));
-                // @as: widen the second operand for the wide multiply.
-                const sc: i32 = @as(i32, @as(i16, @bitCast(c)));
+                // safety: unsigned → signed bit reinterpret for the Q8.8 multiplicand.
+                const sa_i16: i16 = @bitCast(a);
+                // @as: widen i16 → i32 so the product can hold the full Q16.16 result.
+                const sa: i32 = @as(i32, sa_i16);
+                // safety: same reinterpret for the multiplier.
+                const sc_i16: i16 = @bitCast(c);
+                // @as: widen i16 → i32 for the wide product.
+                const sc: i32 = @as(i32, sc_i16);
                 const wide: i32 = sa * sc;
-                // safety: shift-right by 8 to renormalize Q8.8 product; result fits in i16 by spec convention (overflow wraps).
+                // safety: shift-right by 8 to renormalize Q8.8 product; truncate the renormalized i32 back to i16.
                 const shifted: i16 = @truncate(wide >> 8);
+                // safety: signed → unsigned bit reinterpret for the storage cell.
                 break :blk .{ .fixed_ = @bitCast(shifted) };
             },
             .div => blk: {
@@ -789,13 +821,18 @@ const Evaluator = struct {
                     try self.diagFatal(span, "E_BAKE_DIV_BY_ZERO", "bake: fixed-point divide by zero");
                     return error.Fault;
                 }
-                // @as: pre-scale dividend by 2^8 (Q16.16 numerator) so the i32/i32 quotient lands back in Q8.8.
-                const sa: i32 = @as(i32, @as(i16, @bitCast(a)));
-                // @as: signed divisor.
-                const sc: i32 = @as(i32, @as(i16, @bitCast(c)));
+                // safety: u16 → i16 reinterpret for the signed dividend.
+                const sa_i16: i16 = @bitCast(a);
+                // @as: widen i16 → i32 so `sa << 8` doesn't lose the high bits.
+                const sa: i32 = @as(i32, sa_i16);
+                // safety: u16 → i16 reinterpret for the divisor.
+                const sc_i16: i16 = @bitCast(c);
+                // @as: widen i16 → i32 to match the pre-scaled dividend.
+                const sc: i32 = @as(i32, sc_i16);
                 const wide: i32 = (sa << 8);
                 // safety: truncating the i32 quotient back to i16 mirrors the runtime `divs` semantics.
                 const q: i16 = @truncate(@divTrunc(wide, sc));
+                // safety: signed → unsigned bit reinterpret for the storage cell.
                 break :blk .{ .fixed_ = @bitCast(q) };
             },
             else => {
@@ -808,13 +845,23 @@ const Evaluator = struct {
     fn evalOrderingOp(self: *Evaluator, op: ast.BinaryOp, lhs: BakeValue, rhs: BakeValue, span: ast.Span) StepError!BakeValue {
         const order: std.math.Order = switch (lhs) {
             .int_ => |x| switch (rhs) {
-                // safety: signed compare — runtime `cmp` interprets registers as signed by default for `<` / `<=` / `>` / `>=`.
-                .int_ => |y| std.math.order(@as(i16, @bitCast(x)), @as(i16, @bitCast(y))),
+                .int_ => |y| blk: {
+                    // safety: u16 → i16 reinterpret for the signed compare.
+                    const xi: i16 = @bitCast(x);
+                    // safety: same reinterpret for the rhs.
+                    const yi: i16 = @bitCast(y);
+                    break :blk std.math.order(xi, yi);
+                },
                 else => return self.orderMismatch(span),
             },
             .fixed_ => |x| switch (rhs) {
-                // safety: same signed interpretation for Q8.8 ordering.
-                .fixed_ => |y| std.math.order(@as(i16, @bitCast(x)), @as(i16, @bitCast(y))),
+                .fixed_ => |y| blk: {
+                    // safety: u16 → i16 reinterpret for Q8.8 ordering.
+                    const xi: i16 = @bitCast(x);
+                    // safety: same reinterpret for the Q8.8 rhs.
+                    const yi: i16 = @bitCast(y);
+                    break :blk std.math.order(xi, yi);
+                },
                 else => return self.orderMismatch(span),
             },
             .byte => |x| switch (rhs) {
@@ -828,7 +875,8 @@ const Evaluator = struct {
             .lte => order != .gt,
             .gt => order == .gt,
             .gte => order != .lt,
-            else => unreachable, // allow-strict: only the four ordering ops route into this fn.
+            // allow-strict: only the four ordering ops route into this fn.
+            else => unreachable,
         };
         return .{ .bool_ = r };
     }
@@ -1057,10 +1105,18 @@ fn writeSlice(xs: []const BakeValue, out: []u8) usize {
 pub fn literalAsBakeValue(source: []const u8, e: *const ast.Expr) ?BakeValue {
     _ = source;
     return switch (e.*) {
-        // safety: parser stores int literals as i32; truncate to i16 then bit-cast to u16 for the storage value.
-        .int_lit => |l| .{ .int_ = @bitCast(@as(i16, @truncate(l.value))) },
-        // safety: fixed literal same i32 → i16 truncate pattern.
-        .fixed_lit => |l| .{ .fixed_ = @bitCast(@as(i16, @truncate(l.value))) },
+        .int_lit => |l| blk: {
+            // @as: parser stores int_lit as i32; truncate to runtime i16.
+            const truncated: i16 = @truncate(l.value);
+            // safety: signed → unsigned bit reinterpret for storage.
+            break :blk .{ .int_ = @bitCast(truncated) };
+        },
+        .fixed_lit => |l| blk: {
+            // @as: same i32 → i16 truncate for Q8.8 storage.
+            const truncated: i16 = @truncate(l.value);
+            // safety: signed → unsigned bit reinterpret.
+            break :blk .{ .fixed_ = @bitCast(truncated) };
+        },
         .bool_lit => |l| .{ .bool_ = l.value },
         .char_lit => |l| .{ .byte = l.value },
         .nil_lit => .nil_,

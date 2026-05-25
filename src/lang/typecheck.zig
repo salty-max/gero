@@ -1096,6 +1096,7 @@ pub const Checker = struct {
 
     fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
         try annotations.validateAnnotations(self, d.annotations, T.DEF);
+        if (d.is_bake) try self.checkBakeAnnotationConflicts(d.annotations);
         try self.checkVariadicPosition(d);
         const saved_scope = self.current_scope;
         var fn_scope: Scope = .init(self.arena, saved_scope);
@@ -2663,6 +2664,29 @@ pub const Checker = struct {
                 .{callee_name},
             );
             try self.emitSpan("E_BAKE_FORBIDDEN_CALL", c.callee.span(), msg);
+        }
+    }
+
+    /// Per spec §3.8, `bake` cannot combine with `@cold`,
+    /// `@inline`, `@interrupt`, `@bank`, or `@no_capture` —
+    /// those describe runtime codegen and have no meaning at
+    /// compile-time evaluation. Reuses `E_ANN_CONFLICT` with a
+    /// bake-flavored message so editors / filters match the
+    /// same code as other mutual-exclusion checks.
+    fn checkBakeAnnotationConflicts(self: *Checker, anns: []const ast.Annotation) WalkError!void {
+        const forbidden = [_][]const u8{ "cold", "inline", "interrupt", "bank", "no_capture" };
+        for (anns) |ann| {
+            const name = self.lexeme(ann.name);
+            for (forbidden) |f| {
+                if (std.mem.eql(u8, name, f)) {
+                    const msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "annotation `@{s}` cannot be combined with `bake` — `@{s}` describes runtime codegen, which has no meaning for compile-time evaluation (§3.8)",
+                        .{ name, name },
+                    );
+                    try self.emitSpan("E_ANN_CONFLICT", ann.name, msg);
+                }
+            }
         }
     }
 };
