@@ -1442,7 +1442,8 @@ pub const Emitter = struct {
         var map = std.StringHashMap(*const ast.DefDecl).init(self.arena);
         var it = self.bake_defs.iterator();
         while (it.next()) |e| {
-            map.put(e.key_ptr.*, e.value_ptr.*) catch unreachable; // allow-strict: copies fit in the same arena that owns `bake_defs`; OOM here would have surfaced upstream.
+            // allow-strict: copies fit in the same arena that owns `bake_defs`; OOM here would have surfaced upstream.
+            map.put(e.key_ptr.*, e.value_ptr.*) catch unreachable;
         }
         return map;
     }
@@ -1601,8 +1602,10 @@ pub const Emitter = struct {
                 // spec §3.4; non-literal lengths fall back to 0
                 // (the typecheck flags those as `E_TYPE_*`).
                 if (a.len_expr.* == .int_lit) {
-                    // safety: parser stores length as i32; spec §3.4 caps at the address space (u16). Truncate-cast.
-                    const len: u16 = @intCast(@as(u32, @bitCast(a.len_expr.int_lit.value)) & 0xFFFF);
+                    // safety: bit-cast i32 to u32 to drop sign for the masked truncate.
+                    const raw: u32 = @bitCast(a.len_expr.int_lit.value);
+                    // @as: low-16 of the masked length; spec §3.4 caps at u16 address space.
+                    const len: u16 = @intCast(raw & 0xFFFF);
                     break :blk elem_w *% len;
                 }
                 break :blk 0;

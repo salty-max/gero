@@ -1058,6 +1058,12 @@ const SIN_TABLE = make_sin_table()
 -- 512 bytes of static data; no runtime cost
 ```
 
+(`fixed_sin` ships with the `math.*` stdlib — see #284 for the
+implementation. Until then, bake bodies inline a Taylor-series
+approximation in pure gero-lang or use simpler example tables
+like `make_squares_table`. The bake interpreter itself is fully
+ready; only the curated stdlib allowlist is pending.)
+
 `bake do` is the same idea inline, without a named function:
 
 ```

@@ -1917,6 +1917,43 @@ test "typecheck: @private member accessed from inside the class is allowed" {
     );
 }
 
+// ---------- bake annotation conflicts (§3.8) ----------
+
+test "typecheck: `bake def @cold` rejects with E_ANN_CONFLICT" {
+    try expectCode(
+        \\@cold
+        \\bake def cold_table() -> i16
+        \\  return 0
+        \\end
+    , "E_ANN_CONFLICT");
+}
+
+test "typecheck: `bake def @inline` rejects with E_ANN_CONFLICT" {
+    try expectCode(
+        \\@inline
+        \\bake def inline_table() -> i16
+        \\  return 0
+        \\end
+    , "E_ANN_CONFLICT");
+}
+
+test "typecheck: `bake def @bank 5` rejects with E_ANN_CONFLICT" {
+    try expectCode(
+        \\@bank 5
+        \\bake def banked_table() -> i16
+        \\  return 0
+        \\end
+    , "E_ANN_CONFLICT");
+}
+
+test "typecheck: plain `bake def` without conflicting annotations is clean" {
+    try expectClean(
+        \\bake def fine() -> i16
+        \\  return 42
+        \\end
+    );
+}
+
 test "typecheck: @static method with `self` param is rejected" {
     try expectCode(
         \\class Util
