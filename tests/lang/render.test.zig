@@ -268,6 +268,56 @@ test "render: cross-line secondary emits its own `-->` excerpt block" {
     try std.testing.expect(std.mem.indexOf(u8, out, "previous definition here") != null);
 }
 
+test "render: two same-line secondaries each get their own pointer + label stack" {
+    // `let x: i16 = "hi"`
+    //  0    5  8   13  17
+    // Two non-overlapping secondaries on the same line. Both
+    // should draw their underline + their own `|` / label rows.
+    const source = "let x: i16 = \"hi\"";
+    const d = Diagnostic{
+        .severity = .fatal,
+        .code = "E_TYPE_MISMATCH",
+        .message = "type mismatch",
+        .span = .{ .start = 13, .end = 17 },
+        .secondary = &[_]gero.lang.SpanLabel{
+            .{ .span = .{ .start = 4, .end = 5 }, .message = "binding declared here" },
+            .{ .span = .{ .start = 7, .end = 10 }, .message = "annotation pins the type" },
+        },
+    };
+    const file: FileDiagnostics = .{ .path = "x.gr", .source = source, .diagnostics = &.{d} };
+    const out = try renderPretty(file);
+    defer alloc.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "binding declared here") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "annotation pins the type") != null);
+}
+
+test "render: secondary `Decoration.point` uses caret glyphs instead of dashes" {
+    const source = "let x: i16 = \"hi\"";
+    const d = Diagnostic{
+        .severity = .fatal,
+        .code = "E_TYPE_MISMATCH",
+        .message = "type mismatch",
+        .span = .{ .start = 13, .end = 17 },
+        .secondary = &[_]gero.lang.SpanLabel{
+            .{
+                .span = .{ .start = 7, .end = 10 },
+                .message = "carets, not dashes",
+                .decoration = .point,
+            },
+        },
+    };
+    const file: FileDiagnostics = .{ .path = "x.gr", .source = source, .diagnostics = &.{d} };
+    const out = try renderPretty(file);
+    defer alloc.free(out);
+
+    // With `.point`, the secondary draws `^` — so there is NO `-`
+    // anywhere in the output (the primary uses `^` too, and the
+    // header / location lines don't contain dashes).
+    try std.testing.expect(std.mem.indexOf(u8, out, "---") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "carets, not dashes") != null);
+}
+
 test "render: empty `secondary` keeps the existing single-span layout" {
     const source = "let x: i16 = \"hi\"";
     const d = Diagnostic{

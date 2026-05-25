@@ -239,6 +239,21 @@ fn writeExcerpt(
     try writeSecondaryLabelStack(writer, source, gutter_w, lc.line, secondary, style);
 }
 
+/// Pre-resolved column extent + glyph for one same-line
+/// secondary, materialized once per render so the per-column
+/// merge loop doesn't re-walk the source buffer.
+const Segment = struct {
+    col_start: usize,
+    col_end_exclusive: usize,
+    glyph: u8,
+};
+
+/// Cap on same-line secondaries one diagnostic can attach.
+/// Beyond this, extras get dropped from the caret merge —
+/// readable output beats blasting twenty stacked labels at the
+/// user. Real diagnostics carry one or two secondaries.
+const max_same_line_segments: usize = 8;
+
 /// Emit the caret / underline row covering both the primary span
 /// and every same-line secondary. Each output column picks its
 /// glyph by source order: primary wins where it overlaps a
@@ -254,17 +269,30 @@ fn writeMergedCaretLine(
     secondary: []const SpanLabel,
     style: Style,
 ) !void {
-    // Compute the max column the row needs to cover so the trailing
-    // spaces don't run forever — past the last decorated column we
-    // stop emitting characters.
+    // Pre-resolve each same-line secondary's column extent ONCE so
+    // the inner column loop reads from `segments` instead of
+    // re-walking the source for every column × every secondary.
+    var segments_buf: [max_same_line_segments]Segment = undefined;
+    var n_segments: usize = 0;
     var max_col: usize = primary_end_exclusive;
     for (secondary) |sl| {
+        if (n_segments >= max_same_line_segments) break;
         if (lineOf(source, sl.span.start) != line) continue;
         const sc = lineColAt(source, sl.span.start);
         const slen = caretLength(source, sl.span);
         const end_exc = sc.col + slen;
+        segments_buf[n_segments] = .{
+            .col_start = sc.col,
+            .col_end_exclusive = end_exc,
+            .glyph = switch (sl.decoration) {
+                .underline => '-',
+                .point => '^',
+            },
+        };
+        n_segments += 1;
         if (end_exc > max_col) max_col = end_exc;
     }
+    const segments = segments_buf[0..n_segments];
 
     try writePadGutter(writer, gutter_w, style);
     try writer.writeAll(" | ");
@@ -272,17 +300,13 @@ fn writeMergedCaretLine(
     var in_caret_style = false;
     while (col < max_col) : (col += 1) {
         const in_primary = col >= primary_start and col < primary_end_exclusive;
-        const sec = if (!in_primary) secondaryCovering(source, line, col, secondary) else null;
-        if (in_primary or sec != null) {
+        const seg_glyph: ?u8 = if (in_primary) null else segmentGlyphAt(segments, col);
+        if (in_primary or seg_glyph != null) {
             if (!in_caret_style) {
                 try writer.writeAll(style.caret);
                 in_caret_style = true;
             }
-            const ch: u8 = if (in_primary) '^' else switch (sec.?.decoration) {
-                .underline => '-',
-                .point => '^',
-            };
-            try writer.writeByte(ch);
+            try writer.writeByte(if (in_primary) '^' else seg_glyph.?);
         } else {
             if (in_caret_style) {
                 try writer.writeAll(style.reset);
@@ -293,6 +317,17 @@ fn writeMergedCaretLine(
     }
     if (in_caret_style) try writer.writeAll(style.reset);
     try writer.writeByte('\n');
+}
+
+/// First segment (in source order) covering column `col`, or
+/// `null` when no same-line secondary overlaps. Pure linear scan
+/// of the pre-resolved segment slice — no source-walks inside
+/// the hot per-column loop.
+fn segmentGlyphAt(segments: []const Segment, col: usize) ?u8 {
+    for (segments) |s| {
+        if (col >= s.col_start and col < s.col_end_exclusive) return s.glyph;
+    }
+    return null;
 }
 
 /// For each same-line secondary, emit a `|` pointer row (carrying
@@ -399,23 +434,6 @@ fn writeOneCrossLineSecondary(
 /// but cheap to call from the per-column merge loop.
 fn lineOf(source: []const u8, byte: u32) usize {
     return lineColAt(source, byte).line;
-}
-
-/// First secondary span (in source order) that covers column `col`
-/// on `line`. `null` when no same-line secondary overlaps.
-fn secondaryCovering(
-    source: []const u8,
-    line: usize,
-    col: usize,
-    secondary: []const SpanLabel,
-) ?SpanLabel {
-    for (secondary) |sl| {
-        if (lineOf(source, sl.span.start) != line) continue;
-        const sc = lineColAt(source, sl.span.start);
-        const end = sc.col + caretLength(source, sl.span);
-        if (col >= sc.col and col < end) return sl;
-    }
-    return null;
 }
 
 fn writeHelp(writer: *std.Io.Writer, help_msg: []const u8, style: Style) !void {
