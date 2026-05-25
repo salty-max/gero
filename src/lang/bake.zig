@@ -493,20 +493,97 @@ const Evaluator = struct {
     }
 
     fn runAssign(self: *Evaluator, a: ast.AssignStmt) StepError!void {
-        // The typecheck pass already rejected non-ident assignment
-        // targets inside bake bodies; recheck defensively so a
-        // future codegen / typecheck regression surfaces here.
-        if (a.target.* != .ident) {
-            try self.diagFatal(a.span, "E_BAKE_UNSUPPORTED", "bake `=` only supports ident targets at this slice");
+        // Ident target — direct binding update.
+        if (a.target.* == .ident) {
+            const value = try self.evalExpr(a.value);
+            const name = self.lexeme(a.target.ident.span);
+            const ok = try self.assignLocal(name, value);
+            if (!ok) {
+                try self.diagFmt(a.span, "E_UNDEFINED_SYMBOL", "bake: `{s}` is not bound in any enclosing scope", .{name});
+                return error.Fault;
+            }
+            return;
+        }
+        // Indexed assignment — `arr[i] = v`. Walks back to the
+        // ident at the array root and rebuilds the slice with
+        // the new slot. BakeValues are copy-on-write internally
+        // (the typecheck arena owns the array storage), so a fresh
+        // slice is cheap; this keeps lookups by reference safe.
+        if (a.target.* == .index) {
+            try self.runIndexedAssign(a);
+            return;
+        }
+        // Field-target assignment surfaces as a similar rebuild,
+        // but bake bodies don't yet emit class / struct mutation
+        // — the typechecker keeps that out of the in-bake scope.
+        try self.diagFatal(a.span, "E_BAKE_UNSUPPORTED", "bake `=` only supports ident or `a[i]` targets at this slice");
+        return error.Fault;
+    }
+
+    /// `arr[i] = v` rebuild path. Resolves the root ident, copies
+    /// the array (or tuple) backing, swaps the slot, and writes the
+    /// rebuilt value back to the scope. Multi-level (`a[i][j] = v`)
+    /// nests recursively.
+    fn runIndexedAssign(self: *Evaluator, a: ast.AssignStmt) StepError!void {
+        const ix = a.target.index;
+        const idx_val = try self.evalExpr(ix.index);
+        if (idx_val != .int_) {
+            try self.diagFatal(a.span, "E_BAKE_TYPE", "bake: index must be an integer");
             return error.Fault;
         }
-        const value = try self.evalExpr(a.value);
-        const name = self.lexeme(a.target.ident.span);
-        const ok = try self.assignLocal(name, value);
-        if (!ok) {
-            try self.diagFmt(a.span, "E_UNDEFINED_SYMBOL", "bake: `{s}` is not bound in any enclosing scope", .{name});
+        // safety: reinterpret as i16 so negative indices fault.
+        const idx_signed: i16 = @bitCast(idx_val.int_);
+        if (idx_signed < 0) {
+            try self.diagFatal(a.span, "E_BAKE_INDEX_OUT_OF_BOUNDS", "bake: negative index");
             return error.Fault;
         }
+        const idx: usize = @intCast(idx_signed);
+        const new_value = try self.evalExpr(a.value);
+
+        // Walk the receiver chain — only `ident[…] = v` lands as a
+        // direct rebuild at this slice; nested receivers (`a[i][j]
+        // = v`) would need a recursive zipper and aren't exercised
+        // by the spec's lookup-table examples yet.
+        if (ix.receiver.* != .ident) {
+            try self.diagFatal(a.span, "E_BAKE_UNSUPPORTED", "bake `a[i] = v` only supports an ident receiver at this slice");
+            return error.Fault;
+        }
+        const root_name = self.lexeme(ix.receiver.ident.span);
+        const current = self.lookup(root_name) orelse {
+            try self.diagFmt(a.span, "E_UNDEFINED_SYMBOL", "bake: `{s}` is not bound", .{root_name});
+            return error.Fault;
+        };
+        const rebuilt = try self.rebuildAtIndex(current, idx, new_value, a.span);
+        _ = try self.assignLocal(root_name, rebuilt);
+    }
+
+    fn rebuildAtIndex(self: *Evaluator, agg: BakeValue, idx: usize, new_value: BakeValue, span: ast.Span) StepError!BakeValue {
+        return switch (agg) {
+            .array => |xs| blk: {
+                if (idx >= xs.len) {
+                    try self.diagFatal(span, "E_BAKE_INDEX_OUT_OF_BOUNDS", "bake: array index out of bounds");
+                    break :blk error.Fault;
+                }
+                const out = try self.diag_arena.allocator().alloc(BakeValue, xs.len);
+                @memcpy(out, xs);
+                out[idx] = new_value;
+                break :blk .{ .array = out };
+            },
+            .tuple => |xs| blk: {
+                if (idx >= xs.len) {
+                    try self.diagFatal(span, "E_BAKE_INDEX_OUT_OF_BOUNDS", "bake: tuple index out of bounds");
+                    break :blk error.Fault;
+                }
+                const out = try self.diag_arena.allocator().alloc(BakeValue, xs.len);
+                @memcpy(out, xs);
+                out[idx] = new_value;
+                break :blk .{ .tuple = out };
+            },
+            else => blk: {
+                try self.diagFatal(span, "E_BAKE_TYPE", "bake: indexed assign requires an array or tuple receiver");
+                break :blk error.Fault;
+            },
+        };
     }
 
     // ---------- expressions ----------
@@ -530,6 +607,12 @@ const Evaluator = struct {
             .binary => |b| try self.evalBinary(b),
             .do_expr => |d| try self.runDoExpr(d),
             .if_expr => |ie| try self.runIfExpr(ie),
+            .list_lit => |ll| try self.evalListLit(ll),
+            .list_repeat => |lr| try self.evalListRepeat(lr),
+            .tuple_lit => |tl| try self.evalTupleLit(tl),
+            .struct_lit => |sl| try self.evalStructLit(sl),
+            .index => |ix| try self.evalIndex(ix),
+            .field => |f| try self.evalField(f),
             else => {
                 try self.diagFmt(e.span(), "E_BAKE_UNSUPPORTED", "bake interpreter does not yet support `{s}` expressions", .{@tagName(e.*)});
                 return error.Fault;
@@ -749,6 +832,96 @@ const Evaluator = struct {
     fn orderMismatch(self: *Evaluator, span: ast.Span) StepError!BakeValue {
         try self.diagFatal(span, "E_BAKE_TYPE", "bake: ordering compare requires same-shape numeric operands");
         return error.Fault;
+    }
+
+    // ---------- aggregates ----------
+
+    fn evalListLit(self: *Evaluator, ll: ast.ListLit) StepError!BakeValue {
+        const out = try self.diag_arena.allocator().alloc(BakeValue, ll.elems.len);
+        for (ll.elems, 0..) |e, i| out[i] = try self.evalExpr(e);
+        return .{ .array = out };
+    }
+
+    fn evalListRepeat(self: *Evaluator, lr: ast.ListRepeatLit) StepError!BakeValue {
+        const count_val = try self.evalExpr(lr.count);
+        if (count_val != .int_) {
+            try self.diagFatal(lr.span, "E_BAKE_TYPE", "bake: array-repeat count must be an integer");
+            return error.Fault;
+        }
+        // safety: reinterpret as i16 so negatives surface as a fault instead of wrapping to a huge length.
+        const count_signed: i16 = @bitCast(count_val.int_);
+        if (count_signed < 0) {
+            try self.diagFatal(lr.span, "E_BAKE_TYPE", "bake: array-repeat count must be non-negative");
+            return error.Fault;
+        }
+        const n: usize = @intCast(count_signed);
+        const proto = try self.evalExpr(lr.value);
+        const out = try self.diag_arena.allocator().alloc(BakeValue, n);
+        for (out) |*slot| slot.* = proto;
+        return .{ .array = out };
+    }
+
+    fn evalTupleLit(self: *Evaluator, tl: ast.TupleLit) StepError!BakeValue {
+        const out = try self.diag_arena.allocator().alloc(BakeValue, tl.elems.len);
+        for (tl.elems, 0..) |e, i| out[i] = try self.evalExpr(e);
+        return .{ .tuple = out };
+    }
+
+    fn evalStructLit(self: *Evaluator, sl: ast.StructLit) StepError!BakeValue {
+        const out = try self.diag_arena.allocator().alloc(BakeValue.Field, sl.fields.len);
+        for (sl.fields, 0..) |lf, i| {
+            const v = try self.evalExpr(lf.value);
+            out[i] = .{ .name = self.lexeme(lf.name), .value = v };
+        }
+        return .{ .struct_ = out };
+    }
+
+    fn evalIndex(self: *Evaluator, ix: ast.IndexExpr) StepError!BakeValue {
+        const recv = try self.evalExpr(ix.receiver);
+        const idx_val = try self.evalExpr(ix.index);
+        if (idx_val != .int_) {
+            try self.diagFatal(ix.span, "E_BAKE_TYPE", "bake: index must be an integer");
+            return error.Fault;
+        }
+        // safety: reinterpret as i16 so negative indices fault rather than wrapping.
+        const idx_signed: i16 = @bitCast(idx_val.int_);
+        if (idx_signed < 0) {
+            try self.diagFatal(ix.span, "E_BAKE_INDEX_OUT_OF_BOUNDS", "bake: negative index");
+            return error.Fault;
+        }
+        const idx: usize = @intCast(idx_signed);
+        return switch (recv) {
+            .array => |xs| if (idx >= xs.len) blk: {
+                try self.diagFatal(ix.span, "E_BAKE_INDEX_OUT_OF_BOUNDS", "bake: array index out of bounds");
+                break :blk error.Fault;
+            } else xs[idx],
+            .tuple => |xs| if (idx >= xs.len) blk: {
+                try self.diagFatal(ix.span, "E_BAKE_INDEX_OUT_OF_BOUNDS", "bake: tuple index out of bounds");
+                break :blk error.Fault;
+            } else xs[idx],
+            else => blk: {
+                try self.diagFatal(ix.span, "E_BAKE_TYPE", "bake: `[…]` requires an array or tuple receiver");
+                break :blk error.Fault;
+            },
+        };
+    }
+
+    fn evalField(self: *Evaluator, f: ast.FieldExpr) StepError!BakeValue {
+        const recv = try self.evalExpr(f.receiver);
+        const name = self.lexeme(f.field);
+        return switch (recv) {
+            .struct_ => |flds| blk: {
+                for (flds) |fld| {
+                    if (std.mem.eql(u8, fld.name, name)) break :blk fld.value;
+                }
+                try self.diagFmt(f.span, "E_BAKE_UNDEFINED_FIELD", "bake: struct has no field `{s}`", .{name});
+                break :blk error.Fault;
+            },
+            else => blk: {
+                try self.diagFatal(f.span, "E_BAKE_TYPE", "bake: `.field` requires a struct receiver");
+                break :blk error.Fault;
+            },
+        };
     }
 };
 

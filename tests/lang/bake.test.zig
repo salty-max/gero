@@ -313,6 +313,86 @@ test "bake: `if` expression returns the taken arm's value" {
 
 // ---------- instruction budget ----------
 
+// ---------- aggregates ----------
+
+test "bake: list literal evaluates each element" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  [1, 2, 3]
+        \\end
+    );
+    defer res.deinit(alloc);
+    const arr = res.value.?.array;
+    try std.testing.expectEqual(@as(usize, 3), arr.len);
+    try std.testing.expectEqual(@as(u16, 1), arr[0].int_);
+    try std.testing.expectEqual(@as(u16, 2), arr[1].int_);
+    try std.testing.expectEqual(@as(u16, 3), arr[2].int_);
+}
+
+test "bake: array-repeat literal expands to N copies" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  [7; 4]
+        \\end
+    );
+    defer res.deinit(alloc);
+    const arr = res.value.?.array;
+    try std.testing.expectEqual(@as(usize, 4), arr.len);
+    for (arr) |v| try std.testing.expectEqual(@as(u16, 7), v.int_);
+}
+
+test "bake: array indexing reads the slot" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let xs = [10, 20, 30]
+        \\  xs[1]
+        \\end
+    );
+    defer res.deinit(alloc);
+    try std.testing.expectEqual(@as(u16, 20), res.value.?.int_);
+}
+
+test "bake: indexed assignment rebuilds the slot" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let xs = [0; 5]
+        \\  for i in 0..5
+        \\    xs[i] = i * 2
+        \\  end
+        \\  xs
+        \\end
+    );
+    defer res.deinit(alloc);
+    const arr = res.value.?.array;
+    try std.testing.expectEqual(@as(usize, 5), arr.len);
+    for (arr, 0..) |v, i| try std.testing.expectEqual(@as(u16, @intCast(i * 2)), v.int_);
+}
+
+test "bake: tuple literal + indexing" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let t = (1, 2, 3)
+        \\  t[2]
+        \\end
+    );
+    defer res.deinit(alloc);
+    try std.testing.expectEqual(@as(u16, 3), res.value.?.int_);
+}
+
+test "bake: out-of-bounds index emits E_BAKE_INDEX_OUT_OF_BOUNDS" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let xs = [1, 2, 3]
+        \\  xs[10]
+        \\end
+    );
+    defer res.deinit(alloc);
+    try std.testing.expect(res.value == null);
+    try std.testing.expectEqualStrings("E_BAKE_INDEX_OUT_OF_BOUNDS", res.diagnostics[0].code);
+}
+
+// ---------- instruction budget ----------
+
 test "bake: unbounded loop trips E_BAKE_BUDGET_EXCEEDED" {
     const source =
         \\const X = bake do
