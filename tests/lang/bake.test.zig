@@ -178,3 +178,160 @@ test "bake: signed division (-10 / 3)" {
     // -10 / 3 = -3 (truncates toward zero) = 0xFFFD
     try std.testing.expectEqual(@as(u16, 0xFFFD), res.value.?.int_);
 }
+
+// ---------- control flow ----------
+
+test "bake: `if` chain picks the first true arm" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let r = 0
+        \\  if false
+        \\    r = 1
+        \\  elif true
+        \\    r = 2
+        \\  else
+        \\    r = 3
+        \\  end
+        \\  r
+        \\end
+    );
+    defer res.deinit(alloc);
+    try std.testing.expectEqual(@as(u16, 2), res.value.?.int_);
+}
+
+test "bake: `while` loop accumulates" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let n = 0
+        \\  let i = 0
+        \\  while i < 10
+        \\    n = n + i
+        \\    i = i + 1
+        \\  end
+        \\  n
+        \\end
+    );
+    defer res.deinit(alloc);
+    // 0+1+2+…+9 = 45
+    try std.testing.expectEqual(@as(u16, 45), res.value.?.int_);
+}
+
+test "bake: `for-in` over an exclusive range" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let n = 0
+        \\  for i in 0..5
+        \\    n = n + i
+        \\  end
+        \\  n
+        \\end
+    );
+    defer res.deinit(alloc);
+    // 0+1+2+3+4 = 10
+    try std.testing.expectEqual(@as(u16, 10), res.value.?.int_);
+}
+
+test "bake: `for-in` over an inclusive range" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let n = 0
+        \\  for i in 1..=5
+        \\    n = n + i
+        \\  end
+        \\  n
+        \\end
+    );
+    defer res.deinit(alloc);
+    // 1+2+3+4+5 = 15
+    try std.testing.expectEqual(@as(u16, 15), res.value.?.int_);
+}
+
+test "bake: `break` exits the loop early" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let n = 0
+        \\  for i in 0..100
+        \\    if i > 5
+        \\      break
+        \\    end
+        \\    n = n + i
+        \\  end
+        \\  n
+        \\end
+    );
+    defer res.deinit(alloc);
+    // 0+1+2+3+4+5 = 15
+    try std.testing.expectEqual(@as(u16, 15), res.value.?.int_);
+}
+
+test "bake: `continue` skips the remainder of the iteration" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let n = 0
+        \\  for i in 0..10
+        \\    if i == 5
+        \\      continue
+        \\    end
+        \\    n = n + 1
+        \\  end
+        \\  n
+        \\end
+    );
+    defer res.deinit(alloc);
+    // 10 iterations, skip 1 → 9 increments
+    try std.testing.expectEqual(@as(u16, 9), res.value.?.int_);
+}
+
+test "bake: `repeat … until` runs at least once" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let n = 0
+        \\  repeat
+        \\    n = n + 1
+        \\  until n >= 3
+        \\  n
+        \\end
+    );
+    defer res.deinit(alloc);
+    try std.testing.expectEqual(@as(u16, 3), res.value.?.int_);
+}
+
+test "bake: `if` expression returns the taken arm's value" {
+    var res = try evalBakeDoSource(
+        \\const X = bake do
+        \\  let v = if 1 == 1
+        \\    42
+        \\  else
+        \\    0
+        \\  end
+        \\  v
+        \\end
+    );
+    defer res.deinit(alloc);
+    try std.testing.expectEqual(@as(u16, 42), res.value.?.int_);
+}
+
+// ---------- instruction budget ----------
+
+test "bake: unbounded loop trips E_BAKE_BUDGET_EXCEEDED" {
+    const source =
+        \\const X = bake do
+        \\  let i = 0
+        \\  while true
+        \\    i = i + 1
+        \\  end
+        \\  i
+        \\end
+    ;
+    var parsed = try parseFirstBakeDo(source);
+    defer parsed.tree.deinit();
+    // Tight budget so the test runs in microseconds.
+    var res = try gero.lang.bake.evaluateDo(alloc, source, parsed.do, .{ .budget = 100 });
+    defer res.deinit(alloc);
+    try std.testing.expect(res.value == null);
+    var saw_budget = false;
+    for (res.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_BAKE_BUDGET_EXCEEDED")) saw_budget = true;
+    }
+    try std.testing.expect(saw_budget);
+}
