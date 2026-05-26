@@ -1,11 +1,3 @@
-/// Tiny terminal-styling layer for the CLI. Wraps an
-/// `*std.Io.Writer` with `err` / `warn` / `success` / `info`
-/// helpers that prefix messages and (when color is enabled)
-/// wrap the labels in ANSI sequences. `cargo` / `clippy` style.
-///
-/// Color enablement is decided by the caller — the host typically
-/// computes it from TTY detection, the `NO_COLOR` env var, and a
-/// `--no-color` flag. `apps/gero-cli/main.zig` does that wiring.
 const std = @import("std");
 
 /// User-controllable color toggle. `auto` defers to the caller's

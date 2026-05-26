@@ -1,18 +1,3 @@
-/// `gero build` — project-aware compile. Walks the ancestor
-/// chain for `gero.toml`, reads `[build]` + `[package]`, runs the
-/// asm pipeline against `build.entry`, and writes the resulting
-/// `.gx` to `<project_root>/<build.out>/<stem>.gx`, where `<stem>`
-/// is `[build].name` if set, else `[package].name`.
-///
-/// `gero build` is essentially `gero asm` wrapped with manifest
-/// resolution + output-path discipline. Reuses every existing
-/// asm-pipeline piece (`resolveIncludes` → `parse` → `assemble`).
-///
-/// Exit codes per cli.md §3.12 + §5:
-///   - `0` clean
-///   - `1` host IO problem (manifest missing, unreadable, write failed)
-///   - `2` usage error (unsupported target override)
-///   - `3` manifest parse error or asm pipeline error
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");

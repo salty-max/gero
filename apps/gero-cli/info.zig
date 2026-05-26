@@ -1,6 +1,3 @@
-/// `gero info` — print the `.gx` header in human-readable form.
-/// The formatter is pure (takes already-parsed values) so the
-/// host shell wires file I/O around it.
 const std = @import("std");
 const gero = @import("gero");
 

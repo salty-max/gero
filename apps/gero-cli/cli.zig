@@ -1,9 +1,3 @@
-/// Argument parser + subcommand dispatcher for the `gero`
-/// binary. The parser doesn't allocate — it borrows from the
-/// caller's argv slice. Each known subcommand is currently a
-/// stub that prints "not yet implemented" and exits 1; flag
-/// parsing is fully wired so the eventual implementations only
-/// need to read `Options`.
 const std = @import("std");
 const build_options = @import("build_options");
 

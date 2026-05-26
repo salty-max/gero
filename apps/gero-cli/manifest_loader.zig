@@ -1,17 +1,3 @@
-/// Project-aware glue for `gero check` / `gero fmt` / `gero test`:
-/// walk ancestors for `gero.toml`, parse it, and expand
-/// manifest-relative include lists into a flat `.gas` file list.
-///
-/// `load` is the thin wrapper that does manifest discovery + parse
-/// + read-error reporting; `expandIncludes` walks each entry like
-/// a positional path would be walked (single `.gas` file or a
-/// directory recursed for `.gas`). Errors are printed via `term`
-/// with a `<command_name>: …` prefix so each consuming subcommand
-/// keeps its diagnostic voice.
-///
-/// Lives next to the consuming subcommands (under `apps/gero-cli/`)
-/// because it pulls in `term.zig` for diagnostics. `project.zig`
-/// stays pure-parser; this module is the CLI flavor.
 const std = @import("std");
 const project = @import("project.zig");
 const term_mod = @import("term.zig");

@@ -1,25 +1,3 @@
-/// `gero fmt` — canonical formatter for `.gas` and `.gr` source.
-/// Parses the file directly (without resolving includes for asm),
-/// re-emits through the language-specific canonical printer, and
-/// either writes in-place or reports `--check` diffs.
-///
-/// Exit codes per cli.md §3.8 + §5:
-///   - `0` every file is canonical (or was just made canonical)
-///   - `1` host IO problem
-///   - `2` usage error
-///   - `3` parse error in source
-///   - `8` `--check` mode and at least one file would change
-///
-/// Dispatch by extension: `.gas` → `gero.asm_.printProgram`,
-/// `.gr` → `gero.lang.print`. Stdin mode is asm-only for now.
-///
-/// Notes
-/// -----
-/// The parser is invoked **without** `resolveIncludes`, so the file
-/// is formatted as-written — `include "..."` lines round-trip
-/// verbatim (the parser surfaces them as `unknown` statements, the
-/// printer source-slices them back). Cross-file validation is the
-/// job of `gero check`, not `gero fmt`.
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");

@@ -1,14 +1,8 @@
-/// `gero.toml` parser + project resolver. Foundation for the
-/// project-aware subcommands (`gero new`, `gero build`, and the
-/// project-mode of `gero check` / `fmt` / `test`).
+/// `gero.toml` parser + project resolver.
 ///
-/// Scope: a TOML subset sufficient for today's manifest shape —
-/// section headers, key=value with string literals, string arrays,
-/// `#`-comments. **Not** full TOML: no integers, booleans, inline
-/// tables, dotted keys, multi-line strings/arrays, dates. Those
-/// can land later if the manifest grows to need them.
-///
-/// Example:
+/// Supports a TOML subset: section headers, `key = value` with
+/// string literals, string arrays, `#`-comments. No integers,
+/// booleans, inline tables, dotted keys, multi-line strings.
 ///
 /// ```toml
 /// [package]
