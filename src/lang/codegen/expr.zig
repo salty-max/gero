@@ -6,6 +6,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
+const isa = @import("isa.zig");
 const archive = @import("archive.zig");
 const assert_builtin = @import("assert.zig");
 const class = @import("class.zig");
@@ -28,7 +29,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
             const trimmed: i16 = @truncate(lit.value);
             // safety: i16 → u16 bit pattern; the two's-complement encoding is preserved.
             const v: u16 = @bitCast(trimmed);
-            try self.movImmToReg(v, Reg.acu);
+            try isa.movImmToReg(self, v, Reg.acu);
         },
         .fixed_lit => |lit| {
             // Q8.8 — the parser pre-encodes the value as `int *
@@ -38,15 +39,15 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
             const trimmed: i16 = @truncate(lit.value);
             // safety: i16 → u16 bit pattern preserved (two's complement).
             const v: u16 = @bitCast(trimmed);
-            try self.movImmToReg(v, Reg.acu);
+            try isa.movImmToReg(self, v, Reg.acu);
         },
         .str_lit => |sl| try self.emitStrLitExpr(sl),
         .bool_lit => |b| {
             const v: u16 = if (b.value) 1 else 0;
-            try self.movImmToReg(v, Reg.acu);
+            try isa.movImmToReg(self, v, Reg.acu);
         },
-        .nil_lit => try self.movImmToReg(0, Reg.acu),
-        .char_lit => |c| try self.movImmToReg(c.value, Reg.acu),
+        .nil_lit => try isa.movImmToReg(self, 0, Reg.acu),
+        .char_lit => |c| try isa.movImmToReg(self, c.value, Reg.acu),
         .paren => |p| try emitExpr(self, p.inner),
         .ident => |i| {
             const name = self.source[i.span.start..i.span.end];
@@ -64,11 +65,11 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
                     try lambda.emitPromotedIdentLoad(self, ofs);
                     return;
                 }
-                try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
+                try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
                 return;
             }
             if (self.params.get(name)) |ofs| {
-                try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
+                try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
                 return;
             }
             if (self.globals.get(name)) |g| {
@@ -87,7 +88,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
             // implicit param). Outside a method it's a typecheck
             // error — the codegen falls through to "unsupported".
             if (self.params.get("self")) |ofs| {
-                try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
+                try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
             } else {
                 try self.unsupported(se.span, "`self` used outside a method body");
             }
@@ -153,7 +154,7 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
                     }
                 }
             }
-            try self.movImmToReg(tag, Reg.acu);
+            try isa.movImmToReg(self, tag, Reg.acu);
             return;
         }
     }
@@ -176,7 +177,7 @@ pub fn emitIsTest(self: *Emitter, it: ast.IsTestExpr) !void {
         return;
     };
     try emitExpr(self, it.lhs);
-    try self.cmpRegImm(Reg.acu, tag);
+    try isa.cmpRegImm(self, Reg.acu, tag);
     try materializeBoolFromFlags(self, .eq);
 }
 
@@ -184,11 +185,11 @@ pub fn emitIsTest(self: *Emitter, it: ast.IsTestExpr) !void {
 pub fn emitUnary(self: *Emitter, u: ast.UnaryExpr) !void {
     try emitExpr(self, u.operand);
     switch (u.op) {
-        .neg => try self.negReg(Reg.acu),
-        .bit_not => try self.notRegOp(Reg.acu),
+        .neg => try isa.negReg(self, Reg.acu),
+        .bit_not => try isa.notRegOp(self, Reg.acu),
         .log_not => {
             // acu = (acu == 0) ? 1 : 0
-            try self.cmpRegImm(Reg.acu, 0);
+            try isa.cmpRegImm(self, Reg.acu, 0);
             try materializeBoolFromFlags(self, .eq);
         },
     }
@@ -225,16 +226,16 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
     // Standard stack-machine pattern: eval RHS, push, eval LHS,
     // pop RHS into r1, apply op (acu = acu OP r1).
     try emitExpr(self, b.rhs);
-    try self.pushReg(Reg.acu);
+    try isa.pushReg(self, Reg.acu);
     try emitExpr(self, b.lhs);
-    try self.popReg(Reg.r1);
+    try isa.popReg(self, Reg.r1);
     switch (b.op) {
         .add => {
-            try self.addRegToAcu(Reg.r1);
+            try isa.addRegToAcu(self, Reg.r1);
             if (integer_arith) try overflow.emitOverflowTrap(self, signedness);
         },
         .sub => {
-            try self.subRegFromAcu(Reg.r1);
+            try isa.subRegFromAcu(self, Reg.r1);
             if (integer_arith) try overflow.emitOverflowTrap(self, signedness);
         },
         .mul => {
@@ -245,11 +246,11 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
             // through `muls` so the V flag matches `i16` overflow
             // (`mul`'s V means `high != 0`, which false-positives
             // on legitimate negative products).
-            try self.movRegToReg(Reg.acu, Reg.r2);
+            try isa.movRegToReg(self, Reg.acu, Reg.r2);
             if (integer_arith and signedness == .signed and self.optimize == .debug) {
-                try self.mulsRegReg(Reg.r1, Reg.r2);
+                try isa.mulsRegReg(self, Reg.r1, Reg.r2);
             } else {
-                try self.mulRegReg(Reg.r1, Reg.r2);
+                try isa.mulRegReg(self, Reg.r1, Reg.r2);
             }
             if (fixed_op) {
                 // Q8.8 * Q8.8 — the conceptual Q16.16 product
@@ -259,14 +260,14 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
                 // >> 8)`. ISA §5.4.1 — products whose real
                 // magnitude exceeds 127.99… wrap silently
                 // because the result no longer fits in 16 bits.
-                try self.shrRegImm(Reg.r2, 8);
-                try self.shlRegImm(Reg.acu, 8);
-                try self.orRegReg(Reg.acu, Reg.r2);
+                try isa.shrRegImm(self, Reg.r2, 8);
+                try isa.shlRegImm(self, Reg.acu, 8);
+                try isa.orRegReg(self, Reg.acu, Reg.r2);
             } else {
                 // Integer mul — drop the high half. `mov` doesn't
                 // touch flags, so the V/C set by the mul op above
                 // are still live for the overflow check below.
-                try self.movRegToReg(Reg.r2, Reg.acu);
+                try isa.movRegToReg(self, Reg.r2, Reg.acu);
             }
             if (integer_arith) try overflow.emitOverflowTrap(self, signedness);
         },
@@ -280,35 +281,35 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
                 //   acu = acu >>arith 8      (sign-extended top byte)
                 // Then `divs r1, r2` performs the 32÷16 signed
                 // divide and the quotient ends up in r2.
-                try self.movRegToReg(Reg.acu, Reg.r2);
-                try self.shlRegImm(Reg.r2, 8); // r2 = lhs << 8 (low)
-                try self.asrRegImm(Reg.acu, 8); // acu = lhs >>a 8 (high)
-                try self.divsRegReg(Reg.r1, Reg.r2);
-                try self.movRegToReg(Reg.r2, Reg.acu);
+                try isa.movRegToReg(self, Reg.acu, Reg.r2);
+                try isa.shlRegImm(self, Reg.r2, 8); // r2 = lhs << 8 (low)
+                try isa.asrRegImm(self, Reg.acu, 8); // acu = lhs >>a 8 (high)
+                try isa.divsRegReg(self, Reg.r1, Reg.r2);
+                try isa.movRegToReg(self, Reg.r2, Reg.acu);
             } else {
                 // Signed 32÷16 divide. Dividend lives in acu:dst
                 // (high:low); the dividend is assumed to fit in
                 // 16 bits — sign-extension is not yet emitted.
-                try self.movRegToReg(Reg.acu, Reg.r2); // r2 = low half
-                try self.movImmToReg(0, Reg.acu); // high half = 0
-                try self.divsRegReg(Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
-                try self.movRegToReg(Reg.r2, Reg.acu);
+                try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = low half
+                try isa.movImmToReg(self, 0, Reg.acu); // high half = 0
+                try isa.divsRegReg(self, Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
+                try isa.movRegToReg(self, Reg.r2, Reg.acu);
             }
         },
         .mod => {
             // Same divs pattern as `div`, but keep `acu` (the
             // remainder is exactly what `mod` wants).
-            try self.movRegToReg(Reg.acu, Reg.r2); // r2 = low half
-            try self.movImmToReg(0, Reg.acu); // high half = 0
-            try self.divsRegReg(Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
+            try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = low half
+            try isa.movImmToReg(self, 0, Reg.acu); // high half = 0
+            try isa.divsRegReg(self, Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
         },
-        .bit_and => try self.andRegReg(Reg.acu, Reg.r1),
-        .bit_or => try self.orRegReg(Reg.acu, Reg.r1),
-        .bit_xor => try self.xorRegReg(Reg.acu, Reg.r1),
-        .shl => try self.shlRegReg(Reg.acu, Reg.r1),
-        .shr => try self.shrRegReg(Reg.acu, Reg.r1),
+        .bit_and => try isa.andRegReg(self, Reg.acu, Reg.r1),
+        .bit_or => try isa.orRegReg(self, Reg.acu, Reg.r1),
+        .bit_xor => try isa.xorRegReg(self, Reg.acu, Reg.r1),
+        .shl => try isa.shlRegReg(self, Reg.acu, Reg.r1),
+        .shr => try isa.shrRegReg(self, Reg.acu, Reg.r1),
         .eq, .neq, .lt, .lte, .gt, .gte => {
-            try self.cmpRegReg(Reg.acu, Reg.r1);
+            try isa.cmpRegReg(self, Reg.acu, Reg.r1);
             try materializeBoolFromFlags(self, b.op);
         },
         // allow-strict: handled by the short-circuit branch above; emitBinary never falls through here for these ops.
@@ -327,17 +328,17 @@ pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
             .eq, .neq, .lt, .lte, .gt, .gte => {
                 // Eval LHS into acu, eval RHS into r1, cmp acu, r1.
                 try emitExpr(self, b.rhs);
-                try self.pushReg(Reg.acu);
+                try isa.pushReg(self, Reg.acu);
                 try emitExpr(self, b.lhs);
-                try self.popReg(Reg.r1);
-                try self.cmpRegReg(Reg.acu, Reg.r1);
+                try isa.popReg(self, Reg.r1);
+                try isa.cmpRegReg(self, Reg.acu, Reg.r1);
                 try materializeBoolFromFlags(self, b.op);
-                try self.cmpRegImm(Reg.acu, 0);
+                try isa.cmpRegImm(self, Reg.acu, 0);
                 return;
             },
             .log_and, .log_or => {
                 try emitShortCircuitBool(self, b);
-                try self.cmpRegImm(Reg.acu, 0);
+                try isa.cmpRegImm(self, Reg.acu, 0);
                 return;
             },
             else => {},
@@ -345,14 +346,14 @@ pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
     }
     if (e.* == .unary and e.unary.op == .log_not) {
         try emitExpr(self, e.unary.operand);
-        try self.cmpRegImm(Reg.acu, 0);
+        try isa.cmpRegImm(self, Reg.acu, 0);
         try materializeBoolFromFlags(self, .eq);
-        try self.cmpRegImm(Reg.acu, 0);
+        try isa.cmpRegImm(self, Reg.acu, 0);
         return;
     }
     // Generic path — evaluate to acu, then test against 0.
     try emitExpr(self, e);
-    try self.cmpRegImm(Reg.acu, 0);
+    try isa.cmpRegImm(self, Reg.acu, 0);
 }
 
 /// Materialize a 0 / 1 boolean in `acu` from the current flag
@@ -377,14 +378,14 @@ pub fn materializeBoolFromFlags(self: *Emitter, op: ast.BinaryOp) !void {
     // true_label:
     //   mov 1, acu
     // end:
-    const true_patch = try self.emitJumpPlaceholder(taken_op);
-    try self.movImmToReg(0, Reg.acu);
-    const end_patch = try self.emitJumpPlaceholder(Op.jmp_addr);
+    const true_patch = try isa.emitJumpPlaceholder(self, taken_op);
+    try isa.movImmToReg(self, 0, Reg.acu);
+    const end_patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
     const true_offset = try self.currentOffset();
-    try self.movImmToReg(1, Reg.acu);
+    try isa.movImmToReg(self, 1, Reg.acu);
     const end_offset = try self.currentOffset();
-    try self.patchJumpTo(true_patch, true_offset);
-    try self.patchJumpTo(end_patch, end_offset);
+    try isa.patchJumpTo(self, true_patch, true_offset);
+    try isa.patchJumpTo(self, end_patch, end_offset);
 }
 
 /// Lower a short-circuiting `and` / `or` into a chain of
@@ -394,31 +395,31 @@ pub fn emitShortCircuitBool(self: *Emitter, b: ast.BinaryExpr) !void {
         .log_and => {
             // acu = lhs; if acu == 0 -> short-circuit false.
             try emitExpr(self, b.lhs);
-            try self.cmpRegImm(Reg.acu, 0);
-            const short_patch = try self.emitJumpPlaceholder(Op.jeq_addr);
+            try isa.cmpRegImm(self, Reg.acu, 0);
+            const short_patch = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
             try emitExpr(self, b.rhs);
-            try self.cmpRegImm(Reg.acu, 0);
+            try isa.cmpRegImm(self, Reg.acu, 0);
             try materializeBoolFromFlags(self, .neq);
-            const end_patch = try self.emitJumpPlaceholder(Op.jmp_addr);
+            const end_patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
             const short_offset = try self.currentOffset();
-            try self.movImmToReg(0, Reg.acu);
+            try isa.movImmToReg(self, 0, Reg.acu);
             const end_offset = try self.currentOffset();
-            try self.patchJumpTo(short_patch, short_offset);
-            try self.patchJumpTo(end_patch, end_offset);
+            try isa.patchJumpTo(self, short_patch, short_offset);
+            try isa.patchJumpTo(self, end_patch, end_offset);
         },
         .log_or => {
             try emitExpr(self, b.lhs);
-            try self.cmpRegImm(Reg.acu, 0);
-            const short_patch = try self.emitJumpPlaceholder(Op.jne_addr);
+            try isa.cmpRegImm(self, Reg.acu, 0);
+            const short_patch = try isa.emitJumpPlaceholder(self, Op.jne_addr);
             try emitExpr(self, b.rhs);
-            try self.cmpRegImm(Reg.acu, 0);
+            try isa.cmpRegImm(self, Reg.acu, 0);
             try materializeBoolFromFlags(self, .neq);
-            const end_patch = try self.emitJumpPlaceholder(Op.jmp_addr);
+            const end_patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
             const short_offset = try self.currentOffset();
-            try self.movImmToReg(1, Reg.acu);
+            try isa.movImmToReg(self, 1, Reg.acu);
             const end_offset = try self.currentOffset();
-            try self.patchJumpTo(short_patch, short_offset);
-            try self.patchJumpTo(end_patch, end_offset);
+            try isa.patchJumpTo(self, short_patch, short_offset);
+            try isa.patchJumpTo(self, end_patch, end_offset);
         },
         // allow-strict: caller filters to log_and / log_or before invoking this helper.
         else => unreachable,
@@ -544,7 +545,7 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     while (i > 0) {
         i -= 1;
         try emitExpr(self, c.args[i]);
-        try self.pushReg(Reg.acu);
+        try isa.pushReg(self, Reg.acu);
     }
 
     if (cross_bank) {
@@ -557,7 +558,7 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         try self.emitU16Le(0); // placeholder
         try self.emitByte(Reg.r1);
         const target_bank_byte: u8 = target_bank orelse 0;
-        try self.movImmToReg(target_bank_byte, Reg.r2);
+        try isa.movImmToReg(self, target_bank_byte, Reg.r2);
         try self.emitByte(Op.call_addr);
         const tramp_patch_offset = try self.currentOffset();
         try self.emitU16Le(0);
@@ -595,6 +596,6 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     if (c.args.len > 0 and !skip_cleanup) {
         // @as: each arg is one 16-bit word; arg count capped by parser.
         const drop_bytes: u16 = @intCast(c.args.len * 2);
-        try self.addImmToReg(drop_bytes, Reg.sp);
+        try isa.addImmToReg(self, drop_bytes, Reg.sp);
     }
 }

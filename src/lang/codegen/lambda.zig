@@ -49,6 +49,7 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
 const opcodes = @import("opcodes.zig");
+const isa = @import("isa.zig");
 const codegen_mod = @import("../codegen.zig");
 
 const Emitter = codegen_mod.Emitter;
@@ -220,24 +221,24 @@ pub fn emitPromotedLetInit(
     slot_ofs: i8,
 ) !void {
     // Allocate a 2-byte cell on the heap.
-    try self.movImmToReg(2, Reg.acu);
+    try isa.movImmToReg(self, 2, Reg.acu);
     try self.emitByte(Op.sys);
     try self.emitByte(Sys.alloc);
     // acu = cell pointer; store it in the local slot.
-    try self.movRegToRegOffset(Reg.acu, Reg.fp, slot_ofs);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, slot_ofs);
     // Seed the cell with the init value when present.
     if (init) |init_expr| {
-        try self.movRegToReg(Reg.acu, Reg.r1); // r1 = cell ptr
-        try self.pushReg(Reg.r1);
+        try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = cell ptr
+        try isa.pushReg(self, Reg.r1);
         try self.emitExpr(init_expr); // acu = init value
-        try self.popReg(Reg.r1);
+        try isa.popReg(self, Reg.r1);
         try cellStore(self, Reg.r1, Reg.acu);
     }
 }
 
 /// Read a promoted local: load cell pointer from slot, then deref.
 pub fn emitPromotedIdentLoad(self: *Emitter, slot_ofs: i8) !void {
-    try self.movRegOffsetToReg(Reg.fp, slot_ofs, Reg.r1);
+    try isa.movRegOffsetToReg(self, Reg.fp, slot_ofs, Reg.r1);
     try cellLoad(self, Reg.r1, Reg.acu);
 }
 
@@ -245,9 +246,9 @@ pub fn emitPromotedIdentLoad(self: *Emitter, slot_ofs: i8) !void {
 /// the cell pointer, deref-write.
 pub fn emitPromotedAssign(self: *Emitter, slot_ofs: i8, value: *const ast.Expr) !void {
     try self.emitExpr(value);
-    try self.pushReg(Reg.acu);
-    try self.movRegOffsetToReg(Reg.fp, slot_ofs, Reg.r1);
-    try self.popReg(Reg.r2);
+    try isa.pushReg(self, Reg.acu);
+    try isa.movRegOffsetToReg(self, Reg.fp, slot_ofs, Reg.r1);
+    try isa.popReg(self, Reg.r2);
     try cellStore(self, Reg.r1, Reg.r2);
 }
 
@@ -277,11 +278,11 @@ pub fn emitLambdaExpr(self: *Emitter, lambda: ast.LambdaExpr, expr: *const ast.E
 
     // @as: tuple size = 2 (fn_ptr) + 2*N (capture slots). N caps well below 32k by parser limits.
     const tuple_size: u16 = 2 + @as(u16, @intCast(li.captures.items.len * 2));
-    try self.movImmToReg(tuple_size, Reg.acu);
+    try isa.movImmToReg(self, tuple_size, Reg.acu);
     try self.emitByte(Op.sys);
     try self.emitByte(Sys.alloc);
     // acu = tuple ptr; stash in r1 for the populate phase.
-    try self.movRegToReg(Reg.acu, Reg.r1);
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
 
     // Write fn_ptr at offset 0 — placeholder, patched when the
     // lambda body emits at the end of the fn pass.
@@ -304,15 +305,15 @@ pub fn emitLambdaExpr(self: *Emitter, lambda: ast.LambdaExpr, expr: *const ast.E
     for (li.captures.items, 0..) |cap, idx| {
         // @as: idx fits u16 — capture count caps below 32k.
         const slot_offset: u16 = 2 + @as(u16, @intCast(idx)) * 2;
-        try self.pushReg(Reg.r1); // preserve tuple ptr
+        try isa.pushReg(self, Reg.r1); // preserve tuple ptr
         try emitCaptureSource(self, cap);
-        try self.popReg(Reg.r1);
+        try isa.popReg(self, Reg.r1);
         // acu = capture value (cell ptr if promoted, value otherwise)
         try emitWordStoreAtOffset(self, Reg.r1, slot_offset, Reg.acu);
     }
 
     // Result: tuple ptr in acu.
-    try self.movRegToReg(Reg.r1, Reg.acu);
+    try isa.movRegToReg(self, Reg.r1, Reg.acu);
 }
 
 /// Load a capture's source value into `acu` at closure-creation
@@ -336,11 +337,11 @@ fn emitCaptureSource(self: *Emitter, name: []const u8) !void {
         return;
     }
     if (self.locals.get(name)) |ofs| {
-        try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
+        try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
         return;
     }
     if (self.params.get(name)) |ofs| {
-        try self.movRegOffsetToReg(Reg.fp, ofs, Reg.acu);
+        try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
         return;
     }
     if (self.globals.get(name)) |g| {
@@ -457,7 +458,7 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
     if (local_count > 0) {
         // @as: 2 bytes per slot, caps well below u16.
         const reserve_bytes: u16 = @intCast(local_count * 2);
-        try self.subImmFromReg(reserve_bytes, Reg.sp);
+        try isa.subImmFromReg(self, reserve_bytes, Reg.sp);
     }
 
     try self.pushBlock();
@@ -484,7 +485,7 @@ pub const CaptureSlot = struct {
 /// Load env_ptr from `[fp + 4]` into `dst` — used by capture
 /// loads / stores inside the lambda body.
 fn loadEnvPtr(self: *Emitter, dst: u8) !void {
-    try self.movRegOffsetToReg(Reg.fp, 4, dst);
+    try isa.movRegOffsetToReg(self, Reg.fp, 4, dst);
 }
 
 /// Read a captured binding from inside the lambda body.
@@ -493,7 +494,7 @@ pub fn emitCaptureLoad(self: *Emitter, slot: CaptureSlot) !void {
     try loadEnvPtr(self, Reg.r1);
     try emitWordLoadAtOffset(self, Reg.r1, slot.env_offset, Reg.acu);
     if (slot.is_cell) {
-        try self.movRegToReg(Reg.acu, Reg.r1);
+        try isa.movRegToReg(self, Reg.acu, Reg.r1);
         try cellLoad(self, Reg.r1, Reg.acu);
     }
 }
@@ -509,10 +510,10 @@ pub fn emitCaptureStore(self: *Emitter, slot: CaptureSlot, value: *const ast.Exp
         return;
     }
     try self.emitExpr(value);
-    try self.pushReg(Reg.acu);
+    try isa.pushReg(self, Reg.acu);
     try loadEnvPtr(self, Reg.r1);
     try emitWordLoadAtOffset(self, Reg.r1, slot.env_offset, Reg.r1);
-    try self.popReg(Reg.r2);
+    try isa.popReg(self, Reg.r2);
     try cellStore(self, Reg.r1, Reg.r2);
 }
 
@@ -528,7 +529,7 @@ pub fn emitClosureCall(
 ) !void {
     // Evaluate closure value into r1 (the tuple pointer).
     try self.emitExpr(callee);
-    try self.movRegToReg(Reg.acu, Reg.r1);
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
 
     // Load fn_ptr from [r1 + 0] into r3.
     try emitWordLoadAtOffset(self, Reg.r1, 0, Reg.r3);
@@ -537,23 +538,23 @@ pub fn emitClosureCall(
     var i: usize = c.args.len;
     while (i > 0) {
         i -= 1;
-        try self.pushReg(Reg.r1);
-        try self.pushReg(Reg.r3);
+        try isa.pushReg(self, Reg.r1);
+        try isa.pushReg(self, Reg.r3);
         try self.emitExpr(c.args[i]);
-        try self.popReg(Reg.r3);
-        try self.popReg(Reg.r1);
-        try self.pushReg(Reg.acu);
+        try isa.popReg(self, Reg.r3);
+        try isa.popReg(self, Reg.r1);
+        try isa.pushReg(self, Reg.acu);
     }
 
     // Push env_ptr (the closure itself) as the hidden first arg.
-    try self.pushReg(Reg.r1);
+    try isa.pushReg(self, Reg.r1);
 
     try self.emitByte(Op.call_reg);
     try self.emitByte(Reg.r3);
 
     // @as: widen usize args.len to u16 — practical method arity caps well below 32k.
     const drop_bytes: u16 = 2 + @as(u16, @intCast(c.args.len * 2));
-    try self.addImmToReg(drop_bytes, Reg.sp);
+    try isa.addImmToReg(self, drop_bytes, Reg.sp);
 }
 
 /// Patch every recorded lambda-fn-ptr placeholder with the
@@ -1057,21 +1058,21 @@ fn findLambdaInfo(self: *Emitter, expr: *const ast.Expr) ?*const LambdaInfo {
 fn emitWordLoadAtOffset(self: *Emitter, base: u8, offset: u16, dst: u8) !void {
     if (offset <= 127) {
         // @as: offset fits i8 (≤127); the cast is a no-op for the value range.
-        try self.movRegOffsetToReg(base, @as(i8, @intCast(offset)), dst);
+        try isa.movRegOffsetToReg(self, base, @as(i8, @intCast(offset)), dst);
         return;
     }
-    try self.movRegToReg(base, Reg.r2);
-    try self.addImmToReg(offset, Reg.r2);
-    try self.movRegOffsetToReg(Reg.r2, 0, dst);
+    try isa.movRegToReg(self, base, Reg.r2);
+    try isa.addImmToReg(self, offset, Reg.r2);
+    try isa.movRegOffsetToReg(self, Reg.r2, 0, dst);
 }
 
 fn emitWordStoreAtOffset(self: *Emitter, base: u8, offset: u16, src: u8) !void {
     if (offset <= 127) {
         // @as: offset fits i8 (≤127); the cast is a no-op for the value range.
-        try self.movRegToRegOffset(src, base, @as(i8, @intCast(offset)));
+        try isa.movRegToRegOffset(self, src, base, @as(i8, @intCast(offset)));
         return;
     }
-    try self.movRegToReg(base, Reg.r3);
-    try self.addImmToReg(offset, Reg.r3);
-    try self.movRegToRegOffset(src, Reg.r3, 0);
+    try isa.movRegToReg(self, base, Reg.r3);
+    try isa.addImmToReg(self, offset, Reg.r3);
+    try isa.movRegToRegOffset(self, src, Reg.r3, 0);
 }

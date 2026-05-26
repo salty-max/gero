@@ -6,6 +6,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
+const isa = @import("isa.zig");
 const pattern = @import("pattern.zig");
 
 const Emitter = codegen.Emitter;
@@ -63,13 +64,13 @@ pub fn popBlockWithDefers(self: *Emitter) !void {
 /// to the caller after defers run).
 pub fn emitDefersLifo(self: *Emitter, stmts: []const *const ast.Statement) !void {
     if (stmts.len == 0) return;
-    try self.pushReg(Reg.acu);
+    try isa.pushReg(self, Reg.acu);
     var i = stmts.len;
     while (i > 0) {
         i -= 1;
         try self.emitStatement(stmts[i].*);
     }
-    try self.popReg(Reg.acu);
+    try isa.popReg(self, Reg.acu);
 }
 
 /// Emit every active block's defers in LIFO order from the
@@ -130,15 +131,15 @@ pub fn emitIfStmt(self: *Emitter, is_: ast.IfStmt) !void {
     for (is_.arms) |arm| {
         const skip_body_patch = try emitIfArmTest(self, arm);
         try emitScopedBody(self, arm.body);
-        try end_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jmp_addr));
+        try end_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
         const after_body = try self.currentOffset();
-        try self.patchJumpTo(skip_body_patch, after_body);
+        try isa.patchJumpTo(self, skip_body_patch, after_body);
     }
 
     if (is_.else_body) |eb| try emitScopedBody(self, eb);
 
     const end_offset = try self.currentOffset();
-    for (end_patches.items) |p| try self.patchJumpTo(p, end_offset);
+    for (end_patches.items) |p| try isa.patchJumpTo(self, p, end_offset);
 }
 
 /// Emit the test for one if-arm and return the offset of the
@@ -147,7 +148,7 @@ pub fn emitIfStmt(self: *Emitter, is_: ast.IfStmt) !void {
 fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
     if (arm.cond) |c| {
         try self.emitCondBranch(c);
-        return try self.emitJumpPlaceholder(Op.jeq_addr);
+        return try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     }
     // `if let pat = expr [when guard]` — ident-binder form.
     const pat = arm.let_pattern.?.*;
@@ -158,21 +159,21 @@ fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
             const name = self.source[id.name.start..id.name.end];
             const dup = try self.arena.dupe(u8, name);
             const ofs = try self.allocLocal(dup);
-            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
             if (arm.let_guard) |g| {
                 try self.emitExpr(g);
-                try self.cmpRegImm(Reg.acu, 0);
-                return try self.emitJumpPlaceholder(Op.jeq_addr);
+                try isa.cmpRegImm(self, Reg.acu, 0);
+                return try isa.emitJumpPlaceholder(self, Op.jeq_addr);
             }
             // No guard — ident binder always matches; emit a
             // never-taken skip for symmetry with the cond arm.
-            try self.movImmToReg(1, Reg.r1);
-            try self.cmpRegImm(Reg.r1, 0);
-            return try self.emitJumpPlaceholder(Op.jeq_addr);
+            try isa.movImmToReg(self, 1, Reg.r1);
+            try isa.cmpRegImm(self, Reg.r1, 0);
+            return try isa.emitJumpPlaceholder(self, Op.jeq_addr);
         },
         else => {
             try self.unsupported(arm.span, "`if let` patterns other than a bare ident");
-            return try self.emitJumpPlaceholder(Op.jeq_addr);
+            return try isa.emitJumpPlaceholder(self, Op.jeq_addr);
         },
     }
 }
@@ -201,7 +202,7 @@ pub fn emitWhileStmt(self: *Emitter, ws: ast.WhileStmt) !void {
 
     const exit_on_false_patch = if (ws.cond) |c| blk: {
         try self.emitCondBranch(c);
-        break :blk try self.emitJumpPlaceholder(Op.jeq_addr);
+        break :blk try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     } else blk: {
         const pat = ws.let_pattern.?.*;
         try self.emitExpr(ws.let_expr.?);
@@ -210,19 +211,19 @@ pub fn emitWhileStmt(self: *Emitter, ws: ast.WhileStmt) !void {
                 const name = self.source[id.name.start..id.name.end];
                 const dup = try self.arena.dupe(u8, name);
                 const ofs = try self.allocLocal(dup);
-                try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+                try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
                 if (ws.let_guard) |g| {
                     try self.emitExpr(g);
-                    try self.cmpRegImm(Reg.acu, 0);
-                    break :blk try self.emitJumpPlaceholder(Op.jeq_addr);
+                    try isa.cmpRegImm(self, Reg.acu, 0);
+                    break :blk try isa.emitJumpPlaceholder(self, Op.jeq_addr);
                 }
-                try self.movImmToReg(1, Reg.r1);
-                try self.cmpRegImm(Reg.r1, 0);
-                break :blk try self.emitJumpPlaceholder(Op.jeq_addr);
+                try isa.movImmToReg(self, 1, Reg.r1);
+                try isa.cmpRegImm(self, Reg.r1, 0);
+                break :blk try isa.emitJumpPlaceholder(self, Op.jeq_addr);
             },
             else => {
                 try self.unsupported(ws.span, "`while let` patterns other than a bare ident");
-                break :blk try self.emitJumpPlaceholder(Op.jeq_addr);
+                break :blk try isa.emitJumpPlaceholder(self, Op.jeq_addr);
             },
         }
     };
@@ -230,14 +231,14 @@ pub fn emitWhileStmt(self: *Emitter, ws: ast.WhileStmt) !void {
     for (ws.body) |s| try self.emitStatement(s);
     try popBlockWithDefers(self);
 
-    try self.emitJumpBack(cond_offset);
+    try isa.emitJumpBack(self, cond_offset);
 
     const exit_offset = try self.currentOffset();
-    try self.patchJumpTo(exit_on_false_patch, exit_offset);
+    try isa.patchJumpTo(self, exit_on_false_patch, exit_offset);
 
     var frame = self.loop_stack.pop().?;
-    for (frame.break_patches.items) |p| try self.patchJumpTo(p, exit_offset);
-    for (frame.continue_patches.items) |p| try self.patchJumpTo(p, cond_offset);
+    for (frame.break_patches.items) |p| try isa.patchJumpTo(self, p, exit_offset);
+    for (frame.continue_patches.items) |p| try isa.patchJumpTo(self, p, cond_offset);
     frame.break_patches.deinit(self.allocator);
     frame.continue_patches.deinit(self.allocator);
 }
@@ -275,8 +276,8 @@ pub fn emitRepeatStmt(self: *Emitter, rs: ast.RepeatStmt) !void {
 
     const exit_offset = try self.currentOffset();
     var frame = self.loop_stack.pop().?;
-    for (frame.break_patches.items) |p| try self.patchJumpTo(p, exit_offset);
-    for (frame.continue_patches.items) |p| try self.patchJumpTo(p, test_offset);
+    for (frame.break_patches.items) |p| try isa.patchJumpTo(self, p, exit_offset);
+    for (frame.continue_patches.items) |p| try isa.patchJumpTo(self, p, test_offset);
     frame.break_patches.deinit(self.allocator);
     frame.continue_patches.deinit(self.allocator);
 }
@@ -300,9 +301,9 @@ pub fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
     const end_ofs = try self.allocLocal(try self.arena.dupe(u8, "\x00__for_end"));
 
     try self.emitExpr(range.start);
-    try self.movRegToRegOffset(Reg.acu, Reg.fp, var_ofs);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, var_ofs);
     try self.emitExpr(range.end);
-    try self.movRegToRegOffset(Reg.acu, Reg.fp, end_ofs);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, end_ofs);
 
     const label_str: ?[]const u8 = if (fs.label) |s|
         try self.arena.dupe(u8, self.source[s.start..s.end])
@@ -321,46 +322,46 @@ pub fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
     // Top-of-loop: load `current`, load `end`, compare. Exit
     // when current > end (inclusive) or current >= end (exclusive).
     const test_offset = try self.currentOffset();
-    try self.movRegOffsetToReg(Reg.fp, var_ofs, Reg.acu);
-    try self.movRegOffsetToReg(Reg.fp, end_ofs, Reg.r1);
-    try self.cmpRegReg(Reg.acu, Reg.r1);
+    try isa.movRegOffsetToReg(self, Reg.fp, var_ofs, Reg.acu);
+    try isa.movRegOffsetToReg(self, Reg.fp, end_ofs, Reg.r1);
+    try isa.cmpRegReg(self, Reg.acu, Reg.r1);
     const exit_patch = if (inclusive)
-        try self.emitJumpPlaceholder(Op.jgt_addr)
+        try isa.emitJumpPlaceholder(self, Op.jgt_addr)
     else
-        try self.emitJumpPlaceholder(Op.jge_addr);
+        try isa.emitJumpPlaceholder(self, Op.jge_addr);
 
     for (fs.body) |s| try self.emitStatement(s);
     try popBlockWithDefers(self);
 
     // `continue` target — the step-and-back-edge.
     const continue_offset = try self.currentOffset();
-    try self.movRegOffsetToReg(Reg.fp, var_ofs, Reg.acu);
+    try isa.movRegOffsetToReg(self, Reg.fp, var_ofs, Reg.acu);
     if (step_expr) |se| {
         if (se.* == .int_lit) {
             // @as: parser stores int_lit as i32; range steps fit i16 per spec §4.5.1.
             const step_i16: i16 = @truncate(se.int_lit.value);
             // safety: i16 → u16 keeps the two's-complement bit pattern for negative steps.
             const step_val: u16 = @bitCast(step_i16);
-            try self.addImmToReg(step_val, Reg.acu);
+            try isa.addImmToReg(self, step_val, Reg.acu);
         } else {
-            try self.pushReg(Reg.acu);
+            try isa.pushReg(self, Reg.acu);
             try self.emitExpr(se);
-            try self.movRegToReg(Reg.acu, Reg.r1);
-            try self.popReg(Reg.acu);
-            try self.addRegToAcu(Reg.r1);
+            try isa.movRegToReg(self, Reg.acu, Reg.r1);
+            try isa.popReg(self, Reg.acu);
+            try isa.addRegToAcu(self, Reg.r1);
         }
     } else {
-        try self.addImmToReg(1, Reg.acu);
+        try isa.addImmToReg(self, 1, Reg.acu);
     }
-    try self.movRegToRegOffset(Reg.acu, Reg.fp, var_ofs);
-    try self.emitJumpBack(test_offset);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, var_ofs);
+    try isa.emitJumpBack(self, test_offset);
 
     const exit_offset = try self.currentOffset();
-    try self.patchJumpTo(exit_patch, exit_offset);
+    try isa.patchJumpTo(self, exit_patch, exit_offset);
 
     var frame = self.loop_stack.pop().?;
-    for (frame.break_patches.items) |p| try self.patchJumpTo(p, exit_offset);
-    for (frame.continue_patches.items) |p| try self.patchJumpTo(p, continue_offset);
+    for (frame.break_patches.items) |p| try isa.patchJumpTo(self, p, exit_offset);
+    for (frame.continue_patches.items) |p| try isa.patchJumpTo(self, p, continue_offset);
     frame.break_patches.deinit(self.allocator);
     frame.continue_patches.deinit(self.allocator);
 }
@@ -381,7 +382,7 @@ pub fn emitLoopJump(self: *Emitter, j: ast.LoopJumpStmt, kind: LoopJumpKind) !vo
         return;
     };
     try unwindDefersDownTo(self, frame.body_block_idx);
-    const patch = try self.emitJumpPlaceholder(Op.jmp_addr);
+    const patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
     switch (kind) {
         .break_ => try frame.break_patches.append(self.allocator, patch),
         .continue_ => try frame.continue_patches.append(self.allocator, patch),
@@ -413,7 +414,7 @@ fn emitMatchSequential(self: *Emitter, ms: ast.MatchStmt) !void {
             else => {
                 try self.emitExpr(ms.scrutinee);
                 const ofs = try self.allocLocal(try self.arena.dupe(u8, "\x00__match"));
-                try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+                try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
                 break :blk ofs;
             },
         }
@@ -427,7 +428,7 @@ fn emitMatchSequential(self: *Emitter, ms: ast.MatchStmt) !void {
         if (scrutinee_is_ident) {
             try self.emitExpr(ms.scrutinee);
         } else {
-            try self.movRegOffsetToReg(Reg.fp, scrutinee_ofs, Reg.acu);
+            try isa.movRegOffsetToReg(self, Reg.fp, scrutinee_ofs, Reg.acu);
         }
 
         var skip_patches: std.ArrayList(usize) = .empty;
@@ -436,19 +437,19 @@ fn emitMatchSequential(self: *Emitter, ms: ast.MatchStmt) !void {
 
         if (arm.guard) |g| {
             try self.emitExpr(g);
-            try self.cmpRegImm(Reg.acu, 0);
-            try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jeq_addr));
+            try isa.cmpRegImm(self, Reg.acu, 0);
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
         }
 
         try emitScopedBody(self, arm.body);
-        try end_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jmp_addr));
+        try end_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
 
         const after_arm = try self.currentOffset();
-        for (skip_patches.items) |p| try self.patchJumpTo(p, after_arm);
+        for (skip_patches.items) |p| try isa.patchJumpTo(self, p, after_arm);
     }
 
     const end_offset = try self.currentOffset();
-    for (end_patches.items) |p| try self.patchJumpTo(p, end_offset);
+    for (end_patches.items) |p| try isa.patchJumpTo(self, p, end_offset);
 }
 
 /// Detect the spec §4.8.5 "single-arm tag dispatch" shape and,
@@ -544,36 +545,36 @@ fn tryEmitTagJumpTable(self: *Emitter, ms: ast.MatchStmt) !bool {
     // Bounds: `tag > max_tag` → fall through to default. Even
     // exhaustive matches keep this — a stray u8 value past the
     // last declared variant can still reach here through a cast.
-    try self.cmpRegImm(Reg.acu, max_tag);
-    const bounds_patch = try self.emitJumpPlaceholder(Op.jgt_addr);
+    try isa.cmpRegImm(self, Reg.acu, max_tag);
+    const bounds_patch = try isa.emitJumpPlaceholder(self, Op.jgt_addr);
 
     // acu = 3*tag (each table slot is `jmp_addr <body>`, 3 bytes).
-    try self.movRegToReg(Reg.acu, Reg.r1);
-    try self.shlRegImm(Reg.r1, 1); // r1 = 2*tag
-    try self.addRegToAcu(Reg.r1); // acu = 3*tag
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try isa.shlRegImm(self, Reg.r1, 1); // r1 = 2*tag
+    try isa.addRegToAcu(self, Reg.r1); // acu = 3*tag
 
     // acu = table_base + 3*tag — patched once the table address is known.
     try self.emitByte(Op.mov_imm16_reg);
     const table_base_patch = try self.currentOffset();
     try self.emitU16Le(0);
     try self.emitByte(Reg.r1);
-    try self.addRegToAcu(Reg.r1);
+    try isa.addRegToAcu(self, Reg.r1);
 
     // jmp [acu] — control transfers to the `jmp_addr <body>` at
     // table_base + 3*tag, which then jumps to the actual body.
-    try self.jmpReg(Reg.acu);
+    try isa.jmpReg(self, Reg.acu);
 
     // ---- emit table ----
     const table_offset = try self.currentOffset();
     // Patch the dispatch's `mov_imm16` so r1 = table_base. Same
     // 2-byte LE address slot as a forward `jmp` patch.
-    try self.patchJumpTo(table_base_patch, table_offset);
+    try isa.patchJumpTo(self, table_base_patch, table_offset);
     // Slot per tag in 0..=max_tag. Each is a `jmp_addr <body>`
     // placeholder; address slot resolves once the body emits.
     var slot_patches: [256]usize = undefined;
     var t: usize = 0;
     while (t < table_len) : (t += 1) {
-        slot_patches[t] = try self.emitJumpPlaceholder(Op.jmp_addr);
+        slot_patches[t] = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
     }
 
     // ---- emit arm bodies + collect end-of-match jumps ----
@@ -590,30 +591,30 @@ fn tryEmitTagJumpTable(self: *Emitter, ms: ast.MatchStmt) !bool {
             const name = self.source[arm.pattern.ident.name.start..arm.pattern.ident.name.end];
             const dup = try self.arena.dupe(u8, name);
             const ofs = try self.allocLocal(dup);
-            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
         }
         try emitScopedBody(self, arm.body);
-        try end_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jmp_addr));
+        try end_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
     }
 
     // The "default" target is the wildcard arm body when present,
     // otherwise the post-match end. Unmapped table slots and the
     // out-of-range bounds branch both land here.
     const default_offset: usize = if (wildcard_arm) |w| arm_offsets[w] else try self.currentOffset();
-    try self.patchJumpTo(bounds_patch, default_offset);
+    try isa.patchJumpTo(self, bounds_patch, default_offset);
 
     // Patch each table slot to its arm's body (or default).
     t = 0;
     while (t < table_len) : (t += 1) {
         // safety: tag_to_arm is indexed 0..=255; t ≤ max_tag ≤ 255.
         const target = if (tag_to_arm[@intCast(t)]) |arm_idx| arm_offsets[arm_idx] else default_offset;
-        try self.patchJumpTo(slot_patches[t], target);
+        try isa.patchJumpTo(self, slot_patches[t], target);
     }
 
     // Every arm body terminates with a `jmp end`. Resolve them all
     // to the byte after the match statement.
     const end_offset = try self.currentOffset();
-    for (end_patches.items) |p| try self.patchJumpTo(p, end_offset);
+    for (end_patches.items) |p| try isa.patchJumpTo(self, p, end_offset);
 
     return true;
 }

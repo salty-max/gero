@@ -57,6 +57,7 @@ const expr_emit = @import("codegen/expr.zig");
 const control_flow = @import("codegen/control_flow.zig");
 const class = @import("codegen/class.zig");
 const lambda = @import("codegen/lambda.zig");
+const isa = @import("codegen/isa.zig");
 const bake_mod = @import("bake.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
@@ -621,7 +622,7 @@ pub const Emitter = struct {
     /// Pointer to the buffer the next byte should go into — the
     /// base `code` buffer when no `@bank` is active, otherwise the
     /// per-bank buffer (created lazily on first byte).
-    fn currentCode(self: *Emitter) !*std.ArrayList(u8) {
+    pub fn currentCode(self: *Emitter) !*std.ArrayList(u8) {
         if (self.current_bank) |b| {
             const gop = try self.banks.getOrPut(self.allocator, b);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -654,317 +655,11 @@ pub const Emitter = struct {
         try self.emitByte(@intCast(value >> 8));
     }
 
-    // ---------- ISA instructions used in M1 ----------
-
-    /// `mov imm16, reg` (0x10) — `reg ← imm`.
-    pub fn movImmToReg(self: *Emitter, imm: u16, reg: u8) !void {
-        try self.emitByte(Op.mov_imm16_reg);
-        try self.emitU16Le(imm);
-        try self.emitByte(reg);
-    }
-
-    /// `mov src, dst` (0x11) — `dst ← src`.
-    pub fn movRegToReg(self: *Emitter, src: u8, dst: u8) !void {
-        try self.emitByte(Op.mov_reg_reg);
-        try self.emitByte(src);
-        try self.emitByte(dst);
-    }
-
-    /// `mov [base + ofs], dst` (0x1C) — load fp-relative into reg.
-    pub fn movRegOffsetToReg(self: *Emitter, base: u8, ofs: i8, dst: u8) !void {
-        try self.emitByte(Op.mov_reg_offset_reg);
-        try self.emitByte(base);
-        // safety: i8 → u8 bit pattern; reg_offset is signed byte per ISA §5.1.
-        try self.emitByte(@bitCast(ofs));
-        try self.emitByte(dst);
-    }
-
-    /// `mov src, [base + ofs]` (0x1D) — store reg to fp-relative.
-    /// `mov src, [base + ofs]` (0x1D) — store reg to fp-relative.
-    pub fn movRegToRegOffset(self: *Emitter, src: u8, base: u8, ofs: i8) !void {
-        try self.emitByte(Op.mov_reg_reg_offset);
-        try self.emitByte(src);
-        try self.emitByte(base);
-        // safety: i8 → u8 bit pattern; reg_offset is signed byte per ISA §5.1.
-        try self.emitByte(@bitCast(ofs));
-    }
-
-    /// `mov [addr], reg` (0x13) — load 16-bit word from addr.
-    fn movAddrToReg(self: *Emitter, addr: u16, dst: u8) !void {
-        try self.emitByte(Op.mov_addr_to_reg);
-        try self.emitU16Le(addr);
-        try self.emitByte(dst);
-    }
-
-    /// `mov src, [addr]` (0x12) — store 16-bit word to addr.
-    fn movRegToAddr(self: *Emitter, src: u8, addr: u16) !void {
-        try self.emitByte(Op.mov_reg_to_addr);
-        try self.emitByte(src);
-        try self.emitU16Le(addr);
-    }
-
-    /// `mov [zp], reg` (0x1A) — load 16-bit word from zp slot.
-    fn movZpToReg(self: *Emitter, zp: u8, dst: u8) !void {
-        try self.emitByte(Op.mov_zp_to_reg);
-        try self.emitByte(zp);
-        try self.emitByte(dst);
-    }
-
-    /// `mov src, [zp]` (0x19) — store 16-bit word to zp slot.
-    fn movRegToZp(self: *Emitter, src: u8, zp: u8) !void {
-        try self.emitByte(Op.mov_reg_to_zp);
-        try self.emitByte(src);
-        try self.emitByte(zp);
-    }
-
-    /// `mov8 [addr], reg` (0x22) — load 1-byte from addr (zero-
-    /// extend into the 16-bit dst).
-    fn mov8AddrToReg(self: *Emitter, addr: u16, dst: u8) !void {
-        try self.emitByte(Op.mov8_addr_to_reg);
-        try self.emitU16Le(addr);
-        try self.emitByte(dst);
-    }
-
-    /// `mov8 [zp], reg` (0x29) — load 1-byte from zp slot.
-    fn mov8ZpToReg(self: *Emitter, zp: u8, dst: u8) !void {
-        try self.emitByte(Op.mov8_zp_to_reg);
-        try self.emitByte(zp);
-        try self.emitByte(dst);
-    }
-
-    /// `movl reg, [addr]` (0x27) — store reg's low byte to addr.
-    /// Used for 1-byte global stores so neighboring bytes stay
-    /// untouched (critical for MMIO).
-    fn movlRegToAddr(self: *Emitter, src: u8, addr: u16) !void {
-        try self.emitByte(Op.movl_reg_to_addr);
-        try self.emitByte(src);
-        try self.emitU16Le(addr);
-    }
-
-    /// `movl reg, [zp]` (0x2B) — store reg's low byte to zp slot.
-    fn movlRegToZp(self: *Emitter, src: u8, zp: u8) !void {
-        try self.emitByte(Op.movl_reg_to_zp);
-        try self.emitByte(src);
-        try self.emitByte(zp);
-    }
-
-    /// `push reg` (0x31).
-    pub fn pushReg(self: *Emitter, reg: u8) !void {
-        try self.emitByte(Op.push_reg);
-        try self.emitByte(reg);
-    }
-
-    /// `pop reg` (0x32).
-    pub fn popReg(self: *Emitter, reg: u8) !void {
-        try self.emitByte(Op.pop_reg);
-        try self.emitByte(reg);
-    }
-
-    /// `add imm16, reg` (0x40) — `reg ← reg + imm`.
-    pub fn addImmToReg(self: *Emitter, imm: u16, reg: u8) !void {
-        try self.emitByte(Op.add_imm16_reg);
-        try self.emitU16Le(imm);
-        try self.emitByte(reg);
-    }
-
-    /// `sub imm16, reg` (0x43) — `reg ← reg - imm`.
-    pub fn subImmFromReg(self: *Emitter, imm: u16, reg: u8) !void {
-        try self.emitByte(Op.sub_imm16_reg);
-        try self.emitU16Le(imm);
-        try self.emitByte(reg);
-    }
-
-    /// `add reg` (0x42) — `acu ← acu + reg`.
-    pub fn addRegToAcu(self: *Emitter, reg: u8) !void {
-        try self.emitByte(Op.add_reg_acu);
-        try self.emitByte(reg);
-    }
-
-    /// `sub reg` (0x45) — `acu ← acu - reg`.
-    pub fn subRegFromAcu(self: *Emitter, reg: u8) !void {
-        try self.emitByte(Op.sub_reg_acu);
-        try self.emitByte(reg);
-    }
-
-    /// `mul src, dst` (0x47) — `dst ← dst * src` (unsigned 32-bit
-    /// product; V/C set when `high != 0`).
-    pub fn mulRegReg(self: *Emitter, src: u8, dst: u8) !void {
-        try self.emitByte(Op.mul_reg_reg);
-        try self.emitByte(src);
-        try self.emitByte(dst);
-    }
-
-    /// `muls src, dst` (0x55) — signed `dst ← dst * src`. V/C set
-    /// when the signed result overflows `i16` — the lang's debug
-    /// overflow trap on `*` branches on V without false positives
-    /// that the unsigned `mul`'s V flag would produce on legitimate
-    /// negative operands.
-    pub fn mulsRegReg(self: *Emitter, src: u8, dst: u8) !void {
-        try self.emitByte(Op.muls_reg_reg);
-        try self.emitByte(src);
-        try self.emitByte(dst);
-    }
-
-    /// `divs src, dst` (0x4E) — signed `dst ← dst / src`.
-    pub fn divsRegReg(self: *Emitter, src: u8, dst: u8) !void {
-        try self.emitByte(Op.divs_reg_reg);
-        try self.emitByte(src);
-        try self.emitByte(dst);
-    }
-
-    /// `neg reg` (0x4A) — `reg ← -reg` (two's complement).
-    pub fn negReg(self: *Emitter, reg: u8) !void {
-        try self.emitByte(Op.neg_reg);
-        try self.emitByte(reg);
-    }
-
-    /// `cmp reg, imm16` (0x80) — flags ← reg - imm. Result discarded.
-    /// `cmp reg, imm16` (0x80) — flags ← reg - imm.
-    pub fn cmpRegImm(self: *Emitter, reg: u8, imm: u16) !void {
-        try self.emitByte(Op.cmp_reg_imm16);
-        try self.emitByte(reg);
-        try self.emitU16Le(imm);
-    }
-
-    /// `cmp dst, src` (0x81) — flags ← dst - src.
-    pub fn cmpRegReg(self: *Emitter, dst: u8, src: u8) !void {
-        try self.emitByte(Op.cmp_reg_reg);
-        try self.emitByte(dst);
-        try self.emitByte(src);
-    }
-
-    /// `and src, dst` (0x61) — `dst ← dst & src`. Source-first byte
-    /// per `bitwise.andRegReg` decode.
-    pub fn andRegReg(self: *Emitter, dst: u8, src: u8) !void {
-        try self.emitByte(Op.and_reg_reg);
-        try self.emitByte(src);
-        try self.emitByte(dst);
-    }
-
-    /// `or src, dst` (0x63).
-    pub fn orRegReg(self: *Emitter, dst: u8, src: u8) !void {
-        try self.emitByte(Op.or_reg_reg);
-        try self.emitByte(src);
-        try self.emitByte(dst);
-    }
-
-    /// `xor src, dst` (0x65).
-    pub fn xorRegReg(self: *Emitter, dst: u8, src: u8) !void {
-        try self.emitByte(Op.xor_reg_reg);
-        try self.emitByte(src);
-        try self.emitByte(dst);
-    }
-
-    /// `not reg` (0x66) — `reg ← ~reg`.
-    pub fn notRegOp(self: *Emitter, reg: u8) !void {
-        try self.emitByte(Op.not_reg);
-        try self.emitByte(reg);
-    }
-
-    /// `shl dst, src` (0x71). Source register holds the shift count.
-    pub fn shlRegReg(self: *Emitter, dst: u8, src: u8) !void {
-        try self.emitByte(Op.shl_reg_reg);
-        try self.emitByte(dst);
-        try self.emitByte(src);
-    }
-
-    /// `shr dst, src` (0x73).
-    pub fn shrRegReg(self: *Emitter, dst: u8, src: u8) !void {
-        try self.emitByte(Op.shr_reg_reg);
-        try self.emitByte(dst);
-        try self.emitByte(src);
-    }
-
-    /// `shl reg, imm8` (0x70) — `reg ← reg << imm`.
-    pub fn shlRegImm(self: *Emitter, reg: u8, imm: u8) !void {
-        try self.emitByte(Op.shl_reg_imm8);
-        try self.emitByte(reg);
-        try self.emitByte(imm);
-    }
-
-    /// `shr reg, imm8` (0x72) — `reg ← reg >> imm` (zero-fill).
-    pub fn shrRegImm(self: *Emitter, reg: u8, imm: u8) !void {
-        try self.emitByte(Op.shr_reg_imm8);
-        try self.emitByte(reg);
-        try self.emitByte(imm);
-    }
-
-    /// `asr reg, imm8` (0x74) — `reg ← reg >>arith imm` (sign-fill).
-    pub fn asrRegImm(self: *Emitter, reg: u8, imm: u8) !void {
-        try self.emitByte(Op.asr_reg_imm8);
-        try self.emitByte(reg);
-        try self.emitByte(imm);
-    }
-
-    /// Emit a forward jump with a placeholder address slot. Returns
-    /// the offset of the 2-byte slot inside the current code buffer —
-    /// pass it to `patchJumpTo` once the target offset is known.
-    /// Emit a forward jump with a placeholder address slot.
-    /// Returns the offset of the 2-byte slot inside the current
-    /// code buffer — pass it to `patchJumpTo` once the target
-    /// offset is known.
-    pub fn emitJumpPlaceholder(self: *Emitter, op: u8) !usize {
-        try self.emitByte(op);
-        const slot = try self.currentOffset();
-        try self.emitU16Le(0); // placeholder
-        return slot;
-    }
-
-    /// Resolve a forward-jump patch: writes the absolute address
-    /// `currentBufferBase() + target_offset` into the 2-byte slot at
-    /// `patch_offset`. `target_offset` is a byte offset inside the
-    /// current code buffer.
-    /// Resolve a forward-jump patch: writes the absolute address
-    /// `currentBufferBase() + target_offset` into the 2-byte slot
-    /// at `patch_offset`.
-    pub fn patchJumpTo(self: *Emitter, patch_offset: usize, target_offset: usize) !void {
-        const buf = try self.currentCode();
-        // @as: usize → u16; per-buffer offset stays ≤ 64 KiB.
-        const target_in_buffer: u16 = @intCast(target_offset);
-        const target_addr: u16 = self.currentBufferBase() +% target_in_buffer;
-        // safety: u16 → 2 LE bytes; both casts are byte-masks.
-        buf.items[patch_offset] = @intCast(target_addr & 0xFF);
-        buf.items[patch_offset + 1] = @intCast(target_addr >> 8);
-    }
-
-    /// Emit an unconditional jump to a known target offset within the
-    /// current buffer. Used for back-edges (loop bottom → loop top).
-    /// Emit an unconditional jump to a known target offset
-    /// within the current buffer. Used for loop back-edges.
-    pub fn emitJumpBack(self: *Emitter, target_offset: usize) !void {
-        try self.emitByte(Op.jmp_addr);
-        // @as: usize → u16; per-buffer offset stays ≤ 64 KiB.
-        const target_in_buffer: u16 = @intCast(target_offset);
-        try self.emitU16Le(self.currentBufferBase() +% target_in_buffer);
-    }
-
-    /// `jmp reg` (0x91) — indirect jump via the register's value.
-    /// `ip` becomes whatever the register holds.
-    pub fn jmpReg(self: *Emitter, reg: u8) !void {
-        try self.emitByte(Op.jmp_reg);
-        try self.emitByte(reg);
-    }
-
-    /// Base address of the current code buffer in VM memory — used to
-    /// turn a buffer-local offset into a `jmp` target.
     /// Base address of the current code buffer in VM memory.
     /// Used to turn a buffer-local offset into a `jmp` target.
     pub fn currentBufferBase(self: *const Emitter) u16 {
         if (self.current_bank) |_| return bank_window_base;
         return code_base;
-    }
-
-    /// `sys imm8` (0xFB).
-    /// `sys imm8` (0xFB) — host-callback syscall, identifier in
-    /// the immediate operand byte.
-    pub fn sys(self: *Emitter, id: u8) !void {
-        try self.emitByte(Op.sys);
-        try self.emitByte(id);
-    }
-
-    /// `hlt` (0xFF).
-    fn hlt(self: *Emitter) !void {
-        try self.emitByte(Op.hlt);
     }
 
     // ---------- frame management ----------
@@ -1293,7 +988,7 @@ pub const Emitter = struct {
         try self.emitByte(Op.push_reg);
         try self.emitByte(Reg.mb);
         // mov r2, mb
-        try self.movRegToReg(Reg.r2, Reg.mb);
+        try isa.movRegToReg(self, Reg.r2, Reg.mb);
         // call r1
         try self.emitByte(Op.call_reg);
         try self.emitByte(Reg.r1);
@@ -1526,25 +1221,25 @@ pub const Emitter = struct {
         switch (g.placement) {
             .addr => {
                 if (g.width == 1) {
-                    try self.mov8AddrToReg(g.address, Reg.acu);
+                    try isa.mov8AddrToReg(self, g.address, Reg.acu);
                 } else {
-                    try self.movAddrToReg(g.address, Reg.acu);
+                    try isa.movAddrToReg(self, g.address, Reg.acu);
                 }
             },
             .zero_page => {
                 // @as: zero-page address fits in u8; placement.zero_page guarantees address ≤ 0xFF.
                 const zp: u8 = @intCast(g.address);
                 if (g.width == 1) {
-                    try self.mov8ZpToReg(zp, Reg.acu);
+                    try isa.mov8ZpToReg(self, zp, Reg.acu);
                 } else {
-                    try self.movZpToReg(zp, Reg.acu);
+                    try isa.movZpToReg(self, zp, Reg.acu);
                 }
             },
             .data => {
                 if (g.width == 1) {
-                    try self.mov8AddrToReg(g.address, Reg.acu);
+                    try isa.mov8AddrToReg(self, g.address, Reg.acu);
                 } else {
-                    try self.movAddrToReg(g.address, Reg.acu);
+                    try isa.movAddrToReg(self, g.address, Reg.acu);
                 }
             },
         }
@@ -1558,18 +1253,18 @@ pub const Emitter = struct {
         switch (g.placement) {
             .addr, .data => {
                 if (g.width == 1) {
-                    try self.movlRegToAddr(src, g.address);
+                    try isa.movlRegToAddr(self, src, g.address);
                 } else {
-                    try self.movRegToAddr(src, g.address);
+                    try isa.movRegToAddr(self, src, g.address);
                 }
             },
             .zero_page => {
                 // @as: zero-page address fits in u8; placement.zero_page guarantees address ≤ 0xFF.
                 const zp: u8 = @intCast(g.address);
                 if (g.width == 1) {
-                    try self.movlRegToZp(src, zp);
+                    try isa.movlRegToZp(self, src, zp);
                 } else {
-                    try self.movRegToZp(src, zp);
+                    try isa.movRegToZp(self, src, zp);
                 }
             },
         }
@@ -1709,7 +1404,7 @@ pub const Emitter = struct {
         if (local_count > 0) {
             // @as: 2 bytes per slot capped well below u16.
             const reserve_bytes: u16 = @intCast(local_count * 2);
-            try self.subImmFromReg(reserve_bytes, Reg.sp);
+            try isa.subImmFromReg(self, reserve_bytes, Reg.sp);
         }
 
         // Closure-analysis pre-pass — populates fn_closure_info
@@ -1735,7 +1430,9 @@ pub const Emitter = struct {
 
         // Implicit epilogue (no explicit `return`).
         if (self.is_entry) {
-            try self.hlt();
+            try isa.hlt(
+                self,
+            );
         } else if (is_isr) {
             // ISR teardown — pop flg/fp/ip in reverse of entry.
             try self.emitByte(Op.rti_op);
@@ -1955,11 +1652,11 @@ pub const Emitter = struct {
         }
         try self.emitExpr(a.value); // result in acu
         if (self.locals.get(name)) |ofs| {
-            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
             return;
         }
         if (self.params.get(name)) |ofs| {
-            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
             return;
         }
         if (self.globals.get(name)) |g| {
@@ -1985,7 +1682,7 @@ pub const Emitter = struct {
         }
         if (d.init) |init_expr| {
             try self.emitExpr(init_expr); // result in acu
-            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
         }
         // Uninitialized let leaves the slot at whatever the prologue
         // memset gave it (sub_imm pads sp downward without zeroing).
@@ -1996,7 +1693,7 @@ pub const Emitter = struct {
         const dup_name = try self.arena.dupe(u8, name);
         const ofs = try self.allocLocal(dup_name);
         try self.emitExpr(d.init);
-        try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+        try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
     }
 
     fn emitReturnStmt(self: *Emitter, r: ast.ReturnStmt) !void {
@@ -2017,7 +1714,9 @@ pub const Emitter = struct {
             return;
         }
         if (self.is_entry) {
-            try self.hlt();
+            try isa.hlt(
+                self,
+            );
         } else if (self.is_isr) {
             try self.emitByte(Op.rti_op);
         } else {
@@ -2057,13 +1756,13 @@ pub const Emitter = struct {
         for (p.args, 0..) |arg, i| {
             if (i > 0) {
                 // Space separator between args per spec §4.9.
-                try self.movImmToReg(' ', Reg.acu);
-                try self.sys(Sys.print_char);
+                try isa.movImmToReg(self, ' ', Reg.acu);
+                try isa.sys(self, Sys.print_char);
             }
             try self.emitPrintArg(arg);
         }
         // Trailing newline per spec §4.9.
-        try self.sys(Sys.print_newline);
+        try isa.sys(self, Sys.print_newline);
     }
 
     /// One `print` argument — picks the syscall family from the
@@ -2089,21 +1788,21 @@ pub const Emitter = struct {
         }
         if (self.isPrimitiveType(arg, .char)) {
             try self.emitExpr(arg);
-            try self.sys(Sys.print_char);
+            try isa.sys(self, Sys.print_char);
             return;
         }
         if (self.isPrimitiveType(arg, .fixed)) {
             try self.emitExpr(arg);
-            try self.sys(Sys.print_fixed);
+            try isa.sys(self, Sys.print_fixed);
             return;
         }
         if (self.isPrimitiveType(arg, .str)) {
             try self.emitExpr(arg);
-            try self.sys(Sys.print_str);
+            try isa.sys(self, Sys.print_str);
             return;
         }
         try self.emitExpr(arg);
-        try self.sys(Sys.print_int);
+        try isa.sys(self, Sys.print_int);
     }
 
     /// Delegated to `codegen/strings.zig`.
@@ -2203,12 +1902,12 @@ pub const Emitter = struct {
             self.params = saved_params;
         }
         for (callee.params, c.args) |p, arg| {
-            try self.subImmFromReg(2, Reg.sp);
+            try isa.subImmFromReg(self, 2, Reg.sp);
             try expr_emit.emitExpr(self, arg);
             const pname = self.source[p.name.start..p.name.end];
             const dup = try self.arena.dupe(u8, pname);
             const ofs = try self.allocLocal(dup);
-            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
         }
 
         // Body-emit setup: capture starting offset for the

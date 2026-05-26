@@ -6,6 +6,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
+const isa = @import("isa.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -32,28 +33,28 @@ pub fn emitPatternTest(
             const name = self.source[ip.name.start..ip.name.end];
             const dup = try self.arena.dupe(u8, name);
             const ofs = try self.allocLocal(dup);
-            try self.movRegToRegOffset(Reg.acu, Reg.fp, ofs);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
         },
         .int_lit => |lit| {
             // @as: parser holds int_lit.value as i32; literals fit i16 by typecheck rule.
             const trimmed: i16 = @truncate(lit.value);
             // safety: i16 → u16 bit pattern preserved.
             const v: u16 = @bitCast(trimmed);
-            try self.cmpRegImm(Reg.acu, v);
-            try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
+            try isa.cmpRegImm(self, Reg.acu, v);
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
         },
         .char_lit => |c| {
-            try self.cmpRegImm(Reg.acu, c.value);
-            try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
+            try isa.cmpRegImm(self, Reg.acu, c.value);
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
         },
         .bool_lit => |b| {
             const v: u16 = if (b.value) 1 else 0;
-            try self.cmpRegImm(Reg.acu, v);
-            try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
+            try isa.cmpRegImm(self, Reg.acu, v);
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
         },
         .nil_lit => {
-            try self.cmpRegImm(Reg.acu, 0);
-            try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
+            try isa.cmpRegImm(self, Reg.acu, 0);
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
         },
         .range_pattern => |rp| {
             // Lower `start..end` as: cmp acu, start; jlt skip;
@@ -72,11 +73,11 @@ pub fn emitPatternTest(
             const end_i16: i16 = @truncate(rp.end.int_lit.value);
             // safety: i16 → u16 keeps the two's-complement bit pattern.
             const end_v: u16 = @bitCast(end_i16);
-            try self.cmpRegImm(Reg.acu, start_v);
-            try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jlt_addr));
-            try self.cmpRegImm(Reg.acu, end_v);
+            try isa.cmpRegImm(self, Reg.acu, start_v);
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jlt_addr));
+            try isa.cmpRegImm(self, Reg.acu, end_v);
             const above_bound_op: u8 = if (rp.inclusive) Op.jgt_addr else Op.jge_addr;
-            try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(above_bound_op));
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, above_bound_op));
         },
         .or_pattern => |op_| {
             // Each alt emits its own cmp + branch. A match jumps
@@ -92,19 +93,19 @@ pub fn emitPatternTest(
                 try emitPatternTest(self, alt.*, scrutinee_ofs, scrutinee_is_ident, &alt_skip);
                 // The alt matched if we reach this point — jump
                 // to the shared "body entry" label.
-                try match_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jmp_addr));
+                try match_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
                 // Failure-skips of this alt land at the next alt
                 // (or, after the final alt, at the outer skip).
                 const after_alt = try self.currentOffset();
-                for (alt_skip.items) |p| try self.patchJumpTo(p, after_alt);
+                for (alt_skip.items) |p| try isa.patchJumpTo(self, p, after_alt);
             }
             // None of the alts matched — punt to the outer skip
             // set.
-            try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jmp_addr));
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
             // All match-patches resolve to the byte after the
             // outer skip jump — i.e. the body's first byte.
             const body_offset = try self.currentOffset();
-            for (match_patches.items) |p| try self.patchJumpTo(p, body_offset);
+            for (match_patches.items) |p| try isa.patchJumpTo(self, p, body_offset);
         },
         .variant_pattern => |vp| {
             if (vp.args.len > 0) {
@@ -122,8 +123,8 @@ pub fn emitPatternTest(
                 try self.diagFatal(vp.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant in match pattern");
                 return;
             };
-            try self.cmpRegImm(Reg.acu, tag);
-            try skip_patches.append(self.allocator, try self.emitJumpPlaceholder(Op.jne_addr));
+            try isa.cmpRegImm(self, Reg.acu, tag);
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
         },
         else => try self.unsupported(pat.span(), "this pattern shape"),
     }

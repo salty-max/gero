@@ -6,6 +6,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
+const isa = @import("isa.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -54,7 +55,7 @@ fn emitMemRead1Arg(self: *Emitter, c: ast.CallExpr, kind: MemReadKind) !void {
         return;
     }
     try self.emitExpr(c.args[0]); // acu = addr
-    try self.movRegToReg(Reg.acu, Reg.r1); // r1 = addr
+    try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = addr
     switch (kind) {
         .word => {
             try self.emitByte(Op.mov_ptr_to_reg);
@@ -74,8 +75,8 @@ fn emitMemRead1Arg(self: *Emitter, c: ast.CallExpr, kind: MemReadKind) !void {
             // in `acu.lo`; shifting it into the top byte and back
             // arithmetic-shift-right preserves the sign bit
             // through the high half.
-            try self.shlRegImm(Reg.acu, 8);
-            try self.asrRegImm(Reg.acu, 8);
+            try isa.shlRegImm(self, Reg.acu, 8);
+            try isa.asrRegImm(self, Reg.acu, 8);
         },
     }
 }
@@ -89,9 +90,9 @@ fn emitMemWrite2Args(self: *Emitter, c: ast.CallExpr, kind: MemWriteKind) !void 
         return;
     }
     try self.emitExpr(c.args[0]); // acu = addr
-    try self.pushReg(Reg.acu);
+    try isa.pushReg(self, Reg.acu);
     try self.emitExpr(c.args[1]); // acu = value
-    try self.popReg(Reg.r1); // r1 = addr
+    try isa.popReg(self, Reg.r1); // r1 = addr
     switch (kind) {
         .word => {
             try self.emitByte(Op.mov_reg_to_ptr);
@@ -114,13 +115,13 @@ fn emitMemCopy(self: *Emitter, c: ast.CallExpr) !void {
         return;
     }
     try self.emitExpr(c.args[0]); // dst
-    try self.pushReg(Reg.acu);
+    try isa.pushReg(self, Reg.acu);
     try self.emitExpr(c.args[1]); // src
-    try self.pushReg(Reg.acu);
+    try isa.pushReg(self, Reg.acu);
     try self.emitExpr(c.args[2]); // n → acu
-    try self.movRegToReg(Reg.acu, Reg.r3); // r3 = len
-    try self.popReg(Reg.r2); // r2 = src
-    try self.popReg(Reg.r1); // r1 = dst
+    try isa.movRegToReg(self, Reg.acu, Reg.r3); // r3 = len
+    try isa.popReg(self, Reg.r2); // r2 = src
+    try isa.popReg(self, Reg.r1); // r1 = dst
     try self.emitByte(Op.bcpy);
     try self.emitByte(Reg.r1); // dst
     try self.emitByte(Reg.r2); // src
@@ -136,13 +137,13 @@ fn emitMemFill(self: *Emitter, c: ast.CallExpr) !void {
         return;
     }
     try self.emitExpr(c.args[0]); // dst
-    try self.pushReg(Reg.acu);
+    try isa.pushReg(self, Reg.acu);
     try self.emitExpr(c.args[1]); // v
-    try self.pushReg(Reg.acu);
+    try isa.pushReg(self, Reg.acu);
     try self.emitExpr(c.args[2]); // n → acu
-    try self.movRegToReg(Reg.acu, Reg.r3); // r3 = len
-    try self.popReg(Reg.r2); // r2 = val
-    try self.popReg(Reg.r1); // r1 = dst
+    try isa.movRegToReg(self, Reg.acu, Reg.r3); // r3 = len
+    try isa.popReg(self, Reg.r2); // r2 = val
+    try isa.popReg(self, Reg.r1); // r1 = dst
     try self.emitByte(Op.bfill);
     try self.emitByte(Reg.r1); // dst
     try self.emitByte(Reg.r3); // len
@@ -161,30 +162,30 @@ pub fn emitAddrOf(self: *Emitter, e: *const ast.Expr) !void {
     const name = self.source[e.ident.span.start..e.ident.span.end];
     if (self.locals.get(name)) |ofs| {
         // Local: address = fp + ofs (ofs is negative).
-        try self.movRegToReg(Reg.fp, Reg.acu);
+        try isa.movRegToReg(self, Reg.fp, Reg.acu);
         if (ofs < 0) {
             // @as: widen i8 → i16 so the negate doesn't trip on the minimum value.
             const widened: i16 = ofs;
             // @as: |ofs| ≤ 128 by allocLocal cap; result fits a u16.
             const neg: u16 = @intCast(-widened);
-            try self.subImmFromReg(neg, Reg.acu);
+            try isa.subImmFromReg(self, neg, Reg.acu);
         } else if (ofs > 0) {
             // @as: positive i8 → u16; cap by allocLocal layout.
             const pos: u16 = @intCast(ofs);
-            try self.addImmToReg(pos, Reg.acu);
+            try isa.addImmToReg(self, pos, Reg.acu);
         }
         return;
     }
     if (self.params.get(name)) |ofs| {
         // Param: address = fp + ofs (ofs is positive).
-        try self.movRegToReg(Reg.fp, Reg.acu);
+        try isa.movRegToReg(self, Reg.fp, Reg.acu);
         // @as: positive i8 → u16.
         const pos: u16 = @intCast(ofs);
-        try self.addImmToReg(pos, Reg.acu);
+        try isa.addImmToReg(self, pos, Reg.acu);
         return;
     }
     if (self.globals.get(name)) |g| {
-        try self.movImmToReg(g.address, Reg.acu);
+        try isa.movImmToReg(self, g.address, Reg.acu);
         return;
     }
     try self.unsupported(e.span(), "`addr_of` target not in scope");

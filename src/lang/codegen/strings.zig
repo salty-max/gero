@@ -20,6 +20,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
+const isa = @import("isa.zig");
 const archive = @import("archive.zig");
 
 const Emitter = codegen.Emitter;
@@ -140,16 +141,16 @@ pub fn emitStrLitExpr(self: *Emitter, sl: ast.StrLitExpr) !void {
     const buf_addr = reserveInterpBuffer(self, sl.span) orelse {
         // Diagnostic already emitted; produce a valid placeholder
         // so downstream codegen doesn't see a bad acu shape.
-        try self.movImmToReg(0, Reg.acu);
+        try isa.movImmToReg(self, 0, Reg.acu);
         return;
     };
 
     // r1 holds the moving write cursor. Initialize it to the
     // buffer's base address.
-    try self.movImmToReg(buf_addr, Reg.r1);
+    try isa.movImmToReg(self, buf_addr, Reg.r1);
     try emitInterpFill(self, sl);
-    try self.sys(Sys.format_terminate_buf);
-    try self.movImmToReg(buf_addr, Reg.acu);
+    try isa.sys(self, Sys.format_terminate_buf);
+    try isa.movImmToReg(self, buf_addr, Reg.acu);
 }
 
 /// Reserve `interp_buffer_size` bytes at the top of the data
@@ -183,7 +184,7 @@ pub fn emitInterpFill(self: *Emitter, sl: ast.StrLitExpr) !void {
             const decoded = try archive.decodeStringEscapes(self.arena, raw);
             const id = try internString(self, decoded);
             try emitMovStringAddrToReg(self, id, Reg.acu);
-            try self.sys(Sys.format_str_to_buf);
+            try isa.sys(self, Sys.format_str_to_buf);
         },
         .interp => |ip| {
             if (ip.format_spec != null) {
@@ -192,18 +193,18 @@ pub fn emitInterpFill(self: *Emitter, sl: ast.StrLitExpr) !void {
             }
             // Save the cursor — the interp-expression eval may
             // pop into r1 as scratch.
-            try self.pushReg(Reg.r1);
+            try isa.pushReg(self, Reg.r1);
             try self.emitExpr(ip.expr);
-            try self.popReg(Reg.r1);
+            try isa.popReg(self, Reg.r1);
 
             if (self.isPrimitiveType(ip.expr, .char)) {
-                try self.sys(Sys.format_char_to_buf);
+                try isa.sys(self, Sys.format_char_to_buf);
             } else if (self.isPrimitiveType(ip.expr, .fixed)) {
-                try self.sys(Sys.format_fixed_to_buf);
+                try isa.sys(self, Sys.format_fixed_to_buf);
             } else if (self.isPrimitiveType(ip.expr, .str)) {
-                try self.sys(Sys.format_str_to_buf);
+                try isa.sys(self, Sys.format_str_to_buf);
             } else {
-                try self.sys(Sys.format_int_to_buf);
+                try isa.sys(self, Sys.format_int_to_buf);
             }
         },
     };
@@ -222,7 +223,7 @@ pub fn emitPrintStrLit(self: *Emitter, sl: ast.StrLitExpr) !void {
             const decoded = try archive.decodeStringEscapes(self.arena, raw);
             const id = try internString(self, decoded);
             try emitMovStringAddrToReg(self, id, Reg.acu);
-            try self.sys(Sys.print_str);
+            try isa.sys(self, Sys.print_str);
         },
         .interp => |ip| {
             if (ip.format_spec != null) {
@@ -231,16 +232,16 @@ pub fn emitPrintStrLit(self: *Emitter, sl: ast.StrLitExpr) !void {
             }
             if (self.isPrimitiveType(ip.expr, .char)) {
                 try self.emitExpr(ip.expr);
-                try self.sys(Sys.print_char);
+                try isa.sys(self, Sys.print_char);
             } else if (self.isPrimitiveType(ip.expr, .fixed)) {
                 try self.emitExpr(ip.expr);
-                try self.sys(Sys.print_fixed);
+                try isa.sys(self, Sys.print_fixed);
             } else if (self.isPrimitiveType(ip.expr, .str)) {
                 try self.emitExpr(ip.expr);
-                try self.sys(Sys.print_str);
+                try isa.sys(self, Sys.print_str);
             } else {
                 try self.emitExpr(ip.expr);
-                try self.sys(Sys.print_int);
+                try isa.sys(self, Sys.print_int);
             }
         },
     };
