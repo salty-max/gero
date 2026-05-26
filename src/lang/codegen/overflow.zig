@@ -13,6 +13,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const opcodes = @import("opcodes.zig");
+const isa = @import("isa.zig");
 const codegen_mod = @import("../codegen.zig");
 
 const Emitter = codegen_mod.Emitter;
@@ -76,9 +77,9 @@ pub fn emitOverflowTrap(self: *Emitter, signedness: Signedness) !void {
         .signed => Op.jvc_addr,
         .unsigned => Op.jcc_addr,
     };
-    const skip_patch = try self.emitJumpPlaceholder(skip_op);
+    const skip_patch = try isa.emitJumpPlaceholder(self, skip_op);
     try self.emitByte(Op.int_imm8);
     try self.emitByte(overflow_vector);
     const target = try self.currentOffset();
-    try self.patchJumpTo(skip_patch, target);
+    try isa.patchJumpTo(self, skip_patch, target);
 }

@@ -37,6 +37,7 @@ const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 const cg_class = @import("lang/codegen/class.zig");
 const cg_lambda = @import("lang/codegen/lambda.zig");
+const cg_isa = @import("lang/codegen/isa.zig");
 
 // ---------- lexer ----------
 
@@ -196,5 +197,8 @@ pub const internal = struct {
         /// Internal — closure lowering (capture analysis, heap
         /// promotion, lambda body emission, dispatch).
         pub const lambda = cg_lambda;
+        /// Internal — ISA-instruction emit helpers (one fn per
+        /// named bytecode op the lang codegen produces).
+        pub const isa = cg_isa;
     };
 };

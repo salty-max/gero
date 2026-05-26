@@ -17,6 +17,7 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
 const opcodes = @import("opcodes.zig");
+const isa = @import("isa.zig");
 const codegen_mod = @import("../codegen.zig");
 const archive = @import("archive.zig");
 const strings = @import("strings.zig");
@@ -42,10 +43,10 @@ pub fn emitAssertCall(self: *Emitter, c: ast.CallExpr, name: []const u8) !void {
 
     // `cond` evaluated into `acu`; falsy ⇒ acu == 0 ⇒ Z flag set.
     try self.emitExpr(c.args[0]);
-    try self.cmpRegImm(Reg.acu, 0);
+    try isa.cmpRegImm(self, Reg.acu, 0);
     // `jne skip` — when cond is truthy (Z = 0), jump past the
     // trap. Patched after the trap body emits.
-    const skip_patch = try self.emitJumpPlaceholder(Op.jne_addr);
+    const skip_patch = try isa.emitJumpPlaceholder(self, Op.jne_addr);
 
     // Trap body. Message printed only when provided so the host
     // gets a contextual diagnostic before the halt.
@@ -54,7 +55,7 @@ pub fn emitAssertCall(self: *Emitter, c: ast.CallExpr, name: []const u8) !void {
     try self.emitByte(Op.hlt);
 
     const skip_target = try self.currentOffset();
-    try self.patchJumpTo(skip_patch, skip_target);
+    try isa.patchJumpTo(self, skip_patch, skip_target);
 }
 
 /// Emit the print syscall for the optional assert message. Plain
@@ -69,9 +70,9 @@ fn emitMessage(self: *Emitter, msg: *const ast.Expr) !void {
         const decoded = try archive.decodeStringEscapes(self.arena, raw);
         const id = try strings.internString(self, decoded);
         try strings.emitMovStringAddrToReg(self, id, Reg.acu);
-        try self.sys(Sys.print_str);
+        try isa.sys(self, Sys.print_str);
         return;
     }
     try self.emitExpr(msg);
-    try self.sys(Sys.print_str);
+    try isa.sys(self, Sys.print_str);
 }

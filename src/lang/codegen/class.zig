@@ -18,6 +18,7 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
 const opcodes = @import("opcodes.zig");
+const isa = @import("isa.zig");
 const codegen_mod = @import("../codegen.zig");
 
 const Emitter = codegen_mod.Emitter;
@@ -267,12 +268,12 @@ pub fn emitConstructor(
         return;
     };
     // 1. mov instance_size, acu ; sys alloc
-    try self.movImmToReg(layout.instance_size, Reg.acu);
+    try isa.movImmToReg(self, layout.instance_size, Reg.acu);
     try self.emitByte(Op.sys);
     try self.emitByte(Sys.alloc);
 
     // 2. Save instance pointer in r1 for the vtable write.
-    try self.movRegToReg(Reg.acu, Reg.r1);
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
 
     // 3. Write vtable address into the instance's word at offset 0.
     //    The vtable's address isn't known yet (vtables emit after
@@ -300,13 +301,13 @@ pub fn emitConstructor(
         var i: usize = c.args.len;
         while (i > 0) {
             i -= 1;
-            try self.pushReg(Reg.r1);
+            try isa.pushReg(self, Reg.r1);
             try self.emitExpr(c.args[i]);
-            try self.popReg(Reg.r1);
-            try self.pushReg(Reg.acu);
+            try isa.popReg(self, Reg.r1);
+            try isa.pushReg(self, Reg.acu);
         }
         // Push self last so it lands at fp+4 in the callee frame.
-        try self.pushReg(Reg.r1);
+        try isa.pushReg(self, Reg.r1);
 
         // Direct-call the inheritance-resolved `init` — may live
         // on an ancestor when the child doesn't define its own.
@@ -316,10 +317,10 @@ pub fn emitConstructor(
         // Drop args: 1 (self) + user args, 2 bytes each.
         // @as: widen usize args.len to u16 — practical method arity caps well below 32k.
         const drop_bytes: u16 = 2 + @as(u16, @intCast(c.args.len * 2));
-        try self.addImmToReg(drop_bytes, Reg.sp);
+        try isa.addImmToReg(self, drop_bytes, Reg.sp);
         // init may have clobbered acu — restore the instance ptr
         // from r1 so the caller's let-bind reads the right value.
-        try self.movRegToReg(Reg.r1, Reg.acu);
+        try isa.movRegToReg(self, Reg.r1, Reg.acu);
     }
     // No-init path leaves acu holding the instance ptr from the
     // `sys alloc` above — none of the intervening ops touched it.
@@ -379,7 +380,7 @@ fn emitInstancePtr(self: *Emitter, recv: *const ast.Expr) !void {
     try self.emitExpr(recv);
     const ty = self.typeOf(recv) orelse return;
     if (ty.* == .reference) {
-        try self.movRegToReg(Reg.acu, Reg.r1);
+        try isa.movRegToReg(self, Reg.acu, Reg.r1);
         try emitWordLoadAtOffset(self, Reg.r1, 0, Reg.acu);
     }
 }
@@ -405,7 +406,7 @@ pub fn emitFieldLoad(
 
     try emitInstancePtr(self, recv);
     // acu = instance ptr; load at acu + field.offset.
-    try self.movRegToReg(Reg.acu, Reg.r1);
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
     if (field.width == 1) {
         try emitByteLoadAtOffset(self, Reg.r1, field.offset, Reg.acu);
     } else {
@@ -433,10 +434,10 @@ pub fn emitFieldStore(
     };
 
     try self.emitExpr(value);
-    try self.pushReg(Reg.acu);
+    try isa.pushReg(self, Reg.acu);
     try emitInstancePtr(self, recv);
-    try self.movRegToReg(Reg.acu, Reg.r1);
-    try self.popReg(Reg.r2);
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try isa.popReg(self, Reg.r2);
     if (field.width == 1) {
         try emitByteStoreAtOffset(self, Reg.r1, field.offset, Reg.r2);
     } else {
@@ -467,7 +468,7 @@ pub fn emitMethodDispatch(
 
     // 1. Evaluate receiver (auto-deref if `&T`), stash instance ptr in r1.
     try emitInstancePtr(self, recv);
-    try self.movRegToReg(Reg.acu, Reg.r1);
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
 
     // 2. Load vtable pointer from [r1+0] into r2.
     try emitWordLoadAtOffset(self, Reg.r1, 0, Reg.r2);
@@ -482,16 +483,16 @@ pub fn emitMethodDispatch(
     var i: usize = args.len;
     while (i > 0) {
         i -= 1;
-        try self.pushReg(Reg.r1);
-        try self.pushReg(Reg.r3);
+        try isa.pushReg(self, Reg.r1);
+        try isa.pushReg(self, Reg.r3);
         try self.emitExpr(args[i]);
-        try self.popReg(Reg.r3);
-        try self.popReg(Reg.r1);
-        try self.pushReg(Reg.acu);
+        try isa.popReg(self, Reg.r3);
+        try isa.popReg(self, Reg.r1);
+        try isa.pushReg(self, Reg.acu);
     }
 
     // 5. Push self last so it lands at fp+4 in the callee frame.
-    try self.pushReg(Reg.r1);
+    try isa.pushReg(self, Reg.r1);
 
     // 6. call_reg r3 — indirect call to the resolved method.
     try self.emitByte(Op.call_reg);
@@ -500,7 +501,7 @@ pub fn emitMethodDispatch(
     // 7. Drop args: 1 (self) + user args.
     // @as: widen usize args.len to u16 — practical method arity caps well below 32k.
     const drop_bytes: u16 = 2 + @as(u16, @intCast(args.len * 2));
-    try self.addImmToReg(drop_bytes, Reg.sp);
+    try isa.addImmToReg(self, drop_bytes, Reg.sp);
 }
 
 /// Lower `super.method(args)` — direct call to the named method
@@ -530,7 +531,7 @@ pub fn emitSuperMethodCall(
     // self for the super call is the current method's self (fp+4).
     // Load it into r1 first so arg eval can clobber acu freely.
     if (self.params.get("self")) |ofs| {
-        try self.movRegOffsetToReg(Reg.fp, ofs, Reg.r1);
+        try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.r1);
     } else {
         try self.diagFatal(span, "E_CODEGEN_NO_SELF", "codegen: `super.method` used outside a method body");
         return;
@@ -540,20 +541,20 @@ pub fn emitSuperMethodCall(
     var i: usize = args.len;
     while (i > 0) {
         i -= 1;
-        try self.pushReg(Reg.r1);
+        try isa.pushReg(self, Reg.r1);
         try self.emitExpr(args[i]);
-        try self.popReg(Reg.r1);
-        try self.pushReg(Reg.acu);
+        try isa.popReg(self, Reg.r1);
+        try isa.pushReg(self, Reg.acu);
     }
     // Push self last so it lands at fp+4 in the callee frame.
-    try self.pushReg(Reg.r1);
+    try isa.pushReg(self, Reg.r1);
 
     const label = try methodLabel(self, owner, method_name);
     try emitDirectCall(self, label, span);
 
     // @as: widen usize args.len to u16 — practical method arity caps well below 32k.
     const drop_bytes: u16 = 2 + @as(u16, @intCast(args.len * 2));
-    try self.addImmToReg(drop_bytes, Reg.sp);
+    try isa.addImmToReg(self, drop_bytes, Reg.sp);
 }
 
 /// Lower `super.field` read — load `self`, then read at the
@@ -571,7 +572,7 @@ pub fn emitSuperFieldLoad(
     };
 
     if (self.params.get("self")) |ofs| {
-        try self.movRegOffsetToReg(Reg.fp, ofs, Reg.r1);
+        try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.r1);
     } else {
         try self.diagFatal(span, "E_CODEGEN_NO_SELF", "codegen: `super.field` used outside a method body");
         return;
@@ -621,13 +622,13 @@ fn emitDirectCall(self: *Emitter, label: []const u8, span: ast.Span) !void {
 fn emitWordLoadAtOffset(self: *Emitter, base: u8, offset: u16, dst: u8) !void {
     if (offset <= 127) {
         // @as: offset fits i8 (≤127); the cast is a no-op for the value range.
-        try self.movRegOffsetToReg(base, @as(i8, @intCast(offset)), dst);
+        try isa.movRegOffsetToReg(self, base, @as(i8, @intCast(offset)), dst);
         return;
     }
     // tmp = base + offset; then load [tmp+0].
-    try self.movRegToReg(base, Reg.r2);
-    try self.addImmToReg(offset, Reg.r2);
-    try self.movRegOffsetToReg(Reg.r2, 0, dst);
+    try isa.movRegToReg(self, base, Reg.r2);
+    try isa.addImmToReg(self, offset, Reg.r2);
+    try isa.movRegOffsetToReg(self, Reg.r2, 0, dst);
 }
 
 /// Word store: `mov src, [base + offset]`. Same `i8`-vs-widen
@@ -635,12 +636,12 @@ fn emitWordLoadAtOffset(self: *Emitter, base: u8, offset: u16, dst: u8) !void {
 fn emitWordStoreAtOffset(self: *Emitter, base: u8, offset: u16, src: u8) !void {
     if (offset <= 127) {
         // @as: offset fits i8 (≤127); the cast is a no-op for the value range.
-        try self.movRegToRegOffset(src, base, @as(i8, @intCast(offset)));
+        try isa.movRegToRegOffset(self, src, base, @as(i8, @intCast(offset)));
         return;
     }
-    try self.movRegToReg(base, Reg.r3);
-    try self.addImmToReg(offset, Reg.r3);
-    try self.movRegToRegOffset(src, Reg.r3, 0);
+    try isa.movRegToReg(self, base, Reg.r3);
+    try isa.addImmToReg(self, offset, Reg.r3);
+    try isa.movRegToRegOffset(self, src, Reg.r3, 0);
 }
 
 /// Byte load with `+offset` addressing — synthesized via a temp
@@ -653,8 +654,8 @@ fn emitByteLoadAtOffset(self: *Emitter, base: u8, offset: u16, dst: u8) !void {
         try self.emitByte(dst);
         return;
     }
-    try self.movRegToReg(base, Reg.r2);
-    try self.addImmToReg(offset, Reg.r2);
+    try isa.movRegToReg(self, base, Reg.r2);
+    try isa.addImmToReg(self, offset, Reg.r2);
     try self.emitByte(Op.mov8_ptr_to_reg);
     try self.emitByte(Reg.r2);
     try self.emitByte(dst);
@@ -669,8 +670,8 @@ fn emitByteStoreAtOffset(self: *Emitter, base: u8, offset: u16, src: u8) !void {
         try self.emitByte(base);
         return;
     }
-    try self.movRegToReg(base, Reg.r3);
-    try self.addImmToReg(offset, Reg.r3);
+    try isa.movRegToReg(self, base, Reg.r3);
+    try isa.addImmToReg(self, offset, Reg.r3);
     try self.emitByte(Op.mov8_reg_to_ptr);
     try self.emitByte(src);
     try self.emitByte(Reg.r3);
