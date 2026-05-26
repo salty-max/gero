@@ -1,15 +1,11 @@
-/// `.gx` bytecode-file parser. Validates the 16-byte header,
-/// confirms the image / bank sections fit, and hands back
-/// slices the caller can copy into a VM. No allocation; the
-/// returned slices borrow from the input buffer.
 const std = @import("std");
 
 /// Magic bytes at offset `0x00..0x04`.
 pub const magic: [4]u8 = .{ 'G', 'E', 'R', 'O' };
 
 /// ISA version this loader accepts (high byte = major, low =
-/// minor). Files with a higher major are rejected; same major
-/// + higher minor are accepted (backwards-compatible additions).
+/// minor). Higher major is rejected; same-major higher-minor
+/// is accepted.
 pub const version_target: u16 = 0x0003;
 
 /// Header bytes — fixed 16-byte prefix.
@@ -22,8 +18,7 @@ pub const bank_disk_size: usize = 0x4000;
 pub const flag_banked: u16 = 0b0000_0000_0000_0001;
 /// Flag bit 1: debug-symbol section follows the banks.
 pub const flag_has_debug: u16 = 0b0000_0000_0000_0010;
-/// All bits the loader recognizes; the rest are reserved and
-/// must be `0`.
+/// Bits the loader recognizes. Other bits must be `0`.
 pub const flag_known_mask: u16 = flag_banked | flag_has_debug;
 
 /// Errors returned by the parser.
@@ -53,10 +48,8 @@ pub const Header = struct {
     image_size: u16,
     bank_count: u8,
     sram_bank_count: u8,
-    /// Address where the bump-allocator heap starts. `0` means the
-    /// program declared no heap and `sys alloc` will fault on first
-    /// call. Files declaring version `0x0001` always read `0` here
-    /// (the field was added in `0x0002`).
+    /// Bump-allocator heap base. `0` = no heap (`sys alloc`
+    /// faults on first call). Added in version `0x0002`.
     heap_base: u16,
 
     /// `true` when the file carries a bank-pool section.
@@ -70,9 +63,8 @@ pub const Header = struct {
     }
 };
 
-/// Output of `parse` — header plus borrowed slices into the
-/// input buffer. `banks` and `debug` are empty when the
-/// corresponding flag is clear.
+/// `parse` output: header + borrowed slices into the input buffer.
+/// `banks` and `debug` are empty when their flag is clear.
 pub const LoadedProgram = struct {
     header: Header,
     image: []const u8,
@@ -102,10 +94,7 @@ pub fn parse(bytes: []const u8) LoaderError!LoadedProgram {
     const image_size = readU16Le(bytes, 0x0A);
     const bank_count = bytes[0x0C];
     const sram_bank_count = bytes[0x0D];
-    // 0x0E..0x0F is `heap_base` from version 0x0002 onward. Files
-    // declaring version 0x0001 still pass — the field reads as 0,
-    // which means "no heap" and the alloc syscall faults on first
-    // use. Older files never called `sys alloc` anyway.
+    // heap_base added in version 0x0002; older files read 0.
     const heap_base = readU16Le(bytes, 0x0E);
     if (sram_bank_count > bank_count) return error.InvalidSramCount;
 
@@ -128,9 +117,7 @@ pub fn parse(bytes: []const u8) LoaderError!LoadedProgram {
 
     var debug: []const u8 = bytes[cursor..cursor];
     if ((flags & flag_has_debug) != 0) {
-        // Debug symbols are variable-length; the loader exposes
-        // the trailing slice as-is. The disassembler parses it on
-        // demand.
+        // Variable-length; parsed on demand by the disassembler.
         debug = bytes[cursor..];
     }
 

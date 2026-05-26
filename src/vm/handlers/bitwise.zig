@@ -1,12 +1,3 @@
-/// Handlers for the logical (`and` / `or` / `xor` / `not`) and
-/// shift / rotate (`shl` / `shr` / `rol` / `ror`) families.
-///
-/// Flag policy:
-///   - Logical: set `Z` / `N`; clear `C` / `V`.
-///   - Shifts:  set `Z` / `N` from result; `C` ← last bit shifted
-///              out (unchanged when count = 0); `V` cleared.
-///   - Rotates: bits cycle through `C` (17-bit chain — 16 reg
-///              bits + 1 carry); `Z` / `N` from result; `V` cleared.
 const vm_mod = @import("../vm.zig");
 const dispatch = @import("../dispatch.zig");
 const VM = vm_mod.VM;

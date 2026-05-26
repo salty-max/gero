@@ -1,7 +1,3 @@
-/// Handlers for the stack family. All three ops use the
-/// pre-decrement push / post-increment pop convention shared
-/// with the fault-entry sequence via `dispatch.pushWord` /
-/// `dispatch.popWord`.
 const vm_mod = @import("../vm.zig");
 const dispatch = @import("../dispatch.zig");
 const VM = vm_mod.VM;

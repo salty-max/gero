@@ -1,7 +1,3 @@
-/// Handlers for `cmp` and `tst` — flag-only ops that discard
-/// the computed result. `cmp` mirrors `sub` (sets `Z` / `N` /
-/// `C` / `V`); `tst` mirrors `and` (sets `Z` / `N`, clears
-/// `C` / `V`).
 const vm_mod = @import("../vm.zig");
 const dispatch = @import("../dispatch.zig");
 const VM = vm_mod.VM;

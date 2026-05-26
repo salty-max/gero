@@ -1,6 +1,3 @@
-/// Register file: 15 u16 slots, indexable by name or by operand
-/// index. `flg` gets bit-level helpers so callers don't open-code
-/// the mask math.
 const std = @import("std");
 
 /// Number of named registers.
@@ -16,8 +13,7 @@ pub const Register = enum(u8) {
     /// Instruction pointer.
     ip = 0x00,
     /// Accumulator. Implicit destination for short-form ALU ops;
-    /// holds the high half of `mul` results and the remainder of
-    /// `div`.
+    /// holds the high half of `mul` and the remainder of `div`.
     acu = 0x01,
     /// General purpose.
     r1 = 0x02,
@@ -64,8 +60,7 @@ pub const Flag = enum(u4) {
 
 /// 15-slot u16 register file.
 pub const Registers = struct {
-    /// Backing storage. Public so tests and the loader can poke
-    /// directly; production callers prefer the typed helpers.
+    /// Backing storage. Prefer the typed helpers below.
     values: [reg_count]u16,
 
     /// Fresh zeroed file.
@@ -83,15 +78,13 @@ pub const Registers = struct {
         self.values[@intFromEnum(reg)] = value;
     }
 
-    /// Read by raw operand index. `null` for out-of-range — caller
-    /// raises the fault.
+    /// Read by raw operand index. `null` for out-of-range.
     pub fn readByIndex(self: Registers, index: u8) ?u16 {
         if (index > max_index) return null;
         return self.values[index];
     }
 
-    /// Write by raw operand index. `false` for out-of-range — caller
-    /// raises the fault.
+    /// Write by raw operand index. `false` for out-of-range.
     pub fn writeByIndex(self: *Registers, index: u8, value: u16) bool {
         if (index > max_index) return false;
         self.values[index] = value;

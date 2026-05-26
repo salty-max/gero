@@ -1,24 +1,15 @@
-/// Bank pool — the 16KB pages that mirror into the bank window
-/// at `0xC000..0xFEFF`. Bytes outside the window are out of
-/// scope here; the VM only routes window accesses through the
-/// pool.
-///
-/// The last `sram_bank_count` banks are battery-backed: the host
-/// is expected to persist `sramSlice` and to restore it via
-/// `initWithImage` on the next boot. The pool itself does not do
-/// any I/O.
 const std = @import("std");
 
-/// Size of a single bank, matching the window size.
+/// Single-bank size.
 pub const bank_size: usize = 0x4000;
 
-/// Lowest address that maps into the bank window.
+/// Lowest address mapped into the bank window.
 pub const window_base: u16 = 0xC000;
 
-/// Highest address inclusive that maps into the bank window.
+/// Highest address (inclusive) mapped into the bank window.
 pub const window_end: u16 = 0xFEFF;
 
-/// Read of an out-of-range `mb` returns this byte per spec.
+/// Byte returned for reads through an out-of-range `mb`.
 pub const out_of_range_byte: u8 = 0xFF;
 
 /// Errors returned by the bank-pool constructors.
@@ -36,8 +27,7 @@ pub const Banks = struct {
     sram_bank_count: u8,
     allocator: std.mem.Allocator,
 
-    /// Fresh zeroed pool with `bank_count` banks. Use when the
-    /// host has no save store yet — every byte starts at zero.
+    /// Fresh zeroed pool with `bank_count` banks.
     pub fn init(
         allocator: std.mem.Allocator,
         bank_count: u8,
@@ -54,8 +44,8 @@ pub const Banks = struct {
         };
     }
 
-    /// Pool seeded from an existing image. Copies the bytes so
-    /// the caller can release its buffer immediately after.
+    /// Pool seeded from `image`. The bytes are copied; the caller
+    /// may free its buffer on return.
     pub fn initWithImage(
         allocator: std.mem.Allocator,
         image: []const u8,
@@ -92,37 +82,34 @@ pub const Banks = struct {
     }
 
     /// Read a byte from the bank window. Out-of-range `mb`
-    /// returns `0xFF` per the permissive spec.
+    /// returns `0xFF`.
     pub fn readByte(self: Banks, mb: u16, addr: u16) u8 {
         if (self.slotAt(mb, addr)) |i| return self.data[i];
         return out_of_range_byte;
     }
 
     /// Write a byte into the bank window. Out-of-range `mb`
-    /// drops the write silently.
+    /// silently drops the write.
     pub fn writeByte(self: *Banks, mb: u16, addr: u16, value: u8) void {
         if (self.slotAt(mb, addr)) |i| self.data[i] = value;
     }
 
-    /// Word read that wraps the high byte to the window base if
-    /// `addr` is at the very top of the window (matches the
-    /// `Memory.readWord` wrap behavior at `0xFFFF`).
+    /// Word read. Wraps at the top of the window, matching
+    /// `Memory.readWord`.
     pub fn readWord(self: Banks, mb: u16, addr: u16) u16 {
         const lo: u16 = self.readByte(mb, addr);
         const hi: u16 = self.readByte(mb, addr +% 1);
         return lo | (hi << 8);
     }
 
-    /// Same wrap rule as `readWord` for the symmetric write.
+    /// Word write. Same wrap rule as `readWord`.
     pub fn writeWord(self: *Banks, mb: u16, addr: u16, value: u16) void {
         self.writeByte(mb, addr, @truncate(value & 0xFF));
         self.writeByte(mb, addr +% 1, @truncate((value >> 8) & 0xFF));
     }
 
-    /// Read-only slice of the SRAM portion of the pool. The host
-    /// persists this to disk; on the next boot the same bytes go
-    /// back in via `initWithImage`'s `image` argument (with the
-    /// non-SRAM banks reproduced from the original `.gx`).
+    /// Read-only SRAM slice. Host persists this to disk; pass it
+    /// back through `initWithImage` on the next boot.
     pub fn sramSlice(self: Banks) []const u8 {
         // @as: widen sram_bank_count to usize for the byte count
         const sram_bytes = @as(usize, self.sram_bank_count) * bank_size;
@@ -130,7 +117,7 @@ pub const Banks = struct {
         return self.data[self.data.len - sram_bytes ..];
     }
 
-    /// Mutable variant — used by the host to seed SRAM on reload.
+    /// Mutable SRAM slice. Host seeds this on reload.
     pub fn sramSliceMut(self: *Banks) []u8 {
         // @as: widen sram_bank_count to usize for the byte count
         const sram_bytes = @as(usize, self.sram_bank_count) * bank_size;

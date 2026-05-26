@@ -1,7 +1,3 @@
-/// The fetch-decode-execute loop. Reads the byte at `ip`, dispatches
-/// to the right handler in `handler_table`, and auto-advances `ip`
-/// past the instruction unless the handler set `ip` itself
-/// (jumps / calls / fault entry).
 const std = @import("std");
 const vm_mod = @import("vm.zig");
 const opcodes = @import("opcodes.zig");
@@ -20,12 +16,10 @@ const Flag = vm_mod.Flag;
 /// Base address of the interrupt vector table.
 pub const ivt_base: u16 = 0x1000;
 
-/// Interrupt / fault vector. Non-exhaustive: the reserved vectors
-/// get named tags, but any `u8` in `0..0x3F` is a valid vector
-/// index — the `int N` opcode can raise host-defined or
-/// software-int vectors that aren't named.
+/// Interrupt / fault vector. Non-exhaustive: any `u8` in `0..0x3F`
+/// is a valid vector — `int N` can raise host-defined ones.
 pub const Vector = enum(u8) {
-    /// Reset — runs at boot when the program's entry point is 0.
+    /// Reset (entry point `0` at boot).
     reset = 0x00,
     /// Invalid-opcode fault.
     invalid_opcode = 0x01,
@@ -33,47 +27,38 @@ pub const Vector = enum(u8) {
     invalid_register = 0x02,
     /// Division by zero.
     div_by_zero = 0x03,
-    /// Heap exhausted — `sys alloc` couldn't satisfy a request
-    /// because the bump cursor would have collided with the stack
-    /// or fallen outside the program's heap region.
+    /// Heap exhausted (`sys alloc` failed).
     heap_exhausted = 0x04,
-    /// Arithmetic overflow (e.g. `div` quotient > 16 bits).
+    /// Arithmetic overflow.
     arith_overflow = 0x05,
     _,
 };
 
 /// Outcome of a `step` call.
 pub const StepResult = enum {
-    /// The handler completed normally; `step` auto-advances `ip`
-    /// past the instruction.
+    /// Handler completed normally; `step` auto-advances `ip`.
     cont,
-    /// The handler set `ip` itself (jump, call, fault entry).
-    /// `step` leaves `ip` alone — the run loop keeps going.
+    /// Handler set `ip` itself (jump, call, fault entry).
     branched,
-    /// The VM hit `hlt` (no resume).
+    /// `hlt` reached (no resume).
     halted,
-    /// A fault fired but no ISR was installed (vector slot is `0`).
-    /// The host should surface the fault to the user.
+    /// Fault fired but no ISR was installed (vector slot is `0`).
     halted_on_fault,
-    /// The VM hit `brk`. `ip` is already advanced past the
-    /// breakpoint; calling `run` again resumes from there.
+    /// `brk` reached. `ip` is past the breakpoint; `run` resumes.
     breakpoint,
 };
 
-/// Per-opcode handler. Receives the VM and returns the post-step
-/// outcome. A handler that returns `.cont` without touching `ip`
-/// leaves the auto-advance work to `step`.
+/// Per-opcode handler. Returns the post-step outcome. Handlers
+/// returning `.cont` without touching `ip` are auto-advanced.
 pub const Handler = *const fn (vm: *VM) StepResult;
 
-/// Default handler for bytes with no implementation — raises the
-/// invalid-opcode fault.
+/// Default handler: raises the invalid-opcode fault.
 fn unimplemented(vm: *VM) StepResult {
     return raiseFault(vm, .invalid_opcode);
 }
 
-/// 256-slot handler table. Bytes without a real handler default
-/// to `unimplemented`; subsequent opcode-family PRs install their
-/// handlers by overwriting individual slots here.
+/// 256-slot handler table. Unimplemented bytes default to
+/// `unimplemented`.
 pub const handler_table: [256]Handler = blk: {
     var t = [_]Handler{unimplemented} ** 256;
 
@@ -214,10 +199,7 @@ pub const handler_table: [256]Handler = blk: {
     break :blk t;
 };
 
-/// One fetch-decode-execute cycle. Reads the byte at `ip`,
-/// invokes its handler, and (if the handler returned `.cont`
-/// without moving `ip`) advances past the instruction by the
-/// schema-derived size.
+/// One fetch-decode-execute cycle.
 pub fn step(vm: *VM) StepResult {
     vm.cycles +%= 1;
     const ip_before = vm.regs.read(.ip);
@@ -231,10 +213,8 @@ pub fn step(vm: *VM) StepResult {
     return result;
 }
 
-/// Iterate `step` until the VM signals a terminal state. `.cont`
-/// and `.branched` both keep the loop going; `.breakpoint`,
-/// `.halted`, and `.halted_on_fault` exit so the host can
-/// inspect / decide whether to resume.
+/// Dispatch loop until a terminal `StepResult` (`.breakpoint`,
+/// `.halted`, `.halted_on_fault`).
 pub fn run(vm: *VM) StepResult {
     while (true) {
         const r = step(vm);
@@ -243,12 +223,10 @@ pub fn run(vm: *VM) StepResult {
     }
 }
 
-/// Deliver a fault through the interrupt mechanism. Faults
-/// (and software `int N`) bypass `flg.I` and `im` — they always
-/// fire, so a buggy program can't silently drop a div-by-zero.
-/// If the vector slot is `0` the VM halts with a host-visible
-/// fault marker; otherwise the entry sequence pushes `ip` /
-/// `fp` / `flg`, sets `flg.I`, and jumps to the ISR.
+/// Deliver a fault. Bypasses `flg.I` and `im` (always fires).
+/// Halts with `.halted_on_fault` when the vector slot is `0`;
+/// otherwise pushes `ip` / `fp` / `flg`, sets `flg.I`, and jumps
+/// to the ISR.
 pub fn raiseFault(vm: *VM, vector: Vector) StepResult {
     const target = vm.readWord(ivtSlot(vector));
     if (target == 0) return .halted_on_fault;
@@ -261,11 +239,8 @@ pub fn raiseFault(vm: *VM, vector: Vector) StepResult {
     return .branched;
 }
 
-/// Deliver a hardware-style IRQ. Honors the maskable layer
-/// (`flg.I` globally + `im` for vectors `0..0x0F`); host /
-/// device code calls this to signal an interrupt. Returns
-/// `null` when the IRQ is blocked by masking, otherwise the
-/// outcome of the entry sequence (same as `raiseFault`).
+/// Deliver a maskable IRQ. Honors `flg.I` globally and `im` for
+/// vectors `0..0x0F`. Returns `null` when masked.
 pub fn raiseIrq(vm: *VM, vector: Vector) ?StepResult {
     if (vm.regs.flagSet(.interrupt_disable)) return null;
     const v = @intFromEnum(vector);
@@ -276,23 +251,22 @@ pub fn raiseIrq(vm: *VM, vector: Vector) ?StepResult {
     return raiseFault(vm, vector);
 }
 
-/// Address of the slot for `vector` inside the IVT.
+/// IVT address of `vector`'s slot.
 pub fn ivtSlot(vector: Vector) u16 {
     // @as: widen the u8 vector index to u16 before the multiply
     return ivt_base + 2 * @as(u16, @intFromEnum(vector));
 }
 
-/// Push a 16-bit word onto the stack. Pre-decrement:
-/// `sp -= 2; mem[sp] = value`. Underflow wraps silently — no
-/// fault, the program is responsible.
+/// Push a word: `sp -= 2; mem[sp] = value`. Wraps silently on
+/// underflow.
 pub fn pushWord(vm: *VM, value: u16) void {
     const new_sp = vm.regs.read(.sp) -% 2;
     vm.regs.write(.sp, new_sp);
     vm.writeWord(new_sp, value);
 }
 
-/// Pop a 16-bit word from the stack. Post-increment:
-/// `value = mem[sp]; sp += 2`. Overflow wraps silently.
+/// Pop a word: `value = mem[sp]; sp += 2`. Wraps silently on
+/// overflow.
 pub fn popWord(vm: *VM) u16 {
     const sp = vm.regs.read(.sp);
     const value = vm.readWord(sp);
