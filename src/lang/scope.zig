@@ -1,13 +1,3 @@
-/// Scope + symbol-table tracking for the gero-lang typechecker.
-/// Each `Scope` is a flat name → `SymbolInfo` map with an optional
-/// parent pointer; `lookup` walks the chain. New blocks (function
-/// body, class body, `do` block, etc.) push a fresh child scope; the
-/// caller releases it when the block ends.
-///
-/// Naming convention: identifiers are interned by raw byte slice
-/// (sliced from the source buffer the parser was handed). The string
-/// hash-map's keys reference into that buffer — callers must not
-/// release the source until the scope tree is torn down.
 const std = @import("std");
 const ast = @import("ast.zig");
 const types = @import("types.zig");

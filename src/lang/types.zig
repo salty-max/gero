@@ -1,10 +1,3 @@
-/// Gero-lang type representation — the typechecker's internal shape
-/// of every value's static type. Mirrors the surface forms documented
-/// in `docs/gero-lang.md` §3.
-///
-/// This module is scaffolding: subsequent typechecker slices populate
-/// the `named` variant's payload as user-defined types resolve. The
-/// shape here stays stable so dependent passes can build against it.
 const std = @import("std");
 const ast = @import("ast.zig");
 

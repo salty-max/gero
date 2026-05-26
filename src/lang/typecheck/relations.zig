@@ -1,7 +1,3 @@
-/// Type-to-type relations: assignability (used by return /
-/// let-init / assignment / call-arg checks) and cast
-/// convertibility (used by the `as` expression). Both are pure
-/// functions over `types.Type` pairs — no `Checker` state.
 const types = @import("../types.zig");
 const predicates = @import("predicates.zig");
 

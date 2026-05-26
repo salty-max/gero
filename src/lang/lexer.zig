@@ -1,13 +1,3 @@
-/// `.gr` lexer — same shape as `src/asm/lexer.zig` (knit-driven,
-/// per-token combinator thunks, error recovery via byte-advance)
-/// but tuned to the gero-lang surface: newline-significant,
-/// 28+ keywords, symbolic operator set, hex/decimal/binary
-/// numerics with underscores, string literals with interpolation
-/// (`"$(expr)"`) and a small format-spec sublanguage.
-///
-/// Per gero-lang spec §2 (see `docs/gero-lang.md`). The parser
-/// downstream consumes `TokenStream` and reuses knit's diagnostic
-/// shape so error reporting stays unified across asm + lang.
 const std = @import("std");
 const knit = @import("knit");
 const core = knit.core;

@@ -1,11 +1,3 @@
-/// Annotation parser — `@name` / `@name(args...)` markers that
-/// the parser accumulates into a pending buffer and attaches to
-/// the following decl. Both the paren form (`@bank(5)`) and the
-/// bare-arg sugar (`@bank 5` — single inline arg on the same line)
-/// are recognized. §3.7.
-///
-/// Imports `Parser` + `ParserError` from `parser.zig`; calls
-/// `expr.parseExpression` to capture arg expressions.
 const std = @import("std");
 const ast = @import("ast.zig");
 const lexer = @import("lexer.zig");

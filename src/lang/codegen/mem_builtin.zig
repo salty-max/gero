@@ -1,7 +1,3 @@
-/// Lowering for the stdlib `mem.*` builtins. Each entry maps to
-/// a specific VM opcode sequence — typed peek/poke pairs, the
-/// `bcpy` / `bfill` block ops, and the shared `addr_of` helper
-/// that also backs the `&x` reference operator.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");

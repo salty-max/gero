@@ -1,15 +1,3 @@
-/// Render gero-lang diagnostics in the format documented by
-/// `docs/lang-diagnostics.md`.
-///
-/// Two surfaces:
-///   - `pretty(...)` — Cargo-style human output (default for
-///     `gero check`).
-///   - `json(...)` — line-delimited JSON, one diagnostic per
-///     line, for editor / CI consumers (the LSP wire schema).
-///
-/// Both consume `Diagnostic` slices plus the underlying source
-/// buffer (needed for line-extraction and column math) plus the
-/// file path (for the `--> path:line:col` header).
 const std = @import("std");
 const ast = @import("ast.zig");
 const diag_mod = @import("diagnostic.zig");

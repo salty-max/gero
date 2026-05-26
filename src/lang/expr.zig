@@ -1,13 +1,3 @@
-/// Expression parser — Pratt loop over the precedence hierarchy
-/// from `docs/gero-lang.md` §3.3. Primaries cover every literal
-/// + ident + paren + tuple + list + struct literal + `do…end` /
-/// `if…end` / `lambda…end` expression form.
-///
-/// The Pratt loop in `parseExpression(min_prec)` consumes operators
-/// whose precedence is ≥ `min_prec`, recursing on RHS at one tier
-/// higher. Unary prefix and postfix call/index/field are folded
-/// into the leaf path (`parseUnary` → `parseCallChain` →
-/// `parsePrimary`).
 const std = @import("std");
 const ast = @import("ast.zig");
 const lexer = @import("lexer.zig");

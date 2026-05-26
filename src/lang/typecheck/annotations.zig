@@ -1,9 +1,3 @@
-/// Annotation validation per `docs/gero-lang.md` §3.7 — the
-/// `T` target bit-flags, the `AnnotationSpec` table, and the
-/// `validateAnnotations` / `validateAnnotationArgs` walkers
-/// invoked from every decl-registration site. Also hosts
-/// `defHasNoCapture`, the small predicate that scans a `def`'s
-/// annotation list for `@no_capture`.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const typecheck = @import("../typecheck.zig");

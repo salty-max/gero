@@ -1,7 +1,3 @@
-/// Operator type rules (§4.2.1) + `as T` cast checking. Splits
-/// the unary / binary operator family out of `typecheck.zig` so
-/// the walker file stays scannable. Every entry takes a
-/// `*Checker` and threads through its arena / diagnostic sink.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");

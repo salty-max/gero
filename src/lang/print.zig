@@ -1,19 +1,3 @@
-/// Gero-lang pretty-printer — walks an `ast.Program` and emits
-/// canonical `.gr` source per `docs/gero-lang.md`. Foundation for
-/// `gero fmt` and for the parser round-trip property test.
-///
-/// Strategy: walk the AST and re-emit each node from its structured
-/// shape. Identifiers, string parts, format specs, etc. are sliced
-/// from `source` because they are byte-exact (the lexer doesn't
-/// canonicalize identifier case or string escapes); all other text
-/// is emitted from the AST shape itself.
-///
-/// Round-trip contract (§ acceptance of issue #231):
-///
-///   parse(print(parse(s))) == parse(s)
-///
-/// AST equality compares every structural field except byte
-/// offsets (those legitimately differ when whitespace differs).
 const std = @import("std");
 const ast = @import("ast.zig");
 

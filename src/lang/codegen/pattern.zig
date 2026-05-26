@@ -1,7 +1,3 @@
-/// Pattern-arm test emission for `match`. Lowers each pattern
-/// shape (literal / wildcard / ident binder / range / or-pattern
-/// / nullary variant) to the `cmp + jne` sequence that drops
-/// failure jumps into `skip_patches` and falls through on match.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");

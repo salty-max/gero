@@ -1,23 +1,3 @@
-/// Gero-lang parser — driver. Consumes the lexer's `TokenStream`,
-/// runs a hand-rolled statement-kind dispatch, and hands off to
-/// sibling modules for each language sub-surface:
-///
-///   - `expr.zig`       — Pratt expressions + primaries
-///   - `pattern.zig`    — `match` / `let` destructuring patterns
-///   - `type_ann.zig`   — type annotations
-///   - `annotation.zig` — `@name(...)` decorators
-///   - `decl.zig`       — `let` / `const` / `def` / `class` /
-///                        `struct` / `enum` / `use`
-///   - `stmt.zig`       — `if` / `while` / `for` / `match` /
-///                        `do` / `return` / `print` / expr-stmts
-///
-/// Errors append to `errors` but never abort parsing — the parser
-/// recovers to the next newline so one drive surfaces every problem.
-///
-/// `Parser`, `ParserError`, and the helpers below are `pub` so the
-/// sibling modules can compose against them. They aren't part of
-/// the `gero.lang` public API surface (`src/lang.zig` re-exports
-/// only `parse`, `ParseTree`, and the `ast` barrel).
 const std = @import("std");
 const knit = @import("knit");
 const core = knit.core;

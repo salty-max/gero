@@ -1,8 +1,3 @@
-/// Stdlib `mem.*` builtin signatures + the two typechecker
-/// dispatch helpers that consume them. The `mem` module is
-/// compiler-recognized (not a source-level module) so callers
-/// hit these resolvers directly instead of going through the
-/// regular module-lookup path.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");

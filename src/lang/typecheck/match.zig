@@ -1,6 +1,3 @@
-/// `match` typechecking — walks each arm's pattern, validates
-/// arm-body bindings, and runs the exhaustiveness +
-/// reachability checks for enum-typed scrutinees.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");

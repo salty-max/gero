@@ -1,10 +1,3 @@
-/// Codegen ISA primitives — one helper per named bytecode
-/// instruction the Emitter relies on. Splits out of `codegen.zig`
-/// so the walker file stays scannable. Every entry takes a
-/// `*Emitter` and writes through its raw-emit primitives
-/// (`emitByte` / `emitU16Le` / `currentOffset` /
-/// `currentBufferBase`). Pure byte emission, no codegen state
-/// mutation beyond the code buffer cursor.
 const std = @import("std");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");

@@ -1,19 +1,3 @@
-/// Builtin lowering for `assert(cond, msg?)` and
-/// `debug_assert(cond, msg?)` per spec §5.3. Both shapes parse as
-/// regular `CallExpr { callee: ident, args: ... }` — the
-/// typechecker validates the signature; the codegen dispatches on
-/// the callee name before the generic call path.
-///
-/// `assert` always emits the check (in every build mode).
-/// `debug_assert` is elided to zero bytecode when the active
-/// `Options.optimize` is anything other than `.debug` — argument
-/// expressions are not evaluated either, per spec.
-///
-/// On `false` the emitted sequence prints the optional message
-/// (via `sys print_str` when the arg is a string literal) and
-/// halts the VM. The host sees a clean halt with the assertion
-/// message in `Host.out` — matching the spec's "diagnostic"
-/// guarantee without reserving a new ISA fault vector.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const opcodes = @import("opcodes.zig");

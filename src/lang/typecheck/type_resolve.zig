@@ -1,8 +1,3 @@
-/// Type-annotation resolution. Walks an `ast.TypeAnn` and builds
-/// the equivalent `types.Type` allocated on the `Checker`'s
-/// arena. Splits out of `typecheck.zig` so the walker file stays
-/// scannable; the resolver itself is purely recursive over the
-/// AST + the typecheck arena.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
