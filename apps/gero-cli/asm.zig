@@ -1,10 +1,3 @@
-/// `gero asm` — drive the assembler from a `.gas` source file
-/// down to a `.gx` image on disk. Includes are resolved through
-/// `gero.asm_.resolveIncludes`; parse + codegen run end-to-end;
-/// diagnostics print with caret snippets via `formatPretty`.
-///
-/// Exit code per cli.md §3.1: `0` on success, `3` on parse /
-/// assembly error, `1` on host IO problems.
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");

@@ -1,12 +1,3 @@
-/// `gero init` — scaffold an asm project **into the current
-/// directory**. Mirror of `gero new <name>` (see `new.zig`) but
-/// in-place: the cwd's basename becomes the project name. Match
-/// to cargo / poetry / yarn / zig: `new` creates a fresh
-/// sub-directory, `init` initializes the cwd.
-///
-/// Refuses to overwrite if any of the scaffolded paths already
-/// exist (per-file pre-flight, since the cwd itself is expected
-/// to exist).
 const std = @import("std");
 const cli = @import("cli.zig");
 const term_mod = @import("term.zig");

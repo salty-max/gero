@@ -1,18 +1,3 @@
-/// Cargo-style elapsed-time footer printed by the long-running
-/// CLI subcommands (`gero asm`, `gero check`, …) to give a quick
-/// "how long did that take" signal. Shared so the format stays
-/// consistent across every command.
-///
-/// Output shape:
-///
-/// ```text
-///     Finished in 1.2 ms
-///     Failed in   4.1 ms
-/// ```
-///
-/// The footer label is right-padded by the caller's choice of
-/// style (`style.location` bold for ok, `style.code` red for
-/// failures).
 const std = @import("std");
 const gero = @import("gero");
 

@@ -1,7 +1,3 @@
-/// Shared diagnostic-printing helpers for the CLI subcommands.
-/// Both `gero asm` and `gero check` produce the same per-file
-/// grouped output with caret snippets — this module owns that
-/// rendering so the surface stays in one place.
 const std = @import("std");
 const gero = @import("gero");
 

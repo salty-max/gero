@@ -1,18 +1,3 @@
-/// `gero check` — validate one or more `.gas` sources through the
-/// full assembler pipeline (resolveIncludes → parse → codegen)
-/// without writing any `.gx`. Positional args can be individual
-/// files or directories (walked recursively for `*.gas`). Editor-
-/// LSP-style use case + CI gate.
-///
-/// Exit codes per cli.md §3.9 + §5:
-///   - `0` clean (every file passed)
-///   - `1` host IO problem (file missing, unreadable, etc.)
-///   - `2` usage error (missing positional)
-///   - `4` ≥ 1 diagnostic from any file
-///
-/// `.gr` positional paths dispatch to a "not yet implemented" stub
-/// until the gero-lang front-end ships. Directory walks ignore
-/// `.gr` extensions entirely until then.
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");

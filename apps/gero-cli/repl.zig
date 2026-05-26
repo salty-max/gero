@@ -1,23 +1,3 @@
-/// `gero repl` — interactive gero-lang prompt. Reads lines from
-/// stdin into a session source buffer, recompiles on every
-/// submission, runs the result on a fresh VM. Each input
-/// classifies as either a top-level statement (let / const / def /
-/// class / struct / enum / use / print / control-flow) or a bare
-/// expression. Bare expressions get auto-wrapped in `print` so the
-/// value lands on stdout.
-///
-/// Multi-line input is detected by lexer-balance: while the running
-/// open-block count (def / do / if / while / for / repeat / class /
-/// struct / enum) exceeds the running close count (end / until),
-/// the prompt switches to `... ` and accumulates more lines.
-///
-/// Meta-commands:
-///
-///   `.help`       — usage summary
-///   `.quit`       — leave the session (also reached via EOF)
-///   `.reset`      — drop every binding
-///   `.dump <n>`   — print the source text of a previously-defined
-///                   name (`def`, `let`, `const`, etc.)
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");

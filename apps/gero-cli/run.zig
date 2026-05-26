@@ -1,10 +1,3 @@
-/// `gero run` — load a `.gx`, boot a fresh VM, execute until
-/// halt / fault / breakpoint. The bare-VM intercepts two
-/// reserved `int N` syscalls before they reach the IVT:
-///
-///   `int 0x10` — print the low byte of `r1` to stdout.
-///   `int 0x21` — flush the SRAM bytes through the host sink
-///                (typically a write of `<basename>.sav`).
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");

@@ -1,26 +1,3 @@
-/// `gero new <name>` — scaffold a fresh asm project in a new
-/// sub-directory. The in-place form (cwd as the project root) is
-/// `gero init` — see `init.zig`. Both subcommands consume the
-/// shared scaffolding primitives exported below.
-///
-/// Layout written:
-///
-/// ```text
-/// <name>/
-/// ├── gero.toml              # filled with `name`, version 0.1.0, vm target
-/// ├── src/main.gas           # hello-world entry, hlt's clean
-/// ├── tests/smoke.gas        # template golden-file test
-/// ├── tests/smoke.expected   # paired expected stdout
-/// └── README.md              # build / test / run pointers
-/// ```
-///
-/// Templates are bundled into the binary via `@embedFile`, so
-/// `gero new` works without a network call or external assets.
-///
-/// Philosophy: guide, don't force. The scaffold ships no CI /
-/// pre-commit config — the README points users to the upstream
-/// tooling guide where opt-in recipes for GitHub Actions, GitLab,
-/// lefthook, and plain git hooks live.
 const std = @import("std");
 const cli = @import("cli.zig");
 const term_mod = @import("term.zig");

@@ -1,13 +1,3 @@
-/// `gero test [pattern]` — asm-level test harness.
-///
-/// Walks `tests/asm/` for `.gas` programs paired with sibling
-/// `.expected` files, assembles + boots each in a fresh VM, and
-/// diffs the captured stdout against the golden file. The optional
-/// positional `pattern` is a substring filter applied to the test
-/// name (the `.gas` basename without extension).
-///
-/// Exit code per cli.md §3.4: `0` on all-pass, `7` on any failure,
-/// `1` on a host IO problem, `2` on bad usage.
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");

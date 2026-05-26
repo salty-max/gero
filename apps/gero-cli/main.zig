@@ -1,5 +1,3 @@
-/// `gero` CLI entry point. Parses argv, dispatches to the
-/// per-subcommand modules, plumbs file-IO + stdio.
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");

@@ -1,10 +1,3 @@
-/// `gero disasm` — read a `.gx` byte buffer, emit asm source to
-/// stdout (or to a file via `-o`). Per cli.md §3.6.
-///
-/// `--bank=N` selects a single bank slot to disassemble. With no
-/// `--bank` flag, the default renders the base image followed by
-/// every bank, each prefixed with a `; --- ... ---` section
-/// header. Out-of-range bank slots surface as an exit-1 error.
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
