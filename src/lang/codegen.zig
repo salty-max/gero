@@ -666,8 +666,6 @@ pub const Emitter = struct {
 
     /// Reserve a 2-byte slot for `name` at the next fp-relative
     /// offset. Returns the offset (negative — locals grow down).
-    /// Reserve a 2-byte slot for `name` at the next fp-relative
-    /// offset. Returns the offset (negative — locals grow down).
     pub fn allocLocal(self: *Emitter, name: []const u8) !i8 {
         const new_frame_bytes = self.frame_bytes + 2;
         // @as: i8 covers -128..127; with 2 bytes per slot we cap at 64 locals per frame, fits.
@@ -833,8 +831,6 @@ pub const Emitter = struct {
         return self.checked.typeOf(e);
     }
 
-    /// `true` when the expression's inferred type is the named
-    /// primitive `p`. Returns `false` for missing types.
     /// `true` when the expression's inferred type is the named
     /// primitive `p`. Returns `false` for missing types.
     pub fn isPrimitiveType(self: *const Emitter, e: *const ast.Expr, p: types_mod.Primitive) bool {
@@ -1805,7 +1801,6 @@ pub const Emitter = struct {
         try isa.sys(self, Sys.print_int);
     }
 
-    /// Delegated to `codegen/strings.zig`.
     /// Delegated to `codegen/strings.zig`.
     pub fn emitStrLitExpr(self: *Emitter, sl: ast.StrLitExpr) !void {
         return strings.emitStrLitExpr(self, sl);
