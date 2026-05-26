@@ -1,15 +1,3 @@
-/// Helpers that drive the asm → disasm → asm pipeline so tests
-/// can assert byte-equality after a full round-trip.
-///
-/// Two entry points:
-///
-///   * `roundTripImage` — symbol-blind, takes a raw base-image
-///     slice. Round-trips reliably only for pure-code sources
-///     (no `data8` / `data16`). Cheap path for the legacy tests.
-///   * `roundTripArchive` — takes a full `.gx` archive (header
-///     included), reads the debug-symbol section to drive
-///     data-mode rendering, and returns a re-assembled archive.
-///     The right path for example-program round-trip tests.
 const std = @import("std");
 const gero = @import("../gero.zig");
 

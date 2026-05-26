@@ -1,7 +1,3 @@
-/// Assembler AST — what the unified knit parser emits, what the
-/// symbol pass / codegen consume. Each node carries a `Span` so
-/// diagnostics can resolve back to `(file, line, col)` via the
-/// `SourceMap` from the include resolver.
 const std = @import("std");
 const lexer = @import("lexer.zig");
 const vm = @import("../vm/vm.zig");

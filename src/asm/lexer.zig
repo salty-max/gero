@@ -1,9 +1,3 @@
-/// `.gas` lexer — built on `knit` so token errors share the
-/// same `ParseError` shape (parser name / expected / actual /
-/// kind / context) as the parser stage downstream. Each token
-/// kind has its own `Parser(Token)`; the `tokenize` driver
-/// composes them through `knit.choice` and surfaces multi-error
-/// recovery by advancing one byte past every refusal.
 const std = @import("std");
 const knit = @import("knit");
 const core = knit.core;

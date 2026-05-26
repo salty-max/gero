@@ -1,17 +1,3 @@
-/// Asm parser — consumes the fused source string from
-/// `include.resolveIncludes` and emits an `ast.Program`.
-///
-/// Scope so far: top-level loop, label statements, `const`
-/// directive with full compile-time expression RHS (per asm spec
-/// §1.7 operator set). Remaining directives + instructions land
-/// in subsequent PRs.
-///
-/// Architecture note: the leaf parsers (`hexP`, `identP`,
-/// `colonP`, …) are knit byte-parsers reused from `lexer.zig`.
-/// Statement-level dispatch is hand-rolled — knit's `choice`
-/// composes well over leaves but the directive layer wants
-/// `if`-style cascading + threaded state (the `ConstantTable`),
-/// which reads cleaner as explicit code.
 const std = @import("std");
 const knit = @import("knit");
 const core = knit.core;

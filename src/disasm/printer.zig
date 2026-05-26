@@ -1,13 +1,3 @@
-/// Pretty-printer for decoded instructions. Emits asm syntax
-/// the assembler can re-consume (round-trip), with an aligned
-/// mnemonic column and conventional hex / addr / register
-/// literals.
-///
-/// Output shape (one line per instruction):
-///   `<mnemonic-padded-to-width>  <op1>, <op2>`
-///
-/// Columns are right-padded to `mnemonic_col_width` so the
-/// operands line up across the block.
 const std = @import("std");
 const gero = @import("../gero.zig");
 const decoder = @import("decoder.zig");

@@ -1,13 +1,3 @@
-/// Resolves a parsed `ast.Instruction` to an ISA opcode + total
-/// encoded size. The matching is done by classifying each
-/// operand into a `Kind` (operand-encoding category) and looking
-/// up `(mnemonic, kinds...)` in a hand-written shape table.
-///
-/// ZP-form auto-selection is intentionally NOT implemented yet
-/// (PR #36 first cut — keep it simple). All address operands
-/// emit as 2-byte `addr`, never as 1-byte `zp`. A future
-/// peephole pass can downgrade `Addr` to `ZP` when the value
-/// fits in 0..0xFF.
 const std = @import("std");
 const ast = @import("ast.zig");
 const symtab = @import("symtab.zig");

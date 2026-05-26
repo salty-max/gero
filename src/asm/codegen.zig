@@ -1,17 +1,3 @@
-/// Asm codegen — takes a parsed `ParseTree` and produces a
-/// complete `.gx` byte image (header + image bytes). Banked
-/// emission is supported via the `bank N` directive.
-///
-/// Two-pass model:
-///   Pass 1 (layout): walk statements, compute each statement's
-///     emit size via the opcode resolver, advance an emit cursor,
-///     record label / data addresses in the SymbolTable.
-///   Pass 2 (emit): walk statements again, emit opcode + operand
-///     bytes against the populated table. Forward references are
-///     resolvable now because pass 1 saw every label.
-///
-/// Org / forward gaps zero-pad between segments. Backward `org`
-/// (target < current emit address) raises E014.
 const std = @import("std");
 const knit = @import("knit");
 const core = knit.core;

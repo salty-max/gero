@@ -1,9 +1,3 @@
-/// Byte → `Instruction` decoder. Reuses the asm-side opcode
-/// table (`opcode_resolver.shape_by_opcode`) for the reverse
-/// mapping, so the printer can reconstruct the exact asm syntax
-/// the bytes came from — including `[reg]` indirect and
-/// `[addr + reg]` indexed forms that the VM's bare opcode table
-/// flattens to plain `reg, reg, reg` schemas.
 const std = @import("std");
 const opres = @import("../asm/opcode_resolver.zig");
 
