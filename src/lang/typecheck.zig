@@ -1,21 +1,3 @@
-/// Gero-lang typechecker — resolves identifiers, infers types,
-/// checks calls / assignments / patterns, and surfaces every
-/// rule violation as a `Diagnostic` for the caller.
-///
-/// Two passes over the AST:
-///   1. Top-level decl registration — every module-scope `let` /
-///      `const` / `def` / `class` / `struct` / `enum` / `use` lands
-///      in the module scope before walking, so forward references
-///      across the file resolve cleanly.
-///   2. Resolution + inference + checking — walk every statement,
-///      resolve `NamedType` and `Expr.ident` against the scope chain,
-///      infer literal / expression types with a bidirectional `hint`,
-///      type-check operators / casts / calls / assignments per the
-///      spec rules (§3.5.1, §4.2.1, §4.6, §4.2).
-///
-/// Subsequent slices cover nullable / reference / match / annotation /
-/// bake / cast-range / varargs rules and the rendered-diagnostic shape
-/// from `docs/lang-diagnostics.md`.
 const std = @import("std");
 
 const ast = @import("ast.zig");
@@ -26,18 +8,13 @@ const Scope = scope_mod.Scope;
 const Diagnostic = diag_mod.Diagnostic;
 const Severity = diag_mod.Severity;
 
-/// Typechecker output. Owns the diagnostics slice and the arena that
-/// allocated every `*Type` plus the scope tree.
+/// Typechecker output. Owns the diagnostics slice and the arena
+/// holding every `*Type` plus the scope tree.
 pub const CheckedProgram = struct {
     program: *const ast.Program,
     diagnostics: []Diagnostic,
-    /// Inferred type for every `*const Expr` the typechecker walked.
-    /// Keys are AST-stable pointers from the parser's arena; values
-    /// live in `type_arena`. The codegen reads this map for
-    /// type-driven instruction selection (fixed-point arithmetic,
-    /// `print` dispatch between `print_int` / `print_str`, etc.).
-    /// Missing entries mean the expression's type couldn't be
-    /// inferred — callers should fall back rather than assume.
+    /// Inferred type for every walked expression. `null` lookups
+    /// mean the type couldn't be inferred.
     expr_types: std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type),
     type_arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
@@ -48,20 +25,25 @@ pub const CheckedProgram = struct {
         self.type_arena.deinit();
     }
 
-    /// `true` when at least one fatal-severity diagnostic fired.
+    /// `true` when at least one fatal diagnostic fired.
     pub fn hasErrors(self: CheckedProgram) bool {
         for (self.diagnostics) |d| if (d.severity == .fatal) return true;
         return false;
     }
 
-    /// Look up the inferred type for an expression. Returns `null`
-    /// when the typechecker didn't see / record it.
+    /// Inferred type for `e`, or `null` if missing.
     pub fn typeOf(self: *const CheckedProgram, e: *const ast.Expr) ?*const types.Type {
         return self.expr_types.get(e);
     }
 };
 
-/// Walk `program` through resolution + inference + checking.
+/// Type-check `program` and return a `CheckedProgram`.
+///
+/// ```
+/// var checked = try typecheck(allocator, source, &parse_tree.program);
+/// defer checked.deinit();
+/// if (checked.hasErrors()) { ... }
+/// ```
 pub fn typecheck(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -75,8 +57,7 @@ pub fn typecheck(
     errdefer diagnostics.deinit(allocator);
 
     var module_scope: Scope = .init(a, null);
-    // No `defer deinit` — the arena releases the scope's map storage
-    // when `CheckedProgram.deinit` runs.
+    // Arena owns the scope's map storage; freed by `CheckedProgram.deinit`.
 
     var expr_types: std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type) = .{};
     errdefer expr_types.deinit(a);
@@ -105,12 +86,8 @@ pub fn typecheck(
         .expr_types = &expr_types,
     };
 
-    // Pre-pass: capture stable enum / struct / class / def decl
-    // pointers (slice elements have a stable address — the union
-    // variant payload sits in place). Field / method resolution,
-    // match-exhaustiveness, bake-call rules, and MMIO checks all
-    // consult these maps. The MMIO name set is built here too
-    // (any `let` annotated `@addr` lands in it).
+    // Pre-pass: index enum / struct / class / def decls and the
+    // MMIO name set (any `let` annotated `@addr`).
     for (program.statements) |*stmt| switch (stmt.*) {
         .enum_decl => |ed| {
             const name = source[ed.name.start..ed.name.end];
@@ -171,95 +148,71 @@ const calls = @import("typecheck/calls.zig");
 
 const T = annotations.T;
 
-/// Stateful walker that runs resolution + inference + checking
-/// across the program. Sub-modules under `typecheck/` take a
-/// `*Checker` and call back into its public methods.
+/// Stateful walker that runs resolution + inference + checking.
+/// Sub-modules under `typecheck/` take a `*Checker` and call back
+/// into its public methods.
 pub const Checker = struct {
     source: []const u8,
     arena: std.mem.Allocator,
-    /// Allocator used for the diagnostics ArrayList — must match the
-    /// allocator the caller releases the slice with later.
-    /// Diagnostic message strings still live in `arena`.
+    /// Allocator for the diagnostics ArrayList. Diagnostic strings
+    /// live in `arena`.
     diag_alloc: std.mem.Allocator,
     diagnostics: *std.ArrayList(Diagnostic),
-    /// The outermost (module) scope.
+    /// Outermost (module) scope.
     module_scope: *Scope,
-    /// The currently-active scope. Walker entry into a function /
-    /// class / block sets this to a fresh child and restores on exit.
+    /// Currently-active scope. Restored on walker exit.
     current_scope: *Scope,
     /// Return type of the enclosing function (or `null` at module
     /// scope / inside a `def` with no explicit return annotation).
     /// Used as a hint for `return expr` so int literals pin to the
     /// declared return type.
     current_ret_ty: ?*const types.Type,
-    /// Span of the enclosing class's `extends Parent` clause when
-    /// the walker is inside a class method body. `null` everywhere
-    /// else. Drives `super` resolution.
+    /// `extends Parent` span when inside a class method. `null`
+    /// elsewhere. Drives `super` resolution.
     current_class_extends: ?ast.Span,
-    /// Name of the enclosing class when the walker is inside a
-    /// class method body. `null` everywhere else. Drives `self`
-    /// type resolution.
+    /// Enclosing class name when inside a class method. Drives
+    /// `self` type resolution.
     current_class_name: ?[]const u8,
-    /// Identifiers statically known non-nil in the current
-    /// straight-line flow. Populated by simple nil-check pattern
-    /// matching (`if x != nil` arm / `if x == nil then return end`
-    /// fall-through). Keys are source-buffer slices owned by the
-    /// caller's source.
+    /// Identifiers statically known non-nil in the current flow.
+    /// Populated by simple nil-check pattern matching.
     non_nil: std.StringHashMapUnmanaged(void),
-    /// Enum-name → decl pointer map populated during pass 1. Used
-    /// by `match` exhaustiveness to retrieve the variant list when
-    /// the scrutinee resolves to a named-enum type.
+    /// Enum-name → decl pointer (pass 1).
     enum_registry: std.StringHashMapUnmanaged(*const ast.EnumDecl),
-    /// Struct-name → decl pointer map. Drives `.field` typing and
-    /// struct-literal validation.
+    /// Struct-name → decl pointer.
     struct_registry: std.StringHashMapUnmanaged(*const ast.StructDecl),
-    /// Class-name → decl pointer map. Drives `.field` / `.method()`
-    /// typing and `self` / `super` resolution.
+    /// Class-name → decl pointer.
     class_registry: std.StringHashMapUnmanaged(*const ast.ClassDecl),
-    /// Top-level `def` name → decl pointer map. Drives bake-call
-    /// rules (only bake fns may be called from a bake context) and
-    /// variadic-arity detection at call sites.
+    /// Top-level `def` name → decl pointer.
     def_registry: std.StringHashMapUnmanaged(*const ast.DefDecl),
-    /// Module-level `let` names annotated `@addr` — touching one
-    /// from inside a bake context is `E_BAKE_MMIO_ACCESS`.
+    /// Module-level `let`s annotated `@addr`. Accessing from a
+    /// bake context emits `E_BAKE_MMIO_ACCESS`.
     mmio_names: std.StringHashMapUnmanaged(void),
-    /// `true` when walking the body of a `bake def` / `bake do`.
-    /// Bake-context restrictions (no asm, no MMIO, no non-bake
-    /// calls) gate on this flag.
+    /// Walker is inside a `bake def` / `bake do` body.
     in_bake: bool,
-    /// `true` when walking the body of a `@no_capture` def. Inner
-    /// lambdas that mutate a captured binding emit
-    /// `E_ANN_CAPTURE_VIOLATION` per spec §3.7.2.
+    /// Walker is inside a `@no_capture` def body.
     in_no_capture: bool,
-    /// Names declared inside the currently-walked lambda body
-    /// (params + nested `let` / `const`). `null` outside a
-    /// `@no_capture`-tracked lambda. Drives the capture-mutation
-    /// check on assignments and `++` / `--`.
+    /// Names declared inside the current lambda body. `null` when
+    /// not under a `@no_capture`-tracked lambda. Drives capture-
+    /// mutation checks.
     lambda_locals: ?std.StringHashMapUnmanaged(void),
-    /// Names declared inside the currently-walked function body
-    /// (parameters + nested `let` / `const` / `def`). `null` at
+    /// Names declared inside the current function body. `null` at
     /// module scope. Drives `return &local` stack-lifetime checks.
     fn_locals: ?std.StringHashMapUnmanaged(void),
-    /// Tuple-destructuring sibling map: for a `let (a, b) = call()`
-    /// where slot `b` is nullable, `b` maps to `a` here. When a
-    /// bail-pattern fires on `b`, the sibling `a` is also promoted
-    /// to the `non_nil` set (the canonical multi-return idiom per
-    /// §3.4.1).
+    /// Tuple-destructure sibling map. For `let (a, b) = call()`
+    /// with nullable `b`, `b → a`. Bail on `b` promotes `a` to
+    /// non-nil too.
     tuple_correlations: std.StringHashMapUnmanaged([]const u8),
-    /// Out-param: every successful `inferExpr` writes its result here
-    /// keyed by the AST pointer. Owned by the caller; outlives the
-    /// `Checker` so the codegen can read it via `CheckedProgram`.
+    /// Inferred type per AST expression pointer. Owned by the
+    /// caller; survives `Checker` for the codegen to read.
     expr_types: *std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type),
 
-    /// Mutually recursive walker fns need an explicit error set —
-    /// Zig's inferred sets would deadlock the dependency graph.
+    /// Explicit error set for the mutually-recursive walker fns.
     const WalkError = error{OutOfMemory};
 
     // ---------- nil-flow helpers ----------
 
     /// Mark `name` as statically non-nil. Returns `true` when the
-    /// addition is fresh (caller pops on scope exit); `false` when
-    /// the binding was already in the set.
+    /// addition is fresh.
     fn pushNonNil(self: *Checker, name: []const u8) WalkError!bool {
         const gop = try self.non_nil.getOrPut(self.arena, name);
         return !gop.found_existing;
@@ -269,10 +222,8 @@ pub const Checker = struct {
         _ = self.non_nil.remove(name);
     }
 
-    /// Pattern-match a condition expression of the shape
-    /// `ident == nil` / `ident != nil` (in either operand order).
-    /// Returns the ident lexeme + whether the relation is `!=` so
-    /// callers can pick the right arm to confer non-nil status to.
+    /// Match `ident == nil` / `ident != nil` (either order). Returns
+    /// the ident lexeme + whether the relation is `!=`.
     fn matchNilCheck(self: *const Checker, cond: *const ast.Expr) ?NilCheck {
         if (cond.* != .binary) return null;
         const b = cond.binary;
@@ -288,17 +239,13 @@ pub const Checker = struct {
 
     const NilCheck = struct {
         name: []const u8,
-        /// `true` when the relation is `!=` (then-arm confers
-        /// non-nil); `false` when it is `==` (else-arm confers
-        /// non-nil, or fall-through if the then-body exits).
+        /// `true` for `!=` (then-arm is non-nil), `false` for `==`.
         is_neq: bool,
     };
 
     // ---------- diagnostic helpers ----------
 
-    /// Emit a diagnostic with full span coverage so the renderer
-    /// can underline the offending source slice rather than a
-    /// single character.
+    /// Emit a fatal diagnostic at `span`.
     pub fn emitSpan(
         self: *Checker,
         code: []const u8,
@@ -313,8 +260,7 @@ pub const Checker = struct {
         });
     }
 
-    /// Same as `emitSpan` plus an optional `help:` block printed
-    /// after the caret snippet.
+    /// Like `emitSpan` plus a `help:` block.
     pub fn emitSpanHelp(
         self: *Checker,
         code: []const u8,
@@ -331,10 +277,8 @@ pub const Checker = struct {
         });
     }
 
-    /// Emit `E_TYPE_MISMATCH` for a bare `expected vs actual`
-    /// type mismatch — no extra anchor span. Used by call-site /
-    /// operator / store checks where only the offending site is
-    /// useful context.
+    /// Emit `E_TYPE_MISMATCH` for an expected-vs-actual mismatch
+    /// at a single span.
     pub fn emitMismatch(
         self: *Checker,
         span: ast.Span,
@@ -351,10 +295,8 @@ pub const Checker = struct {
         try self.emitSpan("E_TYPE_MISMATCH", span, msg);
     }
 
-    /// Same as `emitMismatch` plus a secondary span pinned to the
-    /// `: T` annotation that drove the expected type. Renderer
-    /// surfaces it as the "expected `T` because of this annotation"
-    /// label under the source line.
+    /// Like `emitMismatch` but anchors the expected type to a
+    /// `: T` annotation span via a secondary label.
     pub fn emitMismatchAnnotated(
         self: *Checker,
         span: ast.Span,
@@ -384,10 +326,8 @@ pub const Checker = struct {
         });
     }
 
-    /// Allocate a single-element `SpanLabel` slice on `self.arena`
-    /// — the typical shape for diagnostics with one context span.
-    /// Lives long enough to back the `Diagnostic.secondary` field
-    /// (arena released by `CheckedProgram.deinit`).
+    /// Allocate a one-element `SpanLabel` slice on `self.arena`,
+    /// suitable for `Diagnostic.secondary`.
     pub fn singleSecondary(
         self: *Checker,
         span: ast.Span,
@@ -399,18 +339,13 @@ pub const Checker = struct {
         return sec;
     }
 
-    /// Combined assignability + narrowing check for "store into a
-    /// typed slot" sites (let-init, assignment, call arg, return).
-    /// Routes the diagnostic per spec §3.5.1:
-    ///
-    /// - Assignable (`Type.eql`, `T → T?`, or integer widening) →
-    ///   no diagnostic.
-    /// - Integer / `char` narrowing without explicit `as` →
-    ///   `E_CAST_PRECISION_LOSS` (warning).
-    /// - Anything else → `E_TYPE_MISMATCH` (fatal).
-    ///
-    /// Keeps the four call sites uniform — none of them know about
-    /// the precision-loss case directly.
+    /// Assignability + narrowing check for "store into a typed
+    /// slot" sites (let-init, assignment, call arg, return).
+    /// Routes per spec §3.5.1:
+    /// - Assignable → no diagnostic.
+    /// - Integer narrowing without `as` → `E_CAST_PRECISION_LOSS`
+    ///   (warning).
+    /// - Otherwise → `E_TYPE_MISMATCH` (fatal).
     pub fn checkStoreCompat(
         self: *Checker,
         span: ast.Span,
@@ -451,13 +386,11 @@ pub const Checker = struct {
         return self.source[span.start..span.end];
     }
 
-    // ---------- "did you mean…?" suggestions (#257) ----------
+    // ---------- "did you mean…?" suggestions ----------
 
-    /// Walk the scope chain and every type registry collecting
-    /// candidate names visible at `name`'s use site, then return
-    /// the closest Levenshtein match within `suggestions.max_distance`.
-    /// Used for `E_UNDEFINED_SYMBOL` — covers locals, params,
-    /// globals, defs, classes, structs, enums.
+    /// Closest near-spelling match for an undefined symbol across
+    /// the scope chain + type registries. `null` when nothing is
+    /// within `suggestions.max_distance`.
     pub fn suggestSymbol(self: *Checker, name: []const u8) WalkError!?[]const u8 {
         var pool: std.ArrayList([]const u8) = .empty;
         defer pool.deinit(self.arena);
@@ -475,8 +408,8 @@ pub const Checker = struct {
     pub fn suggestTypeName(self: *Checker, name: []const u8) WalkError!?[]const u8 {
         var pool: std.ArrayList([]const u8) = .empty;
         defer pool.deinit(self.arena);
-        // Primitive types — must be matched first so `let x: i8`
-        // wins over a stray `i9` local. Mirrors `types.primitiveFromName`.
+        // Primitives matched first so `let x: i8` wins over a stray
+        // `i9` local. Mirrors `types.primitiveFromName`.
         const primitives = [_][]const u8{ "i8", "u8", "i16", "u16", "int", "uint", "bool", "nil", "str", "fixed", "char" };
         for (primitives) |p| try pool.append(self.arena, p);
         var struct_it = self.struct_registry.keyIterator();
@@ -488,8 +421,7 @@ pub const Checker = struct {
         return suggestions.bestMatch(name, pool.items);
     }
 
-    /// Collect the field names of a struct decl into the candidate
-    /// pool for an `E_TYPE_UNDEFINED_FIELD` suggestion.
+    /// Best-match field name on a struct.
     pub fn suggestStructField(self: *Checker, sd: *const ast.StructDecl, name: []const u8) WalkError!?[]const u8 {
         var pool: std.ArrayList([]const u8) = .empty;
         defer pool.deinit(self.arena);
@@ -497,10 +429,7 @@ pub const Checker = struct {
         return suggestions.bestMatch(name, pool.items);
     }
 
-    /// Collect every field reachable from a class via its
-    /// inheritance chain — for `E_TYPE_UNDEFINED_FIELD` on a class
-    /// receiver. Walks parents so suggestions can land on inherited
-    /// fields.
+    /// Best-match field name across a class and its parents.
     pub fn suggestClassField(self: *Checker, cd: *const ast.ClassDecl, name: []const u8) WalkError!?[]const u8 {
         var pool: std.ArrayList([]const u8) = .empty;
         defer pool.deinit(self.arena);
@@ -512,8 +441,7 @@ pub const Checker = struct {
         return suggestions.bestMatch(name, pool.items);
     }
 
-    /// Collect every method reachable from a class via its
-    /// inheritance chain — for `E_TYPE_UNDEFINED_METHOD`.
+    /// Best-match method name across a class and its parents.
     pub fn suggestClassMethod(self: *Checker, cd: *const ast.ClassDecl, name: []const u8) WalkError!?[]const u8 {
         var pool: std.ArrayList([]const u8) = .empty;
         defer pool.deinit(self.arena);
@@ -525,12 +453,8 @@ pub const Checker = struct {
         return suggestions.bestMatch(name, pool.items);
     }
 
-    /// Emit a fatal `Diagnostic` for an undefined-name code,
-    /// attaching a `help: did you mean \`X\`?` line when
-    /// `candidate` is non-null. Centralizes the "look up a
-    /// suggestion → branch on hit/miss" dispatch used by every
-    /// `E_*_UNDEFINED*` / `E_UNDEFINED_SYMBOL` site (including
-    /// the `mem.X` resolvers in `typecheck/mem_builtin.zig`).
+    /// Emit a fatal diagnostic; appends `help: did you mean \`X\`?`
+    /// when `candidate` is non-null.
     pub fn emitSpanWithSuggestion(
         self: *Checker,
         code: []const u8,
@@ -669,11 +593,9 @@ pub const Checker = struct {
         }
     }
 
-    /// Build the function-pointer type for a `def` from its
-    /// annotations. Params without an explicit type produce a `nil`
-    /// placeholder slot — `checkCall` treats those as "skip arg-type
-    /// check" since the parameter type can't be inferred without
-    /// a concrete call site.
+    /// Build the function-pointer type for a `def`. Unannotated
+    /// params produce a `nil` placeholder slot (treated as "skip
+    /// arg-type check" by `checkCall`).
     fn signatureFromDef(self: *Checker, d: ast.DefDecl) WalkError!*const types.Type {
         var param_types: std.ArrayList(*const types.Type) = .empty;
         errdefer param_types.deinit(self.arena);
@@ -758,16 +680,13 @@ pub const Checker = struct {
     }
 
     /// Detect a single-arm `if` whose body always exits — the
-    /// "bail pattern" used by both the simple nullable idiom and
-    /// the multi-return tuple idiom.
+    /// nullable / multi-return bail pattern. Returns the name to
+    /// push as non-nil, or `null`.
     ///
-    ///   - `if x == nil return end`        → `x` is non-nil after.
-    ///   - `if err != nil return end`      → sibling slot of `err`
-    ///     (registered via `tuple_correlations`) is non-nil after;
-    ///     `err` itself is now nil, not pushed.
-    ///
-    /// Returns the name to push, or `null` when neither shape
-    /// applies.
+    /// ```
+    /// if x == nil return end      // x is non-nil after.
+    /// if err != nil return end    // sibling of err (correlated) is non-nil after.
+    /// ```
     fn detectNilBailGain(self: *const Checker, s: ast.Statement) ?[]const u8 {
         if (s != .if_stmt) return null;
         const is_ = s.if_stmt;
@@ -840,9 +759,8 @@ pub const Checker = struct {
 
     /// Type each binding of a `let (a, b, …) = call()` against the
     /// init's tuple slots. Mismatched arity emits
-    /// `E_TYPE_TUPLE_ARITY`. When the pattern is exactly two idents
-    /// and the second slot is nullable, register a sibling
-    /// correlation so the bail-pattern flow lifts the non-err slot.
+    /// `E_TYPE_TUPLE_ARITY`. Two-ident patterns with a nullable
+    /// second slot get a sibling correlation for bail-pattern flow.
     fn checkLetTupleDestructure(
         self: *Checker,
         pat: *const ast.Pattern,
@@ -1051,11 +969,9 @@ pub const Checker = struct {
         return match.variantExists(self, ed, name);
     }
 
-    /// Defer bodies may not redirect control flow (per spec §4.10
-    /// — see `docs/lang-diagnostics.md` §5.11). Reject the immediate
-    /// `return` / `break` / `continue` shapes as
-    /// `E_DEFER_CONTROL_FLOW` and `defer defer` as `E_DEFER_NESTED`;
-    /// legitimate bodies fall through to the regular statement walk.
+    /// Check a `defer` body. Reject `return` / `break` / `continue`
+    /// (`E_DEFER_CONTROL_FLOW`) and nested `defer` (`E_DEFER_NESTED`)
+    /// per spec §4.10.
     fn checkDeferStmt(self: *Checker, ds: ast.DeferStmt) WalkError!void {
         switch (ds.body.*) {
             .return_stmt, .break_stmt, .continue_stmt => try self.emitSpan(
@@ -1118,17 +1034,13 @@ pub const Checker = struct {
         self.fn_locals = .{};
         defer self.fn_locals = saved_locals;
 
-        // Bake context: `bake def` body must satisfy bake rules.
-        // Nested non-bake defs reset the flag (a bake fn calling a
-        // non-bake-defined inner fn isn't itself in a bake context
-        // for the inner body — but the call itself still checks).
+        // Bake context: `bake def` body satisfies bake rules.
+        // Nested non-bake defs reset the flag for the inner body.
         const saved_bake = self.in_bake;
         self.in_bake = d.is_bake;
         defer self.in_bake = saved_bake;
 
-        // `@no_capture` context: inner lambdas in this fn's body
-        // must not mutate captured bindings. Nested `def`s inherit
-        // the flag so a closure two levels deep still flags.
+        // `@no_capture` context: inherited by nested defs.
         const saved_nc = self.in_no_capture;
         self.in_no_capture = saved_nc or annotations.defHasNoCapture(self, d);
         defer self.in_no_capture = saved_nc;
@@ -1232,16 +1144,12 @@ pub const Checker = struct {
         }
     }
 
-    /// Validate OOP annotations on a method against its enclosing
-    /// class + parent chain:
+    /// Validate OOP annotations on a method against its class
+    /// and parent chain.
     ///
-    /// - `@override`: a parent method with the same name must exist;
-    ///   else `E_OVERRIDE_NO_PARENT`.
-    /// - Overriding a `@final` parent method: `E_METHOD_FINAL_OVERRIDE`.
-    /// - `@static` on a method: the first parameter must not be
-    ///   named `self` (else `E_STATIC_HAS_SELF`). The parser already
-    ///   refuses to attach a body to an `@abstract` method, so the
-    ///   empty-body rule needs no extra check here.
+    /// - `@override` without a parent method → `E_OVERRIDE_NO_PARENT`.
+    /// - Overriding a `@final` method → `E_METHOD_FINAL_OVERRIDE`.
+    /// - `@static` with a `self` first param → `E_STATIC_HAS_SELF`.
     fn checkMethodAnnotations(
         self: *Checker,
         cd: *const ast.ClassDecl,
@@ -1305,11 +1213,9 @@ pub const Checker = struct {
         return null;
     }
 
-    /// `cd` is a concrete (non-abstract) class — every abstract
-    /// method inherited from an ancestor must be overridden by a
-    /// non-abstract method in `cd` or in some ancestor closer than
-    /// the abstract declaration. Emits `E_ABSTRACT_NOT_IMPLEMENTED`
-    /// for every missing impl.
+    /// Every abstract method inherited by the concrete class `cd`
+    /// must be overridden. Missing impls emit
+    /// `E_ABSTRACT_NOT_IMPLEMENTED`.
     fn checkAbstractMethodsImplemented(
         self: *Checker,
         cd: *const ast.ClassDecl,
@@ -1432,13 +1338,9 @@ pub const Checker = struct {
 
     // ---------- expression walking + inference + checking ----------
 
-    /// Infer the type of an expression. `hint` is the type the
-    /// caller expects this expression to produce, used by literal
-    /// inference to pin to the requested primitive. `null` when no
-    /// context is available.
-    ///
-    /// Records the inferred type on `expr_types` before returning so
-    /// the codegen can consume it without re-walking the AST.
+    /// Infer the type of `e`, optionally pinned by `hint` (the
+    /// expected type at the use site). Records the result on
+    /// `expr_types` for the codegen.
     pub fn inferExpr(self: *Checker, e: *const ast.Expr, hint: ?*const types.Type) WalkError!?*const types.Type {
         const ty = try self.inferExprInner(e, hint);
         if (ty) |t| try self.expr_types.put(self.arena, e, t);
