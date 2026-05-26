@@ -164,6 +164,7 @@ const annotations = @import("typecheck/annotations.zig");
 const relations = @import("typecheck/relations.zig");
 const flow = @import("typecheck/flow.zig");
 const suggestions = @import("typecheck/suggestions.zig");
+const type_resolve = @import("typecheck/type_resolve.zig");
 
 const T = annotations.T;
 
@@ -311,7 +312,7 @@ pub const Checker = struct {
 
     /// Same as `emitSpan` plus an optional `help:` block printed
     /// after the caret snippet.
-    fn emitSpanHelp(
+    pub fn emitSpanHelp(
         self: *Checker,
         code: []const u8,
         span: ast.Span,
@@ -450,7 +451,7 @@ pub const Checker = struct {
     /// the closest Levenshtein match within `suggestions.max_distance`.
     /// Used for `E_UNDEFINED_SYMBOL` — covers locals, params,
     /// globals, defs, classes, structs, enums.
-    fn suggestSymbol(self: *Checker, name: []const u8) WalkError!?[]const u8 {
+    pub fn suggestSymbol(self: *Checker, name: []const u8) WalkError!?[]const u8 {
         var pool: std.ArrayList([]const u8) = .empty;
         defer pool.deinit(self.arena);
         var scope: ?*const Scope = self.current_scope;
@@ -464,7 +465,7 @@ pub const Checker = struct {
     /// Same pool as `suggestSymbol` plus the primitive type names —
     /// used by `E_TYPE_UNDEFINED` when an unknown type name shows
     /// up in an annotation / struct-lit position.
-    fn suggestTypeName(self: *Checker, name: []const u8) WalkError!?[]const u8 {
+    pub fn suggestTypeName(self: *Checker, name: []const u8) WalkError!?[]const u8 {
         var pool: std.ArrayList([]const u8) = .empty;
         defer pool.deinit(self.arena);
         // Primitive types — must be matched first so `let x: i8`
@@ -482,7 +483,7 @@ pub const Checker = struct {
 
     /// Collect the field names of a struct decl into the candidate
     /// pool for an `E_TYPE_UNDEFINED_FIELD` suggestion.
-    fn suggestStructField(self: *Checker, sd: *const ast.StructDecl, name: []const u8) WalkError!?[]const u8 {
+    pub fn suggestStructField(self: *Checker, sd: *const ast.StructDecl, name: []const u8) WalkError!?[]const u8 {
         var pool: std.ArrayList([]const u8) = .empty;
         defer pool.deinit(self.arena);
         for (sd.fields) |f| try pool.append(self.arena, self.lexeme(f.name));
@@ -493,7 +494,7 @@ pub const Checker = struct {
     /// inheritance chain — for `E_TYPE_UNDEFINED_FIELD` on a class
     /// receiver. Walks parents so suggestions can land on inherited
     /// fields.
-    fn suggestClassField(self: *Checker, cd: *const ast.ClassDecl, name: []const u8) WalkError!?[]const u8 {
+    pub fn suggestClassField(self: *Checker, cd: *const ast.ClassDecl, name: []const u8) WalkError!?[]const u8 {
         var pool: std.ArrayList([]const u8) = .empty;
         defer pool.deinit(self.arena);
         var cur: ?*const ast.ClassDecl = cd;
@@ -506,7 +507,7 @@ pub const Checker = struct {
 
     /// Collect every method reachable from a class via its
     /// inheritance chain — for `E_TYPE_UNDEFINED_METHOD`.
-    fn suggestClassMethod(self: *Checker, cd: *const ast.ClassDecl, name: []const u8) WalkError!?[]const u8 {
+    pub fn suggestClassMethod(self: *Checker, cd: *const ast.ClassDecl, name: []const u8) WalkError!?[]const u8 {
         var pool: std.ArrayList([]const u8) = .empty;
         defer pool.deinit(self.arena);
         var cur: ?*const ast.ClassDecl = cd;
@@ -584,7 +585,7 @@ pub const Checker = struct {
         switch (pat.*) {
             .ident => |i| {
                 const ty: ?*const types.Type = if (type_ann) |t|
-                    try self.resolveType(t)
+                    try type_resolve.resolveType(self, t)
                 else
                     null;
                 try self.registerName(self.lexeme(i.name), .{
@@ -671,13 +672,13 @@ pub const Checker = struct {
         errdefer param_types.deinit(self.arena);
         for (d.params) |p| {
             const pt: *const types.Type = if (p.type_ann) |t|
-                try self.resolveType(t)
+                try type_resolve.resolveType(self, t)
             else
                 try self.primitive(.nil_); // unknown until call-site inference
             try param_types.append(self.arena, pt);
         }
         const ret_ty: *const types.Type = if (d.ret_type) |r|
-            try self.resolveType(r)
+            try type_resolve.resolveType(self, r)
         else
             try self.primitive(.nil_);
         const sig = try self.arena.create(types.Type);
@@ -780,7 +781,7 @@ pub const Checker = struct {
     fn checkLetDecl(self: *Checker, d: ast.LetDecl) WalkError!void {
         try annotations.validateAnnotations(self, d.annotations, T.LET);
         const ann_ty: ?*const types.Type = if (d.type_ann) |t|
-            try self.resolveType(t)
+            try type_resolve.resolveType(self, t)
         else
             null;
         // Pass annotation type as a hint so int literals pin to the
@@ -889,7 +890,7 @@ pub const Checker = struct {
     fn checkConstDecl(self: *Checker, d: ast.ConstDecl) WalkError!void {
         try annotations.validateAnnotations(self, d.annotations, T.CONST);
         const ann_ty: ?*const types.Type = if (d.type_ann) |t|
-            try self.resolveType(t)
+            try type_resolve.resolveType(self, t)
         else
             null;
         const init_ty = try self.inferExpr(d.init, ann_ty);
@@ -1128,7 +1129,7 @@ pub const Checker = struct {
         // Bake fn return type must be bakeable. `Vec(T)` and `&T`
         // are runtime-only.
         if (d.is_bake) if (d.ret_type) |r| {
-            const rt = try self.resolveType(r);
+            const rt = try type_resolve.resolveType(self, r);
             if (!predicates.isBakeableType(rt.*)) {
                 const ty_s = try types.render(self.arena, rt.*);
                 const msg = try std.fmt.allocPrint(
@@ -1142,7 +1143,7 @@ pub const Checker = struct {
 
         for (d.params) |p| {
             const pt: ?*const types.Type = if (p.type_ann) |t|
-                try self.resolveType(t)
+                try type_resolve.resolveType(self, t)
             else
                 null;
             try self.registerName(self.lexeme(p.name), .{
@@ -1163,7 +1164,7 @@ pub const Checker = struct {
 
         // Track ret type for `return expr` checking inside the body.
         const saved_ret = self.current_ret_ty;
-        self.current_ret_ty = if (d.ret_type) |r| try self.resolveType(r) else null;
+        self.current_ret_ty = if (d.ret_type) |r| try type_resolve.resolveType(self, r) else null;
         defer self.current_ret_ty = saved_ret;
 
         try self.walkStatementSequence(d.body);
@@ -1198,7 +1199,7 @@ pub const Checker = struct {
         for (d.fields) |f| {
             try annotations.validateAnnotations(self, f.annotations, T.CLASS_FIELD);
             const ty: ?*const types.Type = if (f.type_ann) |t|
-                try self.resolveType(t)
+                try type_resolve.resolveType(self, t)
             else
                 null;
             try self.registerName(self.lexeme(f.name), .{
@@ -1415,109 +1416,11 @@ pub const Checker = struct {
         };
     }
 
-    // ---------- type resolution ----------
-
-    fn resolveType(self: *Checker, t: *const ast.TypeAnn) WalkError!*const types.Type {
-        switch (t.*) {
-            .named => |n| {
-                const name = self.lexeme(n.name);
-                if (types.primitiveFromName(name)) |p| {
-                    return try self.primitive(p);
-                }
-                if (self.current_scope.lookup(name)) |_| {
-                    return try types.mkNamed(self.arena, name, n.span);
-                }
-                const msg = try std.fmt.allocPrint(
-                    self.arena,
-                    "undefined type `{s}`",
-                    .{name},
-                );
-                try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED", n.name, msg, try self.suggestTypeName(name));
-                return try types.mkNamed(self.arena, name, n.span);
-            },
-            .nullable => |n| {
-                const inner = try self.resolveType(n.inner);
-                if (!self.isPointerLike(inner.*)) {
-                    const inner_s = try types.render(self.arena, inner.*);
-                    const msg = try std.fmt.allocPrint(
-                        self.arena,
-                        "type `{s}?` is invalid — `T?` only applies to pointer-like types (`str`, class, fn-pointer, references)",
-                        .{inner_s},
-                    );
-                    try self.emitSpan("E_NULL_NON_POINTER", n.span, msg);
-                }
-                return try types.mkOptional(self.arena, inner);
-            },
-            .array => |a| {
-                const elem = try self.resolveType(a.elem);
-                const len_val: u32 = if (a.len_expr.* == .int_lit)
-                    // safety: parser stores array lengths as i32; §3.4 requires non-negative comptime int. Slice 3+ will range-check; bit-cast preserves bytes.
-                    @bitCast(a.len_expr.int_lit.value)
-                else
-                    0;
-                return try types.mkArray(self.arena, elem, len_val);
-            },
-            .vec => |v| {
-                const elem = try self.resolveType(v.elem);
-                return try types.mkVec(self.arena, elem);
-            },
-            .tuple => |tu| {
-                var elems: std.ArrayList(*const types.Type) = .empty;
-                errdefer elems.deinit(self.arena);
-                for (tu.elems) |e| try elems.append(self.arena, try self.resolveType(e));
-                const out = try self.arena.create(types.Type);
-                out.* = .{ .tuple = try elems.toOwnedSlice(self.arena) };
-                return out;
-            },
-            .fn_type => |f| {
-                var params: std.ArrayList(*const types.Type) = .empty;
-                errdefer params.deinit(self.arena);
-                for (f.params) |p| try params.append(self.arena, try self.resolveType(p));
-                const ret: *const types.Type = if (f.ret) |r|
-                    try self.resolveType(r)
-                else
-                    try self.primitive(.nil_);
-                const out = try self.arena.create(types.Type);
-                out.* = .{ .function = .{
-                    .params = try params.toOwnedSlice(self.arena),
-                    .ret = ret,
-                } };
-                return out;
-            },
-            .reference => |r| {
-                const inner = try self.resolveType(r.inner);
-                return try types.mkReference(self.arena, inner);
-            },
-        }
-    }
-
     /// Allocate (or reuse) a `Type` value for the given primitive
     /// tag. Sub-modules call this to construct argument / return
     /// types for the function signatures they synthesize.
     pub fn primitive(self: *Checker, p: types.Primitive) WalkError!*const types.Type {
         return try types.mkPrimitive(self.arena, p);
-    }
-
-    /// Pointer-like types per §3.4.1 — `str`, references, function
-    /// pointers, and class names. Struct / enum / numeric / bool /
-    /// fixed are by-value and therefore not nullable-eligible.
-    fn isPointerLike(self: *const Checker, t: types.Type) bool {
-        return switch (t) {
-            .primitive => |p| p == .str,
-            .reference, .function => true,
-            .named => |n| {
-                if (self.current_scope.lookup(n.name)) |info| {
-                    return switch (info.kind) {
-                        .class, .module_alias, .imported => true,
-                        else => false,
-                    };
-                }
-                // Unresolved named type — accept defensively so the
-                // diagnostic surfaces from the resolution step.
-                return true;
-            },
-            else => false,
-        };
     }
 
     // ---------- expression walking + inference + checking ----------
@@ -1677,7 +1580,7 @@ pub const Checker = struct {
                 errdefer param_types.deinit(self.arena);
                 for (l.params, 0..) |p, i| {
                     const pt: *const types.Type = if (p.type_ann) |t|
-                        try self.resolveType(t)
+                        try type_resolve.resolveType(self, t)
                     else if (hint_fn) |hf|
                         if (i < hf.params.len) hf.params[i] else try self.primitive(.nil_)
                     else
@@ -1690,7 +1593,7 @@ pub const Checker = struct {
                     try param_types.append(self.arena, pt);
                 }
                 const ret_ty: *const types.Type = if (l.ret_type) |r|
-                    try self.resolveType(r)
+                    try type_resolve.resolveType(self, r)
                 else if (hint_fn) |hf|
                     hf.ret
                 else
@@ -1851,7 +1754,7 @@ pub const Checker = struct {
         var param_tys: std.ArrayList(*const types.Type) = .empty;
         errdefer param_tys.deinit(self.arena);
         for (variant.?.payload) |pf| {
-            const pt = try self.resolveType(pf.type_ann);
+            const pt = try type_resolve.resolveType(self, pf.type_ann);
             try param_tys.append(self.arena, pt);
         }
         const fn_ty = try self.arena.create(types.Type);
@@ -1885,7 +1788,7 @@ pub const Checker = struct {
         if (self.struct_registry.get(named_name)) |sd| {
             for (sd.fields) |fld| {
                 if (std.mem.eql(u8, self.lexeme(fld.name), field_name)) {
-                    return try self.resolveType(fld.type_ann);
+                    return try type_resolve.resolveType(self, fld.type_ann);
                 }
             }
             try self.emitUndefinedField(named_name, field_name, f.field);
@@ -1905,7 +1808,7 @@ pub const Checker = struct {
                         try self.emitSpan("E_PRIVATE_ACCESS", f.field, msg);
                     }
                 }
-                if (hit.field.type_ann) |t| return try self.resolveType(t);
+                if (hit.field.type_ann) |t| return try type_resolve.resolveType(self, t);
                 return null;
             }
             try self.emitUndefinedField(named_name, field_name, f.field);
@@ -1923,7 +1826,7 @@ pub const Checker = struct {
     ) WalkError!?*const types.Type {
         for (cd.fields) |fld| {
             if (std.mem.eql(u8, self.lexeme(fld.name), field_name)) {
-                if (fld.type_ann) |t| return try self.resolveType(t);
+                if (fld.type_ann) |t| return try type_resolve.resolveType(self, t);
                 return null;
             }
         }
@@ -2037,7 +1940,7 @@ pub const Checker = struct {
         } else {
             for (m.args, sig_params) |arg, p| {
                 const param_ty: ?*const types.Type = if (p.type_ann) |t|
-                    try self.resolveType(t)
+                    try type_resolve.resolveType(self, t)
                 else
                     null;
                 const skip = if (param_ty) |pt| predicates.isNilType(pt.*) else true;
@@ -2047,7 +1950,7 @@ pub const Checker = struct {
                 }
             }
         }
-        if (method.ret_type) |r| return try self.resolveType(r);
+        if (method.ret_type) |r| return try type_resolve.resolveType(self, r);
         return try self.primitive(.nil_);
     }
 
@@ -2097,7 +2000,7 @@ pub const Checker = struct {
                 _ = try self.inferExpr(lit_field.value, null);
                 continue;
             };
-            const expected_ty = try self.resolveType(decl_field.type_ann);
+            const expected_ty = try type_resolve.resolveType(self, decl_field.type_ann);
             const actual_ty = try self.inferExpr(lit_field.value, expected_ty);
             if (actual_ty) |at| try self.checkStoreCompat(lit_field.value.span(), expected_ty, at);
             _ = try seen.put(self.arena, field_name, {});
@@ -2158,7 +2061,7 @@ pub const Checker = struct {
             const skip: usize = if (has_self) 1 else 0;
             for (init_method.params[skip..]) |p| {
                 const pt: *const types.Type = if (p.type_ann) |t|
-                    try self.resolveType(t)
+                    try type_resolve.resolveType(self, t)
                 else
                     try self.primitive(.nil_);
                 try param_types.append(self.arena, pt);
@@ -2436,7 +2339,7 @@ pub const Checker = struct {
 
     fn checkCast(self: *Checker, c: ast.CastExpr) WalkError!?*const types.Type {
         const inner_ty = try self.inferExpr(c.inner, null);
-        const target_ty = try self.resolveType(c.target_type);
+        const target_ty = try type_resolve.resolveType(self, c.target_type);
         if (inner_ty) |it| {
             if (!relations.canCast(it.*, target_ty.*)) {
                 const from_s = try types.render(self.arena, it.*);
