@@ -1,40 +1,22 @@
-/// Opcode table — the canonical mapping from byte → mnemonic +
-/// operand schema. Dispatch consults this for instruction sizing;
-/// the disassembler can re-use it for textual rendering.
-///
-/// Bytes are organized by 16-slot pages, one page per role:
-///   0x1X  mov word        | 0x8X  cmp/tst
-///   0x2X  mov byte        | 0x9X  branches
-///   0x3X  stack           | 0xAX  subroutines
-///   0x4X  arith primary   | 0xBX  flag manipulation
-///   0x5X  arith carry     | 0xCX  misc
-///   0x6X  bitwise         | 0xD-EX reserved
-///   0x7X  shifts/rotates  | 0xFX  system
 const std = @import("std");
 
-/// Operand kinds. Encoding sizes:
-///   `reg`/`imm8`/`zp`/`reg_indirect`   = 1 byte
-///   `imm16`/`addr`/`reg_offset`        = 2 bytes
-///   `indexed`                          = 3 bytes
+/// Operand kinds. See `operandSize` for byte widths.
 pub const Operand = enum {
-    /// 1-byte register index.
+    /// Register index (1 byte).
     reg,
-    /// 1-byte immediate.
+    /// Immediate (1 byte).
     imm8,
-    /// 2-byte little-endian immediate.
+    /// Immediate (2 bytes, LE).
     imm16,
-    /// 2-byte little-endian address.
+    /// Address (2 bytes, LE).
     addr,
-    /// 1-byte zero-page address.
+    /// Zero-page address (1 byte).
     zp,
-    /// `[reg]` indirect — encodes as 1 register-index byte
-    /// treated as effective address.
+    /// `[reg]` indirect.
     reg_indirect,
-    /// `[reg + imm8]` register-relative — encodes as base-reg
-    /// byte + signed imm8 byte.
+    /// `[reg + imm8]` register-relative (base reg + signed imm8).
     reg_offset,
-    /// `[addr + reg]` indexed — encodes as 2 addr bytes + 1
-    /// reg byte.
+    /// `[addr + reg]` indexed (2 addr bytes + 1 reg byte).
     indexed,
 };
 
@@ -47,14 +29,12 @@ pub fn operandSize(op: Operand) u8 {
     };
 }
 
-/// One opcode's metadata: mnemonic plus the byte-layout schema
-/// of its operands (in source order). The handler comes later;
-/// dispatch tracks it in its own structure.
+/// One opcode's metadata: mnemonic + operand schema.
 pub const OpcodeInfo = struct {
     mnemonic: []const u8,
     operands: []const Operand,
 
-    /// Total instruction byte size: opcode + sum of operand sizes.
+    /// Total byte size: opcode + sum of operand sizes.
     pub fn size(self: OpcodeInfo) u8 {
         var s: u8 = 1;
         for (self.operands) |op| s += operandSize(op);
@@ -62,8 +42,8 @@ pub const OpcodeInfo = struct {
     }
 };
 
-/// 256-entry table indexed by opcode byte. `null` = no opcode
-/// defined at that byte (raises invalid-opcode fault on dispatch).
+/// 256-entry opcode table. `null` = unassigned (raises
+/// invalid-opcode fault).
 pub const table: [256]?OpcodeInfo = blk: {
     var t = [_]?OpcodeInfo{null} ** 256;
 

@@ -1,13 +1,3 @@
-/// Handlers for `call` / `ret` — the subroutine calling convention.
-///
-/// `call` lays out the activation record:
-///   push fp; push (ip after instruction); fp ← sp; ip ← target.
-/// The new `fp` ends up pointing at the saved return ip — the
-/// subroutine can push locals below it and still find them via
-/// `fp - N` offsets.
-///
-/// `ret` rewinds locals (`sp ← fp`), pops the return ip, then
-/// pops the caller's fp.
 const vm_mod = @import("../vm.zig");
 const dispatch = @import("../dispatch.zig");
 const VM = vm_mod.VM;

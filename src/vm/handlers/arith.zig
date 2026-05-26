@@ -1,9 +1,3 @@
-/// Handlers for the arithmetic family — add / sub / mul / div /
-/// divs / inc / dec / neg / adc / sbc. All set `Z` / `N` / `C` /
-/// `V` except `inc` / `dec`, which leave `C` intact so they can
-/// be used as counter primitives inside `adc` / `sbc` sequences.
-/// `mul` produces a 32-bit result with the high half in `acu`;
-/// `div` / `divs` consume `acu:reg` as the 32-bit dividend.
 const vm_mod = @import("../vm.zig");
 const dispatch = @import("../dispatch.zig");
 const VM = vm_mod.VM;

@@ -1,8 +1,3 @@
-/// Handlers for the misc, flag-manipulation, and system families:
-/// `swap` / `nop`, `clc` / `sec` / `cli` / `sei` / `clv`, and
-/// `int` / `rti` / `brk` / `hlt`. `int` reuses the interrupt-
-/// entry path so software interrupts and faults share one
-/// implementation.
 const vm_mod = @import("../vm.zig");
 const dispatch = @import("../dispatch.zig");
 const VM = vm_mod.VM;

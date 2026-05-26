@@ -1,8 +1,3 @@
-/// Handlers for the jump family — unconditional `jmp`, the twelve
-/// conditional jumps, the `djnz` loop primitive, and the short
-/// relative `jr`. Branch targets are written directly into `ip`
-/// and the handler returns `.branched` so dispatch skips the
-/// auto-advance.
 const vm_mod = @import("../vm.zig");
 const dispatch = @import("../dispatch.zig");
 const VM = vm_mod.VM;

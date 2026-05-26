@@ -1,37 +1,36 @@
-/// `MemoryMapper` — the indirection layer between the VM and RAM.
-/// Hosts can register `Device` callbacks against address ranges so
-/// memory-mapped IO (VRAM, registers) intercepts reads / writes.
-/// When no device claims an address the access falls through to
-/// the underlying `Memory`.
 const std = @import("std");
 const Memory = @import("memory.zig").Memory;
 
-/// Stable handle returned by `map`. Pass to `unmap` to remove the
-/// region. `0` is reserved for "no region" so callers can use the
-/// raw integer in optional patterns.
+/// Handle returned by `map`. Pass to `unmap` to remove the region.
+/// `0` is reserved for "no region".
 pub const RegionId = u32;
 
 /// Errors returned by `map`.
 pub const MapError = error{
-    /// `size == 0` — caller likely intended at least one byte.
+    /// `size == 0`.
     EmptyRange,
     /// `start + size` overshoots the 64KB address space.
     RangeOverflow,
 };
 
-/// Host-pluggable IO interface. Intrusive: the host embeds a
-/// `Device` as a field of its concrete struct, supplies a vtable
-/// whose callbacks recover the parent struct via `@fieldParentPtr`,
-/// and hands `&concrete.device` to the mapper.
+/// Host-pluggable I/O interface. Intrusive: the host embeds a
+/// `Device` field in its concrete struct, supplies a vtable whose
+/// callbacks recover the parent via `@fieldParentPtr`, and hands
+/// `&concrete.device` to the mapper.
 ///
-/// No type erasure — the mapper stores `*Device` (typed) and the
-/// host's vtable callbacks know exactly which struct owns them.
+/// ```
+/// const Vram = struct {
+///     bytes: [16 * 1024]u8,
+///     device: Device = .{ .vtable = &vtable },
+///     const vtable: Device.VTable = .{ .readByte = read, .writeByte = write, ... };
+/// };
+/// _ = try mapper.map(&vram.device, 0x4000, 16 * 1024);
+/// ```
 pub const Device = struct {
     vtable: *const VTable,
 
-    /// Method table. Each callback receives the same `*Device`
-    /// pointer the mapper holds; the host recovers the parent
-    /// struct via `@fieldParentPtr("<field-name>", self)`.
+    /// Method table. Each callback receives the `*Device` pointer
+    /// the mapper holds; recover the parent via `@fieldParentPtr`.
     pub const VTable = struct {
         readByte: *const fn (self: *Device, addr: u16) u8,
         writeByte: *const fn (self: *Device, addr: u16, value: u8) void,
@@ -39,22 +38,22 @@ pub const Device = struct {
         writeWord: *const fn (self: *Device, addr: u16, value: u16) void,
     };
 
-    /// Convenience: byte read through the vtable.
+    /// Byte read through the vtable.
     pub fn readByte(self: *Device, addr: u16) u8 {
         return self.vtable.readByte(self, addr);
     }
 
-    /// Convenience: byte write through the vtable.
+    /// Byte write through the vtable.
     pub fn writeByte(self: *Device, addr: u16, value: u8) void {
         self.vtable.writeByte(self, addr, value);
     }
 
-    /// Convenience: word read through the vtable.
+    /// Word read through the vtable.
     pub fn readWord(self: *Device, addr: u16) u16 {
         return self.vtable.readWord(self, addr);
     }
 
-    /// Convenience: word write through the vtable.
+    /// Word write through the vtable.
     pub fn writeWord(self: *Device, addr: u16, value: u16) void {
         self.vtable.writeWord(self, addr, value);
     }
@@ -64,24 +63,22 @@ const Region = struct {
     id: RegionId,
     device: *Device,
     start: u16,
-    /// Inclusive — kept as `u16` so the full last byte 0xFFFF fits.
+    /// Inclusive (so `0xFFFF` is representable).
     end: u16,
 };
 
-/// Routes memory accesses: device-claimed addresses go through the
-/// device vtable, everything else falls through to the underlying
-/// `Memory`. Regions are scanned newest-first so the most-recent
-/// `map` wins on overlap.
+/// Routes accesses: device-claimed addresses go through the
+/// device vtable; everything else falls through to `Memory`.
+/// Regions scan newest-first, so the most-recent `map` wins on
+/// overlap.
 pub const MemoryMapper = struct {
-    /// The underlying RAM. Accessible directly for raw inspection
-    /// (loader, tests); production callers prefer the routed
-    /// `readByte` / `writeByte` / `readWord` / `writeWord` below.
+    /// Underlying RAM. Prefer the routed read/write methods below.
     mem: Memory,
     regions: std.ArrayList(Region),
     allocator: std.mem.Allocator,
     next_id: RegionId,
 
-    /// Fresh mapper with empty `Memory` and no devices mapped.
+    /// Fresh mapper: empty `Memory`, no devices mapped.
     pub fn init(allocator: std.mem.Allocator) MemoryMapper {
         return .{
             .mem = Memory.init(),
@@ -91,15 +88,14 @@ pub const MemoryMapper = struct {
         };
     }
 
-    /// Release the region list. RAM is stack-allocated so it does
-    /// not need an explicit free.
+    /// Release the region list (RAM is stack-allocated).
     pub fn deinit(self: *MemoryMapper) void {
         self.regions.deinit(self.allocator);
     }
 
-    /// Claim `[start, start + size - 1]` for `device`. Returns a
-    /// handle that `unmap` consumes. Overlap is allowed — later
-    /// `map` calls take priority.
+    /// Claim `[start, start + size - 1]` for `device`. Overlap is
+    /// allowed; later `map` calls take priority. Returns a handle
+    /// for `unmap`.
     pub fn map(
         self: *MemoryMapper,
         device: *Device,
@@ -122,8 +118,7 @@ pub const MemoryMapper = struct {
         return id;
     }
 
-    /// Remove a previously-mapped region. Returns `false` if the
-    /// id is unknown (already unmapped, or never registered).
+    /// Remove a mapped region. `false` when the id is unknown.
     pub fn unmap(self: *MemoryMapper, id: RegionId) bool {
         var i: usize = 0;
         while (i < self.regions.items.len) : (i += 1) {
@@ -150,10 +145,9 @@ pub const MemoryMapper = struct {
         self.mem.writeByte(addr, value);
     }
 
-    /// Routed word read. Routing is decided by the starting address
-    /// — a word straddling a region boundary is delivered to the
-    /// device that claims `addr`, matching real-bus behavior on
-    /// devices that don't honor unaligned accesses.
+    /// Routed word read. Routing is decided by `addr`; a word
+    /// straddling a region boundary goes to whichever device
+    /// claims `addr`.
     pub fn readWord(self: MemoryMapper, addr: u16) u16 {
         if (self.findDevice(addr)) |dev| return dev.readWord(addr);
         return self.mem.readWord(addr);
@@ -169,8 +163,7 @@ pub const MemoryMapper = struct {
     }
 
     fn findDevice(self: MemoryMapper, addr: u16) ?*Device {
-        // Iterate newest-first so the most-recently-mapped region
-        // wins on overlap.
+        // Newest-first: latest `map` wins on overlap.
         var i: usize = self.regions.items.len;
         while (i > 0) {
             i -= 1;

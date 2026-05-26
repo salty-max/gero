@@ -1,6 +1,3 @@
-/// 64KB linear address space, byte-addressable, with little-endian
-/// `u16` helpers. Pure storage — banking and the host-pluggable
-/// mapper layer on top.
 const std = @import("std");
 
 /// Total address space.
@@ -8,8 +5,7 @@ pub const size: usize = 65536;
 
 /// Flat 64KB byte-addressable RAM.
 pub const Memory = struct {
-    /// Backing bytes. Public so the loader can `loadImage` and
-    /// tests can inspect; production callers use the typed helpers.
+    /// Backing bytes. Prefer the typed helpers below.
     bytes: [size]u8,
 
     /// Fresh zeroed region.
@@ -27,15 +23,15 @@ pub const Memory = struct {
         self.bytes[addr] = value;
     }
 
-    /// Word read at `0xFFFF` wraps the high byte to `0x0000` —
-    /// matches real-bus behavior, deliberate.
+    /// Word read. Wraps at `0xFFFF` — the high byte reads from
+    /// `0x0000` (matches real-bus behavior).
     pub fn readWord(self: Memory, addr: u16) u16 {
         const lo: u16 = self.bytes[addr];
         const hi: u16 = self.bytes[addr +% 1];
         return lo | (hi << 8);
     }
 
-    /// Same wrap as `readWord` for the symmetric write.
+    /// Word write. Same wrap as `readWord`.
     pub fn writeWord(self: *Memory, addr: u16, value: u16) void {
         self.bytes[addr] = @truncate(value & 0xFF);
         self.bytes[addr +% 1] = @truncate((value >> 8) & 0xFF);
