@@ -1,15 +1,3 @@
-/// `include` resolution — source-level. Walks the include graph
-/// from a root `.gas` file, concatenates every reachable file's
-/// content into one buffer the unified parser can chew on
-/// without needing to do its own file I/O. Splice is textual per
-/// asm spec §2.2 — every `include` emits the target's bytes
-/// every time.
-///
-/// The fused source carries a `SourceMap` sidecar so diagnostics
-/// raised by the downstream parser (which sees only the fused
-/// buffer) can be resolved back to `(file, line, col)`. Same
-/// E012 / E013 / E015 surface as the previous token-level
-/// implementation, just attached to source byte ranges.
 const std = @import("std");
 const knit = @import("knit");
 const core = knit.core;

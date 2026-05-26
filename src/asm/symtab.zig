@@ -1,9 +1,3 @@
-/// Symbol table for the asm codegen — accumulates label
-/// addresses, `const` values, struct-field offsets, and
-/// `data8`/`data16` data-symbol addresses as the codegen pass
-/// walks statements. The parser's `ConstantTable` (in `expr.zig`)
-/// handles parse-time refs to constants and struct fields; this
-/// table extends with the address-bearing entries codegen needs.
 const std = @import("std");
 const expr = @import("expr.zig");
 

@@ -1,14 +1,3 @@
-/// Disassembler-side header decoder. Reads a `.gx` byte buffer,
-/// validates the magic + version per ISA §7.1, slices the image
-/// / banks / debug regions, and returns a `Header` value the rest
-/// of the disasm can consume.
-///
-/// The VM has its own `parseGx` in `src/vm/loader.zig` doing the
-/// same byte work — we just delegate to it and re-wrap the result
-/// in a disasm-friendly shape. Keeping the function defined here
-/// (rather than re-exporting raw `vm.parseGx`) preserves the
-/// option to tighten the disasm checks in the future without
-/// affecting the VM loader.
 const std = @import("std");
 const gero = @import("../gero.zig");
 

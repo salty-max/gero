@@ -1,16 +1,3 @@
-/// Compile-time expression parser + evaluator. Used by every
-/// directive that wants an integer value at parse time:
-///
-/// - `const NAME = <expr>` — the canonical consumer (this PR)
-/// - `org $ADDR` — the address is itself an expression
-/// - `&[ <expr> ]` — address-expression form a
-/// - `data8` / `data16` value-list entries
-///
-/// All four feed `parseExpression` to build an `ast.Expr` tree
-/// and then `evalExpr` to fold to a `u16`. Symbol references
-/// (`@sym`) are NOT supported here — they go through the symbol
-/// table pass (#35). Bare identifiers refer to previously
-/// defined `const`s via a `ConstantTable` the caller maintains.
 const std = @import("std");
 const knit = @import("knit");
 const core = knit.core;
