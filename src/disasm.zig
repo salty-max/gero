@@ -1,70 +1,55 @@
-/// Disassembler — bytecode (`.gx`) → asm source (`.gas`). The
-/// inverse of `asm_`. Reads bytes (no `knit` dependency), emits
-/// text that the assembler can re-consume.
-///
-/// Module shape:
-///   header.zig — strict `.gx` header parse + section slicing
-///   decoder.zig — byte → `Instruction` AST (re-uses the VM's
-///                 opcode schema table for the reverse mapping)
-///   printer.zig — `Instruction` AST → asm syntax with aligned
-///                 columns, hex literals, labels
 const header_mod = @import("disasm/header.zig");
 const decoder_mod = @import("disasm/decoder.zig");
 const printer_mod = @import("disasm/printer.zig");
 const roundtrip_mod = @import("disasm/roundtrip.zig");
 
-/// Re-export: decoded `.gx` header + borrowed section slices.
+/// Decoded `.gx` header + borrowed section slices.
 pub const Header = header_mod.Header;
-/// Re-export: failure modes when reading a `.gx`.
+/// Failure modes when reading a `.gx`.
 pub const DecodeError = header_mod.DecodeError;
-/// Re-export: parse a `.gx` byte buffer.
+/// Parse a `.gx` byte buffer.
 pub const parseHeader = header_mod.parse;
-/// Re-export: one debug-symbol entry (address + kind + name).
+/// One debug-symbol entry (address + kind + name).
 pub const Symbol = header_mod.Symbol;
-/// Re-export: kind discriminator for a symbol (label / data).
+/// Kind discriminator for a symbol (label / data).
 pub const SymbolKind = header_mod.SymbolKind;
-/// Re-export: parsed debug-symbol section (`address → name` lookup).
+/// Parsed debug-symbol section (address → name lookup).
 pub const Symbols = header_mod.Symbols;
-/// Re-export: failure modes when parsing the debug-symbol section.
+/// Failure modes when parsing the debug-symbol section.
 pub const SymbolsError = header_mod.SymbolsError;
-/// Re-export: parse the debug-symbol blob (typically
-/// `Header.debug`) per ISA §7.3.
+/// Parse a debug-symbol blob (typically `Header.debug`) per ISA §7.3.
 pub const parseSymbols = header_mod.parseSymbols;
 
-/// Re-export: one decoded instruction (opcode + operands + size).
+/// One decoded instruction (opcode + operands + size).
 pub const Instruction = decoder_mod.Instruction;
-/// Re-export: one decoded operand (reg / imm8 / imm16 / addr / etc.).
+/// One decoded operand (reg / imm8 / imm16 / addr / …).
 pub const Operand = decoder_mod.Operand;
-/// Re-export: decode one instruction at `bytes[offset]`.
+/// Decode one instruction at `bytes[offset]`.
 pub const decodeOne = decoder_mod.decodeOne;
-/// Re-export: free the operand slice attached to an `Instruction`.
+/// Free the operand slice attached to an `Instruction`.
 pub const freeInstruction = decoder_mod.freeInstruction;
 
-/// Re-export: render one decoded instruction as asm syntax.
+/// Render one decoded instruction as asm syntax.
 pub const writeInstruction = printer_mod.writeInstruction;
-/// Re-export: walk a byte buffer and emit one asm line per
-/// instruction. Unknown opcodes surface as `.byte` comments.
-/// Round-trip-friendly: re-assembling the output produces the
-/// same bytes (for all-code programs).
+/// Walk a byte buffer and emit one asm line per instruction.
+/// Unknown opcodes surface as `.byte` comments. Round-trip-friendly
+/// for all-code programs.
 pub const writeBytes = printer_mod.writeBytes;
 
-/// Re-export: pretty version of `writeBytes` with address +
-/// hex-bytes columns and an `; entry point` marker. Not
-/// round-trip-friendly — for the human-facing CLI view only.
+/// Pretty view with address + hex-bytes columns. Human-facing only;
+/// not round-trip-friendly.
 pub const writeBytesPretty = printer_mod.writeBytesPretty;
-/// Re-export: knob bundle for `writeBytesPretty`.
+/// Options for `writeBytesPretty`.
 pub const PrintOptions = printer_mod.PrintOptions;
-/// Re-export: ANSI palette for the disasm pretty view.
+/// ANSI palette for the disasm pretty view.
 pub const Style = printer_mod.Style;
 
-/// Re-export: drive the full asm → disasm → asm pipeline for
-/// byte-equality round-trip tests. See `disasm/roundtrip.zig`
-/// for the caveats around data sections.
+/// Drive the full asm → disasm → asm pipeline for byte-equality
+/// round-trip tests. See `disasm/roundtrip.zig` for caveats around
+/// data sections.
 pub const roundTripImage = roundtrip_mod.roundTripImage;
 
-/// Re-export: round-trip a full `.gx` archive (header + base +
-/// banks + debug). Reads the contained debug-symbol section so
-/// sources mixing code + data survive the trip — the disasm
-/// renders data blocks as `data8 NAME = ...` instead of fake
-/// instructions.
+/// Round-trip a full `.gx` archive (header + base + banks + debug).
+/// Reads the contained debug-symbol section so data blocks render
+/// as `data8 NAME = …` rather than fake instructions.
 pub const roundTripArchive = roundtrip_mod.roundTripArchive;
