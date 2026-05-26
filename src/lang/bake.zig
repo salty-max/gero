@@ -5,72 +5,49 @@ const diag_mod = @import("diagnostic.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
 
-/// Default upper bound on AST-walk steps per `bake` invocation.
-/// One step = one statement walked or one expression evaluated;
-/// loops bump the counter per iteration body. 100M matches the
-/// spec's stated default budget and runs in ~1s on a developer
-/// laptop for sane lookup-table builds.
+/// Default AST-walk step budget per `bake` invocation. One step
+/// is one walked statement or evaluated expression.
 pub const default_budget: u32 = 100_000_000;
 
-/// One value produced by the bake interpreter. The shape mirrors
-/// the spec's "bakeable types" list (§3.8): primitive scalars,
-/// `[T; N]` arrays, tuples, and POD structs. Strings live in the
-/// usual interned pool — they're represented here as the byte
-/// slice the codegen later writes into the data segment.
-///
-/// `Vec(T)`, classes, references, and function pointers are
-/// unrepresentable here; the typechecker rejects them via
-/// `predicates.isBakeableType` before the interpreter ever runs.
+/// One bake-time value (spec §3.8). Strings reference interned
+/// source bytes the codegen later writes into the data segment.
+/// `Vec(T)`, classes, references, and fn pointers are rejected
+/// by the typechecker before this runs.
 pub const BakeValue = union(enum) {
-    /// 16-bit integer. Sign interpretation follows the value's
-    /// declared type at the binding / parameter level; the
-    /// interpreter stores the bits without committing to either
-    /// signed or unsigned semantics until serialization.
+    /// 16-bit integer (sign interpretation comes from the binding).
     int_: u16,
-    /// Q8.8 fixed-point value — same bit layout as the runtime
-    /// `fixed` primitive (ISA §5.4.1).
+    /// Q8.8 fixed-point (same bit layout as runtime `fixed`).
     fixed_: u16,
-    /// `bool` — `false = 0`, `true = 1`.
+    /// Boolean.
     bool_: bool,
-    /// `nil` — the unit value; mostly returned from blocks that
-    /// produce no useful result.
+    /// Unit value.
     nil_,
-    /// 8-bit byte slot used by `u8` / `i8` / `char`.
+    /// 8-bit byte (`u8` / `i8` / `char`).
     byte: u8,
-    /// String literal — points at interned source bytes (the
-    /// codegen later interns into its string pool).
+    /// String literal (borrowed from interned source bytes).
     str: []const u8,
-    /// Fixed-length array — every element shares a single shape.
+    /// Fixed-length array.
     array: []const BakeValue,
-    /// Heterogeneous tuple — per-slot shapes recorded inline.
+    /// Heterogeneous tuple.
     tuple: []const BakeValue,
-    /// POD struct — `fields[i].name` is the source-buffer slice,
-    /// `fields[i].value` the bound value.
+    /// POD struct.
     struct_: []const Field,
 
-    /// One named slot inside a `struct_` value. `name` borrows
-    /// from the source buffer; `value` lives on the evaluator's
-    /// diag arena until the codegen clones it onto its own.
+    /// One field of a `struct_` value.
     pub const Field = struct {
         name: []const u8,
         value: BakeValue,
     };
 };
 
-/// Errors the bake driver can return. Semantic violations (budget
-/// overrun, unbakeable shape, missing binding) land in the
-/// `diagnostics` slice on `Result` — only true host failures
-/// propagate through the error union.
+/// Errors the bake driver can return. Semantic violations land
+/// in `Result.diagnostics`; only host failures propagate here.
 pub const BakeError = error{OutOfMemory};
 
-/// Outcome of running the interpreter on one `bake def` /
-/// `bake do` site. `value` is `null` when evaluation failed; the
-/// caller treats that as a hard stop and skips the codegen path.
-///
-/// `diag_arena` backs every `Diagnostic.message` string that the
-/// evaluator built via formatting — call `deinit(alloc)` once
-/// done. The slice itself was allocated through the same `alloc`,
-/// so a single deinit releases both.
+/// Outcome of one `bake` evaluation. `value` is `null` on
+/// failure; the caller skips the codegen path in that case.
+/// `diag_arena` backs every `Diagnostic.message` — call
+/// `deinit(alloc)` to release both the arena and the slice.
 pub const Result = struct {
     value: ?BakeValue,
     diagnostics: []const Diagnostic,
@@ -1016,12 +993,8 @@ const Evaluator = struct {
     }
 };
 
-/// Compute the byte width of a `BakeValue` when serialized into
-/// static data. Mirrors the runtime layout the typechecker's
-/// `widthOfTypeAnn` would produce for the same shape, with
-/// aggregate sizes summed from the actual values. Used by the
-/// codegen to allocate the right number of bytes in the data
-/// region before writing the serialized blob.
+/// Byte width of a serialized `BakeValue`. Mirrors the runtime
+/// layout (`widthOfTypeAnn`) with aggregate sizes summed.
 pub fn widthOf(v: BakeValue) usize {
     return switch (v) {
         .int_, .fixed_ => 2,
@@ -1085,11 +1058,8 @@ fn writeSlice(xs: []const BakeValue, out: []u8) usize {
     return off;
 }
 
-/// Best-effort conversion of a literal expression to a
-/// `BakeValue` — used by the codegen when a top-level
-/// `const X = bake_def(args)` init needs to evaluate `args`
-/// without standing up a full evaluator. Returns `null` for any
-/// non-literal shape; the caller then emits a clear diagnostic.
+/// Convert a literal expression to a `BakeValue`. Returns `null`
+/// for non-literal shapes.
 pub fn literalAsBakeValue(source: []const u8, e: *const ast.Expr) ?BakeValue {
     _ = source;
     return switch (e.*) {
@@ -1112,11 +1082,8 @@ pub fn literalAsBakeValue(source: []const u8, e: *const ast.Expr) ?BakeValue {
     };
 }
 
-/// Deep-clone a `BakeValue` into the destination allocator. The
-/// interpreter's diag arena owns the temporaries during
-/// evaluation; once we return to the codegen we re-allocate
-/// onto the codegen's arena so the value survives past
-/// `Result.deinit`.
+/// Deep-clone a `BakeValue` onto `arena`. Used to migrate values
+/// off the evaluator's diag arena onto the codegen's.
 pub fn cloneBakeValue(arena: std.mem.Allocator, v: BakeValue) BakeError!BakeValue {
     return switch (v) {
         .int_, .fixed_, .bool_, .nil_, .byte => v,

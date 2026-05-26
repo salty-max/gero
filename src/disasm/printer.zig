@@ -7,17 +7,12 @@ const header = @import("header.zig");
 /// mnemonic plus one trailing space.
 const mnemonic_col_width: usize = 6;
 
-/// Minimum number of consecutive `$00` bytes (with no symbol
-/// landing inside them) before the printer collapses the run into
-/// a single `; N bytes zero padding (org $XXXX)` comment. Below
-/// this threshold the bytes still render as individual
-/// `; .byte $00` lines so small genuine gaps aren't hidden.
+/// Minimum consecutive `$00` bytes before collapsing the run
+/// into a single `; N bytes zero padding` comment.
 const zero_run_collapse_threshold: usize = 4;
 
-/// ANSI escape strings the disasm printer wraps around each
-/// rendered piece. `Style.plain` emits no escapes (round-trip);
-/// `Style.ansi` is the human-facing palette the CLI flips to
-/// when stdout is a TTY.
+/// ANSI escape strings wrapped around each rendered piece.
+/// Use `Style.plain` for round-trip output, `Style.ansi` for TTY.
 pub const Style = struct {
     /// `XXXX:` address gutter.
     address: []const u8 = "",
@@ -82,16 +77,10 @@ pub fn writeInstruction(
     }
 }
 
-/// Render the bytes between `addr` and `addr + N` (for some
-/// caller-chosen N) as a series of asm instructions, one per
-/// line, terminated by `\n`. Stops on the first
-/// `error.UnknownOpcode` and emits a `; .byte $XX` comment so the
-/// surrounding context stays readable.
-///
-/// Output is round-trip-friendly: pass it to the assembler and
-/// you get the same bytes back (for all-code programs). For the
-/// human-facing "disassembly view" with address column + raw
-/// hex bytes + entry marker, use `writeBytesPretty`.
+/// Render `bytes` as one asm instruction per line. Unknown
+/// opcodes emit a `; .byte $XX` comment.
+/// Round-trip-friendly. For the human-facing view use
+/// `writeBytesPretty`.
 pub fn writeBytes(
     allocator: std.mem.Allocator,
     writer: *std.Io.Writer,
@@ -198,11 +187,8 @@ const DataBlock = struct {
     length: usize,
 };
 
-/// If `offset` corresponds to the CPU address of a `data`-kind
-/// symbol, return its name + length. `null` otherwise. Length is
-/// the gap to the next symbol in the same section (whether label
-/// or data); when no later symbol exists we return a "rest of
-/// section" sentinel that `writeDataBlock` caps at `bytes.len`.
+/// If `offset` is the CPU address of a `data`-kind symbol,
+/// return its name + length (gap to the next symbol).
 fn dataSymbolAt(offset: usize, opts: PrintOptions) ?DataBlock {
     const symbols = opts.symbols orelse return null;
     const base = opts.base_addr orelse return null;
@@ -259,11 +245,8 @@ fn writeDataBlock(
     try writer.writeByte('\n');
 }
 
-/// Walk forward from `start` while `bytes[i] == 0x00`, stopping
-/// at end-of-buffer or at any symbol whose CPU address lands at
-/// or after the run (to avoid swallowing a labeled region that
-/// happens to begin with zero bytes). Returns the offset of the
-/// first non-zero byte / next symbol / end of buffer.
+/// Walk while `bytes[i] == 0`, stopping at the next labeled
+/// region so labeled zero-runs aren't swallowed.
 fn scanZeroRun(bytes: []const u8, start: usize, opts: PrintOptions) usize {
     var i: usize = start;
     while (i < bytes.len and bytes[i] == 0x00) : (i += 1) {
@@ -287,11 +270,8 @@ fn symbolAtOffset(offset: usize, opts: PrintOptions) bool {
     return false;
 }
 
-/// Render a collapsed zero-padding run as a single annotated
-/// comment line: `XXXX:  ; N bytes zero padding (org $YYYY)`.
-/// `YYYY` is the CPU address of the first byte AFTER the run —
-/// re-assembling with that `org` directive reproduces the same
-/// padding (codegen zero-fills up to the directive's address).
+/// Render a collapsed zero-run as `; N bytes zero padding (org
+/// $YYYY)`. `$YYYY` is the first non-zero byte's address.
 fn writeZeroRunComment(
     writer: *std.Io.Writer,
     offset: usize,

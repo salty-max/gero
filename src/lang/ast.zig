@@ -26,12 +26,9 @@ pub const Span = struct {
 // Annotations — `@name` / `@name(arg)` markers attached to a decl.
 // =====================================================================
 
-/// One `@name(...)` annotation. Bound to the following decl by the
-/// parser. The argument list is captured verbatim as expressions so
-/// each annotation's semantics (e.g. `@bank 5`, `@interrupt 0x06`,
-/// `@addr $FE40`, `@asm("swap {a}, {b}")`) stay decoupled from the
-/// parser shape. The downstream typechecker / codegen interprets
-/// the args per the annotation's contract.
+/// One `@name(...)` annotation attached to a decl. Argument
+/// expressions are captured verbatim; the typechecker / codegen
+/// interpret them per each annotation's contract.
 pub const Annotation = struct {
     /// Span of the annotation name (without the `@` prefix). Lexeme
     /// bytes recover via `source[name.start..name.end]`.
@@ -414,11 +411,8 @@ pub const IntLitExpr = struct {
     span: Span,
 };
 
-/// Fixed-point literal — `1.5`, `0.125`, etc. `value` is the
-/// pre-encoded Q8.8 (top byte integer part, bottom byte
-/// `round(frac * 256)`). Sign carried in the 16-bit two's-complement
-/// pattern; the lexer applies negation when the literal is preceded
-/// by `-` in operand position.
+/// Fixed-point literal. `value` is the pre-encoded Q8.8 (high
+/// byte integer part, low byte `round(frac * 256)`).
 pub const FixedLitExpr = struct {
     value: i32,
     span: Span,
@@ -438,12 +432,14 @@ pub const CharLitExpr = struct {
     span: Span,
 };
 
-/// String literal — possibly interpolated. `parts` runs in source
-/// order; for `"hello, $(name)!"` the list is
-/// `[ .lit("hello, "), .interp(<name expr>), .lit("!") ]`. Adjacent
-/// interpolations are still separated by an empty `.lit("")` part so
-/// downstream consumers can rely on a uniform "literal between every
-/// pair of interps" shape.
+/// String literal (possibly interpolated). `parts` runs in
+/// source order with empty `.lit("")` chunks between adjacent
+/// interpolations so consumers see a uniform alternation.
+///
+/// ```
+/// "hello, $(name)!" =>
+///     [ .lit("hello, "), .interp(<name>), .lit("!") ]
+/// ```
 pub const StrLitExpr = struct {
     parts: []StrPart,
     span: Span,
