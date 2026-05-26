@@ -1,10 +1,3 @@
-/// Type-annotation parser — primitives, generics (`Vec(T)`),
-/// nullable suffix (`T?`), arrays (`[T; N]`), tuples (`(T1, T2)`),
-/// function types (`fn(args) -> ret`). Per gero-lang spec §3.
-///
-/// Imports `Parser` + `ParserError` from `parser.zig`; calls
-/// `expr.parseExpression` for the comptime length expression in
-/// `[T; N]`.
 const std = @import("std");
 const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");

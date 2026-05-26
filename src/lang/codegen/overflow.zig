@@ -1,14 +1,3 @@
-/// Debug-mode overflow trap for `+` / `-` / `*` per spec §4.2.1.
-/// The lang follows the Rust model — same operators in every build
-/// mode, but debug builds insert a per-op overflow check that
-/// raises arithmetic-overflow (`int 5`, vector `$05` per ISA §6).
-/// Release / size builds skip the check; the underlying ALU op
-/// wraps two's-complement silently.
-///
-/// Signed types check `V` (set by the ALU on signed overflow).
-/// Unsigned types check `C` (carry on add, borrow on sub). For
-/// `*` the lang lowers signed operands through `muls` (so V is
-/// correct) and unsigned through `mul` (V = `high != 0`).
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");

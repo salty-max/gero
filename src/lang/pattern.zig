@@ -1,9 +1,3 @@
-/// Pattern parser — `let` destructuring (§4.1.1), `if let`
-/// (§4.4.1), `while let` (§4.5.2), `match` arms (§4.8.1). Builds
-/// every pattern shape the spec lists.
-///
-/// Imports `Parser` + `ParserError` from `parser.zig`; calls
-/// `expr.parseExpression` for the bounds of a range pattern.
 const std = @import("std");
 const ast = @import("ast.zig");
 const lexer = @import("lexer.zig");

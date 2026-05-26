@@ -1,15 +1,3 @@
-/// Compile-time evaluator for `bake def` / `bake do` bodies per
-/// spec §3.8. The typechecker has already enforced the structural
-/// restrictions (no MMIO, no asm, no non-bake calls, no Vec /
-/// class results); this module runs the post-check AST against a
-/// `BakeValue` interpreter and serializes the final value into
-/// static-data bytes the codegen interns.
-///
-/// Restricted on purpose: bake bodies are a strict subset of the
-/// runtime. No allocator beyond the arena passed in, no host I/O,
-/// no FFI. The interpreter trades runtime efficiency for
-/// determinism — `gero check` must produce identical baked bytes
-/// across machines and build modes.
 const std = @import("std");
 const ast = @import("ast.zig");
 const types = @import("types.zig");

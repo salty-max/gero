@@ -1,21 +1,3 @@
-/// String pool + interpolation lowering. Owns the
-/// `InternedString` / `StringPatch` types that store the pool
-/// state and the helpers that emit lookup / fill sequences.
-///
-/// String literals at expression position lower to one of two
-/// shapes:
-///
-/// - Single-literal strings — appended once to a pool laid out
-///   at the end of the base image; the load is `mov str_addr,
-///   acu` patched against the resolved address.
-/// - Interpolated strings — each site reserves a 64-byte buffer
-///   in the data region (per spec §3.2.2 "single-buffer
-///   allocation"); a `format_*_to_buf` syscall sequence fills
-///   it and the buffer's base address lands in `acu`.
-///
-/// `print` of a string literal uses a third shape — per-part
-/// `print_*` syscalls write to `host.out` directly with no
-/// runtime buffer (the zero-alloc fast path from spec §4.9).
 const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");

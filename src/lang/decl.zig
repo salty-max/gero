@@ -1,11 +1,3 @@
-/// Declaration parsers — `let`, `const`, `def`, `class`, `struct`,
-/// `enum`, `use`, plus the shared `parseParamList` (used by both
-/// `def` and `lambda`). Annotations land here too via
-/// `takePendingAnnotations` from `parser.zig`.
-///
-/// Imports `Parser` + `ParserError` from `parser.zig`; delegates
-/// to `expr`, `pattern`, `type_ann`, `annotation` for sub-shapes,
-/// and to `parser_mod.parseStatement` for function bodies.
 const std = @import("std");
 const ast = @import("ast.zig");
 const lexer = @import("lexer.zig");

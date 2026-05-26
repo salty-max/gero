@@ -1,7 +1,3 @@
-/// Expression lowering — `emitExpr` and every per-shape helper
-/// it dispatches into. Results land in `acu`. Sub-modules
-/// (`mem_builtin`, `strings`, etc.) call back into `emitExpr`
-/// through the `Emitter` method dispatch.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");

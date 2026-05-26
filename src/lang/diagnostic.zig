@@ -1,11 +1,3 @@
-/// Gero-lang diagnostic — the rich shape consumed by the
-/// renderer in `render.zig` and produced by `typecheck.zig` plus
-/// (eventually) the parser retrofit.
-///
-/// Carries everything the spec mockup in `docs/lang-diagnostics.md`
-/// needs to print one entry: severity prefix, stable code,
-/// message body, span (for `(line, col)` + caret length), optional
-/// `help:` and `note:` lines.
 const std = @import("std");
 const ast = @import("ast.zig");
 

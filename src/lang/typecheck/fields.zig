@@ -1,8 +1,3 @@
-/// Field + method resolution for struct + class types, plus
-/// struct-literal / class-literal field validation and the
-/// per-class layout helpers (`lookupClassMethodOwner` etc.).
-/// Lives next to `typecheck.zig` since every entry takes a
-/// `*Checker` and threads through its registry maps.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");

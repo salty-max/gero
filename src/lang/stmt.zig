@@ -1,10 +1,3 @@
-/// Statement parsers — control flow (`if`/`elif`/`else`,
-/// `while`/`while let`, `for`, `match`), `do…end` blocks, `return`,
-/// `print`, and the expression-or-assignment fallthrough.
-///
-/// Imports `Parser` + `ParserError` from `parser.zig`; delegates
-/// to `expr` / `pattern` for sub-shapes and to
-/// `parser_mod.parseStatement` for nested bodies.
 const std = @import("std");
 const ast = @import("ast.zig");
 const lexer = @import("lexer.zig");

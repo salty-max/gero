@@ -1,7 +1,3 @@
-/// Control-flow lowering — `if` / `while` / `for` / `repeat` /
-/// `match` / `break` / `continue` / `defer` / `do…end`. Owns the
-/// block + loop stack helpers that drive defer-emission at every
-/// exit path and label-resolution for nested loop jumps.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");

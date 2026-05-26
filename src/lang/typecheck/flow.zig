@@ -1,8 +1,3 @@
-/// Small, heterogeneous helpers consumed by flow-sensitive
-/// inference and decl-resolution paths in the typechecker.
-/// Grouped here because each is too small to warrant its own
-/// file and they share the common shape of "lookup or shape
-/// inspection that doesn't drive its own pass".
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");

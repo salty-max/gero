@@ -1,9 +1,3 @@
-/// Pure predicates over `types.Type` / `types.Primitive` /
-/// `ast.BinaryOp`. No `Checker` state — every helper is a total
-/// function from its inputs, so they're safe to call from any
-/// inference / checking site. Used heavily by the binary-operator
-/// arm-checks, integer-literal fitting, and `bake` return-type
-/// validation.
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 

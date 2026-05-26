@@ -1,8 +1,3 @@
-/// `.gx` archive layout + small utility helpers that don't need
-/// any `Emitter` state. Owns the byte-level encoding of the
-/// header (per ISA §7.1), the per-bank window padding, and the
-/// shared `decodeStringEscapes` / `alignUpU16` helpers used by
-/// string-pool emission and global placement.
 const std = @import("std");
 
 // ---------- .gx layout constants ----------

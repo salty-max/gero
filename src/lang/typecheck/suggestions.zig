@@ -1,13 +1,3 @@
-/// "Did you mean…?" suggestion helpers for typecheck diagnostics
-/// (`E_UNDEFINED_SYMBOL`, `E_TYPE_UNDEFINED`, `E_TYPE_UNDEFINED_FIELD`,
-/// `E_TYPE_UNDEFINED_METHOD`). Pure functions over byte slices — the
-/// caller assembles the candidate list and feeds it in.
-///
-/// The cap is intentionally tight: distance ≤ 2 captures typical typos
-/// (single transposition, single missing / extra char, simple
-/// substitution) without spamming irrelevant suggestions for genuinely
-/// unrelated names. Beyond two edits the user is more likely to have
-/// the wrong concept than a misspelling.
 const std = @import("std");
 
 /// Maximum edit distance for a suggestion to count. Per spec

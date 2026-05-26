@@ -1,12 +1,5 @@
-/// VM opcode + register + syscall byte values used by the
-/// codegen. Mirrored from `src/vm/opcodes.zig`,
-/// `src/vm/registers.zig`, and `src/vm/handlers/system.zig`. The
-/// codegen deliberately doesn't `@import` the VM module — the two
-/// sides stay decoupled — so adding an opcode in the VM means
-/// adding the matching constant here.
-/// VM opcode byte values. Each constant is the leading byte of
-/// the matching instruction; subsequent bytes carry operands per
-/// ISA §5.
+/// VM opcode byte values. Each constant is the leading byte;
+/// subsequent bytes carry operands per ISA §5.
 pub const Op = struct {
     /// `mov imm16, reg` — load 16-bit immediate into reg.
     pub const mov_imm16_reg: u8 = 0x10;

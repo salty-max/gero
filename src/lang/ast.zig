@@ -1,14 +1,3 @@
-/// Gero-lang AST — what the parser emits, what the typechecker
-/// and codegen consume. Every node carries a `Span` so diagnostics
-/// can resolve back to `(file, line, col)` against the original
-/// source text.
-///
-/// Mirrors the shape of `src/asm/ast.zig`: discriminated unions
-/// for `Statement`, `Expr`, `Pattern`, `TypeAnn`; allocated child
-/// trees are owned by the program allocator and released via
-/// `Program.deinit`.
-///
-/// Per gero-lang spec (see `docs/gero-lang.md`).
 const std = @import("std");
 const lexer = @import("lexer.zig");
 

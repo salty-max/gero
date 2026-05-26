@@ -1,20 +1,3 @@
-/// Class lowering — instance layout, vtable emission, constructor
-/// calls, field read/write, and method dispatch via vtable.
-/// Handles single inheritance via `extends`: a child class
-/// inherits the parent's field layout (own fields appended;
-/// shadowed names occupy distinct slots and `super.field` reaches
-/// the parent's), and the child's vtable copies the parent's
-/// method addresses, overrides re-declared slots, and appends
-/// brand-new methods at fresh slot indices.
-///
-/// Per spec §6 a class instance is `[vtable_ptr: u16][field bytes
-/// contiguous]`. The vtable lives in static data (appended after
-/// the code body and string pool, same pattern as
-/// `codegen/strings.zig`) — one u16 entry per method, in slot
-/// order. Method calls load the vtable pointer from the instance,
-/// index into the table, and `call_reg` the resolved address.
-/// `super.method(args)` bypasses the vtable and emits a direct
-/// call to the parent's mangled label.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const opcodes = @import("opcodes.zig");

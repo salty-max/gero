@@ -1,7 +1,3 @@
-/// Function-call type-checking: regular calls, assert / debug_assert
-/// builtins (§5.3), variadic param + call rules (§4.6.2), and
-/// bake-context rules (§3.8). Splits out of `typecheck.zig` so the
-/// walker file stays scannable. Every entry takes a `*Checker`.
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
