@@ -96,19 +96,16 @@ pub fn execute(
 /// Errors during evaluation print diagnostics + leave both
 /// buffers untouched so the user's session survives mistakes.
 ///
-/// Known limitations (deferred follow-ups, not in the v0.3 AC):
+/// `evaluate` runs every parse / typecheck / codegen against a
+/// per-iteration scratch arena so the session arena stays
+/// bounded to the committed source buffers — long sessions
+/// won't accumulate stale allocator pages.
 ///
-/// - The session arena grows monotonically — every parse /
-///   typecheck / codegen accumulates and the REPL never resets.
-///   Fine for typical interactive sessions; long-running editor
-///   integrations may want a per-iteration scratch arena.
-/// - `const X = bake do …` at REPL routes to the prelude
-///   (local-const inside `__repl_main`). Bake codegen only
-///   handles `bake do` at module-scope const-init, so the
-///   compound surfaces `E_CODEGEN_UNSUPPORTED`. Workaround:
-///   define a `bake def` separately, then `const X = my_def()`
-///   at the prompt — the call dispatches through the bake-init
-///   path correctly.
+/// `const X = bake do …` and `const X = my_bake_def(…)` route
+/// to `decls_source` instead of `prelude_source` so the
+/// bake codegen handles them at module-scope. Other `const`
+/// initializers stay in the prelude where local-const init is
+/// the right model.
 const Session = struct {
     arena: std.mem.Allocator,
     stdout: *std.Io.Writer,
@@ -200,19 +197,31 @@ const Session = struct {
 
     /// One REPL submit: classify the leading token + route the
     /// input. Decls (def / class / struct / enum / use / bake def
-    /// / @ann) join `decls_source` at module scope; `let` /
-    /// `const` join `prelude_source` so they re-run on every
-    /// subsequent submit and stay visible; everything else runs
-    /// once in the current iteration's `__repl_main` body.
+    /// / @ann / `const X = bake …`) join `decls_source` at
+    /// module scope; non-bake `let` / `const` join
+    /// `prelude_source` so they re-run on every subsequent submit
+    /// and stay visible; everything else runs once in the current
+    /// iteration's `__repl_main` body.
+    ///
+    /// Per-iteration work allocates from a fresh scratch arena
+    /// that releases at the end of this call — the long-lived
+    /// session arena keeps only the committed source buffers.
     fn evaluate(self: *Session, new_input: []const u8) !void {
         const stripped = std.mem.trim(u8, new_input, " \t\n");
         if (stripped.len == 0) return;
 
-        const kind = classifyInput(stripped);
+        // Scratch arena — every parse / typecheck / codegen
+        // alloc lands here so the session arena doesn't grow
+        // unboundedly across submits. Released on every return.
+        var scratch = std.heap.ArenaAllocator.init(self.arena);
+        defer scratch.deinit();
+        const sa = scratch.allocator();
+
+        const kind = try self.classifyForRoute(sa, stripped);
 
         const decl_input: []const u8 = if (kind == .decl) new_input else "";
         const body_input: []const u8 = if (kind == .body)
-            try self.maybeWrapInPrint(new_input)
+            try self.maybeWrapInPrint(sa, new_input)
         else
             "";
         const prelude_extra: []const u8 = if (kind == .prelude) new_input else "";
@@ -222,7 +231,7 @@ const Session = struct {
         // Each piece is `\n`-terminated to keep the parser's
         // statement-boundary rules happy across joins.
         const source = try std.fmt.allocPrint(
-            self.arena,
+            sa,
             "{s}{s}\ndef __repl_main()\n{s}{s}{s}\nend\n",
             .{
                 self.decls_source.items,
@@ -233,13 +242,13 @@ const Session = struct {
             },
         );
 
-        var stream = gero.lang.tokenize(self.arena, source) catch {
+        var stream = gero.lang.tokenize(sa, source) catch {
             try self.term.err("repl: tokenizer failure", .{});
             return;
         };
         defer stream.deinit();
 
-        var tree = gero.lang.parse(self.arena, source, stream) catch {
+        var tree = gero.lang.parse(sa, source, stream) catch {
             try self.term.err("repl: parse failure", .{});
             return;
         };
@@ -251,7 +260,7 @@ const Session = struct {
             return;
         }
 
-        var checked = gero.lang.typecheck(self.arena, source, &tree.program) catch {
+        var checked = gero.lang.typecheck(sa, source, &tree.program) catch {
             try self.term.err("repl: typecheck failure", .{});
             return;
         };
@@ -261,7 +270,7 @@ const Session = struct {
             return;
         }
 
-        var compiled = gero.lang.compile(self.arena, source, &checked, .{ .entry_name = "__repl_main" }) catch {
+        var compiled = gero.lang.compile(sa, source, &checked, .{ .entry_name = "__repl_main" }) catch {
             try self.term.err("repl: codegen failure", .{});
             return;
         };
@@ -291,33 +300,61 @@ const Session = struct {
     /// already print or whose return is `nil` shouldn't get an
     /// extra `print` wrapping their return value. Pre-parses the
     /// input alone (sub-millisecond) to inspect the AST shape.
-    fn maybeWrapInPrint(self: *Session, input: []const u8) ![]const u8 {
-        const stripped = std.mem.trim(u8, input, " \t\n");
-        if (stripped.len == 0) return try self.arena.dupe(u8, input);
-        if (looksLikeMainBodyStatement(stripped)) return try self.arena.dupe(u8, input);
-
-        // Best-effort AST inspection: if the input parses as a
-        // single `expr_stmt` whose expression is a call or method
-        // call, leave it alone (it executes for effect; the
-        // user's own `print`s inside the callee surface the
-        // value). Anything else gets the `print` wrap.
-        if (try self.inputIsCallStatement(input)) return try self.arena.dupe(u8, input);
-        return try std.fmt.allocPrint(self.arena, "print {s}", .{input});
+    /// State-free; takes the scratch allocator directly.
+    fn maybeWrapInPrint(_: *Session, sa: std.mem.Allocator, input: []const u8) ![]const u8 {
+        return wrapInPrintIfBareExpr(sa, input);
     }
 
-    fn inputIsCallStatement(self: *Session, input: []const u8) !bool {
-        var stream = gero.lang.tokenize(self.arena, input) catch return false;
+    /// Route `const X = bake do …` / `const X = bake_def(…)` to
+    /// `.decl` even though the leading token is `const`. Module-
+    /// scope is where the bake codegen evaluates + serializes the
+    /// result into static data; routing these through the prelude
+    /// would land them inside `__repl_main` as locals where bake
+    /// init isn't supported.
+    fn classifyForRoute(self: *Session, sa: std.mem.Allocator, stripped: []const u8) !Session.InputKind {
+        const base = classifyInput(stripped);
+        if (base != .prelude) return base;
+        if (!startsWithToken(stripped, "const")) return base;
+        if (try constInitIsBake(self, sa, stripped)) return .decl;
+        return base;
+    }
+
+    /// `true` when `stripped` parses as a single `const X = …`
+    /// whose init is `bake do …` or a call to a known bake def.
+    fn constInitIsBake(self: *Session, sa: std.mem.Allocator, stripped: []const u8) !bool {
+        var stream = gero.lang.tokenize(sa, stripped) catch return false;
         defer stream.deinit();
-        var tree = gero.lang.parse(self.arena, input, stream) catch return false;
+        var tree = gero.lang.parse(sa, stripped, stream) catch return false;
         defer tree.deinit();
         if (tree.errors.len > 0) return false;
         if (tree.program.statements.len != 1) return false;
         const stmt = tree.program.statements[0];
-        if (stmt != .expr_stmt) return false;
-        return switch (stmt.expr_stmt.expr.*) {
-            .call, .method_call => true,
+        if (stmt != .const_decl) return false;
+        const init_expr = stmt.const_decl.init;
+        return switch (init_expr.*) {
+            .do_expr => |de| de.is_bake,
+            .call => |c| blk: {
+                if (c.callee.* != .ident) break :blk false;
+                const name = stripped[c.callee.ident.span.start..c.callee.ident.span.end];
+                break :blk self.committedHasBakeDef(name);
+            },
             else => false,
         };
+    }
+
+    /// Cheap textual scan for a `bake def <name>` in the
+    /// committed decls. Used by `constInitIsBake` to decide
+    /// whether a `const X = my_fn()` call hits a known bake def
+    /// and should route to module scope.
+    fn committedHasBakeDef(self: *Session, name: []const u8) bool {
+        var scan: usize = 0;
+        const src = self.decls_source.items;
+        while (std.mem.indexOfPos(u8, src, scan, "bake def ")) |hit| {
+            const after = hit + "bake def ".len;
+            if (after < src.len and matchesIdent(src[after..], name)) return true;
+            scan = hit + "bake def ".len;
+        }
+        return false;
     }
 
     /// Format every lang diagnostic onto the REPL's stderr. Bare
@@ -432,6 +469,37 @@ fn precededByIdent(source: []const u8, i: usize) bool {
 }
 
 // ---------- classify input ----------
+
+/// Wrap `input` in `print …` when it's a bare expression so the
+/// expression's value lands on stdout. Statement shapes (`print
+/// …`, control flow, etc.) and function-call expr_stmts pass
+/// through untouched — the latter would otherwise double-print.
+fn wrapInPrintIfBareExpr(sa: std.mem.Allocator, input: []const u8) ![]const u8 {
+    const stripped = std.mem.trim(u8, input, " \t\n");
+    if (stripped.len == 0) return try sa.dupe(u8, input);
+    if (looksLikeMainBodyStatement(stripped)) return try sa.dupe(u8, input);
+    if (try inputIsCallStatement(sa, input)) return try sa.dupe(u8, input);
+    return try std.fmt.allocPrint(sa, "print {s}", .{input});
+}
+
+/// `true` when `input` parses as a single `expr_stmt(.call |
+/// .method_call)`. Used by the print-wrap heuristic — calls
+/// already execute for effect; wrapping them would print their
+/// return value on top of any `print` inside the callee.
+fn inputIsCallStatement(sa: std.mem.Allocator, input: []const u8) !bool {
+    var stream = gero.lang.tokenize(sa, input) catch return false;
+    defer stream.deinit();
+    var tree = gero.lang.parse(sa, input, stream) catch return false;
+    defer tree.deinit();
+    if (tree.errors.len > 0) return false;
+    if (tree.program.statements.len != 1) return false;
+    const stmt = tree.program.statements[0];
+    if (stmt != .expr_stmt) return false;
+    return switch (stmt.expr_stmt.expr.*) {
+        .call, .method_call => true,
+        else => false,
+    };
+}
 
 /// Decide where one input lands in the session — see
 /// `Session.evaluate` for the routing rules.
@@ -592,6 +660,47 @@ test "repl/classifyInput: `bake do` is an expression, routes to .body" {
     // surfaces it via `print`. Only `bake def` is a decl.
     try testing.expectEqual(Session.InputKind.body, classifyInput("bake do 1 + 2 end"));
     try testing.expectEqual(Session.InputKind.body, classifyInput("bake do"));
+}
+
+test "repl/classifyForRoute: `const X = bake do …` re-routes to .decl" {
+    // Without the re-route a bake-do const would land inside
+    // __repl_main as a local; the bake codegen only handles
+    // module-scope const-init.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var session = Session.init(arena.allocator(), undefined, undefined);
+    const kind = try session.classifyForRoute(arena.allocator(), "const X = bake do 1 + 2 end");
+    try testing.expectEqual(Session.InputKind.decl, kind);
+}
+
+test "repl/classifyForRoute: plain `const X = 42` stays in the prelude" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var session = Session.init(arena.allocator(), undefined, undefined);
+    const kind = try session.classifyForRoute(arena.allocator(), "const X = 42");
+    try testing.expectEqual(Session.InputKind.prelude, kind);
+}
+
+test "repl/classifyForRoute: `const X = my_bake_def()` re-routes to .decl" {
+    // The session has to know `my_fn` is a bake def — seed the
+    // committed decls with the source text the textual scan
+    // looks for.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var session = Session.init(arena.allocator(), undefined, undefined);
+    try session.decls_source.appendSlice(arena.allocator(), "bake def my_fn() -> i16\n  return 7\nend\n");
+    const kind = try session.classifyForRoute(arena.allocator(), "const X = my_fn()");
+    try testing.expectEqual(Session.InputKind.decl, kind);
+}
+
+test "repl/classifyForRoute: `const X = unknown_fn()` stays in .prelude" {
+    // Unknown callee → not a bake def → keep prelude routing so
+    // the regular const-init path runs.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var session = Session.init(arena.allocator(), undefined, undefined);
+    const kind = try session.classifyForRoute(arena.allocator(), "const X = unknown_fn()");
+    try testing.expectEqual(Session.InputKind.prelude, kind);
 }
 
 test "repl/classifyInput: `let` / `const` route to .prelude" {
