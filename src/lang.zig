@@ -24,6 +24,7 @@ const tc_relations = @import("lang/typecheck/relations.zig");
 const tc_flow = @import("lang/typecheck/flow.zig");
 const tc_suggestions = @import("lang/typecheck/suggestions.zig");
 const tc_type_resolve = @import("lang/typecheck/type_resolve.zig");
+const tc_fields = @import("lang/typecheck/fields.zig");
 const bake_mod = @import("lang/bake.zig");
 const cg_opcodes = @import("lang/codegen/opcodes.zig");
 const cg_archive = @import("lang/codegen/archive.zig");
@@ -145,6 +146,10 @@ pub const internal = struct {
         pub const suggestions = tc_suggestions;
         /// Internal — `ast.TypeAnn` → `types.Type` resolution.
         pub const type_resolve = tc_type_resolve;
+        /// Internal — field + method resolution for struct + class
+        /// types (incl. struct-literal / class-literal field
+        /// validation, constructor-sig synthesis).
+        pub const fields = tc_fields;
     };
 
     /// Internal — codegen submodule seams.
