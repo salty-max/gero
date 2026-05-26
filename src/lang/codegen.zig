@@ -1,47 +1,3 @@
-/// Gero-lang codegen — typed AST → `.gx` bytecode image.
-///
-/// Direct emission (no asm intermediate per cli.md §3.2). Walks
-/// the `CheckedProgram` from `typecheck.zig` and produces a `.gx`
-/// archive ready for the VM loader (`gero.vm.parseGx`) per ISA §7.
-///
-/// **Statements** — `let` / `const` / `return` / `print` /
-/// `target = value` / discard / expression statements; `do…end`
-/// blocks; `if` / `else if` / `else` (incl. `if let` ident-binder
-/// form); `while` (incl. `while let`); `for x in start..end
-/// [step N]`; `repeat body until cond`; `match`; `break [:label]`;
-/// `continue [:label]`; `defer stmt`.
-///
-/// **Expressions** — literals (int / fixed / bool / nil / char /
-/// string with single-literal + multi-part interpolation); idents
-/// (local + param + global); unary `- / not / ~`; binary `+ - *
-/// / % == != < <= > >= and or & | ^ << >>`; direct calls; nullary
-/// enum variant constructors (`EnumName.Variant`); `is`
-/// tag-tests; `&x` reference taking; `as` cast (no-op for
-/// same-width primitives); `mem.*` stdlib builtins.
-///
-/// **Stack frames** — locals at `[fp - 2*N]`, params at
-/// `[fp + 4 + 2*i]`; the VM's `call` / `ret` handle the
-/// `ret_ip` + `fp` push / pop. `countLocalsInBody` reserves the
-/// frame up front.
-///
-/// **Globals + placement annotations** — top-level `let` /
-/// `const` with optional `@addr` / `@volatile` / `@zero_page` /
-/// `@align(N)`. Byte-width globals use `movl`.
-///
-/// **Banks** — `@bank N` routes defs into per-bank buffers;
-/// cross-bank calls go through a `__call_bank` trampoline in
-/// the base image.
-///
-/// **Match** — sequential `cmp` + branch decision tree.
-/// OR-patterns collapse onto one shared body label; range
-/// patterns emit one low+high cmp pair; `when` guards run after
-/// the pattern bind. Variant patterns dispatch on the variant
-/// tag.
-///
-/// **Defer** — per-block LIFO list of statements; cleanup emits
-/// inline at every exit path (normal block end, `return`,
-/// `break`, `continue`). `acu` is preserved across the cleanup
-/// so the caller's return value survives.
 const std = @import("std");
 const ast = @import("ast.zig");
 const types_mod = @import("types.zig");
@@ -69,14 +25,11 @@ const Sys = opcodes.Sys;
 
 // ---------- public constants (boot layout per ISA §7) ----------
 
-/// IVT base address — first IVT slot lives at `0x1000`. Each slot
-/// is 2 bytes; the spec reserves `0x1000..0x10FF` for the table.
+/// IVT base address (`0x1000..0x10FF` is reserved for 2-byte slots).
 pub const ivt_base: u16 = 0x1000;
-/// First byte of code emission. The 0x0000..0x10FF range is
-/// reserved for the IVT + low-RAM scratch.
+/// First byte of code emission.
 pub const code_base: u16 = 0x1100;
-/// First byte of static-data emission. Code grows up from
-/// `code_base`; data grows up from here.
+/// First byte of static-data emission.
 pub const data_base: u16 = 0x2000;
 
 // ---------- .gx file constants (re-exported from archive) ----------
@@ -88,12 +41,10 @@ const StringPatch = strings.StringPatch;
 
 // ---------- public surface ----------
 
-/// Codegen output. Owns the `.gx` image bytes + the diagnostic
-/// slice + the arena that backs the diagnostic message strings
-/// (kept alive past `compile`'s return so callers can read
-/// `Diagnostic.message`).
+/// Codegen output. Owns the `.gx` image bytes, the diagnostic
+/// slice, and the arena backing diagnostic message strings.
 pub const Compiled = struct {
-    /// Full `.gx` archive, ready to feed to `gero.vm.parseGx`.
+    /// Full `.gx` archive. Pass to `gero.vm.parseGx`.
     image: []u8,
     diagnostics: []Diagnostic,
     diag_arena: std.heap.ArenaAllocator,
@@ -114,43 +65,39 @@ pub const Compiled = struct {
     }
 };
 
-/// Build-mode selector. Mirrors the CLI's `--optimize=<m>` values
-/// per `docs/cli.md` §2. The lang doesn't itself depend on the CLI
-/// — the CLI plumbs its parsed value into `Options.optimize` when
-/// invoking `compile`.
+/// Build-mode selector. Mirrors `--optimize=<m>` from `docs/cli.md`.
 pub const Optimize = enum { debug, release, size };
 
-/// Knobs for `compile`. Mirrors `gero.asm_.Options` so callers
-/// can wrap both pipelines uniformly.
+/// Knobs for `compile`.
 pub const Options = struct {
-    /// Name of the top-level `def` to use as the program entry.
-    /// Spec convention is `main`.
+    /// Top-level `def` to use as the program entry.
     entry_name: []const u8 = "main",
-    /// When `true` reserves a flag bit + section for debug
-    /// symbols (per ISA §7.3). Slice M1 doesn't emit the body yet.
+    /// Reserve the flag bit + section for debug symbols
+    /// (ISA §7.3).
     debug_symbols: bool = true,
-    /// Build mode. Controls debug-only lowering decisions such as
-    /// `debug_assert` elision (§5.3) and overflow trap insertion
-    /// (§4.2.1). Defaults to `.debug` — release / size modes drop
-    /// debug-only checks.
+    /// Build mode. Controls `debug_assert` elision (§5.3) and
+    /// overflow trap insertion (§4.2.1).
     optimize: Optimize = .debug,
 };
 
-/// Errors `compile` can return. Grammar / semantic errors land in
-/// the returned `Compiled.diagnostics` slice — only true host
-/// failures propagate here.
+/// Errors `compile` can return. Semantic errors land in
+/// `Compiled.diagnostics`; only host failures propagate here.
 pub const CompileError = error{
     OutOfMemory,
-    /// `Options.entry_name` doesn't resolve to a top-level `def`
-    /// in the typechecked program.
+    /// `Options.entry_name` doesn't resolve to a top-level `def`.
     EntryNotFound,
-    /// Codegen tried to lower an AST shape that this slice
-    /// doesn't yet support. The unsupported feature shows up in
-    /// the diagnostic slice with the offending span.
+    /// Codegen tried to lower an unsupported AST shape; details
+    /// are in `Compiled.diagnostics`.
     UnsupportedFeature,
 };
 
-/// Walk a typechecked program and emit a `.gx` archive.
+/// Compile a typechecked program to a `.gx` archive.
+///
+/// ```
+/// var compiled = try compile(allocator, source, &checked, .{});
+/// defer compiled.deinit();
+/// try std.fs.cwd().writeFile("out.gx", compiled.image);
+/// ```
 pub fn compile(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -160,14 +107,11 @@ pub fn compile(
     var diagnostics: std.ArrayList(Diagnostic) = .empty;
     errdefer diagnostics.deinit(allocator);
 
-    // Scratch arena — short-lived bookkeeping (local-name dupes,
-    // hash-map storage). Released at the end of this function.
+    // Scratch arena: short-lived bookkeeping.
     var scratch_arena = std.heap.ArenaAllocator.init(allocator);
     defer scratch_arena.deinit();
 
-    // Diagnostics arena — backs the message strings on every
-    // `Diagnostic` the codegen produces. Persists past this
-    // function via `Compiled.diag_arena`.
+    // Diagnostics arena: persists via `Compiled.diag_arena`.
     var diag_arena = std.heap.ArenaAllocator.init(allocator);
     errdefer diag_arena.deinit();
 
@@ -401,31 +345,22 @@ pub const LoopFrame = struct {
     continue_patches: std.ArrayList(usize),
 };
 
-/// One top-level `let` / `const` global. Address is decided during
-/// the pre-pass: `@addr` literal wins, otherwise `@zero_page`
-/// allocates from `zp_cursor`, otherwise the binding lands in the
-/// dynamic data region from `data_cursor`.
+/// One top-level `let` / `const` global. Addressed by `@addr`
+/// literal, `@zero_page` (from `zp_cursor`), or the data region
+/// (from `data_cursor`).
 const Global = struct {
-    /// Resolved absolute address in the 64 KiB address space.
+    /// Resolved absolute address.
     address: u16,
-    /// Byte width — `1` for `u8` / `bool` / `char`, `2` for the
-    /// 16-bit primitives and references, larger for aggregate
-    /// types (e.g. `[i16; 256]` = 512 bytes when initialized
-    /// from a `bake` block). The data region grows monotonically
-    /// from `data_cursor`; the resolved bytes are written
-    /// directly into the base image at `address`.
+    /// Byte width: 1 for `u8`/`bool`/`char`; 2 for 16-bit
+    /// primitives + references; larger for aggregates.
     width: u16,
-    /// Placement family — drives which addressing mode the
-    /// ident-load / assignment emits (`mov zp` is 1 byte cheaper
-    /// per access than `mov addr`).
+    /// Placement family. Drives the addressing mode used for
+    /// loads / stores against this global.
     placement: enum { addr, zero_page, data },
 };
 
-/// Unresolved vtable-address site — the constructor for
-/// `class_name` left an imm16 slot at `code_offset` (inside the
-/// `bank` buffer or base code) for the class's vtable address.
-/// `patchVtableSlots` rewrites every slot once `emitVtables`
-/// has resolved each class's `vtable_addr`.
+/// Unresolved vtable-address site. Patched by `patchVtableSlots`
+/// once `emitVtables` resolves each class's `vtable_addr`.
 pub const VtablePatch = struct {
     bank: ?u8,
     code_offset: usize,
@@ -474,45 +409,35 @@ pub const Emitter = struct {
     /// `push fp` / `mov sp, fp` parts of the prologue (the VM
     /// boots with `fp == sp`).
     is_entry: bool,
-    /// `true` while emitting the body of an `@interrupt N` def —
-    /// flips `return` lowering to `rti` instead of `ret` so the
-    /// VM tears the ISR frame down (pop flg/fp/ip).
+    /// Emitting the body of an `@interrupt N` def. Flips `return`
+    /// lowering to `rti`.
     is_isr: bool,
-    /// Top-level `def` name → absolute address. Populated as defs
-    /// are emitted in source order so calls patch correctly. For
-    /// banked defs, the recorded address sits in the bank window
-    /// (`bank_window_base + offset`); for un-banked defs, it sits
-    /// in the base image (`code_base + offset`).
+    /// `def` name → absolute address. Banked defs live in the
+    /// bank window; un-banked defs live in the base image.
     fn_addresses: std.StringHashMapUnmanaged(u16),
-    /// Top-level `def` name → the bank it lives in (or `null`
-    /// for the base image). Populated in a pre-pass over
-    /// `program.statements` BEFORE emission, so `emitCall` knows
-    /// the target's bank when deciding direct-call vs trampoline.
+    /// `def` name → bank index (or `null` for the base image).
+    /// Populated pre-emission so `emitCall` picks direct vs
+    /// trampoline.
     fn_banks: std.StringHashMapUnmanaged(?u8),
-    /// Top-level `def` names that carry `@noreturn`. Populated in
-    /// the same pre-pass — `emitCall` skips the post-call
-    /// stack-cleanup epilogue at these call sites (the callee
-    /// never resumes, by contract).
+    /// `def` names carrying `@noreturn`. `emitCall` skips the
+    /// post-call epilogue for these.
     noreturn_defs: std.StringHashMapUnmanaged(void),
-    /// Top-level `def` names that carry `@inline`. Pre-pass-
-    /// populated; `emitCall` redirects to body inlining instead
-    /// of emitting a `call addr` when the callee matches.
+    /// `def` names carrying `@inline`. `emitCall` inlines the
+    /// body rather than emitting `call addr`.
     inline_defs: std.StringHashMapUnmanaged(*const ast.DefDecl),
-    /// `@interrupt N` defs — vector index → def. Used to emit
-    /// the IVT-write init code before `main` runs.
+    /// `@interrupt N` defs — vector index → def. Drives IVT-init
+    /// emission before `main`.
     interrupt_defs: std.ArrayList(InterruptHandler),
-    /// Pending `return` patch offsets accumulated while emitting an
-    /// `@inline` def body. Each entry is the 2-byte address slot of
-    /// a `jmp_addr` placeholder that will be rewritten to the
-    /// "after-inlined-body" address. `null` outside any inline.
+    /// Pending `return` patch offsets accumulated while emitting
+    /// an `@inline` body. Each is a `jmp_addr` 2-byte slot to be
+    /// rewritten to the after-body address. `null` outside an
+    /// inline.
     inline_returns: ?std.ArrayList(usize),
-    /// Reentrancy guard: caps `@inline` nesting depth to detect
-    /// recursive inlining loops. The compiler errors with
-    /// `E_ANN_INLINE_RECURSIVE` past this depth.
+    /// `@inline` nesting depth guard. Past this, codegen emits
+    /// `E_ANN_INLINE_RECURSIVE`.
     inline_depth: u8,
-    /// Address of the `__call_bank` trampoline in the base image
-    /// after emission. `null` until the trampoline is emitted —
-    /// trampoline-target call patches resolve against this.
+    /// `__call_bank` trampoline address in the base image.
+    /// `null` until the trampoline is emitted.
     trampoline_addr: ?u16,
     /// Unresolved `call addr` sites — recorded when the callee's
     /// address isn't known yet (forward references). Rewritten at
@@ -523,94 +448,63 @@ pub const Emitter = struct {
     /// by ident loads + assignments. See `Global` for the per-
     /// binding metadata (address, byte width, placement kind).
     globals: std.StringHashMapUnmanaged(Global),
-    /// Next free address in the dynamic data region (data_base
-    /// upward). Used for unannotated globals.
+    /// Next free byte in the dynamic data region.
     data_cursor: u16,
-    /// Next free zero-page byte (0x0000 upward). Used for
-    /// `@zero_page` globals. Tracked as u16 so the cursor can
-    /// legitimately reach `0x100` after the last byte fills — the
-    /// `placeGlobal` check rejects allocations that would use a
-    /// byte at index ≥ `0x100`.
+    /// Next free zero-page byte. Range-checked at `placeGlobal`.
     zp_cursor: u16,
-    /// Per-bank emit buffers — `@bank N` defs land here instead of
-    /// the base `code` buffer. The base image gets the un-banked
-    /// bytes; `buildArchive` appends each bank window after.
+    /// Per-bank emit buffers. `@bank N` defs land here; the base
+    /// image gets un-banked bytes.
     banks: std.AutoHashMapUnmanaged(u8, std.ArrayList(u8)),
-    /// Active bank for the current def (`@bank N` on the decl).
-    /// `null` means the base image. Saved + restored per `emitDef`.
+    /// Active bank for the current def. `null` = base image.
     current_bank: ?u8,
-    /// String pool + outstanding patches. Each unique byte content
-    /// gets one `InternedString` entry; references at emit time push
-    /// `StringPatch` records resolved at end-of-codegen.
+    /// Interned string pool + patches resolved at end-of-codegen.
     strings: std.ArrayList(InternedString),
     string_patches: std.ArrayList(StringPatch),
-    /// View into the typechecker's per-expression type map (read-
-    /// only). Drives type-aware lowering — fixed-point arithmetic,
-    /// `print` dispatch between `print_int` / `print_str`, etc.
+    /// Read-only view into the typechecker's per-expr type map.
+    /// Drives type-aware lowering.
     checked: *const CheckedProgram,
-    /// Top-level `enum Foo … end` declarations indexed by name.
-    /// Codegen reads this map to resolve variant-tag indices when
-    /// emitting `EnumName.Variant` constructors, `is` tests, and
-    /// `match` arm patterns.
+    /// `enum` decls by name. Used for variant-tag indices,
+    /// `is` tests, and `match` patterns.
     enum_decls: std.StringHashMapUnmanaged(*const ast.EnumDecl),
-    /// Top-level `class Foo … end` declarations indexed by name.
-    /// Backs constructor detection in `emitCall`, vtable + layout
-    /// lookup in field / method access, and the vtable emission
-    /// pass.
+    /// `class` decls by name. Used by constructor detection,
+    /// vtable lookup, and field / method access.
     class_decls: std.StringHashMapUnmanaged(*const ast.ClassDecl),
-    /// Per-class layout — instance size, per-field byte offsets,
-    /// per-method vtable slot, and the vtable's resolved address
-    /// (populated after `class.emitVtables`).
+    /// Per-class layout: instance size, field offsets, vtable
+    /// slots, vtable address (set by `class.emitVtables`).
     class_layouts: std.StringHashMapUnmanaged(class.ClassLayout),
-    /// Name of the class whose method body we're currently
-    /// emitting — drives `super` resolution. `null` outside any
-    /// method body. Saved + restored per `emitMethodAsDef` call.
+    /// Class whose method body is currently emitting. Drives
+    /// `super` resolution.
     current_class_name: ?[]const u8,
-    /// Per-fn closure analysis — populated by `lambda.analyzeFn`
-    /// before each fn body emits, then consulted by `emitLetDecl`
-    /// / `emitIdent` / `emitAssign` / `emitCall` to route through
-    /// the heap-cell / closure-call paths. Reset between defs.
+    /// Per-fn closure analysis. Populated by `lambda.analyzeFn`
+    /// before each body emits. Reset between defs.
     fn_closure_info: lambda.FnClosureInfo,
-    /// Captures visible to the body currently emitting — set when
-    /// emitting a lambda's body so `emitIdent` / `emitAssign` can
-    /// dispatch env-relative loads / stores for captured names.
-    /// `null` outside any lambda body.
+    /// Captures visible to the emitting body (set inside a
+    /// lambda body).
     captures: std.StringHashMapUnmanaged(lambda.CaptureSlot),
-    /// Unresolved lambda fn_ptr slots emitted by closure-creation
-    /// sites — patched by `lambda.patchLambdaSlots` once each
-    /// lambda body has landed in `fn_addresses`.
+    /// Unresolved lambda fn_ptr slots. Patched by
+    /// `lambda.patchLambdaSlots`.
     lambda_patches: std.ArrayList(LambdaPatch),
     /// Unresolved vtable-address slots emitted by class
-    /// constructors — the constructor emits `mov 0, r2` as a
-    /// placeholder when it runs (vtables don't have addresses
-    /// yet). After `class.emitVtables` resolves each layout's
-    /// `vtable_addr`, `patchVtableSlots` rewrites every recorded
-    /// imm16 slot with the right address.
+    /// constructors. Patched by `patchVtableSlots`.
     vtable_patches: std.ArrayList(VtablePatch),
-    /// Stack of lexical blocks active at the current emit cursor.
-    /// The function body opens the bottom block; nested `do…end`,
-    /// loop bodies, `if` arms, etc. push more on top. Each block
+    /// Stack of lexical blocks at the current emit cursor. Each
     /// owns its registered `defer` statements.
     block_stack: std.ArrayList(Block),
-    /// Stack of enclosing loops at the current emit cursor. `break`
-    /// and `continue` look up their target frame here (innermost
-    /// match for unlabeled, label-equal for labeled).
+    /// Stack of enclosing loops at the current emit cursor.
+    /// `break` / `continue` find their target here.
     loop_stack: std.ArrayList(LoopFrame),
     /// Sink for codegen-time diagnostics.
     diagnostics: *std.ArrayList(Diagnostic),
-    /// Active build mode — drives debug-only lowering decisions
-    /// (`debug_assert` elision per §5.3; overflow trap insertion
-    /// per §4.2.1 once it lands).
+    /// Active build mode. Drives `debug_assert` elision and
+    /// overflow trap insertion.
     optimize: Optimize,
-    /// Per-global init bytes produced by the `bake` evaluator.
-    /// Keyed by data-region address; written into `base_image`
-    /// in `compile()` after the code region is laid out so the
-    /// runtime sees the baked value at boot with zero runtime
-    /// cost.
+    /// Per-global init bytes from the `bake` evaluator, keyed by
+    /// data-region address. Written into the base image at
+    /// `compile()` so the runtime sees baked values at boot.
     bake_inits: std.AutoHashMapUnmanaged(u16, []const u8),
-    /// Index of every `bake def` in the program — populated by
-    /// the pre-pass so a `const X = bake_def_name()` init can
-    /// look the callee up at codegen time without re-walking.
+    /// `bake def`s by name. Populated pre-emission so
+    /// `const X = bake_def_name()` initializers can find the
+    /// callee.
     bake_defs: std.StringHashMapUnmanaged(*const ast.DefDecl),
 
     /// Mutually recursive emit fns need an explicit error set to
@@ -631,11 +525,8 @@ pub const Emitter = struct {
         return &self.code;
     }
 
-    /// Byte offset of the next emission within the current code
-    /// buffer. Used to record `fn_addresses` + `call_patches` at
-    /// the right position.
-    /// Current byte cursor inside the active code buffer — used
-    /// by sub-modules to record patch sites.
+    /// Byte cursor inside the active code buffer. Used to record
+    /// patch sites.
     pub fn currentOffset(self: *Emitter) !usize {
         const buf = try self.currentCode();
         return buf.items.len;
@@ -675,11 +566,9 @@ pub const Emitter = struct {
         return ofs;
     }
 
-    /// Conservatively count every local slot the fn body could need
-    /// so the prologue can `sub frame_bytes, sp` up-front. The count
-    /// recurses through control-flow forms; arms that never execute
-    /// at runtime still reserve their slots (the savings of slot
-    /// reuse aren't worth a live-range analysis at this scale).
+    /// Conservatively count locals the body could need so the
+    /// prologue can `sub frame_bytes, sp`. Reserves slots for
+    /// every arm of control-flow forms.
     pub fn countLocalsInBody(self: *const Emitter, body: []const ast.Statement) usize {
         var n: usize = 0;
         for (body) |s| n += self.countLocalsInStmt(s);
@@ -867,14 +756,8 @@ pub const Emitter = struct {
         };
     }
 
-    /// Resolve the tag index for `enum_name.variant_name`. Tags are
-    /// numbered in declaration order starting at 0 — matches spec
-    /// §3.6 ("Sword=0, Potion=1, Key=2"). Returns `null` if the
-    /// enum or variant doesn't exist (the typechecker should have
-    /// caught that; the check keeps codegen defensive).
-    /// Look up the tag index for `enum_name.variant_name`. Tags
-    /// are numbered in declaration order starting at 0 (spec §3.6).
-    /// Returns `null` if the enum or variant doesn't exist.
+    /// Look up the tag index for `enum_name.variant_name` (0-based
+    /// in declaration order per spec §3.6). `null` when unknown.
     pub fn variantTag(self: *const Emitter, enum_name: []const u8, variant_name: []const u8) ?u8 {
         const ed = self.enum_decls.get(enum_name) orelse return null;
         for (ed.variants, 0..) |v, i| {
@@ -955,18 +838,17 @@ pub const Emitter = struct {
         return false;
     }
 
-    /// Emit the `__call_bank` trampoline at the current base-
-    /// image cursor. Caller sets up `r1 = target_addr`,
-    /// `r2 = target_bank`, then `call __call_bank`. The trampoline
-    /// saves the caller's `mb`, switches to the target bank, calls
-    /// through `r1`, restores `mb`, and `ret`s back.
+    /// Emit the `__call_bank` cross-bank trampoline (10 bytes) in
+    /// the base image. Caller sets `r1 = target_addr`,
+    /// `r2 = target_bank`, then `call __call_bank`.
     ///
-    /// Layout (10 bytes):
-    ///   push mb         ; 31 0C
-    ///   mov r2, mb      ; 11 03 0C
-    ///   call r1         ; A1 02
-    ///   pop mb          ; 32 0C
-    ///   ret             ; A2
+    /// ```
+    /// push mb         ; 31 0C
+    /// mov r2, mb      ; 11 03 0C
+    /// call r1         ; A1 02
+    /// pop mb          ; 32 0C
+    /// ret             ; A2
+    /// ```
     fn emitCallBankTrampoline(self: *Emitter) !void {
         // The trampoline must live in the base image (always
         // reachable regardless of `mb`). Save / restore the
@@ -995,21 +877,13 @@ pub const Emitter = struct {
         try self.emitByte(Op.ret_op);
     }
 
-    /// Pre-pass over top-level statements that registers every
-    /// `let` / `const` as a `Global`. The address-decision rule:
-    ///
-    /// 1. `@addr $XXXX` → use the literal value verbatim.
-    /// 2. `@zero_page` → next slot from `zp_cursor` (1-byte
-    ///    addressing range). Overflow → `E_CODEGEN_ZP_OVERFLOW`.
-    /// 3. `@align(N)` → pad the destination cursor up to a
-    ///    multiple of N before placing the binding (the typechecker
-    ///    has already verified `N` is a power of two).
-    /// 4. No annotation → next slot from `data_cursor` (data area
-    ///    starts at `data_base = 0x2000`).
-    ///
-    /// `@volatile` is recognized but doesn't alter the address —
-    /// the lang codegen doesn't register-cache globals today, so
-    /// volatility is naturally honored.
+    /// Register every top-level `let` / `const` as a `Global`.
+    /// Placement rule:
+    /// 1. `@addr $XXXX` → that literal address.
+    /// 2. `@zero_page` → next `zp_cursor` slot (overflow →
+    ///    `E_CODEGEN_ZP_OVERFLOW`).
+    /// 3. `@align(N)` → pad the cursor to a multiple of `N`.
+    /// 4. No annotation → next `data_cursor` slot.
     fn registerGlobals(self: *Emitter, program: *const ast.Program) !void {
         for (program.statements) |*stmt| switch (stmt.*) {
             .let_decl => |*d| try self.registerGlobalLet(d),
@@ -1043,12 +917,9 @@ pub const Emitter = struct {
         }
     }
 
-    /// Evaluate a `const X = …` init at compile time when the
-    /// RHS is a `bake do … end` block or a call to a `bake def`.
-    /// Returns `null` for non-bake initializers, which keeps the
-    /// existing zero-init behavior for plain `const X = 42`-style
-    /// decls (codegen for those lands later — today they
-    /// allocate a slot only).
+    /// Evaluate a `const X = …` initializer when the RHS is a
+    /// `bake do` block or a `bake def` call. `null` for
+    /// non-bake initializers.
     fn evalConstIfBake(self: *Emitter, d: *const ast.ConstDecl) !?bake_mod.BakeValue {
         switch (d.init.*) {
             .do_expr => |do| {
@@ -1059,12 +930,8 @@ pub const Emitter = struct {
                 if (c.callee.* != .ident) return null;
                 const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
                 const decl = self.bake_defs.get(callee_name) orelse return null;
-                // Args inside a `const = bake_def(args)` init are
-                // evaluated against an empty scope — they must be
-                // literal / const-foldable. The bake evaluator
-                // walks them itself when we recurse from a parent
-                // bake block, but a top-level entry call passes
-                // already-resolved BakeValues.
+                // Top-level entry call: args must be literal /
+                // const-foldable.
                 const args = try self.arena.alloc(bake_mod.BakeValue, c.args.len);
                 for (c.args, 0..) |a, i| {
                     args[i] = bake_mod.literalAsBakeValue(self.source, a) orelse {
@@ -1266,12 +1133,9 @@ pub const Emitter = struct {
         }
     }
 
-    /// Byte width inferred from a type annotation — 1 for the
-    /// byte-wide primitives (`i8`/`u8`/`bool`/`char`), 2 for
-    /// everything else (the 16-bit primitives, references, named
-    /// types, aggregates). Public so the class-layout pass in
-    /// `codegen/class.zig` can size class fields with the same
-    /// rule the global-placement path uses.
+    /// Byte width of a type annotation: 1 for `i8`/`u8`/`bool`/
+    /// `char`, 2 for 16-bit primitives + references + named types,
+    /// sum-of-elements for tuples + arrays.
     pub fn widthOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) u16 {
         return switch (t) {
             .named => |n| blk: {
@@ -1287,11 +1151,8 @@ pub const Emitter = struct {
             },
             .array => |a| blk: {
                 const elem_w = self.widthOfTypeAnn(a.elem.*);
-                // Parser stores array lengths as an int-literal
-                // expression. Bake initializers + ordinary
-                // bindings both rely on the literal-int form per
-                // spec §3.4; non-literal lengths fall back to 0
-                // (the typecheck flags those as `E_TYPE_*`).
+                // Spec §3.4: array length is an int-literal. Non-
+                // literal lengths fall back to 0 (typecheck flags).
                 if (a.len_expr.* == .int_lit) {
                     // safety: bit-cast i32 to u32 to drop sign for the masked truncate.
                     const raw: u32 = @bitCast(a.len_expr.int_lit.value);
@@ -1312,9 +1173,8 @@ pub const Emitter = struct {
 
     const DefKind = enum { entry, regular };
 
-    /// Emit one def's prologue + body + epilogue. Reset per-fn
-    /// state (locals / params / frame_bytes / is_entry) so each
-    /// def gets a fresh frame view.
+    /// Emit one def: prologue + body + epilogue. Resets per-fn
+    /// state for a fresh frame view.
     fn emitDef(self: *Emitter, def: *const ast.DefDecl, kind: DefKind) !void {
         const name = self.source[def.name.start..def.name.end];
         return self.emitDefWithLabel(def, kind, name);
@@ -1445,11 +1305,8 @@ pub const Emitter = struct {
         try lambda.emitLambdaBodies(self, def);
     }
 
-    /// Rewrite each unresolved call's 2-byte address slot. An
-    /// unresolved callee name surfaces as
-    /// `E_CODEGEN_UNDEFINED_FN` — should be unreachable in
-    /// well-typed input (the typechecker resolves identifiers
-    /// first) but the check keeps the codegen defensive.
+    /// Rewrite each unresolved call's 2-byte address slot.
+    /// Unknown callees emit `E_CODEGEN_UNDEFINED_FN`.
     fn patchCalls(self: *Emitter) !void {
         for (self.call_patches.items) |p| {
             const target_addr: u16 = switch (p.target) {
@@ -1594,17 +1451,10 @@ pub const Emitter = struct {
     /// Lower `target = value`. The target must be an ident that
     /// resolves to a local, param, or global. Compound `op=`
     /// forms are not yet supported.
-    /// Return the class name when `e`'s inferred type is a
-    /// registered class; otherwise `null`. Used by the field
-    /// access + method dispatch paths to decide between the
-    /// class-typed lowering and the existing free-fn / enum paths.
+    /// Class name when `e` is a registered class (auto-derefs one
+    /// `&T` per spec §3.4.4); otherwise `null`.
     pub fn classNameOf(self: *const Emitter, e: *const ast.Expr) ?[]const u8 {
         const ty = self.typeOf(e) orelse return null;
-        // Per spec §3.4.4 `&T` auto-derefs for `.field` / `.method`;
-        // peeling one layer routes `r: &Class` into the same class
-        // dispatch path as a direct `Class` binding. The extra load
-        // through the reference is emitted in `class.emitInstancePtr`.
-        // `&&T` is rejected at typecheck so a single peel suffices.
         const inner = if (ty.* == .reference) ty.reference else ty;
         if (inner.* != .named) return null;
         const name = inner.named.name;
@@ -1761,23 +1611,15 @@ pub const Emitter = struct {
         try isa.sys(self, Sys.print_newline);
     }
 
-    /// One `print` argument — picks the syscall family from the
-    /// argument's inferred type (per spec §4.9):
+    /// Emit one `print` argument. Routes to the right syscall by
+    /// the arg's inferred type (spec §4.9):
     ///
-    /// - `char` → `print_char` (low byte of `acu`).
-    /// - `fixed` → `print_fixed` (Q8.8 → `<int>.<frac>` decimal).
-    /// - `str` literal — peeled into per-part syscalls so an
-    ///   interpolated `"a $(x) b"` writes directly to `host.out`
-    ///   without ever materializing the full string (the
-    ///   zero-alloc-for-print path called out in spec §4.9).
-    /// - `str` non-literal → `print_str` (address in `acu` to a
-    ///   null-terminated byte run laid out in the string pool).
-    /// - everything else → `print_int` (signed decimal).
+    /// - `char` → `print_char`.
+    /// - `fixed` → `print_fixed`.
+    /// - String literals: per-part emission for interpolations.
+    /// - `str` non-literal → `print_str`.
+    /// - Otherwise → `print_int`.
     fn emitPrintArg(self: *Emitter, arg: *const ast.Expr) !void {
-        // Direct-from-source string literal — emit each part
-        // sequentially. Pure-literal strings short-circuit on the
-        // single-part path below, so the multi-part walk only
-        // runs for actual interpolations.
         if (arg.* == .str_lit) {
             try self.emitPrintStrLit(arg.str_lit);
             return;
@@ -1847,25 +1689,17 @@ pub const Emitter = struct {
         return expr_emit.emitCall(self, c);
     }
 
-    /// An `@inline` def's body may emit at most this many
-    /// bytecode instructions after lowering. Public so
-    /// `codegen/expr.zig:emitCall` can call back into it.
+    /// Max bytecode instructions in an `@inline` body.
     pub const inline_body_instruction_cap: usize = 32;
 
-    /// Hard cap on `@inline` reentrancy depth — every transitive
-    /// inline expansion bumps `inline_depth`; past this we treat
-    /// it as a recursive-inline loop and error out. 8 covers any
-    /// realistic depth without false positives.
+    /// Max `@inline` nesting depth.
     pub const inline_max_depth: u8 = 8;
 
-    /// Splice the `@inline` callee's body into the caller's code
-    /// stream at the current emit position. Skips the call ABI
-    /// entirely — args are evaluated into fresh local slots in the
-    /// caller's frame, params re-bind to those slots, and `return`
-    /// in the body is redirected to a forward jmp to the after-
-    /// inlined-body site (see `emitReturnStmt`). After the body
-    /// emits, decode the spliced bytes to count instructions; over
-    /// the cap → `E_ANN_INLINE_TOO_LARGE`.
+    /// Splice an `@inline` callee's body at the current emit
+    /// position. Args land in fresh locals in the caller's frame;
+    /// `return` in the body redirects to a jmp past the splice.
+    /// Body size capped at `inline_body_instruction_cap` (over →
+    /// `E_ANN_INLINE_TOO_LARGE`).
     pub fn emitInlineCall(
         self: *Emitter,
         callee: *const ast.DefDecl,
@@ -1914,12 +1748,8 @@ pub const Emitter = struct {
         self.inline_returns = std.ArrayList(usize).empty;
         defer self.inline_returns = saved_returns;
 
-        // Closure analysis on the inline body — let / ident /
-        // assign hooks consult it for any nested lambdas the body
-        // declares. Lambdas inside an `@inline` body are
-        // unsupported: their bodies emit alongside the parent def
-        // (which never emits for `@inline`), and their mangled
-        // labels would collide across multiple call sites.
+        // Lambdas inside `@inline` bodies are unsupported
+        // (their mangled labels would collide across call sites).
         const saved_fn_info = self.fn_closure_info;
         defer self.fn_closure_info = saved_fn_info;
         try lambda.analyzeFn(self, callee);
@@ -1977,18 +1807,14 @@ pub const Emitter = struct {
         }
     }
 
-    /// Emit the debug-symbol section:
+    /// Emit the debug-symbol section. Includes resolved fn
+    /// addresses (kind 0) and globals (kind 1). Compiler-internal
+    /// labels are filtered out.
     ///
     /// ```
     /// [u16 symbol_count]
     /// for each: [u16 address][u8 kind][u8 name_len][name bytes]
     /// ```
-    ///
-    /// Includes every resolved fn address (`kind = 0` label) and
-    /// every global (`kind = 1` data). Compiler-internal labels
-    /// (lambda mangles, vtable storage labels) are filtered out —
-    /// the section is human-readable debug metadata, not a private
-    /// dump of every internal symbol.
     pub fn buildDebugSymbolSection(self: *Emitter) ![]u8 {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(self.allocator);
@@ -2022,19 +1848,16 @@ pub const Emitter = struct {
         return out.toOwnedSlice(self.allocator);
     }
 
-    /// Resolve a code offset (inside the active buffer — base or
-    /// the active bank) to its run-time address. Mirrors the
-    /// branch in `emitDefWithLabel` that picks `code_base` vs
-    /// `bank_window_base` based on `current_bank`.
+    /// Resolve a code-buffer offset to its run-time address.
+    /// Picks `bank_window_base` or `code_base` from `current_bank`.
     fn codeOffsetToAddress(self: *const Emitter, offset: usize) u16 {
         // @as: per-buffer offsets stay ≤ 64 KiB by ISA constraint.
         const ofs: u16 = @intCast(offset);
         return if (self.current_bank != null) bank_window_base + ofs else code_base + ofs;
     }
 
-    /// Mutable view into the active code buffer (base or the
-    /// active bank). Used by emit-time patches that rewrite a
-    /// slot the caller emitted moments earlier.
+    /// Mutable view into the active code buffer. Used for emit-
+    /// time slot patches.
     fn currentBufferMut(self: *Emitter) []u8 {
         if (self.current_bank) |b| {
             if (self.banks.getPtr(b)) |bl| return bl.items;
