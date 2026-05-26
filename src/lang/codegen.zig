@@ -1180,12 +1180,9 @@ pub const Emitter = struct {
         return self.emitDefWithLabel(def, kind, name);
     }
 
-    /// Emit a method as a plain def under a mangled label
-    /// (`ClassName.methodName`). The bytecode shape is identical to
-    /// a free fn; only the `fn_addresses` map key differs. Saves +
-    /// restores `current_class_name` around the body emit so
-    /// `super` lookups inside the body resolve to the right
-    /// class's parent.
+    /// Emit a method as a plain def under a mangled
+    /// `ClassName.methodName` label. Threads
+    /// `current_class_name` so `super` resolves correctly.
     pub fn emitMethodAsDef(self: *Emitter, def: *const ast.DefDecl, class_name: []const u8, label: []const u8) !void {
         const saved = self.current_class_name;
         self.current_class_name = class_name;
@@ -1432,11 +1429,6 @@ pub const Emitter = struct {
         return control_flow.emitMatchStmt(self, ms);
     }
 
-    /// Emit a pattern test against the scrutinee. The scrutinee
-    /// is reloaded into `acu` per call — caller is responsible for
-    /// any prelude that needs the same register state. Failures
-    /// emit placeholder jumps and push them onto `skip_patches`;
-    /// the caller resolves all of them to the same post-body offset.
     /// Delegated to `codegen/pattern.zig`.
     fn emitPatternTest(
         self: *Emitter,
@@ -1448,9 +1440,6 @@ pub const Emitter = struct {
         return pattern.emitPatternTest(self, pat, scrutinee_ofs, scrutinee_is_ident, skip_patches);
     }
 
-    /// Lower `target = value`. The target must be an ident that
-    /// resolves to a local, param, or global. Compound `op=`
-    /// forms are not yet supported.
     /// Class name when `e` is a registered class (auto-derefs one
     /// `&T` per spec §3.4.4); otherwise `null`.
     pub fn classNameOf(self: *const Emitter, e: *const ast.Expr) ?[]const u8 {
@@ -1570,13 +1559,9 @@ pub const Emitter = struct {
         }
     }
 
-    /// Emit `mov_imm16_addr <handler_addr>, mem[ivt_base + 2*vec]`
-    /// for every `@interrupt N` handler collected in the pre-pass.
-    /// Handler addresses aren't known yet (their defs emit later),
-    /// so each init slot's imm16 lands in `call_patches` to be
-    /// rewritten once `fn_addresses` is populated. Runs at the top
-    /// of the entry def's body so IVT slots are wired before any
-    /// user code can trigger an interrupt.
+    /// Emit `mov_imm16_addr <handler>, ivt_base + 2*vec` for every
+    /// `@interrupt N` handler. Handler addresses patch later via
+    /// `call_patches`. Runs at the top of the entry body.
     fn emitIvtInit(self: *Emitter) !void {
         for (self.interrupt_defs.items) |handler| {
             try self.emitByte(Op.mov_imm16_addr);
