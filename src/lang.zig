@@ -1,8 +1,3 @@
-/// Gero-lang — high-level language that compiles to gero
-/// bytecode. Public barrel; module internals live under
-/// `src/lang/`.
-///
-/// Per [gero-lang spec](../docs/gero-lang.md).
 const std = @import("std");
 const lexer_mod = @import("lang/lexer.zig");
 const ast_mod = @import("lang/ast.zig");
@@ -15,7 +10,6 @@ const diag_mod = @import("lang/diagnostic.zig");
 const render_mod = @import("lang/render.zig");
 const codegen_mod = @import("lang/codegen.zig");
 
-// Direct submodule imports for the `internal` namespace below.
 const tc_mem_builtin = @import("lang/typecheck/mem_builtin.zig");
 const tc_match = @import("lang/typecheck/match.zig");
 const tc_predicates = @import("lang/typecheck/predicates.zig");
@@ -41,81 +35,74 @@ const cg_isa = @import("lang/codegen/isa.zig");
 
 // ---------- lexer ----------
 
-/// Re-export: lexer token.
+/// Lexer token.
 pub const Token = lexer_mod.Token;
-/// Re-export: lexer output stream.
+/// Lexer output stream.
 pub const TokenStream = lexer_mod.TokenStream;
-/// Re-export: `.gr` tokenizer.
+/// Tokenize `.gr` source.
 pub const tokenize = lexer_mod.tokenize;
 
 // ---------- parser ----------
 
-/// Re-export: AST node types.
+/// AST node types.
 pub const ast = ast_mod;
-/// Re-export: parser output (program + diagnostics).
+/// Parser output: program + diagnostics.
 pub const ParseTree = parser_mod.ParseTree;
-/// Re-export: parse a tokenized source into an `ast.Program`.
+/// Parse tokens into an `ast.Program`.
 pub const parse = parser_mod.parse;
 
-/// Re-export: pretty-print an `ast.Program` to canonical `.gr` text.
+/// Pretty-print an `ast.Program` to canonical `.gr`.
 /// Round-trip safe: `parse(print(parse(s))) == parse(s)`.
 pub const print = print_mod.print;
 
 // ---------- typechecker ----------
 
-/// Re-export: typechecker type representation (`Type`, `Primitive`,
-/// `Array`, etc.).
+/// Typechecker type representation.
 pub const types = types_mod;
-/// Re-export: typechecker scope + symbol-table primitives.
+/// Scope + symbol-table primitives.
 pub const scope = scope_mod;
-/// Re-export: typechecker output (program + diagnostics).
+/// Typechecker output: program + diagnostics.
 pub const CheckedProgram = typecheck_mod.CheckedProgram;
-/// Re-export: walk an `ast.Program` through the typechecker.
+/// Type-check an `ast.Program`.
 pub const typecheck = typecheck_mod.typecheck;
-/// Re-export: `mem.*` stdlib builtin signature (lookup return type).
+/// `mem.*` stdlib builtin signature.
 pub const MemBuiltinSig = tc_mem_builtin.MemBuiltinSig;
-/// Re-export: `mem.X` lookup by builtin name.
+/// Look up a `mem.X` builtin by name.
 pub const lookupMemBuiltin = tc_mem_builtin.lookupMemBuiltin;
-/// Re-export: rich diagnostic shape carried by `CheckedProgram`.
+/// Diagnostic shape carried by `CheckedProgram`.
 pub const Diagnostic = diag_mod.Diagnostic;
-/// Re-export: annotated context span attached to a `Diagnostic`.
+/// Annotated context span on a `Diagnostic`.
 pub const SpanLabel = diag_mod.SpanLabel;
-/// Re-export: severity classification on a `Diagnostic`.
+/// Diagnostic severity.
 pub const Severity = diag_mod.Severity;
-/// Re-export: diagnostic-rendering primitives (pretty + JSON).
-/// Per `docs/lang-diagnostics.md`.
+/// Diagnostic rendering (pretty + JSON). See `docs/lang-diagnostics.md`.
 pub const render = render_mod;
 
 // ---------- codegen ----------
 
-/// Re-export: codegen output (`.gx` image + diagnostics).
+/// Codegen output: `.gx` image + diagnostics.
 pub const Compiled = codegen_mod.Compiled;
-/// Re-export: codegen knobs (`entry_name`, `debug_symbols`,
-/// `optimize`).
+/// Codegen options (`entry_name`, `debug_symbols`, `optimize`).
 pub const CompileOptions = codegen_mod.Options;
-/// Re-export: build-mode selector consumed by `CompileOptions.optimize`.
+/// Build-mode selector for `CompileOptions.optimize`.
 pub const Optimize = codegen_mod.Optimize;
-/// Re-export: errors `compile` can return (host-failure family —
-/// semantic errors land in `Compiled.diagnostics`).
+/// Errors `compile` can return (semantic errors land in `Compiled.diagnostics`).
 pub const CompileError = codegen_mod.CompileError;
-/// Re-export: walk a `CheckedProgram` through codegen to a `.gx`
-/// image.
+/// Compile a `CheckedProgram` to a `.gx` image.
 pub const compile = codegen_mod.compile;
 
 // ---------- bake (compile-time evaluator) ----------
 
-/// Re-export: compile-time evaluator interface per spec §3.8.
-/// `bake def` and `bake do` route through `evaluateDef` /
-/// `evaluateDo`; codegen serializes the returned `BakeValue` into
-/// the data segment.
+/// Compile-time evaluator (spec §3.8).
+/// Routes `bake def` and `bake do` through `evaluateDef` / `evaluateDo`;
+/// codegen serializes the result into the data segment.
 pub const bake = bake_mod;
 
-/// Codegen-namespaced boot-layout constants per ISA §7.
+/// Boot-layout constants (ISA §7).
 pub const codegen = struct {
-    /// IVT base address — first IVT slot.
+    /// First IVT slot address.
     pub const ivt_base = codegen_mod.ivt_base;
-    /// First byte of code emission (above the IVT + low-RAM
-    /// scratch).
+    /// First byte of code emission.
     pub const code_base = codegen_mod.code_base;
     /// First byte of static-data emission.
     pub const data_base = codegen_mod.data_base;
@@ -123,82 +110,66 @@ pub const codegen = struct {
 
 // ---------- internal ----------
 
-/// Submodule seams exposed for mirror-layout test reachability.
-/// **Not** stable consumer API — members under `internal` may
-/// change in any minor bump.
+/// Submodule seams for mirror-layout test reachability.
+/// Not stable consumer API — members may change in any minor bump.
 pub const internal = struct {
-    /// Internal — typecheck submodule seams.
+    /// Typecheck submodule seams.
     pub const typechecker = struct {
-        /// Internal — stateful resolution + inference walker.
+        /// Stateful resolution + inference walker.
         pub const Checker = typecheck_mod.Checker;
-        /// Internal — pure predicates over `types.Type`.
+        /// Pure predicates over `types.Type`.
         pub const predicates = tc_predicates;
-        /// Internal — §3.7 annotation validation pipeline.
+        /// Annotation validation (§3.7).
         pub const annotations = tc_annotations;
-        /// Internal — assignability + cast convertibility relations.
+        /// Assignability + cast convertibility.
         pub const relations = tc_relations;
-        /// Internal — flow-sensitive helpers (ident name, body
-        /// exits, named-type / field finders).
+        /// Flow-sensitive helpers (ident name, body exits, finders).
         pub const flow = tc_flow;
-        /// Internal — `match` exhaustiveness + reachability checks.
+        /// `match` exhaustiveness + reachability.
         pub const match = tc_match;
-        /// Internal — `mem.*` stdlib typecheck dispatch.
+        /// `mem.*` stdlib typecheck dispatch.
         pub const mem_builtin = tc_mem_builtin;
-        /// Internal — "did you mean…?" Levenshtein-based suggestion
-        /// pool helpers (#257).
+        /// "Did you mean…?" Levenshtein-based name suggestions.
         pub const suggestions = tc_suggestions;
-        /// Internal — `ast.TypeAnn` → `types.Type` resolution.
+        /// `ast.TypeAnn` → `types.Type` resolution.
         pub const type_resolve = tc_type_resolve;
-        /// Internal — field + method resolution for struct + class
-        /// types (incl. struct-literal / class-literal field
-        /// validation, constructor-sig synthesis).
+        /// Field + method resolution for structs + classes.
         pub const fields = tc_fields;
-        /// Internal — operator type rules (§4.2.1) + `as T` cast
-        /// checking.
+        /// Operator type rules (§4.2.1) + `as T` cast checking.
         pub const operators = tc_operators;
-        /// Internal — function call type-checking: regular calls,
-        /// `assert` / `debug_assert` builtins, variadic rules
-        /// (§4.6.2), bake-context call rules (§3.8).
+        /// Call type-checking: regular, assert builtins, variadic (§4.6.2), bake (§3.8).
         pub const calls = tc_calls;
     };
 
-    /// Internal — codegen submodule seams.
+    /// Codegen submodule seams.
     pub const codegen = struct {
-        /// Internal — per-fn codegen state (bytecode buffer,
-        /// locals, diagnostic sink).
+        /// Per-fn codegen state (bytecode buffer, locals, diagnostics).
         pub const Emitter = codegen_mod.Emitter;
-        /// Internal — unresolved `call addr` site shape.
+        /// Unresolved `call addr` site.
         pub const CallPatch = codegen_mod.CallPatch;
-        /// Internal — one lexical block tracked at codegen time
-        /// (owns the LIFO `defer` list).
+        /// One lexical block tracked at codegen time (owns LIFO `defer` list).
         pub const Block = codegen_mod.Block;
-        /// Internal — one enclosing loop tracked while emitting the
-        /// body (carries break / continue patches).
+        /// One enclosing loop tracked while emitting the body.
         pub const LoopFrame = codegen_mod.LoopFrame;
-        /// Internal — opcode / register / syscall byte tables
-        /// (mirror of `src/vm/opcodes.zig`).
+        /// Opcode / register / syscall byte tables.
         pub const opcodes = cg_opcodes;
-        /// Internal — `.gx` archive layout + small pure helpers.
+        /// `.gx` archive layout helpers.
         pub const archive = cg_archive;
-        /// Internal — `mem.*` stdlib codegen lowering.
+        /// `mem.*` stdlib codegen lowering.
         pub const mem_builtin = cg_mem_builtin;
-        /// Internal — string literal pool + interpolation lowering.
+        /// String literal pool + interpolation lowering.
         pub const strings = cg_strings;
-        /// Internal — `match` pattern-arm test emission.
+        /// `match` pattern-arm test emission.
         pub const pattern = cg_pattern;
-        /// Internal — expression lowering helpers.
+        /// Expression lowering.
         pub const expr_emit = cg_expr_emit;
-        /// Internal — control-flow lowering (if / while / for /
-        /// match / break / continue / defer).
+        /// Control-flow lowering (if / while / for / match / break / continue / defer).
         pub const control_flow = cg_control_flow;
-        /// Internal — class lowering (vtable + constructor +
-        /// field rw + method dispatch).
+        /// Class lowering (vtable + constructor + field rw + method dispatch).
         pub const class = cg_class;
-        /// Internal — closure lowering (capture analysis, heap
-        /// promotion, lambda body emission, dispatch).
+        /// Closure lowering (capture analysis, heap promotion, dispatch).
         pub const lambda = cg_lambda;
-        /// Internal — ISA-instruction emit helpers (one fn per
-        /// named bytecode op the lang codegen produces).
+        /// ISA-instruction emit helpers.
         pub const isa = cg_isa;
     };
 };
