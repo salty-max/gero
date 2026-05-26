@@ -26,6 +26,7 @@ const tc_suggestions = @import("lang/typecheck/suggestions.zig");
 const tc_type_resolve = @import("lang/typecheck/type_resolve.zig");
 const tc_fields = @import("lang/typecheck/fields.zig");
 const tc_operators = @import("lang/typecheck/operators.zig");
+const tc_calls = @import("lang/typecheck/calls.zig");
 const bake_mod = @import("lang/bake.zig");
 const cg_opcodes = @import("lang/codegen/opcodes.zig");
 const cg_archive = @import("lang/codegen/archive.zig");
@@ -154,6 +155,10 @@ pub const internal = struct {
         /// Internal — operator type rules (§4.2.1) + `as T` cast
         /// checking.
         pub const operators = tc_operators;
+        /// Internal — function call type-checking: regular calls,
+        /// `assert` / `debug_assert` builtins, variadic rules
+        /// (§4.6.2), bake-context call rules (§3.8).
+        pub const calls = tc_calls;
     };
 
     /// Internal — codegen submodule seams.
