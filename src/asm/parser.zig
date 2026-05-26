@@ -229,11 +229,9 @@ fn parseStatement(
 
 // ---------- conditional assembly: ifdef / ifndef / endif ----------
 
-/// Parse `ifdef NAME` or `ifndef NAME`. Side effect: pushes a frame
-/// onto `cond_stack` whose `skipping` reflects the current ConstantTable
-/// lookup result. Nested under an already-skipping outer frame, the
-/// new frame is also `skipping` (so we don't accidentally re-enable
-/// emission inside a dead block).
+/// Parse `ifdef NAME` / `ifndef NAME`. Pushes a frame whose
+/// `skipping` reflects the constant lookup; inherits skipping
+/// from any enclosing dead block.
 fn parseIfDirective(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
@@ -898,11 +896,8 @@ fn parseOrgDecl(
 
 // ---------- bank N / sram_banks N ----------
 
-/// Parse a folded u8 immediately following a keyword. Used by
-/// `bank N` and `sram_banks N`. Frees the expression tree before
-/// returning since the value is the only thing the AST needs.
-/// Returns `null` on parse / eval failure (the diagnostic is
-/// already in `errors`).
+/// Parse a folded `u8` immediately following a keyword. Returns
+/// `null` on parse / eval failure (diagnostic already in `errors`).
 fn parseFoldedU8(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
@@ -973,11 +968,8 @@ fn parseSramBanksDecl(
 
 // ---------- instructions ----------
 
-/// Resolve an identifier lexeme to a `vm.Register` if it names
-/// one. Returns `null` for anything else (which the operand
-/// parser then routes to `.label_ref`). The `vm.Register` enum
-/// is the canonical name → operand-index map for the ISA, so we
-/// reuse it directly here instead of duplicating the table.
+/// Resolve `name` to a `vm.Register`. `null` for non-registers
+/// (the operand parser routes those to `.label_ref`).
 fn parseRegister(name: []const u8) ?vm.Register {
     return std.meta.stringToEnum(vm.Register, name);
 }
@@ -1180,16 +1172,8 @@ fn parseOperand(
     return .{ .immediate = e };
 }
 
-/// `[ ... ]` — either indirect or indexed. The discriminator is
-/// the inner shape:
-///   - single register identifier → indirect
-///   - `<expr> + <reg>` → indexed (form b)
-///
-/// We parse the inner content as one expression. If the top-level
-/// node is `binary(+, lhs, rhs)` and `rhs` is a bare ident that
-/// names a register, it's indexed. If the inner content is just
-/// a bare ident naming a register, it's indirect. Anything else
-/// is a structured error.
+/// `[ ... ]` operand: indirect (`[reg]`) or indexed
+/// (`[expr + reg]`). Discriminator is the inner shape.
 fn parseBracketOperand(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
@@ -1538,12 +1522,8 @@ fn skipSeparators(state: *core.ParseState) void {
     }
 }
 
-/// Same as `skipSeparators` but captures every `;` comment as a
-/// first-class `Statement.comment` and appends it to the program
-/// in parse order. Trailing comments on a statement line surface
-/// as standalone `Comment` statements following the statement
-/// they trailed — the pretty-printer uses span proximity in the
-/// source to recover the "trailing vs standalone" distinction.
+/// Like `skipSeparators` but each `;` comment becomes a
+/// `Statement.comment` appended to the program.
 fn skipSeparatorsCapturingComments(
     state: *core.ParseState,
     statements: *std.ArrayList(ast.Statement),
