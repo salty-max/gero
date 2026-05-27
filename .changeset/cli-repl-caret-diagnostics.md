@@ -31,3 +31,12 @@ parser couldn't see past the first one (recovery skips ahead).
 The canonical multi-line form is what gets committed to the
 session source, so subsequent prompts see valid newline-
 significant gero-lang.
+
+Up / Down arrows now recall previous prompts, shell-style. The
+REPL flips stdin into raw mode while reading each line so it
+can intercept arrow-key escape sequences, and restores cooked
+mode while the compiled program runs. Backspace, Ctrl-C
+(cancel the current line), and Ctrl-D (EOF on empty) all work
+as expected. Non-TTY input (piped scripts, CI captures) falls
+back to the cooked line-buffered reader so test harnesses keep
+working unchanged.
