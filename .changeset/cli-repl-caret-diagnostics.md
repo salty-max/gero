@@ -40,3 +40,10 @@ mode while the compiled program runs. Backspace, Ctrl-C
 as expected. Non-TTY input (piped scripts, CI captures) falls
 back to the cooked line-buffered reader so test harnesses keep
 working unchanged.
+
+Meta-commands drop the leading `.`. `help`, `quit`, `exit`,
+`reset`, and `dump <name>` are now bare keywords — they fit
+the rest of the gero surface (which never starts a statement
+with `.`) and match only when the input is exactly the
+keyword, so a regular `print quit` expression still runs
+through the pipeline.
