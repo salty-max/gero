@@ -111,13 +111,13 @@ const Session = struct {
         if (self.term.color) {
             try self.stdout.print(
                 "\x1b[36;1mgero repl\x1b[0m  \x1b[2mv{s}\x1b[0m\n" ++
-                    "\x1b[2mtype `.help` for commands, `.quit` to leave.\x1b[0m\n\n",
+                    "\x1b[2mtype `help` for commands, `quit` to leave.\x1b[0m\n\n",
                 .{cli.version_string},
             );
         } else {
             try self.stdout.print(
                 "gero repl  v{s}\n" ++
-                    "type `.help` for commands, `.quit` to leave.\n\n",
+                    "type `help` for commands, `quit` to leave.\n\n",
                 .{cli.version_string},
             );
         }
@@ -132,38 +132,41 @@ const Session = struct {
         return if (continuation) "... " else ">>> ";
     }
 
-    /// Dispatch a `.` meta-command. Returns `.quit` on `.quit` /
-    /// `.exit`; otherwise the loop continues.
+    /// Dispatch a REPL meta-command. Returns `.quit` on `quit` /
+    /// `exit`; otherwise the loop continues. Meta-commands match
+    /// only when the input is a bare keyword (or `dump <name>`),
+    /// so a regular `print quit` expression still runs through the
+    /// pipeline.
     fn dispatchMeta(self: *Session, line: []const u8) !MetaOutcome {
         const trimmed = std.mem.trim(u8, line, " \t");
-        if (std.mem.eql(u8, trimmed, ".quit") or std.mem.eql(u8, trimmed, ".exit")) {
+        if (std.mem.eql(u8, trimmed, "quit") or std.mem.eql(u8, trimmed, "exit")) {
             return .quit;
         }
-        if (std.mem.eql(u8, trimmed, ".help")) {
+        if (std.mem.eql(u8, trimmed, "help")) {
             try self.stdout.writeAll(
-                "  .help          — this list\n" ++
-                    "  .quit          — leave the session\n" ++
-                    "  .reset         — drop every binding\n" ++
-                    "  .dump <name>   — print the source of a defined name\n",
+                "  help          — this list\n" ++
+                    "  quit / exit   — leave the session\n" ++
+                    "  reset         — drop every binding\n" ++
+                    "  dump <name>   — print the source of a defined name\n",
             );
             return .continue_loop;
         }
-        if (std.mem.eql(u8, trimmed, ".reset")) {
+        if (std.mem.eql(u8, trimmed, "reset")) {
             self.decls_source.clearRetainingCapacity();
             self.prelude_source.clearRetainingCapacity();
             try self.stdout.writeAll("session reset.\n");
             return .continue_loop;
         }
-        if (std.mem.startsWith(u8, trimmed, ".dump")) {
-            const rest = std.mem.trim(u8, trimmed[5..], " \t");
+        if (startsWithToken(trimmed, "dump")) {
+            const rest = std.mem.trim(u8, trimmed["dump".len..], " \t");
             if (rest.len == 0) {
-                try self.stdout.writeAll("usage: .dump <name>\n");
+                try self.stdout.writeAll("usage: dump <name>\n");
                 return .continue_loop;
             }
             try self.dumpName(rest);
             return .continue_loop;
         }
-        try self.term.err("unknown meta-command `{s}` — try `.help`", .{trimmed});
+        // Unreachable in practice — `isMetaCommand` guards entry.
         return .continue_loop;
     }
 
@@ -721,9 +724,16 @@ fn startsWithToken(s: []const u8, kw: []const u8) bool {
 
 // ---------- meta-command + helpers ----------
 
+/// `true` when the line is one of the bare REPL meta-keywords
+/// (`help`, `quit`, `exit`, `reset`, `dump <name>`). Matches only
+/// when the keyword is the entire input (or `dump <name>` form),
+/// so multi-statement gero code never gets intercepted.
 fn isMetaCommand(line: []const u8) bool {
     const trimmed = std.mem.trim(u8, line, " \t");
-    return trimmed.len > 0 and trimmed[0] == '.';
+    if (trimmed.len == 0) return false;
+    const bare = [_][]const u8{ "help", "quit", "exit", "reset" };
+    for (bare) |kw| if (std.mem.eql(u8, trimmed, kw)) return true;
+    return startsWithToken(trimmed, "dump");
 }
 
 fn matchesIdent(text: []const u8, name: []const u8) bool {
