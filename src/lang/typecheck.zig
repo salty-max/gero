@@ -1549,6 +1549,13 @@ pub const Checker = struct {
             },
             .cast => |c| return try operators.checkCast(self, c),
             .ref_of => |r| return try self.checkRefOf(r),
+            .sizeof => |s| {
+                // `sizeof(T)` resolves T to validate the annotation
+                // is real (so unknown names emit `E_TYPE_UNDEFINED`).
+                // The numeric width is computed at codegen.
+                _ = try type_resolve.resolveType(self, s.type_ann);
+                return try self.primitive(.u16);
+            },
         }
     }
 

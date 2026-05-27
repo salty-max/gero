@@ -146,6 +146,7 @@ pub fn compile(
         .string_patches = .empty,
         .checked = checked,
         .enum_decls = .{},
+        .struct_decls = .{},
         .class_decls = .{},
         .class_layouts = .{},
         .current_class_name = null,
@@ -466,6 +467,9 @@ pub const Emitter = struct {
     /// `enum` decls by name. Used for variant-tag indices,
     /// `is` tests, and `match` patterns.
     enum_decls: std.StringHashMapUnmanaged(*const ast.EnumDecl),
+    /// `struct` decls by name. Used for `sizeof(NamedStruct)`
+    /// width math + future struct-value lowering.
+    struct_decls: std.StringHashMapUnmanaged(*const ast.StructDecl),
     /// `class` decls by name. Used by constructor detection,
     /// vtable lookup, and field / method access.
     class_decls: std.StringHashMapUnmanaged(*const ast.ClassDecl),
@@ -630,9 +634,10 @@ pub const Emitter = struct {
     /// header `entry_point`), then every other top-level `def` in
     /// source order, then patch unresolved call sites.
     fn emitProgram(self: *Emitter, program: *const ast.Program, entry_name: []const u8) !void {
-        // Pre-pass 0: index top-level enum decls so variant-tag
-        // lookups during expr / pattern emission resolve cheaply.
+        // Pre-pass 0: index top-level enum + struct decls so
+        // variant-tag and sizeof lookups resolve cheaply.
         try self.collectEnumDecls(program);
+        try self.collectStructDecls(program);
         // Pre-pass 0b: index top-level class decls + compute
         // per-class layouts (with parent-chain resolution for
         // inherited fields + methods). Vtables emit later, once
@@ -735,6 +740,20 @@ pub const Emitter = struct {
                 const name = self.source[ed.name.start..ed.name.end];
                 const dup = try self.arena.dupe(u8, name);
                 try self.enum_decls.put(self.arena, dup, &stmt.enum_decl);
+            },
+            else => {},
+        };
+    }
+
+    /// Pre-pass: index every top-level `struct` decl by name so
+    /// `widthOfTypeAnn` / `sizeof` can compute the byte size of
+    /// a named struct (sum of field sizes).
+    fn collectStructDecls(self: *Emitter, program: *const ast.Program) !void {
+        for (program.statements) |*stmt| switch (stmt.*) {
+            .struct_decl => |sd| {
+                const name = self.source[sd.name.start..sd.name.end];
+                const dup = try self.arena.dupe(u8, name);
+                try self.struct_decls.put(self.arena, dup, &stmt.struct_decl);
             },
             else => {},
         };
@@ -1134,8 +1153,9 @@ pub const Emitter = struct {
     }
 
     /// Byte width of a type annotation: 1 for `i8`/`u8`/`bool`/
-    /// `char`, 2 for 16-bit primitives + references + named types,
-    /// sum-of-elements for tuples + arrays.
+    /// `char`, 2 for 16-bit primitives + references + class names
+    /// (which use a 2-byte instance pointer), sum-of-fields for
+    /// named structs, sum-of-elements for tuples + arrays.
     pub fn widthOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) u16 {
         return switch (t) {
             .named => |n| blk: {
@@ -1146,6 +1166,13 @@ pub const Emitter = struct {
                     std.mem.eql(u8, name, "char"))
                 {
                     break :blk 1;
+                }
+                // Named struct → sum of field sizes (recursive).
+                // Class names stay at 2 (instance-pointer width).
+                if (self.struct_decls.get(name)) |sd| {
+                    var total: u16 = 0;
+                    for (sd.fields) |f| total +%= self.widthOfTypeAnn(f.type_ann.*);
+                    break :blk total;
                 }
                 break :blk 2;
             },

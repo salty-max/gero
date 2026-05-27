@@ -368,6 +368,7 @@ fn parsePrimary(p: *Parser) ParserError!*ast.Expr {
         .lbracket => return try parseListLit(p),
         .kw_do => return try parseDoExpr(p),
         .kw_bake => return try parseBakeExpr(p),
+        .kw_sizeof => return try parseSizeofExpr(p),
         .kw_if => return try parseIfExpr(p),
         .kw_lambda => return try parseLambda(p),
         // Short lambda form `|x| expr`, `|x, y| expr`, `|| expr`.
@@ -620,6 +621,24 @@ pub fn parseBakeDoExpr(p: *Parser, bake_start: u32) ParserError!*ast.Expr {
 /// `bake do … end` in expression position — e.g. `const X = bake do
 /// … end`. Only `bake do` is accepted here; `bake def` lives at
 /// statement position only.
+/// `sizeof(T)` — compile-time byte width of a type. The arg slot
+/// is a type annotation (not an expression), parsed via the
+/// regular `type_ann.parseTypeAnn` path so all type forms (named,
+/// array, tuple, etc.) work.
+fn parseSizeofExpr(p: *Parser) ParserError!*ast.Expr {
+    const sizeof_tok = p.peek();
+    p.pos += 1; // consume `sizeof`
+    _ = try p.expect(.lparen, "(");
+    const type_mod = @import("type_ann.zig");
+    const type_ann = try type_mod.parseTypeAnn(p);
+    errdefer ast.freeTypeAnn(p.allocator, type_ann);
+    const close = try p.expect(.rparen, ")");
+    return try p.allocExpr(.{ .sizeof = .{
+        .type_ann = type_ann,
+        .span = .{ .start = sizeof_tok.start, .end = close.end },
+    } });
+}
+
 fn parseBakeExpr(p: *Parser) ParserError!*ast.Expr {
     const bake_tok = p.peek();
     p.pos += 1; // consume `bake`
