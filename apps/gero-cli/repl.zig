@@ -2,6 +2,7 @@ const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
+const line_editor = @import("line_editor.zig");
 
 /// Drive `gero repl` end-to-end. Returns the exit code per the
 /// loop's terminating reason — `0` on clean `.quit` / EOF.
@@ -17,47 +18,48 @@ pub fn execute(
 
     try session.banner();
 
+    var editor = line_editor.Editor.init(arena, io, stdout);
+    defer editor.deinit();
+
     var pending = std.ArrayList(u8).empty;
     defer pending.deinit(arena);
-    var line_buf = std.ArrayList(u8).empty;
-    defer line_buf.deinit(arena);
-
-    // Stdin reader — same pattern as `gero fmt --stdin` (fmt.zig).
-    var stdin_buf: [256]u8 = undefined;
-    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buf);
-    const stdin = &stdin_reader.interface;
 
     while (true) {
-        try session.prompt(pending.items.len > 0);
-        // Flush the prompt synchronously so users see it before
-        // their typing lands on the same line.
-        try stdout.flush();
-        line_buf.clearRetainingCapacity();
-        const eof = try readLine(stdin, arena, &line_buf);
-        if (eof) {
-            try stdout.writeAll("\n");
-            return 0;
+        const prompt_text = session.promptText(pending.items.len > 0);
+        const action = try editor.readLine(prompt_text);
+        switch (action) {
+            .eof => return 0,
+            .cancel => {
+                // Ctrl-C: drop any pending multi-line accumulation
+                // and prompt fresh.
+                pending.clearRetainingCapacity();
+                continue;
+            },
+            .submit => |line| {
+                try editor.pushHistory(line);
+
+                // Meta-commands fire only when we're not mid-block;
+                // otherwise the `.help` text would land inside the
+                // user's pending def body and confuse the parser.
+                if (pending.items.len == 0 and isMetaCommand(line)) {
+                    switch (try session.dispatchMeta(line)) {
+                        .quit => return 0,
+                        .continue_loop => continue,
+                    }
+                }
+
+                try pending.appendSlice(arena, line);
+                try pending.append(arena, '\n');
+
+                if (!blockBalanced(pending.items)) continue;
+
+                // Restore the cooked terminal while the program runs
+                // so its own stdout / signals behave normally.
+                editor.restoreTerminal();
+                try session.evaluate(pending.items);
+                pending.clearRetainingCapacity();
+            },
         }
-
-        const line = line_buf.items;
-
-        // Meta-commands fire only when we're not mid-block;
-        // otherwise the `.help` text would land inside the user's
-        // pending def body and confuse the parser later.
-        if (pending.items.len == 0 and isMetaCommand(line)) {
-            switch (try session.dispatchMeta(line)) {
-                .quit => return 0,
-                .continue_loop => continue,
-            }
-        }
-
-        try pending.appendSlice(arena, line);
-        try pending.append(arena, '\n');
-
-        if (!blockBalanced(pending.items)) continue;
-
-        try session.evaluate(pending.items);
-        pending.clearRetainingCapacity();
     }
 }
 
@@ -121,12 +123,13 @@ const Session = struct {
         }
     }
 
-    fn prompt(self: *Session, continuation: bool) !void {
+    /// Prompt text to print before each input line. Caller writes
+    /// it to stdout (or hands it to the line editor for redraw).
+    fn promptText(self: *Session, continuation: bool) []const u8 {
         if (self.term.color) {
-            try self.stdout.writeAll(if (continuation) "\x1b[2m...\x1b[0m " else "\x1b[36;1m>>>\x1b[0m ");
-        } else {
-            try self.stdout.writeAll(if (continuation) "... " else ">>> ");
+            return if (continuation) "\x1b[2m...\x1b[0m " else "\x1b[36;1m>>>\x1b[0m ";
         }
+        return if (continuation) "... " else ">>> ";
     }
 
     /// Dispatch a `.` meta-command. Returns `.quit` on `.quit` /
@@ -762,20 +765,6 @@ fn printSourceBlock(stdout: *std.Io.Writer, source: []const u8, hit: usize) !voi
     }
     try stdout.writeAll(source[hit..]);
     try stdout.writeByte('\n');
-}
-
-// ---------- stdin reader ----------
-
-fn readLine(reader: *std.Io.Reader, arena: std.mem.Allocator, out: *std.ArrayList(u8)) !bool {
-    while (true) {
-        const byte = reader.takeByte() catch |err| switch (err) {
-            error.EndOfStream => return out.items.len == 0,
-            else => return err,
-        };
-        if (byte == '\n') return false;
-        if (byte == '\r') continue;
-        try out.append(arena, byte);
-    }
 }
 
 // ---------- tests ----------
