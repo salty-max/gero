@@ -106,11 +106,27 @@ const Session = struct {
     }
 
     fn banner(self: *Session) !void {
-        try self.stdout.print("gero repl — v{s} (type `.help`, `.quit` to leave)\n", .{cli.version_string});
+        if (self.term.color) {
+            try self.stdout.print(
+                "\x1b[36;1mgero repl\x1b[0m  \x1b[2mv{s}\x1b[0m\n" ++
+                    "\x1b[2mtype `.help` for commands, `.quit` to leave.\x1b[0m\n\n",
+                .{cli.version_string},
+            );
+        } else {
+            try self.stdout.print(
+                "gero repl  v{s}\n" ++
+                    "type `.help` for commands, `.quit` to leave.\n\n",
+                .{cli.version_string},
+            );
+        }
     }
 
     fn prompt(self: *Session, continuation: bool) !void {
-        try self.stdout.writeAll(if (continuation) "... " else ">>> ");
+        if (self.term.color) {
+            try self.stdout.writeAll(if (continuation) "\x1b[2m...\x1b[0m " else "\x1b[36;1m>>>\x1b[0m ");
+        } else {
+            try self.stdout.writeAll(if (continuation) "... " else ">>> ");
+        }
     }
 
     /// Dispatch a `.` meta-command. Returns `.quit` on `.quit` /
@@ -222,21 +238,24 @@ const Session = struct {
             },
         );
 
+        var diags: std.ArrayList(gero.lang.Diagnostic) = .empty;
+
         var stream = gero.lang.tokenize(sa, source) catch {
             try self.term.err("repl: tokenizer failure", .{});
             return;
         };
         defer stream.deinit();
+        for (stream.errors) |e| try appendParseError(sa, &diags, e);
 
         var tree = gero.lang.parse(sa, source, stream) catch {
             try self.term.err("repl: parse failure", .{});
             return;
         };
         defer tree.deinit();
-        if (tree.errors.len > 0) {
-            for (tree.errors) |e| {
-                try self.term.err("parse: {s}", .{e.message});
-            }
+        for (tree.errors) |e| try appendParseError(sa, &diags, e);
+
+        if (diags.items.len > 0) {
+            try self.renderDiagnostics(source, diags.items);
             return;
         }
 
@@ -245,8 +264,9 @@ const Session = struct {
             return;
         };
         defer checked.deinit();
+        for (checked.diagnostics) |d| try diags.append(sa, d);
         if (checked.hasErrors()) {
-            try self.renderLangDiagnostics(source, checked.diagnostics);
+            try self.renderDiagnostics(source, diags.items);
             return;
         }
 
@@ -255,10 +275,14 @@ const Session = struct {
             return;
         };
         defer compiled.deinit();
+        for (compiled.diagnostics) |d| try diags.append(sa, d);
         if (compiled.hasErrors()) {
-            for (compiled.diagnostics) |d| try self.term.err("codegen: {s} [{s}]", .{ d.message, d.code });
+            try self.renderDiagnostics(source, diags.items);
             return;
         }
+
+        // Warnings (no fatal) — show them, but proceed to run.
+        if (diags.items.len > 0) try self.renderDiagnostics(source, diags.items);
 
         // All clean — boot a VM, run until halt / fault, capture
         // print syscalls into our stdout.
@@ -337,21 +361,15 @@ const Session = struct {
         return false;
     }
 
-    /// Format every lang diagnostic onto the REPL's stderr. Bare
-    /// formatting — full caret rendering is overkill for an
-    /// interactive prompt where the source is right above.
-    fn renderLangDiagnostics(self: *Session, source: []const u8, diags: []const gero.lang.Diagnostic) !void {
-        for (diags) |d| {
-            const lc = gero.lang.render.lineColAt(source, d.span.start);
-            // `term.err` already writes the `error:` prefix; we
-            // append the rendered line / column + diagnostic
-            // body without re-prefixing.
-            switch (d.severity) {
-                .fatal => try self.term.err("{d}:{d}: {s} [{s}]", .{ lc.line, lc.col, d.message, d.code }),
-                .warning => try self.term.info("warning {d}:{d}: {s} [{s}]", .{ lc.line, lc.col, d.message, d.code }),
-                .note => try self.term.info("note {d}:{d}: {s} [{s}]", .{ lc.line, lc.col, d.message, d.code }),
-            }
-        }
+    /// Render diagnostics with caret-style snippets via
+    /// `gero.lang.render.prettyOne`. Paths show as `<repl>`.
+    fn renderDiagnostics(self: *Session, source: []const u8, diags: []const gero.lang.Diagnostic) !void {
+        const style: gero.lang.render.Style = if (self.term.color) .ansi else .none;
+        try gero.lang.render.prettyOne(self.stdout, .{
+            .path = "<repl>",
+            .source = source,
+            .diagnostics = diags,
+        }, style);
     }
 
     /// Boot a fresh VM on the compiled image and run until halt
@@ -385,6 +403,27 @@ const Session = struct {
         try self.stdout.flush();
     }
 };
+
+// ---------- diagnostic glue ----------
+
+/// Convert a knit `core.ParseError` (from lexer / parser) into the
+/// `Diagnostic` shape the renderer expects. The `expected` field
+/// doubles as the diagnostic code (`E_SYNTAX_*` per
+/// `docs/lang-diagnostics.md`); falls back to `E_SYNTAX_GENERIC`.
+fn appendParseError(
+    sa: std.mem.Allocator,
+    out: *std.ArrayList(gero.lang.Diagnostic),
+    e: anytype,
+) !void {
+    // safety: ParseError.index fits in u32 — bounded by input size.
+    const idx: u32 = @intCast(e.index);
+    try out.append(sa, .{
+        .severity = .fatal,
+        .code = e.expected orelse "E_SYNTAX_GENERIC",
+        .message = try sa.dupe(u8, e.message),
+        .span = .{ .start = idx, .end = idx },
+    });
+}
 
 // ---------- lex-only block balance ----------
 
@@ -700,6 +739,35 @@ test "repl/startsWithToken: distinguishes prefix from identifier" {
     try testing.expect(startsWithToken("let x = 10", "let"));
     try testing.expect(!startsWithToken("letter", "let"));
     try testing.expect(startsWithToken("let", "let"));
+}
+
+test "repl/appendParseError: uses `expected` field as diagnostic code" {
+    var diags: std.ArrayList(gero.lang.Diagnostic) = .empty;
+    defer diags.deinit(testing.allocator);
+    try appendParseError(testing.allocator, &diags, .{
+        .index = 7,
+        .message = "expected expression",
+        .expected = @as(?[]const u8, "E_SYNTAX_MISSING_TOKEN"),
+    });
+    try testing.expectEqual(@as(usize, 1), diags.items.len);
+    try testing.expectEqualStrings("E_SYNTAX_MISSING_TOKEN", diags.items[0].code);
+    try testing.expectEqualStrings("expected expression", diags.items[0].message);
+    try testing.expectEqual(@as(u32, 7), diags.items[0].span.start);
+    try testing.expectEqual(@as(u32, 7), diags.items[0].span.end);
+    // appendParseError dupes the message string; free it.
+    testing.allocator.free(diags.items[0].message);
+}
+
+test "repl/appendParseError: falls back to E_SYNTAX_GENERIC when expected is null" {
+    var diags: std.ArrayList(gero.lang.Diagnostic) = .empty;
+    defer diags.deinit(testing.allocator);
+    try appendParseError(testing.allocator, &diags, .{
+        .index = 0,
+        .message = "weird input",
+        .expected = @as(?[]const u8, null),
+    });
+    try testing.expectEqualStrings("E_SYNTAX_GENERIC", diags.items[0].code);
+    testing.allocator.free(diags.items[0].message);
 }
 
 test "repl/looksLikeMainBodyStatement: recognizes the body shapes" {
