@@ -10,6 +10,12 @@ spans (e.g. "expected `bool` because of this annotation") show
 under the offending line. Warnings render but no longer block
 the session — the program still runs.
 
+Diagnostic spans translate back to the user's literal input so
+the snippet shows exactly what the user typed — no synthetic
+`__repl_main` wrapper, no auto-`print` prefix, line numbers
+relative to the input. Diagnostics whose spans fall outside the
+new input are filtered.
+
 Banner + prompt picked up a touch of color: bold cyan `gero
 repl` heading, dim version line, bold cyan `>>>` prompt, dim
 `...` continuation. All ANSI escapes gate on the existing

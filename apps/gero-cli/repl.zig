@@ -238,6 +238,18 @@ const Session = struct {
             },
         );
 
+        // Where the user-typed bytes land inside `source` — used to
+        // translate diagnostic spans back to `new_input` so the
+        // renderer shows the user's input, not the synthetic
+        // wrapper / auto-`print` prefix.
+        const wrapper_prefix = "\ndef __repl_main()\n";
+        const user_start: usize = switch (kind) {
+            .decl => self.decls_source.items.len,
+            .prelude => self.decls_source.items.len + wrapper_prefix.len + self.prelude_source.items.len,
+            .body => self.decls_source.items.len + wrapper_prefix.len + self.prelude_source.items.len + (body_input.len - new_input.len),
+        };
+        const view: UserView = .{ .source = new_input, .start_in_synth = user_start };
+
         var diags: std.ArrayList(gero.lang.Diagnostic) = .empty;
 
         var stream = gero.lang.tokenize(sa, source) catch {
@@ -255,7 +267,7 @@ const Session = struct {
         for (tree.errors) |e| try appendParseError(sa, &diags, e);
 
         if (diags.items.len > 0) {
-            try self.renderDiagnostics(source, diags.items);
+            try self.renderDiagnostics(view, diags.items, sa);
             return;
         }
 
@@ -266,7 +278,7 @@ const Session = struct {
         defer checked.deinit();
         for (checked.diagnostics) |d| try diags.append(sa, d);
         if (checked.hasErrors()) {
-            try self.renderDiagnostics(source, diags.items);
+            try self.renderDiagnostics(view, diags.items, sa);
             return;
         }
 
@@ -277,12 +289,12 @@ const Session = struct {
         defer compiled.deinit();
         for (compiled.diagnostics) |d| try diags.append(sa, d);
         if (compiled.hasErrors()) {
-            try self.renderDiagnostics(source, diags.items);
+            try self.renderDiagnostics(view, diags.items, sa);
             return;
         }
 
         // Warnings (no fatal) — show them, but proceed to run.
-        if (diags.items.len > 0) try self.renderDiagnostics(source, diags.items);
+        if (diags.items.len > 0) try self.renderDiagnostics(view, diags.items, sa);
 
         // All clean — boot a VM, run until halt / fault, capture
         // print syscalls into our stdout.
@@ -362,13 +374,26 @@ const Session = struct {
     }
 
     /// Render diagnostics with caret-style snippets via
-    /// `gero.lang.render.prettyOne`. Paths show as `<repl>`.
-    fn renderDiagnostics(self: *Session, source: []const u8, diags: []const gero.lang.Diagnostic) !void {
+    /// `gero.lang.render.prettyOne`. Spans are translated from
+    /// the synthetic source back into the user's literal input so
+    /// the snippet shows what the user actually typed; diagnostics
+    /// whose primary span falls outside `view.source` are dropped.
+    fn renderDiagnostics(
+        self: *Session,
+        view: UserView,
+        diags: []const gero.lang.Diagnostic,
+        sa: std.mem.Allocator,
+    ) !void {
+        var visible: std.ArrayList(gero.lang.Diagnostic) = .empty;
+        for (diags) |d| {
+            if (translateDiag(d, view, sa)) |td| try visible.append(sa, td) else |_| {}
+        }
+        if (visible.items.len == 0) return;
         const style: gero.lang.render.Style = if (self.term.color) .ansi else .none;
         try gero.lang.render.prettyOne(self.stdout, .{
             .path = "<repl>",
-            .source = source,
-            .diagnostics = diags,
+            .source = view.source,
+            .diagnostics = visible.items,
         }, style);
     }
 
@@ -406,6 +431,15 @@ const Session = struct {
 
 // ---------- diagnostic glue ----------
 
+/// Where the user's literal input lives inside the synthetic
+/// source. Spans on diagnostics index into the synthetic source;
+/// translating them by `start_in_synth` reprojects onto `source`
+/// so the renderer shows what the user typed.
+const UserView = struct {
+    source: []const u8,
+    start_in_synth: usize,
+};
+
 /// Convert a knit `core.ParseError` (from lexer / parser) into the
 /// `Diagnostic` shape the renderer expects. The `expected` field
 /// doubles as the diagnostic code (`E_SYNTAX_*` per
@@ -423,6 +457,50 @@ fn appendParseError(
         .message = try sa.dupe(u8, e.message),
         .span = .{ .start = idx, .end = idx },
     });
+}
+
+/// Reproject `d`'s spans from synthetic-source coordinates onto
+/// `view.source`. Returns `error.OutOfRange` when the primary
+/// span doesn't fall inside the user's input — the caller drops
+/// the diagnostic in that case. Secondary spans that fall outside
+/// are silently filtered.
+fn translateDiag(
+    d: gero.lang.Diagnostic,
+    view: UserView,
+    sa: std.mem.Allocator,
+) !gero.lang.Diagnostic {
+    const primary = translateSpan(d.span, view) orelse return error.OutOfRange;
+    var secondary: []const gero.lang.SpanLabel = &.{};
+    if (d.secondary.len > 0) {
+        var kept: std.ArrayList(gero.lang.SpanLabel) = .empty;
+        for (d.secondary) |s| {
+            if (translateSpan(s.span, view)) |ts| {
+                try kept.append(sa, .{ .span = ts, .message = s.message, .decoration = s.decoration });
+            }
+        }
+        secondary = try kept.toOwnedSlice(sa);
+    }
+    return .{
+        .severity = d.severity,
+        .code = d.code,
+        .message = d.message,
+        .span = primary,
+        .help = d.help,
+        .secondary = secondary,
+    };
+}
+
+fn translateSpan(span: anytype, view: UserView) ?@TypeOf(span) {
+    // safety: spans are byte offsets into synthetic source; `start_in_synth`
+    // is bounded by the same buffer length so subtraction stays in usize range.
+    const start_synth: usize = span.start;
+    const end_synth: usize = span.end;
+    if (start_synth < view.start_in_synth) return null;
+    const start = start_synth - view.start_in_synth;
+    const end = if (end_synth < view.start_in_synth) start else end_synth - view.start_in_synth;
+    if (start > view.source.len or end > view.source.len) return null;
+    // @as: spans use u32 — translated offsets stay bounded by user input length.
+    return .{ .start = @intCast(start), .end = @intCast(end) };
 }
 
 // ---------- lex-only block balance ----------
@@ -756,6 +834,26 @@ test "repl/appendParseError: uses `expected` field as diagnostic code" {
     try testing.expectEqual(@as(u32, 7), diags.items[0].span.end);
     // appendParseError dupes the message string; free it.
     testing.allocator.free(diags.items[0].message);
+}
+
+test "repl/translateSpan: shifts spans by user_start" {
+    const view: UserView = .{ .source = "in x", .start_in_synth = 27 };
+    const span = gero.lang.ast.Span{ .start = 27, .end = 31 };
+    const out = translateSpan(span, view).?;
+    try testing.expectEqual(@as(u32, 0), out.start);
+    try testing.expectEqual(@as(u32, 4), out.end);
+}
+
+test "repl/translateSpan: rejects spans before user input" {
+    const view: UserView = .{ .source = "x", .start_in_synth = 20 };
+    const span = gero.lang.ast.Span{ .start = 5, .end = 6 };
+    try testing.expect(translateSpan(span, view) == null);
+}
+
+test "repl/translateSpan: rejects spans past user input" {
+    const view: UserView = .{ .source = "x", .start_in_synth = 20 };
+    const span = gero.lang.ast.Span{ .start = 22, .end = 25 };
+    try testing.expect(translateSpan(span, view) == null);
 }
 
 test "repl/appendParseError: falls back to E_SYNTAX_GENERIC when expected is null" {
