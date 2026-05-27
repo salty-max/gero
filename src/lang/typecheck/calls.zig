@@ -25,6 +25,9 @@ pub fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) Walk
         if (isAssertBuiltinName(callee_name)) {
             return try checkAssertBuiltin(self, c, callee_name);
         }
+        if (isDivergeBuiltinName(callee_name)) {
+            return try checkDivergeBuiltin(self, c, callee_name);
+        }
     }
     // Abstract-class instantiation: `ClassName(args)` where
     // `ClassName` is abstract is rejected.
@@ -141,6 +144,65 @@ pub fn checkAssertBuiltin(
         };
     }
     return try self.primitive(.nil_);
+}
+
+/// Type-check `panic(msg)` / `unreachable()` / `todo(msg?)`.
+/// All three diverge — they halt the VM. Returns `nil` so they
+/// flow in any statement position (including `match` bail arms).
+///
+/// - `panic(msg: str)` — exactly 1 arg, must be `str`.
+/// - `unreachable()` — exactly 0 args.
+/// - `todo(msg: str?)` — 0 or 1 arg; arg must be `str`.
+pub fn checkDivergeBuiltin(
+    self: *Checker,
+    c: ast.CallExpr,
+    name: []const u8,
+) WalkError!?*const types.Type {
+    const is_unreachable = std.mem.eql(u8, name, name_unreachable);
+    const is_panic = std.mem.eql(u8, name, "panic");
+    const is_todo = std.mem.eql(u8, name, "todo");
+
+    if (is_unreachable) {
+        if (c.args.len != 0) {
+            try self.emitSpan(
+                "E_ASSERT_ARG_COUNT",
+                c.span,
+                arg_count_msg_unreachable,
+            );
+            for (c.args) |a| _ = try self.inferExpr(a, null);
+        }
+    } else if (is_panic) {
+        if (c.args.len != 1) {
+            try self.emitSpan(
+                "E_ASSERT_ARG_COUNT",
+                c.span,
+                "`panic` takes exactly 1 argument (msg)",
+            );
+            for (c.args) |a| _ = try self.inferExpr(a, null);
+        } else {
+            try checkStrArg(self, c.args[0]);
+        }
+    } else if (is_todo) {
+        if (c.args.len > 1) {
+            try self.emitSpan(
+                "E_ASSERT_ARG_COUNT",
+                c.span,
+                "`todo` takes 0 or 1 arguments (msg?)",
+            );
+            for (c.args) |a| _ = try self.inferExpr(a, null);
+        } else if (c.args.len == 1) {
+            try checkStrArg(self, c.args[0]);
+        }
+    }
+    return try self.primitive(.nil_);
+}
+
+fn checkStrArg(self: *Checker, arg: *const ast.Expr) WalkError!void {
+    const str_ty = try self.primitive(.str);
+    const got = try self.inferExpr(arg, str_ty);
+    if (got != null and !relations.assignable(got.?.*, str_ty.*)) {
+        try self.emitMismatch(arg.span(), str_ty, got.?);
+    }
 }
 
 /// Verify a `def`'s param list places the (optional) variadic
@@ -272,6 +334,20 @@ fn variadicCalleeDecl(c: *const Checker, callee: *const ast.Expr) ?*const ast.De
 fn isAssertBuiltinName(name: []const u8) bool {
     return std.mem.eql(u8, name, "assert") or std.mem.eql(u8, name, "debug_assert");
 }
+
+/// `true` when `name` is one of the always-in-scope diverging
+/// builtins per spec §5.3. Recognized at call sites before any
+/// generic callee resolution.
+fn isDivergeBuiltinName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "panic") or
+        std.mem.eql(u8, name, name_unreachable) or
+        std.mem.eql(u8, name, "todo");
+}
+
+// allow-strict: gero builtin name; Zig keyword sense doesn't apply on this line.
+const name_unreachable: []const u8 = "unreachable";
+// allow-strict: arg-count diagnostic text printed when the `unreachable` builtin is called wrong.
+const arg_count_msg_unreachable: []const u8 = "`unreachable` takes no arguments";
 
 /// `true` when `e` contains a `CallExpr` anywhere in its sub-tree.
 /// Used as a side-effect proxy for the

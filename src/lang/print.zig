@@ -825,6 +825,11 @@ const Printer = struct {
                 try self.writeExpr(r.inner, .unary);
                 if (need_parens) try self.writer.writeByte(')');
             },
+            .sizeof => |s| {
+                try self.writer.writeAll("sizeof(");
+                try self.writeTypeAnn(s.type_ann);
+                try self.writer.writeByte(')');
+            },
         }
     }
 

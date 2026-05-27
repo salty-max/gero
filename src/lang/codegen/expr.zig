@@ -5,6 +5,7 @@ const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const archive = @import("archive.zig");
 const assert_builtin = @import("assert.zig");
+const diverge_builtin = @import("diverge.zig");
 const class = @import("class.zig");
 const lambda = @import("lambda.zig");
 const overflow = @import("overflow.zig");
@@ -99,6 +100,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .is_test => |it| try emitIsTest(self, it),
         .ref_of => |r| try self.emitAddrOf(r.inner),
         .cast => |c| try emitExpr(self, c.inner), // same-width primitives share a bit pattern, so the cast is a no-op
+        .sizeof => |s| try isa.movImmToReg(self, self.widthOfTypeAnn(s.type_ann.*), Reg.acu),
         else => try self.unsupported(e.span(), "this expression form"),
     }
 }
@@ -490,6 +492,10 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         // top-level def behind them.
         if (assert_builtin.isAssertBuiltin(callee_name)) {
             try assert_builtin.emitAssertCall(self, c, callee_name);
+            return;
+        }
+        if (diverge_builtin.isDivergeBuiltin(callee_name)) {
+            try diverge_builtin.emitDivergeCall(self, c, callee_name);
             return;
         }
         if (class.isClassName(self, callee_name)) {

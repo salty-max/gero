@@ -118,6 +118,10 @@ pub const Token = struct {
         /// `do`-block (§3.8). Evaluated by the bake interpreter at
         /// compile time; result lowered to static data.
         kw_bake,
+        /// `sizeof` — compile-time byte width of a type
+        /// annotation (§5.3). `sizeof(T)` resolves to a `u16`
+        /// literal at codegen.
+        kw_sizeof,
 
         // -- punctuation --------------------------------------
         newline,
@@ -272,6 +276,7 @@ const keyword_table = [_]KeywordEntry{
     .{ .lex = "defer", .kind = .kw_defer },
     .{ .lex = "asm", .kind = .kw_asm },
     .{ .lex = "bake", .kind = .kw_bake },
+    .{ .lex = "sizeof", .kind = .kw_sizeof },
 };
 
 /// Lookup `name` (already lowercase per the identifier rule) in

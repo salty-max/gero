@@ -371,6 +371,9 @@ pub const Expr = union(enum) {
     /// be a place expression (ident / field / index); the
     /// typechecker rejects `&(a+b)` and similar temporaries.
     ref_of: RefOfExpr,
+    /// `sizeof(T)` — compile-time byte width of a type annotation.
+    /// Folds to a `u16` literal at codegen.
+    sizeof: SizeofExpr,
 
     /// Smallest `Span` covering the whole expression.
     pub fn span(self: Expr) Span {
@@ -400,6 +403,7 @@ pub const Expr = union(enum) {
             .is_test => |e| e.span,
             .cast => |e| e.span,
             .ref_of => |e| e.span,
+            .sizeof => |e| e.span,
         };
     }
 };
@@ -683,6 +687,14 @@ pub const CastExpr = struct {
 /// per §3.4.4.
 pub const RefOfExpr = struct {
     inner: *Expr,
+    span: Span,
+};
+
+/// `sizeof(T)` — compile-time byte width of a type annotation.
+/// Resolves to a `u16` literal at codegen; never emits a runtime
+/// call.
+pub const SizeofExpr = struct {
+    type_ann: *TypeAnn,
     span: Span,
 };
 
@@ -1358,6 +1370,7 @@ pub fn freeExpr(allocator: std.mem.Allocator, e: *Expr) void {
             freeTypeAnn(allocator, c.target_type);
         },
         .ref_of => |r| freeExpr(allocator, r.inner),
+        .sizeof => |s| freeTypeAnn(allocator, s.type_ann),
     }
     allocator.destroy(e);
 }
