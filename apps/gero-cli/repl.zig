@@ -213,14 +213,22 @@ const Session = struct {
         defer scratch.deinit();
         const sa = scratch.allocator();
 
-        const kind = try self.classifyForRoute(sa, stripped);
+        // The lang is newline-significant: statements terminate on
+        // `\n`. A single-line REPL submit like `def add(x,y) return
+        // x + y end` would parse-fail with "expected newline" at
+        // every statement boundary. Pre-pass the input alone and
+        // inject `\n` at each missing-boundary site so common
+        // one-liners work without forcing the user to multi-line.
+        const fixed_input = try fixupNewlines(sa, new_input);
 
-        const decl_input: []const u8 = if (kind == .decl) new_input else "";
+        const kind = try self.classifyForRoute(sa, std.mem.trim(u8, fixed_input, " \t\n"));
+
+        const decl_input: []const u8 = if (kind == .decl) fixed_input else "";
         const body_input: []const u8 = if (kind == .body)
-            try self.maybeWrapInPrint(sa, new_input)
+            try self.maybeWrapInPrint(sa, fixed_input)
         else
             "";
-        const prelude_extra: []const u8 = if (kind == .prelude) new_input else "";
+        const prelude_extra: []const u8 = if (kind == .prelude) fixed_input else "";
 
         // Candidate source = committed decls + new decl +
         // `__repl_main { prelude + new_prelude + body_input }`.
@@ -239,16 +247,17 @@ const Session = struct {
         );
 
         // Where the user-typed bytes land inside `source` — used to
-        // translate diagnostic spans back to `new_input` so the
+        // translate diagnostic spans back to `fixed_input` so the
         // renderer shows the user's input, not the synthetic
-        // wrapper / auto-`print` prefix.
+        // wrapper / auto-`print` prefix. `fixed_input` is the
+        // newline-normalized form; spans translate cleanly into it.
         const wrapper_prefix = "\ndef __repl_main()\n";
         const user_start: usize = switch (kind) {
             .decl => self.decls_source.items.len,
             .prelude => self.decls_source.items.len + wrapper_prefix.len + self.prelude_source.items.len,
-            .body => self.decls_source.items.len + wrapper_prefix.len + self.prelude_source.items.len + (body_input.len - new_input.len),
+            .body => self.decls_source.items.len + wrapper_prefix.len + self.prelude_source.items.len + (body_input.len - fixed_input.len),
         };
-        const view: UserView = .{ .source = new_input, .start_in_synth = user_start };
+        const view: UserView = .{ .source = fixed_input, .start_in_synth = user_start };
 
         var diags: std.ArrayList(gero.lang.Diagnostic) = .empty;
 
@@ -428,6 +437,64 @@ const Session = struct {
         try self.stdout.flush();
     }
 };
+
+// ---------- newline fixup ----------
+
+/// Pre-parse `input` alone and inject `\n` at every position the
+/// parser flagged with "expected newline or end-of-input". Lets
+/// REPL one-liners like `def add(x,y) return x + y end` succeed
+/// without the user having to type each statement on its own line.
+/// Returns `input` unchanged when:
+/// - it already contains an internal `\n` (caller is multi-lining),
+/// - tokenize / parse fail outright (likely a different problem),
+/// - no missing-newline errors fire,
+/// - any non-newline parse error is also present (the rewrite
+///   would mask the real bug).
+fn fixupNewlines(sa: std.mem.Allocator, input: []const u8) ![]const u8 {
+    const trailing = input.len > 0 and input[input.len - 1] == '\n';
+    const body = if (trailing) input[0 .. input.len - 1] else input;
+    if (std.mem.indexOfScalar(u8, body, '\n') != null) return input;
+
+    var stream = gero.lang.tokenize(sa, input) catch return input;
+    defer stream.deinit();
+    if (stream.errors.len > 0) return input;
+
+    var tree = gero.lang.parse(sa, input, stream) catch return input;
+    defer tree.deinit();
+    if (tree.errors.len == 0) return input;
+
+    // Collect every missing-newline position. Other parse errors
+    // can co-occur as recovery noise (e.g. a cascading "expected
+    // `end`" after the parser skipped past one) — those aren't a
+    // reason to abandon the rewrite; the post-rewrite parse will
+    // surface real problems if any remain.
+    var positions: std.ArrayList(usize) = .empty;
+    for (tree.errors) |e| {
+        if (isMissingNewlineMsg(e.message)) try positions.append(sa, e.index);
+    }
+    if (positions.items.len == 0) return input;
+
+    // Dedupe + sort descending so earlier inserts don't shift
+    // later positions.
+    std.mem.sort(usize, positions.items, {}, std.sort.desc(usize));
+    var write: usize = 1;
+    for (positions.items[1..]) |p| {
+        if (p != positions.items[write - 1]) {
+            positions.items[write] = p;
+            write += 1;
+        }
+    }
+    positions.shrinkRetainingCapacity(write);
+
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(sa, input);
+    for (positions.items) |p| try out.insert(sa, p, '\n');
+    return try out.toOwnedSlice(sa);
+}
+
+fn isMissingNewlineMsg(msg: []const u8) bool {
+    return std.mem.indexOf(u8, msg, "expected newline") != null;
+}
 
 // ---------- diagnostic glue ----------
 
@@ -834,6 +901,35 @@ test "repl/appendParseError: uses `expected` field as diagnostic code" {
     try testing.expectEqual(@as(u32, 7), diags.items[0].span.end);
     // appendParseError dupes the message string; free it.
     testing.allocator.free(diags.items[0].message);
+}
+
+test "repl/fixupNewlines: expands a one-line def into multi-line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const out = try fixupNewlines(arena.allocator(), "def add(x, y) return x + y end\n");
+    try testing.expect(std.mem.indexOfScalar(u8, out, '\n') != null);
+    // Re-parse the rewritten input — it should now succeed.
+    var stream = try gero.lang.tokenize(arena.allocator(), out);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(arena.allocator(), out, stream);
+    defer tree.deinit();
+    try testing.expectEqual(@as(usize, 0), tree.errors.len);
+}
+
+test "repl/fixupNewlines: leaves multi-line input untouched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const input = "def add(x, y)\n  return x + y\nend\n";
+    const out = try fixupNewlines(arena.allocator(), input);
+    try testing.expectEqual(input.ptr, out.ptr);
+}
+
+test "repl/fixupNewlines: leaves clean single-line input untouched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const input = "let x = 42\n";
+    const out = try fixupNewlines(arena.allocator(), input);
+    try testing.expectEqual(input.ptr, out.ptr);
 }
 
 test "repl/translateSpan: shifts spans by user_start" {

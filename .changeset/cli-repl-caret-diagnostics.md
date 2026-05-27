@@ -20,3 +20,10 @@ Banner + prompt picked up a touch of color: bold cyan `gero
 repl` heading, dim version line, bold cyan `>>>` prompt, dim
 `...` continuation. All ANSI escapes gate on the existing
 color-detection flow, so non-TTY output stays plain.
+
+One-liner submissions like `def add(x, y) return x + y end`
+now work: the REPL pre-parses the input, finds every "expected
+newline" boundary the parser flags, and injects `\n` in-place
+before the main pipeline runs. The canonical multi-line form
+is what gets committed to the session source, so subsequent
+prompts see valid newline-significant gero-lang.
