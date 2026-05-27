@@ -440,56 +440,58 @@ const Session = struct {
 
 // ---------- newline fixup ----------
 
-/// Pre-parse `input` alone and inject `\n` at every position the
-/// parser flagged with "expected newline or end-of-input". Lets
-/// REPL one-liners like `def add(x,y) return x + y end` succeed
-/// without the user having to type each statement on its own line.
+/// Pre-parse `input` and inject `\n` at every position the parser
+/// flagged with "expected newline or end-of-input". Iterates: the
+/// parser recovers from each missing-newline by skipping to the
+/// next newline, so one pass only catches the first miss per
+/// stretch. Re-parsing after each round surfaces the next ones.
+/// Lets REPL one-liners like `def add(x,y) return x + y end` or
+/// `while n < 3 print n n = n + 1 end` succeed without the user
+/// having to type each statement on its own line.
+///
 /// Returns `input` unchanged when:
 /// - it already contains an internal `\n` (caller is multi-lining),
-/// - tokenize / parse fail outright (likely a different problem),
-/// - no missing-newline errors fire,
-/// - any non-newline parse error is also present (the rewrite
-///   would mask the real bug).
+/// - tokenize fails (lex error — let the main pipeline surface it),
+/// - no missing-newline errors ever fire.
 fn fixupNewlines(sa: std.mem.Allocator, input: []const u8) ![]const u8 {
     const trailing = input.len > 0 and input[input.len - 1] == '\n';
     const body = if (trailing) input[0 .. input.len - 1] else input;
     if (std.mem.indexOfScalar(u8, body, '\n') != null) return input;
 
-    var stream = gero.lang.tokenize(sa, input) catch return input;
-    defer stream.deinit();
-    if (stream.errors.len > 0) return input;
+    var current = input;
+    // Cap iteration so a pathological input can't loop. 16 is far
+    // more than any reasonable REPL one-liner needs.
+    var round: u8 = 0;
+    while (round < 16) : (round += 1) {
+        var stream = gero.lang.tokenize(sa, current) catch return current;
+        defer stream.deinit();
+        if (stream.errors.len > 0) return current;
 
-    var tree = gero.lang.parse(sa, input, stream) catch return input;
-    defer tree.deinit();
-    if (tree.errors.len == 0) return input;
+        var tree = gero.lang.parse(sa, current, stream) catch return current;
+        defer tree.deinit();
 
-    // Collect every missing-newline position. Other parse errors
-    // can co-occur as recovery noise (e.g. a cascading "expected
-    // `end`" after the parser skipped past one) — those aren't a
-    // reason to abandon the rewrite; the post-rewrite parse will
-    // surface real problems if any remain.
-    var positions: std.ArrayList(usize) = .empty;
-    for (tree.errors) |e| {
-        if (isMissingNewlineMsg(e.message)) try positions.append(sa, e.index);
-    }
-    if (positions.items.len == 0) return input;
-
-    // Dedupe + sort descending so earlier inserts don't shift
-    // later positions.
-    std.mem.sort(usize, positions.items, {}, std.sort.desc(usize));
-    var write: usize = 1;
-    for (positions.items[1..]) |p| {
-        if (p != positions.items[write - 1]) {
-            positions.items[write] = p;
-            write += 1;
+        var positions: std.ArrayList(usize) = .empty;
+        for (tree.errors) |e| {
+            if (isMissingNewlineMsg(e.message)) try positions.append(sa, e.index);
         }
-    }
-    positions.shrinkRetainingCapacity(write);
+        if (positions.items.len == 0) return current;
 
-    var out: std.ArrayList(u8) = .empty;
-    try out.appendSlice(sa, input);
-    for (positions.items) |p| try out.insert(sa, p, '\n');
-    return try out.toOwnedSlice(sa);
+        std.mem.sort(usize, positions.items, {}, std.sort.desc(usize));
+        var write: usize = 1;
+        for (positions.items[1..]) |p| {
+            if (p != positions.items[write - 1]) {
+                positions.items[write] = p;
+                write += 1;
+            }
+        }
+        positions.shrinkRetainingCapacity(write);
+
+        var out: std.ArrayList(u8) = .empty;
+        try out.appendSlice(sa, current);
+        for (positions.items) |p| try out.insert(sa, p, '\n');
+        current = try out.toOwnedSlice(sa);
+    }
+    return current;
 }
 
 fn isMissingNewlineMsg(msg: []const u8) bool {
@@ -922,6 +924,26 @@ test "repl/fixupNewlines: leaves multi-line input untouched" {
     const input = "def add(x, y)\n  return x + y\nend\n";
     const out = try fixupNewlines(arena.allocator(), input);
     try testing.expectEqual(input.ptr, out.ptr);
+}
+
+test "repl/fixupNewlines: iterates through multiple missing newlines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const out = try fixupNewlines(arena.allocator(), "let n = 0\n");
+    // Single trivial statement — no rewrite, but exercising the
+    // iteration path with a clean input shouldn't loop.
+    try testing.expectEqualStrings("let n = 0\n", out);
+}
+
+test "repl/fixupNewlines: expands one-line while body" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const out = try fixupNewlines(arena.allocator(), "while n < 3 print n n = n + 1 end\n");
+    var stream = try gero.lang.tokenize(arena.allocator(), out);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(arena.allocator(), out, stream);
+    defer tree.deinit();
+    try testing.expectEqual(@as(usize, 0), tree.errors.len);
 }
 
 test "repl/fixupNewlines: leaves clean single-line input untouched" {

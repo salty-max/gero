@@ -21,9 +21,13 @@ repl` heading, dim version line, bold cyan `>>>` prompt, dim
 `...` continuation. All ANSI escapes gate on the existing
 color-detection flow, so non-TTY output stays plain.
 
-One-liner submissions like `def add(x, y) return x + y end`
-now work: the REPL pre-parses the input, finds every "expected
-newline" boundary the parser flags, and injects `\n` in-place
-before the main pipeline runs. The canonical multi-line form
-is what gets committed to the session source, so subsequent
-prompts see valid newline-significant gero-lang.
+One-liner submissions like `def add(x, y) return x + y end`,
+`while n < 3 print n n = n + 1 end`, `if x > 0 print "pos" end`,
+or `for i in 0..5 print i end` now work: the REPL iteratively
+pre-parses the input, finds every "expected newline" boundary
+the parser flags, and injects `\n` in-place before the main
+pipeline runs. Re-parsing between passes catches boundaries the
+parser couldn't see past the first one (recovery skips ahead).
+The canonical multi-line form is what gets committed to the
+session source, so subsequent prompts see valid newline-
+significant gero-lang.
