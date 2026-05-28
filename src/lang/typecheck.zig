@@ -941,7 +941,7 @@ pub const Checker = struct {
             // `if expr is Class as h` — the binding `h` is in scope
             // for THIS arm's body, typed as the target class.
             const is_binding: ?ast.IsTestExpr.ClassTypeProbe = if (arm.cond) |c|
-                extractIsBinding(c)
+                (if (c.* == .is_test) c.is_test.classBinding() else null)
             else
                 null;
             try self.walkArmBodyWithIsBinding(arm.body, is_binding);
@@ -1884,19 +1884,6 @@ fn isReservedBuiltinName(name: []const u8) bool {
     };
     for (reserved) |kw| if (std.mem.eql(u8, name, kw)) return true;
     return false;
-}
-
-// ---------- is-test helpers ----------
-
-/// `is ClassName as h` — return the probe payload when the cond
-/// is a class-type `is_test` carrying a binding. `null` for all
-/// other shapes (variant test, no binding, non-`is_test`).
-fn extractIsBinding(cond: *const ast.Expr) ?ast.IsTestExpr.ClassTypeProbe {
-    if (cond.* != .is_test) return null;
-    return switch (cond.is_test.kind) {
-        .class_type => |probe| if (probe.binding != null) probe else null,
-        else => null,
-    };
 }
 
 // ---------- place expression check ----------

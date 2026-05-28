@@ -43,4 +43,10 @@ end
 Casing convention disambiguates from the regular cast operator:
 lowercase post-`as` ident → binding; uppercase → `as T` cast.
 
+**Public AST shape changed.** `IsTestExpr.variant_path: Span`
+becomes `IsTestExpr.kind: Kind`, where `Kind` is a tagged
+union of `.variant: Span` and `.class_type: ClassTypeProbe`.
+Downstream consumers reading `.variant_path` directly need to
+match on `.kind` instead. Pre-1.0 minor bump.
+
 Closes #294.

@@ -138,16 +138,6 @@ pub fn emitIfStmt(self: *Emitter, is_: ast.IfStmt) !void {
     for (end_patches.items) |p| try isa.patchJumpTo(self, p, end_offset);
 }
 
-/// `is ClassName as binding` cond — return the probe so
-/// `emitIsClassBindingTest` can wire the binding into a local.
-fn extractIsClassBindingCond(c: *const ast.Expr) ?ast.IsTestExpr.ClassTypeProbe {
-    if (c.* != .is_test) return null;
-    return switch (c.is_test.kind) {
-        .class_type => |probe| if (probe.binding != null) probe else null,
-        else => null,
-    };
-}
-
 /// Lower `if expr is ClassName as h ...`. Evaluates the receiver
 /// once, parks the instance pointer in a fresh local bound to
 /// `h`, then compares the vtable pointer. The local stays live
@@ -187,7 +177,9 @@ fn emitIsClassBindingTest(
 /// right after the body.
 fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
     if (arm.cond) |c| {
-        if (extractIsClassBindingCond(c)) |bind| return try emitIsClassBindingTest(self, c, bind);
+        if (c.* == .is_test) if (c.is_test.classBinding()) |probe| {
+            return try emitIsClassBindingTest(self, c, probe);
+        };
         try self.emitCondBranch(c);
         return try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     }
