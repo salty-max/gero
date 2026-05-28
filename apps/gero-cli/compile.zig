@@ -3,6 +3,7 @@ const gero = @import("gero");
 const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
 const footer = @import("footer.zig");
+const manifest_loader = @import("manifest_loader.zig");
 
 /// Run `gero compile <file.gr>` end-to-end:
 /// resolve `use "..."` imports → tokenize → parse → typecheck →
@@ -98,7 +99,11 @@ pub fn execute(
     if (checked.diagnostics.len > 0) try renderLangDiagnostics(stdout, arena, fused, checked.diagnostics, style);
     if (compiled.diagnostics.len > 0) try renderLangDiagnostics(stdout, arena, fused, compiled.diagnostics, style);
 
-    const out_path = try resolveOutputPath(io, arena, src_path, opts.out);
+    const out_path = resolveOutputPath(io, arena, term, src_path, opts.out, opts.optimize) catch |err| switch (err) {
+        error.ManifestFailed => return 3,
+        error.CreateDirFailed => return 1,
+        else => |e| return e,
+    };
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = compiled.image }) catch |err| {
         try term.err("gero compile: cannot write {s} ({s})", .{ out_path, @errorName(err) });
         return 1;
@@ -251,12 +256,22 @@ fn renderIncludeErrors(
     try renderLangDiagnostics(stdout, arena, fused, diags_list.items, style);
 }
 
-/// Resolve the `.gx` output path from `--out` plus the source.
+/// Resolve the `.gx` output path. Precedence:
+/// 1. `--out <path>` — explicit user flag wins.
+/// 2. `gero.toml` in the cwd's ancestor chain — `<root>/<[build].out>/<optimize>/<basename>.gx`.
+/// 3. Sibling default — next to the source.
+///
+/// Returns `error.ManifestFailed` (after printing via `term`) when
+/// a manifest exists but is unreadable / malformed — silently
+/// falling back to the sibling default in that case would mask the
+/// real configuration error.
 fn resolveOutputPath(
     io: std.Io,
     arena: std.mem.Allocator,
+    term: *term_mod.Term,
     src_path: []const u8,
     out_opt: ?[]const u8,
+    cli_optimize: cli.Optimize,
 ) ![]const u8 {
     const base = try gxBasename(arena, src_path);
     if (out_opt) |out| {
@@ -264,6 +279,32 @@ fn resolveOutputPath(
             return std.fs.path.join(arena, &.{ out, base });
         }
         return arena.dupe(u8, out);
+    }
+    switch (try manifest_loader.load(io, arena, term, "gero compile")) {
+        .ok => |loaded| {
+            var manifest = loaded.manifest;
+            defer manifest.deinit(arena);
+            const out_root = try manifest_loader.joinUnderRoot(arena, loaded.project_root, manifest.build.out);
+            // CLI's `--optimize` overrides the manifest's
+            // `[build].optimize` — explicit user intent at the
+            // call site beats the project default.
+            const opt_name: []const u8 = switch (cli_optimize) {
+                .debug => "debug",
+                .release => "release",
+                .size => "size",
+            };
+            const out_dir = try std.fs.path.join(arena, &.{ out_root, opt_name });
+            // Create the per-profile dir up front. `createDirPath`
+            // is idempotent and only walked for the manifest layout
+            // — `--out` paths stay the user's responsibility.
+            std.Io.Dir.cwd().createDirPath(io, out_dir) catch |err| {
+                try term.err("gero compile: cannot create {s} ({s})", .{ out_dir, @errorName(err) });
+                return error.CreateDirFailed;
+            };
+            return try std.fs.path.join(arena, &.{ out_dir, base });
+        },
+        .not_found => {},
+        .failed => return error.ManifestFailed,
     }
     const dir = std.fs.path.dirname(src_path) orelse "";
     if (dir.len == 0) return base;
