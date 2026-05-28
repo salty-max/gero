@@ -811,6 +811,24 @@ Struct receivers reject with `E_TYPE_IS_NON_DYNAMIC` — structs
 have no runtime type identity (no vtable). Use an `enum` with a
 tag if you need a discriminated value.
 
+**Guarded downcast — `is X as h`.** When the `is` test is the
+cond of an `if` arm, an optional `as <ident>` binds the
+receiver under the new name *inside the arm*, typed as the
+target class:
+
+```
+def report(a: Animal)
+  if a is Dog as d
+    d.bark()          -- d: Dog in this arm
+  end
+end
+```
+
+The binding is parsed only when the post-`as` ident starts with
+a lowercase letter (casing convention from §2.3) — uppercase
+RHS still binds to the regular `as T` cast. Outside the `if`-arm
+body, `h` is not in scope.
+
 ### 3.7 Annotations
 
 `@`-prefixed directives that decorate the declaration on the next
@@ -2260,6 +2278,11 @@ both are built-in pseudo-functions:
 assert(self.hp >= 0, "hp went negative")        -- always live
 debug_assert(items.len() < 1000)                -- debug-only
 ```
+
+All always-in-scope builtin names are reserved — declaring
+`def panic`, `let assert = …`, etc. emits `E_BUILTIN_SHADOW`.
+`sizeof` is a keyword and rejected by the parser before the
+shadow check ever runs.
 
 Four more diverging / introspection builtins are always in scope:
 

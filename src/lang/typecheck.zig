@@ -579,6 +579,15 @@ pub const Checker = struct {
         name: []const u8,
         info: scope_mod.SymbolInfo,
     ) WalkError!void {
+        if (isReservedBuiltinName(name)) {
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "cannot shadow always-in-scope builtin `{s}`",
+                .{name},
+            );
+            try self.emitSpan("E_BUILTIN_SHADOW", info.decl_span, msg);
+            return;
+        }
         self.current_scope.define(name, info) catch |err| switch (err) {
             error.AlreadyDefined => {
                 const existing = self.current_scope.lookupLocal(name).?;
@@ -929,7 +938,13 @@ pub const Checker = struct {
             else
                 null;
             const added = if (arm_gain) |n| try self.pushNonNil(n) else false;
-            try self.walkInScope(arm.body);
+            // `if expr is Class as h` — the binding `h` is in scope
+            // for THIS arm's body, typed as the target class.
+            const is_binding: ?ast.IsTestExpr.ClassTypeProbe = if (arm.cond) |c|
+                extractIsBinding(c)
+            else
+                null;
+            try self.walkArmBodyWithIsBinding(arm.body, is_binding);
             if (added) self.popNonNil(arm_gain.?);
         }
 
@@ -944,6 +959,34 @@ pub const Checker = struct {
             try self.walkInScope(eb);
             if (added) self.popNonNil(else_gain.?);
         }
+    }
+
+    /// Walk an `if` arm body, optionally pushing an `is X as h`
+    /// binding into the arm's child scope. The binding's type is
+    /// the named class — typically a subclass of the receiver,
+    /// safe to use as that subclass for the duration of the body.
+    fn walkArmBodyWithIsBinding(
+        self: *Checker,
+        body: []const ast.Statement,
+        probe: ?ast.IsTestExpr.ClassTypeProbe,
+    ) WalkError!void {
+        if (probe == null or probe.?.binding == null) {
+            try self.walkInScope(body);
+            return;
+        }
+        const saved = self.current_scope;
+        var child: Scope = .init(self.arena, saved);
+        self.current_scope = &child;
+        defer self.current_scope = saved;
+        const class_name = self.lexeme(probe.?.class_name);
+        const bind_name = self.lexeme(probe.?.binding.?);
+        const ty = try types.mkNamed(self.arena, class_name, probe.?.class_name);
+        try self.registerName(bind_name, .{
+            .kind = .let_binding,
+            .decl_span = probe.?.binding.?,
+            .ty = ty,
+        });
+        try self.walkStatementSequence(body);
     }
 
     fn checkWhile(self: *Checker, ws: ast.WhileStmt) WalkError!void {
@@ -1611,11 +1654,11 @@ pub const Checker = struct {
         const bool_ty = try self.primitive(.bool_);
         switch (it.kind) {
             .variant => return bool_ty,
-            .class_type => |class_span| {
-                const class_name = self.lexeme(class_span);
+            .class_type => |probe| {
+                const class_name = self.lexeme(probe.class_name);
                 if (!self.class_registry.contains(class_name)) {
                     const msg = try std.fmt.allocPrint(self.arena, "undefined class `{s}`", .{class_name});
-                    try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED", class_span, msg, try self.suggestTypeName(class_name));
+                    try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED", probe.class_name, msg, try self.suggestTypeName(class_name));
                     return bool_ty;
                 }
                 const recv = lhs_ty orelse return bool_ty;
@@ -1822,6 +1865,38 @@ fn anyExprMentions(c: *const Checker, exprs: []const *ast.Expr, name: []const u8
 fn structLitMentions(c: *const Checker, lit_fields: []const ast.StructLitField, name: []const u8) bool {
     for (lit_fields) |f| if (c.exprMentions(f.value, name)) return true;
     return false;
+}
+
+// ---------- builtin name reservation ----------
+
+/// `true` when `name` is an always-in-scope builtin per spec §5.3.
+/// User declarations matching these names get `E_BUILTIN_SHADOW`.
+/// `sizeof` is a keyword and rejected by the parser before reaching
+/// here.
+fn isReservedBuiltinName(name: []const u8) bool {
+    const reserved = [_][]const u8{
+        "assert",
+        "debug_assert",
+        "panic",
+        // allow-strict: lang builtin name; the Zig keyword sense doesn't apply on this line.
+        "unreachable",
+        "todo",
+    };
+    for (reserved) |kw| if (std.mem.eql(u8, name, kw)) return true;
+    return false;
+}
+
+// ---------- is-test helpers ----------
+
+/// `is ClassName as h` — return the probe payload when the cond
+/// is a class-type `is_test` carrying a binding. `null` for all
+/// other shapes (variant test, no binding, non-`is_test`).
+fn extractIsBinding(cond: *const ast.Expr) ?ast.IsTestExpr.ClassTypeProbe {
+    if (cond.* != .is_test) return null;
+    return switch (cond.is_test.kind) {
+        .class_type => |probe| if (probe.binding != null) probe else null,
+        else => null,
+    };
 }
 
 // ---------- place expression check ----------

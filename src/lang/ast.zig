@@ -677,12 +677,19 @@ pub const IsTestExpr = struct {
 
     /// The RHS shape of an `is` test, picked at parse time from
     /// whether the parser saw a qualified `Enum.Variant` path or
-    /// a bare `ClassName`.
+    /// a bare `ClassName` (optionally with `as <ident>` for
+    /// guarded downcast).
     pub const Kind = union(enum) {
         /// `Enum.Variant` — span covers both segments.
         variant: Span,
-        /// `ClassName` — span over the class name ident.
-        class_type: Span,
+        /// `ClassName [as binding]` — class-type probe.
+        class_type: ClassTypeProbe,
+    };
+
+    /// `is ClassName [as binding]` payload.
+    pub const ClassTypeProbe = struct {
+        class_name: Span,
+        binding: ?Span = null,
     };
 };
 

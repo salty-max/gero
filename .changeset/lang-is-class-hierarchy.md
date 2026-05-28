@@ -28,8 +28,19 @@ Also adds class-subtype assignability so `report(Dog())` /
 `let a: Animal = Dog()` work. Without this, every typed binding
 was its exact class and `is` had no runtime case to fire on.
 
-The `is X as binding` shape for guarded downcast is deferred to
-a follow-up — the bare bool form is the minimum viable starting
-point.
+Guarded downcast — `is ClassName as <ident>` — binds the
+receiver under the new name inside the surrounding `if` arm,
+typed as the target class:
+
+```
+def report(a: Animal)
+  if a is Dog as d
+    d.bark()           -- d: Dog in this arm
+  end
+end
+```
+
+Casing convention disambiguates from the regular cast operator:
+lowercase post-`as` ident → binding; uppercase → `as T` cast.
 
 Closes #294.
