@@ -69,10 +69,16 @@ gero asm hello.gas --optimize=release
 
 Compiles a single gero-lang module (and its imports) into a `.gx`.
 
-**Default output:** `<basename>.gx`.
+**Default output** — precedence:
+1. `--out <path>` — explicit wins.
+2. `gero.toml` in an ancestor of the cwd — writes to
+   `<project_root>/<[build].out>/<optimize>/<basename>.gx`
+   (mirrors `gero build`'s Cargo-style layout). A malformed
+   manifest exits 3 rather than silently falling back.
+3. Sibling default — `<basename>.gx` next to the source.
 
 ```bash
-gero compile main.gr            # → main.gx
+gero compile main.gr                       # manifest or sibling
 gero compile main.gr -o game.gx --optimize=release
 ```
 
@@ -82,7 +88,8 @@ gero compile main.gr -o game.gx --optimize=release
   bytecode directly (no asm intermediate — speed).
 - Same error format as `gero asm`.
 
-**Exit:** 0 on success; 3 on parse error; 4 on type error.
+**Exit:** 0 on success; 3 on parse error or malformed manifest;
+4 on type error.
 
 ### 3.3 `gero run <file.gx>` — execute
 

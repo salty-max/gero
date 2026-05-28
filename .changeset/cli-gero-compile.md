@@ -4,8 +4,12 @@ bump: minor
 
 `gero compile <file.gr>` is wired end-to-end: resolves `use
 "..."` imports, tokenizes, parses, type-checks, lowers, writes
-a `.gx` archive next to the source (or to `--out <path>` when
-given).
+a `.gx` archive. Output precedence: `--out <path>` wins; else
+`<project_root>/<[build].out>/<optimize>/<basename>.gx` when a
+`gero.toml` exists in an ancestor (mirrors `gero build`'s
+Cargo-style layout, creates the profile dir on demand); else
+sibling-default next to the source. A malformed manifest exits 3
+rather than silently falling back.
 
 Multi-file is real — `use "./util"` recursively loads each
 referenced `.gr` (with `.gr` extension auto-added when missing),
