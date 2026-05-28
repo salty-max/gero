@@ -40,6 +40,12 @@ pub fn execute(
     var vm = gero.vm.VM.init(allocator);
     defer vm.deinit();
     try vm.boot(allocator, loaded);
+    // Route lang `print` (`sys print_str` / `print_int` /
+    // `print_char` / `print_newline`) through stdout. The asm-
+    // level `int $10` syscall is intercepted below regardless;
+    // wiring host.out makes `.gx` images produced by
+    // `gero compile` runnable end-to-end.
+    vm.host = .{ .out = stdout };
 
     while (true) {
         const ip = vm.regs.read(.ip);
