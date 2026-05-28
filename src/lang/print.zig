@@ -807,7 +807,10 @@ const Printer = struct {
                 if (need_parens) try self.writer.writeByte('(');
                 try self.writeExpr(it.lhs, .is_test);
                 try self.writer.writeAll(" is ");
-                try self.writer.writeAll(self.lexeme(it.variant_path));
+                switch (it.kind) {
+                    .variant => |path| try self.writer.writeAll(self.lexeme(path)),
+                    .class_type => |class_span| try self.writer.writeAll(self.lexeme(class_span)),
+                }
                 if (need_parens) try self.writer.writeByte(')');
             },
             .cast => |c| {

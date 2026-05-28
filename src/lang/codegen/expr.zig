@@ -159,24 +159,52 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
     try self.unsupported(e.span(), "non-enum field access");
 }
 
-/// Lower `expr is EnumName.Variant`. Evaluates `expr` into
-/// `acu`, compares against the variant's tag, materializes a
-/// `0` / `1` bool.
+/// Lower an `is` test. Two shapes:
+/// - `expr is Enum.Variant` — compares the tag in `acu` against
+///   the variant's compile-time tag.
+/// - `expr is ClassName` — loads the instance's vtable pointer
+///   and compares against the (patch-resolved) address of
+///   `ClassName`'s vtable.
 pub fn emitIsTest(self: *Emitter, it: ast.IsTestExpr) !void {
-    const path = self.source[it.variant_path.start..it.variant_path.end];
-    const dot = std.mem.indexOfScalar(u8, path, '.') orelse {
-        try self.diagFatal(it.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: `is` rhs must be `EnumName.Variant`");
-        return;
-    };
-    const enum_name = path[0..dot];
-    const variant_name = path[dot + 1 ..];
-    const tag = self.variantTag(enum_name, variant_name) orelse {
-        try self.diagFatal(it.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant in `is` test");
-        return;
-    };
-    try emitExpr(self, it.lhs);
-    try isa.cmpRegImm(self, Reg.acu, tag);
-    try materializeBoolFromFlags(self, .eq);
+    switch (it.kind) {
+        .variant => |path_span| {
+            const path = self.source[path_span.start..path_span.end];
+            const dot = std.mem.indexOfScalar(u8, path, '.') orelse {
+                try self.diagFatal(it.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: `is` rhs must be `EnumName.Variant`");
+                return;
+            };
+            const enum_name = path[0..dot];
+            const variant_name = path[dot + 1 ..];
+            const tag = self.variantTag(enum_name, variant_name) orelse {
+                try self.diagFatal(it.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant in `is` test");
+                return;
+            };
+            try emitExpr(self, it.lhs);
+            try isa.cmpRegImm(self, Reg.acu, tag);
+            try materializeBoolFromFlags(self, .eq);
+        },
+        .class_type => |class_span| {
+            const class_name = self.source[class_span.start..class_span.end];
+            // Eval receiver → acu = instance pointer.
+            try emitExpr(self, it.lhs);
+            // Load vtable pointer (first word of instance) into r1.
+            try self.emitByte(Op.mov_ptr_to_reg);
+            try self.emitByte(Reg.r1); // dst
+            try self.emitByte(Reg.acu); // ptr
+            // `cmp r1, <vtable_addr>` — the imm16 slot is patched
+            // by `class.patchVtableSlots` after `emitVtables` runs.
+            try self.emitByte(Op.cmp_reg_imm16);
+            try self.emitByte(Reg.r1);
+            const patch_offset = try self.currentOffset();
+            try self.emitU16Le(0);
+            try self.vtable_patches.append(self.allocator, .{
+                .bank = self.current_bank,
+                .code_offset = patch_offset,
+                .class_name = try self.arena.dupe(u8, class_name),
+            });
+            try materializeBoolFromFlags(self, .eq);
+        },
+    }
 }
 
 /// Lower a unary prefix expression.
