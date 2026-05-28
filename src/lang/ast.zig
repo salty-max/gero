@@ -691,6 +691,16 @@ pub const IsTestExpr = struct {
         class_name: Span,
         binding: ?Span = null,
     };
+
+    /// `is ClassName as <ident>` — return the probe payload when
+    /// this test carries a binding. `null` for variant tests and
+    /// for bare-bool class probes.
+    pub fn classBinding(self: IsTestExpr) ?ClassTypeProbe {
+        return switch (self.kind) {
+            .class_type => |probe| if (probe.binding != null) probe else null,
+            else => null,
+        };
+    }
 };
 
 /// `inner as T` — explicit type conversion.

@@ -589,11 +589,8 @@ pub const Emitter = struct {
                     if (a.let_pattern) |p| n += countBindingsInPattern(p.*);
                     // `if expr is Class as h` — `h` parks the
                     // instance pointer in a fresh local slot.
-                    if (a.cond) |c| if (c.* == .is_test) switch (c.is_test.kind) {
-                        .class_type => |probe| if (probe.binding != null) {
-                            n += 1;
-                        },
-                        else => {},
+                    if (a.cond) |c| if (c.* == .is_test and c.is_test.classBinding() != null) {
+                        n += 1;
                     };
                     n += self.countLocalsInBody(a.body);
                 }

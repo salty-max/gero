@@ -3509,3 +3509,151 @@ test "codegen/bake: program without bake stays small (image doesn't grow to data
     // hlt-only program.
     try std.testing.expect(compiled.image.len < gero.lang.codegen.data_base);
 }
+
+// ---------- is X (class form) runtime ----------
+
+test "codegen/is: runtime hit on a subclass instance prints from the then-arm" {
+    try runAndExpect(
+        \\class Animal
+        \\  let k: u8
+        \\  def init(self)
+        \\    self.k = 0
+        \\  end
+        \\end
+        \\class Dog extends Animal
+        \\  def init(self)
+        \\    super.init()
+        \\  end
+        \\end
+        \\def report(a: Animal)
+        \\  if a is Dog
+        \\    print "dog"
+        \\  end
+        \\end
+        \\def main()
+        \\  let d = Dog()
+        \\  report(d)
+        \\end
+    , "dog\n");
+}
+
+test "codegen/is: runtime miss on an unrelated subclass skips the then-arm" {
+    try runAndExpect(
+        \\class Animal
+        \\  let k: u8
+        \\  def init(self)
+        \\    self.k = 0
+        \\  end
+        \\end
+        \\class Dog extends Animal
+        \\  def init(self)
+        \\    super.init()
+        \\  end
+        \\end
+        \\class Cat extends Animal
+        \\  def init(self)
+        \\    super.init()
+        \\  end
+        \\end
+        \\def report(a: Animal)
+        \\  if a is Dog
+        \\    print "dog"
+        \\  end
+        \\  print "done"
+        \\end
+        \\def main()
+        \\  let c = Cat()
+        \\  report(c)
+        \\end
+    , "done\n");
+}
+
+test "codegen/is: `as binding` exposes the downcast value in the arm" {
+    try runAndExpect(
+        \\class Animal
+        \\  let k: u8
+        \\  def init(self)
+        \\    self.k = 0
+        \\  end
+        \\end
+        \\class Dog extends Animal
+        \\  let bark_count: u8
+        \\  def init(self)
+        \\    super.init()
+        \\    self.bark_count = 3
+        \\  end
+        \\end
+        \\def report(a: Animal)
+        \\  if a is Dog as d
+        \\    print d.bark_count
+        \\  end
+        \\end
+        \\def main()
+        \\  let d = Dog()
+        \\  report(d)
+        \\end
+    , "3\n");
+}
+
+// ---------- diverging builtins ----------
+
+test "codegen/panic: prints the message and halts" {
+    try runAndExpect(
+        \\def main()
+        \\  panic("kaboom")
+        \\  print "unreached"
+        \\end
+    , "kaboom\n");
+}
+
+test "codegen/unreachable: prints the diagnostic and halts" {
+    try runAndExpect(
+        \\def main()
+        \\  unreachable()
+        \\  print "unreached"
+        \\end
+    , "unreachable code reached\n");
+}
+
+test "codegen/todo: prints TODO (no msg) and halts" {
+    try runAndExpect(
+        \\def main()
+        \\  todo()
+        \\  print "unreached"
+        \\end
+    , "TODO\n");
+}
+
+test "codegen/todo: prints TODO with the message and halts" {
+    try runAndExpect(
+        \\def main()
+        \\  todo("audio")
+        \\  print "unreached"
+        \\end
+    , "TODO: audio\n");
+}
+
+// ---------- sizeof (comptime) ----------
+
+test "codegen/sizeof: primitive widths fold to integer literals" {
+    try runAndExpect(
+        \\def main()
+        \\  print sizeof(i8)
+        \\  print sizeof(i16)
+        \\  print sizeof(bool)
+        \\end
+    , "1\n2\n1\n");
+}
+
+test "codegen/sizeof: aggregate widths sum field / element sizes" {
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  print sizeof(Pos)
+        \\  print sizeof([i16; 8])
+        \\end
+    , "4\n16\n");
+}
