@@ -687,6 +687,14 @@ Per spec §3.6.
 | `E_TYPE_IS_NON_DYNAMIC` | `is` used with a non-class receiver (struct, primitive, tuple, etc.). Structs have no runtime type identity; use an `enum` tag instead. |
 | `W_DEAD_TEST` | `is` result is statically decidable (receiver's exact type or an ancestor matches, OR target is unrelated to the receiver's class hierarchy). Warning — the runtime check still emits. |
 
+### 5.14 Builtin shadowing (E_BUILTIN_SHADOW)
+
+Per spec §5.3.
+
+| Code | Meaning |
+|------|---------|
+| `E_BUILTIN_SHADOW` | User declaration uses a name reserved for an always-in-scope builtin (`assert`, `debug_assert`, `panic`, `unreachable`, `todo`). `sizeof` is a keyword and rejected by the parser before this check runs. |
+
 **Mockup — defer with return:**
 
 ```
@@ -773,6 +781,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `W_DEBUG_ASSERT_SIDE_EFFECT` | Assert builtins | v0.3 |
 | `E_TYPE_IS_NON_DYNAMIC` | `is` runtime type test | v0.3 |
 | `W_DEAD_TEST` | `is` runtime type test | v0.3 |
+| `E_BUILTIN_SHADOW` | Builtin shadowing | v0.3 |
 | `E_UNDEFINED_SYMBOL` | Name resolution | v0.3 |
 
 ---

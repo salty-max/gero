@@ -24,4 +24,9 @@ referred to but didn't define:
 a type annotation, not an expression. The other three resolve
 before regular callee resolution like `assert` / `debug_assert`.
 
+User declarations matching the builtin names (`assert`,
+`debug_assert`, `panic`, `unreachable`, `todo`) emit
+`E_BUILTIN_SHADOW`. `sizeof` is a keyword and rejected by the
+parser before this check ever runs.
+
 Closes #295.

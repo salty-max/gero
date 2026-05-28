@@ -138,11 +138,56 @@ pub fn emitIfStmt(self: *Emitter, is_: ast.IfStmt) !void {
     for (end_patches.items) |p| try isa.patchJumpTo(self, p, end_offset);
 }
 
+/// `is ClassName as binding` cond — return the probe so
+/// `emitIsClassBindingTest` can wire the binding into a local.
+fn extractIsClassBindingCond(c: *const ast.Expr) ?ast.IsTestExpr.ClassTypeProbe {
+    if (c.* != .is_test) return null;
+    return switch (c.is_test.kind) {
+        .class_type => |probe| if (probe.binding != null) probe else null,
+        else => null,
+    };
+}
+
+/// Lower `if expr is ClassName as h ...`. Evaluates the receiver
+/// once, parks the instance pointer in a fresh local bound to
+/// `h`, then compares the vtable pointer. The local stays live
+/// for the arm body so `h.method()` resolves cleanly.
+fn emitIsClassBindingTest(
+    self: *Emitter,
+    cond: *const ast.Expr,
+    probe: ast.IsTestExpr.ClassTypeProbe,
+) !usize {
+    const class_name = self.source[probe.class_name.start..probe.class_name.end];
+    const bind_lex = self.source[probe.binding.?.start..probe.binding.?.end];
+    const bind_dup = try self.arena.dupe(u8, bind_lex);
+    const ofs = try self.allocLocal(bind_dup);
+    // Eval receiver → acu = instance ptr; persist into the local
+    // so the arm body's reference to `h` reads the same address.
+    try self.emitExpr(cond.is_test.lhs);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+    // Load vtable ptr into r1.
+    try self.emitByte(Op.mov_ptr_to_reg);
+    try self.emitByte(Reg.r1);
+    try self.emitByte(Reg.acu);
+    // `cmp r1, <vtable_addr>` — patched after `emitVtables`.
+    try self.emitByte(Op.cmp_reg_imm16);
+    try self.emitByte(Reg.r1);
+    const patch_offset = try self.currentOffset();
+    try self.emitU16Le(0);
+    try self.vtable_patches.append(self.allocator, .{
+        .bank = self.current_bank,
+        .code_offset = patch_offset,
+        .class_name = try self.arena.dupe(u8, class_name),
+    });
+    return try isa.emitJumpPlaceholder(self, Op.jne_addr);
+}
+
 /// Emit the test for one if-arm and return the offset of the
 /// "skip body" jump patch — the caller resolves it to the byte
 /// right after the body.
 fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
     if (arm.cond) |c| {
+        if (extractIsClassBindingCond(c)) |bind| return try emitIsClassBindingTest(self, c, bind);
         try self.emitCondBranch(c);
         return try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     }

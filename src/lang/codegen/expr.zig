@@ -183,8 +183,8 @@ pub fn emitIsTest(self: *Emitter, it: ast.IsTestExpr) !void {
             try isa.cmpRegImm(self, Reg.acu, tag);
             try materializeBoolFromFlags(self, .eq);
         },
-        .class_type => |class_span| {
-            const class_name = self.source[class_span.start..class_span.end];
+        .class_type => |probe| {
+            const class_name = self.source[probe.class_name.start..probe.class_name.end];
             // Eval receiver → acu = instance pointer.
             try emitExpr(self, it.lhs);
             // Load vtable pointer (first word of instance) into r1.

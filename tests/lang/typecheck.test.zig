@@ -2237,3 +2237,68 @@ test "typecheck/todo: accepts 0 or 1 arg" {
         \\end
     );
 }
+
+test "typecheck/is: `as binding` brings the binding into the arm body" {
+    try expectClean(
+        \\class Animal
+        \\  let k: u8
+        \\  def init(self)
+        \\    self.k = 0
+        \\  end
+        \\end
+        \\class Dog extends Animal
+        \\  let bark_count: u8
+        \\  def init(self)
+        \\    super.init()
+        \\    self.bark_count = 3
+        \\  end
+        \\end
+        \\def report(a: Animal)
+        \\  if a is Dog as d
+        \\    print d.bark_count
+        \\  end
+        \\end
+        \\def main()
+        \\  let d = Dog()
+        \\  report(d)
+        \\end
+    );
+}
+
+test "typecheck/is: `as binding` is not visible after the arm" {
+    try expectCode(
+        \\class Animal
+        \\  let k: u8
+        \\  def init(self)
+        \\    self.k = 0
+        \\  end
+        \\end
+        \\class Dog extends Animal
+        \\  def init(self)
+        \\    super.init()
+        \\  end
+        \\end
+        \\def report(a: Animal)
+        \\  if a is Dog as d
+        \\    print "ok"
+        \\  end
+        \\  print d.k
+        \\end
+    , "E_UNDEFINED_SYMBOL");
+}
+
+test "typecheck/shadow: `def panic` is rejected" {
+    try expectCode(
+        \\def panic(m: str)
+        \\  print m
+        \\end
+    , "E_BUILTIN_SHADOW");
+}
+
+test "typecheck/shadow: `let assert` is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let assert = 10
+        \\end
+    , "E_BUILTIN_SHADOW");
+}

@@ -91,10 +91,24 @@ pub fn parseExpression(p: *Parser, min_prec: u8) ParserError!*ast.Expr {
                 continue;
             }
             const class_span: ast.Span = .{ .start = head_tok.start, .end = head_tok.end };
+            // Guarded downcast: `is ClassName as <lowercase-ident>`
+            // binds the receiver under the new name inside the
+            // surrounding `if` arm. Casing heuristic: uppercase
+            // after `as` is a regular cast (`x is Foo as Bar` →
+            // `(x is Foo) as Bar`), so we leave it for the
+            // cast-operator branch one tier up.
+            var binding_span: ?ast.Span = null;
+            var test_end = head_tok.end;
+            if (p.check(.kw_as) and isLowercaseIdentAt(p, p.pos + 1)) {
+                p.pos += 1; // consume `as`
+                const bind_tok = try p.expect(.ident, "binding name");
+                binding_span = .{ .start = bind_tok.start, .end = bind_tok.end };
+                test_end = bind_tok.end;
+            }
             const new_node = try p.allocExpr(.{ .is_test = .{
                 .lhs = lhs,
-                .kind = .{ .class_type = class_span },
-                .span = .{ .start = lhs.span().start, .end = head_tok.end },
+                .kind = .{ .class_type = .{ .class_name = class_span, .binding = binding_span } },
+                .span = .{ .start = lhs.span().start, .end = test_end },
             } });
             lhs = new_node;
             continue;
@@ -404,6 +418,18 @@ fn looksLikeStructLit(p: *const Parser) bool {
     if (tok.start >= p.source.len) return false;
     const b = p.source[tok.start];
     return b >= 'A' and b <= 'Z';
+}
+
+/// `true` when the token at `pos` is an identifier whose first
+/// byte is ASCII lowercase. Used to disambiguate `is X as Y` —
+/// lowercase Y is a binding, uppercase Y is a cast target type.
+fn isLowercaseIdentAt(p: *const Parser, pos: usize) bool {
+    if (pos >= p.tokens.len) return false;
+    const tok = p.tokens[pos];
+    if (tok.kind != .ident) return false;
+    if (tok.start >= p.source.len) return false;
+    const b = p.source[tok.start];
+    return b >= 'a' and b <= 'z';
 }
 
 fn parseStructLit(p: *Parser) ParserError!*ast.Expr {
