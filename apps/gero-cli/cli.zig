@@ -396,7 +396,8 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .init => &.{ .help, .quiet, .color, .no_color },
         .build => &.{ .help, .target, .quiet, .verbose, .color, .no_color },
         .repl => &.{ .help, .color, .no_color },
-        .compile, .bench => &.{.help},
+        .compile => &.{ .help, .out, .optimize, .quiet, .verbose, .color, .no_color },
+        .bench => &.{.help},
     };
 }
 

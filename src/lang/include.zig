@@ -1,0 +1,428 @@
+const std = @import("std");
+
+const Io = std.Io;
+const Dir = Io.Dir;
+
+const max_include_depth: u8 = 32;
+const max_file_size: usize = 16 * 1024 * 1024;
+
+/// One source file's metadata. Files dedupe by canonical path
+/// inside `SourceMap`; a module referenced multiple times shares
+/// one entry, several `Region`s pointing into it.
+pub const FileInfo = struct {
+    path: [:0]const u8,
+    content: []const u8,
+};
+
+/// Contiguous fused-source byte range mapped back to a slice of
+/// one original file. A file with N `use "..."` lines produces
+/// N+1 regions (between each directive).
+pub const Region = struct {
+    fused_start: u32,
+    fused_end: u32,
+    file_id: u16,
+    file_offset: u32,
+};
+
+/// Resolves a fused-source offset back to `(file, file_offset)`.
+pub const SourceMap = struct {
+    files: std.ArrayList(FileInfo),
+    regions: std.ArrayList(Region),
+    allocator: std.mem.Allocator,
+
+    /// Release every owned path + content buffer and the lists.
+    pub fn deinit(self: *SourceMap) void {
+        for (self.files.items) |f| {
+            self.allocator.free(f.path);
+            self.allocator.free(f.content);
+        }
+        self.files.deinit(self.allocator);
+        self.regions.deinit(self.allocator);
+    }
+
+    /// Find which file + offset `fused_offset` resolves to.
+    /// `null` when the offset is outside every region.
+    pub fn lookup(self: SourceMap, fused_offset: u32) ?Located {
+        for (self.regions.items) |r| {
+            if (fused_offset >= r.fused_start and fused_offset < r.fused_end) {
+                const file = self.files.items[r.file_id];
+                return .{
+                    .file = file,
+                    .file_offset = r.file_offset + (fused_offset - r.fused_start),
+                };
+            }
+        }
+        return null;
+    }
+
+    fn intern(
+        self: *SourceMap,
+        caller_path: [:0]const u8,
+        caller_content: []const u8,
+    ) !u16 {
+        for (self.files.items, 0..) |f, i| {
+            if (std.mem.eql(u8, f.path, caller_path)) {
+                self.allocator.free(caller_path);
+                self.allocator.free(caller_content);
+                // safety: file_id fits in u16; runaway include graphs hit max_include_depth long before this overflows.
+                return @intCast(i);
+            }
+        }
+        // safety: file_id fits in u16; bounded by max_include_depth.
+        const id: u16 = @intCast(self.files.items.len);
+        try self.files.append(self.allocator, .{
+            .path = caller_path,
+            .content = caller_content,
+        });
+        return id;
+    }
+
+    fn appendRegion(
+        self: *SourceMap,
+        fused_start: u32,
+        fused_end: u32,
+        file_id: u16,
+        file_offset: u32,
+    ) !void {
+        try self.regions.append(self.allocator, .{
+            .fused_start = fused_start,
+            .fused_end = fused_end,
+            .file_id = file_id,
+            .file_offset = file_offset,
+        });
+    }
+};
+
+/// Result of resolving a fused offset back to its origin file.
+pub const Located = struct {
+    file: FileInfo,
+    file_offset: u32,
+};
+
+/// Reason an `IncludeError` fired.
+pub const IncludeErrorKind = enum {
+    cycle,
+    depth_exceeded,
+    not_found,
+};
+
+/// One error from the include-resolution phase. Carries the
+/// fused-source offset of the offending `use` directive so the
+/// CLI can render with caret context.
+pub const IncludeError = struct {
+    kind: IncludeErrorKind,
+    /// Fused-source offset of the `use` directive that triggered
+    /// the error.
+    site_offset: u32,
+    /// Path the user requested (verbatim, no resolution).
+    requested: []const u8,
+};
+
+/// `resolveUseImports` output. Caller owns the buffers — call
+/// `deinit` once done.
+pub const FusedSource = struct {
+    /// Reachable files' contents concatenated in dependency
+    /// order, with `use "..."` lines elided.
+    source: []const u8,
+    source_map: SourceMap,
+    errors: []IncludeError,
+    allocator: std.mem.Allocator,
+
+    /// Release the fused buffer, source map, and errors list.
+    pub fn deinit(self: *FusedSource) void {
+        self.allocator.free(self.source);
+        self.source_map.deinit();
+        for (self.errors) |e| self.allocator.free(e.requested);
+        self.allocator.free(self.errors);
+    }
+
+    /// `true` when at least one include-phase error was recorded.
+    pub fn hasErrors(self: FusedSource) bool {
+        return self.errors.len > 0;
+    }
+};
+
+/// Errors surfaced through the result `union` rather than the
+/// error set: cycle / depth / not-found.
+/// Host failures (OOM, I/O) propagate through the error union.
+pub const ResolveError = Dir.RealPathFileAllocError || Dir.ReadFileAllocError;
+
+const Context = struct {
+    io: Io,
+    allocator: std.mem.Allocator,
+    fused: *std.ArrayList(u8),
+    source_map: *SourceMap,
+    errors: *std.ArrayList(IncludeError),
+    in_progress: *std.ArrayList([]const u8),
+};
+
+/// Resolve every `use "./path"` reachable from `root_path` into
+/// a fused source buffer. Quoted-path imports load the named
+/// file; bare-ident imports (`use mem`) are left in source as-is
+/// — they bind to compiler-recognized stdlib modules at
+/// typecheck time.
+pub fn resolveUseImports(
+    io: Io,
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+) ResolveError!FusedSource {
+    var fused: std.ArrayList(u8) = .empty;
+    errdefer fused.deinit(allocator);
+
+    var source_map: SourceMap = .{
+        .files = .empty,
+        .regions = .empty,
+        .allocator = allocator,
+    };
+    errdefer source_map.deinit();
+
+    var errors: std.ArrayList(IncludeError) = .empty;
+    errdefer {
+        for (errors.items) |e| allocator.free(e.requested);
+        errors.deinit(allocator);
+    }
+
+    var in_progress: std.ArrayList([]const u8) = .empty;
+    defer in_progress.deinit(allocator);
+
+    var ctx = Context{
+        .io = io,
+        .allocator = allocator,
+        .fused = &fused,
+        .source_map = &source_map,
+        .errors = &errors,
+        .in_progress = &in_progress,
+    };
+
+    try resolveOne(&ctx, root_path, null, 0, 0);
+
+    return .{
+        .source = try fused.toOwnedSlice(allocator),
+        .source_map = source_map,
+        .errors = try errors.toOwnedSlice(allocator),
+        .allocator = allocator,
+    };
+}
+
+fn resolveOne(
+    ctx: *Context,
+    requested: []const u8,
+    base_dir: ?[]const u8,
+    depth: u8,
+    site_offset: u32,
+) ResolveError!void {
+    if (depth > max_include_depth) {
+        try recordError(ctx, .depth_exceeded, site_offset, requested);
+        return;
+    }
+
+    // Append `.gr` when missing so `use "./util"` resolves to
+    // `util.gr`. Absolute paths pass through unchanged when
+    // already qualified.
+    var owned_requested: ?[]const u8 = null;
+    defer if (owned_requested) |o| ctx.allocator.free(o);
+    const with_ext: []const u8 = if (std.mem.endsWith(u8, requested, ".gr"))
+        requested
+    else blk: {
+        owned_requested = try std.fmt.allocPrint(ctx.allocator, "{s}.gr", .{requested});
+        break :blk owned_requested.?;
+    };
+
+    const absolute = if (std.fs.path.isAbsolute(with_ext))
+        try ctx.allocator.dupe(u8, with_ext)
+    else if (base_dir) |dir|
+        try std.fs.path.join(ctx.allocator, &.{ dir, with_ext })
+    else
+        try std.fs.path.join(ctx.allocator, &.{ ".", with_ext });
+    defer ctx.allocator.free(absolute);
+
+    const canonical = Dir.cwd().realPathFileAlloc(ctx.io, absolute, ctx.allocator) catch |err| switch (err) {
+        error.FileNotFound => {
+            try recordError(ctx, .not_found, site_offset, requested);
+            return;
+        },
+        else => return err,
+    };
+
+    for (ctx.in_progress.items) |p| {
+        if (std.mem.eql(u8, p, canonical)) {
+            try recordError(ctx, .cycle, site_offset, requested);
+            ctx.allocator.free(canonical);
+            return;
+        }
+    }
+
+    const content = Dir.cwd().readFileAlloc(ctx.io, canonical, ctx.allocator, Io.Limit.limited(max_file_size)) catch |err| {
+        ctx.allocator.free(canonical);
+        return err;
+    };
+
+    const file_id = ctx.source_map.intern(canonical, content) catch |err| {
+        ctx.allocator.free(canonical);
+        ctx.allocator.free(content);
+        return err;
+    };
+
+    const file = ctx.source_map.files.items[file_id];
+
+    try ctx.in_progress.append(ctx.allocator, file.path);
+    defer _ = ctx.in_progress.pop();
+
+    try processSource(ctx, file.content, file.path, file_id, depth);
+}
+
+/// Walk one file: copy non-`use` lines into the fused buffer,
+/// recursing on each `use "..."`. Lines containing `--` comments
+/// or string literals are scanned carefully so directives inside
+/// strings or comments don't get matched.
+fn processSource(
+    ctx: *Context,
+    content: []const u8,
+    canonical: [:0]const u8,
+    file_id: u16,
+    depth: u8,
+) ResolveError!void {
+    var seg_file_start: u32 = 0;
+    var seg_fused_start: u32 = @intCast(ctx.fused.items.len);
+
+    var i: usize = 0;
+    while (i < content.len) {
+        const line_start = i;
+        var in_string = false;
+        while (i < content.len and content[i] != '\n') : (i += 1) {
+            const b = content[i];
+            if (in_string) {
+                if (b == '\\' and i + 1 < content.len) {
+                    i += 1;
+                } else if (b == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+            if (b == '"') {
+                in_string = true;
+            } else if (b == '-' and i + 1 < content.len and content[i + 1] == '-') {
+                // gero-lang line comment — skip the rest of the line.
+                while (i < content.len and content[i] != '\n') : (i += 1) {}
+                break;
+            }
+        }
+        const line_end = i;
+        const line = content[line_start..line_end];
+
+        if (matchUseQuotedLine(line)) |target| {
+            const seg_file_end: u32 = @intCast(line_start);
+            if (seg_file_end > seg_file_start) {
+                try ctx.source_map.appendRegion(
+                    seg_fused_start,
+                    @intCast(ctx.fused.items.len),
+                    file_id,
+                    seg_file_start,
+                );
+            }
+            // 1-byte sentinel for the directive position so any
+            // error attached to the `use` line has a mappable
+            // fused offset.
+            const sentinel_start: u32 = @intCast(ctx.fused.items.len);
+            try ctx.fused.append(ctx.allocator, '\n');
+            try ctx.source_map.appendRegion(
+                sentinel_start,
+                sentinel_start + 1,
+                file_id,
+                @intCast(line_start),
+            );
+            const this_dir = std.fs.path.dirname(canonical) orelse ".";
+            try resolveOne(ctx, target, this_dir, depth + 1, sentinel_start);
+            const after_newline = if (i < content.len) i + 1 else i;
+            seg_file_start = @intCast(after_newline);
+            seg_fused_start = @intCast(ctx.fused.items.len);
+            i = after_newline;
+            continue;
+        }
+
+        try ctx.fused.appendSlice(ctx.allocator, line);
+        if (i < content.len) try ctx.fused.append(ctx.allocator, '\n');
+        if (i < content.len) i += 1;
+    }
+
+    const seg_file_end: u32 = @intCast(content.len);
+    if (seg_file_end > seg_file_start) {
+        try ctx.source_map.appendRegion(
+            seg_fused_start,
+            @intCast(ctx.fused.items.len),
+            file_id,
+            seg_file_start,
+        );
+    }
+}
+
+fn recordError(
+    ctx: *Context,
+    kind: IncludeErrorKind,
+    site_offset: u32,
+    requested: []const u8,
+) !void {
+    try ctx.errors.append(ctx.allocator, .{
+        .kind = kind,
+        .site_offset = site_offset,
+        .requested = try ctx.allocator.dupe(u8, requested),
+    });
+}
+
+/// If `line` is a `use "path"` directive, return the path
+/// (without quotes). Otherwise `null`. Bare-ident `use math` and
+/// the selective form `use foo from "./bar"` don't match — the
+/// quoted-path form is what triggers file resolution. Selective
+/// imports (`use a, b from "./bar"`) DO match — we strip
+/// everything up to `from` first and apply the same quoted-path
+/// rule on the right.
+fn matchUseQuotedLine(line: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    const kw = "use";
+    if (i + kw.len > line.len) return null;
+    if (!std.mem.eql(u8, line[i .. i + kw.len], kw)) return null;
+    i += kw.len;
+    if (i >= line.len or (line[i] != ' ' and line[i] != '\t')) return null;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    // Skip past `<items> from ` if a selective import is present.
+    if (std.mem.indexOf(u8, line[i..], " from ")) |from_off| {
+        i += from_off + " from ".len;
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    }
+    if (i >= line.len or line[i] != '"') return null;
+    const path_start = i + 1;
+    var j = path_start;
+    while (j < line.len and line[j] != '"') : (j += 1) {}
+    if (j >= line.len) return null;
+    const path_end = j;
+    var k = j + 1;
+    while (k < line.len and (line[k] == ' ' or line[k] == '\t')) k += 1;
+    // Trailing content allowed only if it's a comment.
+    if (k < line.len and !(k + 1 < line.len and line[k] == '-' and line[k + 1] == '-')) return null;
+    return line[path_start..path_end];
+}
+
+// ---------- tests ----------
+
+const testing = std.testing;
+
+test "include/matchUseQuotedLine: bare `use math` does not match" {
+    try testing.expect(matchUseQuotedLine("use math") == null);
+}
+
+test "include/matchUseQuotedLine: `use \"./util\"` returns ./util" {
+    try testing.expectEqualStrings("./util", matchUseQuotedLine("use \"./util\"").?);
+}
+
+test "include/matchUseQuotedLine: selective `use foo from \"./bar\"`" {
+    try testing.expectEqualStrings("./bar", matchUseQuotedLine("use foo from \"./bar\"").?);
+}
+
+test "include/matchUseQuotedLine: trailing `--` comment is allowed" {
+    try testing.expectEqualStrings("./util", matchUseQuotedLine("use \"./util\"  -- core helpers").?);
+}
+
+test "include/matchUseQuotedLine: trailing non-comment garbage rejects" {
+    try testing.expect(matchUseQuotedLine("use \"./util\" let x = 0") == null);
+}

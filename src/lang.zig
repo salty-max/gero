@@ -9,6 +9,7 @@ const typecheck_mod = @import("lang/typecheck.zig");
 const diag_mod = @import("lang/diagnostic.zig");
 const render_mod = @import("lang/render.zig");
 const codegen_mod = @import("lang/codegen.zig");
+const include_mod = @import("lang/include.zig");
 
 const tc_mem_builtin = @import("lang/typecheck/mem_builtin.zig");
 const tc_match = @import("lang/typecheck/match.zig");
@@ -54,6 +55,24 @@ pub const parse = parser_mod.parse;
 /// Pretty-print an `ast.Program` to canonical `.gr`.
 /// Round-trip safe: `parse(print(parse(s))) == parse(s)`.
 pub const print = print_mod.print;
+
+// ---------- include resolver (multi-file `use "..."`) ----------
+
+/// Fused-source output from `resolveUseImports`.
+pub const FusedSource = include_mod.FusedSource;
+/// Fused offset → (file, file_offset) resolver.
+pub const SourceMap = include_mod.SourceMap;
+/// One file's metadata in the include graph.
+pub const FileInfo = include_mod.FileInfo;
+/// Result of `SourceMap.lookup`.
+pub const Located = include_mod.Located;
+/// One error from include resolution (cycle / depth / not-found).
+pub const IncludeError = include_mod.IncludeError;
+/// Discriminator for `IncludeError`.
+pub const IncludeErrorKind = include_mod.IncludeErrorKind;
+/// Walk the `use "..."` graph from `root_path`, returning fused
+/// source + source map.
+pub const resolveUseImports = include_mod.resolveUseImports;
 
 // ---------- typechecker ----------
 
