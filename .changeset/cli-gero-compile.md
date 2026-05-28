@@ -24,4 +24,12 @@ Re-exports surfaced on `gero.lang`: `resolveUseImports`,
 `FusedSource`, `SourceMap`, `FileInfo`, `Located`,
 `IncludeError`, `IncludeErrorKind`.
 
+`gero run` now wires `vm.host.out` to stdout so the lang's
+`print` (which lowers to `sys print_str` / `print_int` /
+`print_char` / `print_newline`) actually surfaces in the
+terminal. Previously those syscalls were silently no-op'd —
+only `gero asm`'s `int $10` print syscall reached stdout, so
+nothing produced by `gero compile` was demoable. The asm-level
+intercept stays in place untouched.
+
 Closes #198.
