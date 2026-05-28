@@ -2110,3 +2110,130 @@ test "typecheck/suggest: unknown mem.X member surfaces the closest stdlib name" 
         \\end
     , "E_TYPE_UNDEFINED_METHOD", "read_u16");
 }
+
+test "typecheck/is: class form on matching subclass — clean" {
+    try expectClean(
+        \\class Animal
+        \\  let k: u8
+        \\  def init(self)
+        \\    self.k = 0
+        \\  end
+        \\end
+        \\class Dog extends Animal
+        \\  def init(self)
+        \\    super.init()
+        \\  end
+        \\end
+        \\def report(a: Animal)
+        \\  if a is Dog
+        \\    print "ok"
+        \\  end
+        \\end
+        \\def main()
+        \\  let d = Dog()
+        \\  report(d)
+        \\end
+    );
+}
+
+test "typecheck/is: `Dog is Dog` is statically true — W_DEAD_TEST" {
+    try expectCode(
+        \\class Dog
+        \\  let k: u8
+        \\  def init(self)
+        \\    self.k = 0
+        \\  end
+        \\end
+        \\def main()
+        \\  let d = Dog()
+        \\  if d is Dog
+        \\    print "yes"
+        \\  end
+        \\end
+    , "W_DEAD_TEST");
+}
+
+test "typecheck/is: unrelated class is statically false — W_DEAD_TEST" {
+    try expectCode(
+        \\class Dog
+        \\  let k: u8
+        \\  def init(self)
+        \\    self.k = 0
+        \\  end
+        \\end
+        \\class Bird
+        \\  let w: u8
+        \\  def init(self)
+        \\    self.w = 0
+        \\  end
+        \\end
+        \\def main()
+        \\  let d = Dog()
+        \\  if d is Bird
+        \\    print "no"
+        \\  end
+        \\end
+    , "W_DEAD_TEST");
+}
+
+test "typecheck/is: struct receiver rejects with E_TYPE_IS_NON_DYNAMIC" {
+    try expectCode(
+        \\struct Stats
+        \\  hp: i16
+        \\  mp: i16
+        \\end
+        \\class Dog
+        \\  let k: u8
+        \\  def init(self)
+        \\    self.k = 0
+        \\  end
+        \\end
+        \\def main()
+        \\  let s = Stats { hp: 1, mp: 2 }
+        \\  if s is Dog
+        \\    print "x"
+        \\  end
+        \\end
+    , "E_TYPE_IS_NON_DYNAMIC");
+}
+
+test "typecheck/sizeof: primitive widths resolve to u16" {
+    try expectClean(
+        \\const A: u16 = sizeof(i16)
+        \\const B: u16 = sizeof(i8)
+        \\const C: u16 = sizeof([i16; 8])
+    );
+}
+
+test "typecheck/sizeof: unknown type emits E_TYPE_UNDEFINED" {
+    try expectCode("const X = sizeof(NotAType)", "E_TYPE_UNDEFINED");
+}
+
+test "typecheck/panic: takes exactly 1 arg" {
+    try expectCode(
+        \\def main()
+        \\  panic()
+        \\end
+    , "E_ASSERT_ARG_COUNT");
+}
+
+test "typecheck/unreachable: takes no args" {
+    try expectCode(
+        \\def main()
+        \\  unreachable("nope")
+        \\end
+    , "E_ASSERT_ARG_COUNT");
+}
+
+test "typecheck/todo: accepts 0 or 1 arg" {
+    try expectClean(
+        \\def main()
+        \\  todo()
+        \\end
+    );
+    try expectClean(
+        \\def main()
+        \\  todo("audio")
+        \\end
+    );
+}
