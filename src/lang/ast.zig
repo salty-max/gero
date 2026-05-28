@@ -666,12 +666,24 @@ pub const TupleLit = struct {
     span: Span,
 };
 
-/// `lhs is Enum.Variant` — variant-tag test.
+/// `lhs is Enum.Variant` — variant-tag test, or
+/// `lhs is ClassName` — runtime class-type check via vtable
+/// pointer compare. The kind is picked at parse time from the
+/// shape of the RHS (qualified `Enum.Variant` vs bare ident).
 pub const IsTestExpr = struct {
     lhs: *Expr,
-    /// Variant path span — typically `EnumType.Variant`.
-    variant_path: Span,
+    kind: Kind,
     span: Span,
+
+    /// The RHS shape of an `is` test, picked at parse time from
+    /// whether the parser saw a qualified `Enum.Variant` path or
+    /// a bare `ClassName`.
+    pub const Kind = union(enum) {
+        /// `Enum.Variant` — span covers both segments.
+        variant: Span,
+        /// `ClassName` — span over the class name ident.
+        class_type: Span,
+    };
 };
 
 /// `inner as T` — explicit type conversion.

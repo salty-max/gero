@@ -669,14 +669,23 @@ Per spec §4.10.
 | `E_DEFER_CONTROL_FLOW` | `defer return / break / continue` rejected. |
 | `E_DEFER_NESTED` | `defer defer ...` (pointless, doesn't compose). |
 
-### 5.12 Assert builtins (E_ASSERT_* / W_DEBUG_ASSERT_*)
+### 5.12 Assert + diverging builtins (E_ASSERT_* / W_DEBUG_ASSERT_*)
 
 Per spec §5.3.
 
 | Code | Meaning |
 |------|---------|
-| `E_ASSERT_ARG_COUNT` | `assert` / `debug_assert` called with 0 or >2 args. |
+| `E_ASSERT_ARG_COUNT` | `assert` / `debug_assert` / `panic` / `unreachable` / `todo` called with the wrong number of args. |
 | `W_DEBUG_ASSERT_SIDE_EFFECT` | A `debug_assert` arg contains a function call; the call is elided in release. (Warning, not fatal.) |
+
+### 5.13 `is` runtime type test (E_TYPE_IS_* / W_DEAD_TEST)
+
+Per spec §3.6.
+
+| Code | Meaning |
+|------|---------|
+| `E_TYPE_IS_NON_DYNAMIC` | `is` used with a non-class receiver (struct, primitive, tuple, etc.). Structs have no runtime type identity; use an `enum` tag instead. |
+| `W_DEAD_TEST` | `is` result is statically decidable (receiver's exact type or an ancestor matches, OR target is unrelated to the receiver's class hierarchy). Warning — the runtime check still emits. |
 
 **Mockup — defer with return:**
 
@@ -760,8 +769,10 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_LOOP_OUTSIDE` | Loop labels | v0.3 |
 | `E_DEFER_CONTROL_FLOW` | Defer | v0.3 |
 | `E_DEFER_NESTED` | Defer | v0.3 |
-| `E_ASSERT_ARG_COUNT` | Assert builtins | v0.3 |
+| `E_ASSERT_ARG_COUNT` | Assert / diverge builtins | v0.3 |
 | `W_DEBUG_ASSERT_SIDE_EFFECT` | Assert builtins | v0.3 |
+| `E_TYPE_IS_NON_DYNAMIC` | `is` runtime type test | v0.3 |
+| `W_DEAD_TEST` | `is` runtime type test | v0.3 |
 | `E_UNDEFINED_SYMBOL` | Name resolution | v0.3 |
 
 ---

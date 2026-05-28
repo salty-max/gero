@@ -353,11 +353,29 @@ pub const Checker = struct {
         actual: *const types.Type,
     ) WalkError!void {
         if (relations.assignable(actual.*, expected.*)) return;
+        if (self.isClassSubtype(actual.*, expected.*)) return;
         if (relations.isNarrowingInt(actual.*, expected.*)) {
             try self.emitNarrowingWarning(span, expected, actual);
             return;
         }
         try self.emitMismatch(span, expected, actual);
+    }
+
+    /// `true` when `actual` is a class derived from `expected`
+    /// (transitively, via `extends`). Also covers `&Sub` → `&Sup`
+    /// reference subtyping by peeling one layer per side.
+    pub fn isClassSubtype(self: *const Checker, actual: types.Type, expected: types.Type) bool {
+        const a = if (actual == .reference) actual.reference.* else actual;
+        const e = if (expected == .reference) expected.reference.* else expected;
+        if (a != .named or e != .named) return false;
+        const expected_name = e.named.name;
+        var cur = self.class_registry.get(a.named.name) orelse return false;
+        while (cur.extends) |ext| {
+            const parent_name = self.lexeme(ext);
+            if (std.mem.eql(u8, parent_name, expected_name)) return true;
+            cur = self.class_registry.get(parent_name) orelse return false;
+        }
+        return false;
     }
 
     fn emitNarrowingWarning(
@@ -723,6 +741,7 @@ pub const Checker = struct {
             // — sole call site that overrides the plain
             // `checkStoreCompat` path (#254 AC).
             if (!relations.assignable(init_ty.?.*, ann_ty.?.*) and
+                !self.isClassSubtype(init_ty.?.*, ann_ty.?.*) and
                 !relations.isNarrowingInt(init_ty.?.*, ann_ty.?.*) and
                 d.type_ann != null)
             {
@@ -1543,10 +1562,7 @@ pub const Checker = struct {
                 out.* = .{ .tuple = try elems.toOwnedSlice(self.arena) };
                 return out;
             },
-            .is_test => |it| {
-                _ = try self.inferExpr(it.lhs, null);
-                return try self.primitive(.bool_);
-            },
+            .is_test => |it| return try self.checkIsTest(it),
             .cast => |c| return try operators.checkCast(self, c),
             .ref_of => |r| return try self.checkRefOf(r),
             .sizeof => |s| {
@@ -1582,6 +1598,91 @@ pub const Checker = struct {
             .{ty_s},
         );
         try self.emitSpan("E_NULL_DEREF", access_span, msg);
+    }
+
+    /// `lhs is X` — type-check both shapes (variant tag test +
+    /// class-type probe) and apply the receiver-type rules from
+    /// `docs/lang-diagnostics.md` §3.6.
+    ///
+    /// Always returns `bool`. Walks the lhs even on rejection so
+    /// nested diagnostics still surface.
+    fn checkIsTest(self: *Checker, it: ast.IsTestExpr) WalkError!?*const types.Type {
+        const lhs_ty = try self.inferExpr(it.lhs, null);
+        const bool_ty = try self.primitive(.bool_);
+        switch (it.kind) {
+            .variant => return bool_ty,
+            .class_type => |class_span| {
+                const class_name = self.lexeme(class_span);
+                if (!self.class_registry.contains(class_name)) {
+                    const msg = try std.fmt.allocPrint(self.arena, "undefined class `{s}`", .{class_name});
+                    try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED", class_span, msg, try self.suggestTypeName(class_name));
+                    return bool_ty;
+                }
+                const recv = lhs_ty orelse return bool_ty;
+                const peeled = if (recv.* == .reference) recv.reference else recv;
+                if (peeled.* != .named) {
+                    try self.emitSpan(
+                        "E_TYPE_IS_NON_DYNAMIC",
+                        it.span,
+                        "`is` requires a class-typed receiver (struct and primitive types have no runtime type identity)",
+                    );
+                    return bool_ty;
+                }
+                const recv_name = peeled.named.name;
+                // Struct receiver — `is` has no meaning (no vtable).
+                if (self.struct_registry.contains(recv_name)) {
+                    try self.emitSpan(
+                        "E_TYPE_IS_NON_DYNAMIC",
+                        it.span,
+                        "`is` requires a class-typed receiver — structs have no runtime type identity (use an enum tag instead)",
+                    );
+                    return bool_ty;
+                }
+                const recv_class = self.class_registry.get(recv_name) orelse {
+                    try self.emitSpan(
+                        "E_TYPE_IS_NON_DYNAMIC",
+                        it.span,
+                        "`is` requires a class-typed receiver",
+                    );
+                    return bool_ty;
+                };
+                // Decide statically when the relationship is fixed.
+                if (std.mem.eql(u8, recv_name, class_name) or isAncestorOf(self, class_name, recv_class)) {
+                    const msg = try std.fmt.allocPrint(self.arena, "`{s} is {s}` is always true — the static type of the receiver already guarantees this", .{ recv_name, class_name });
+                    try self.diagnostics.append(self.diag_alloc, .{
+                        .severity = .warning,
+                        .code = "W_DEAD_TEST",
+                        .message = msg,
+                        .span = it.span,
+                    });
+                } else {
+                    const target = self.class_registry.get(class_name).?;
+                    if (!isAncestorOf(self, recv_name, target)) {
+                        const msg = try std.fmt.allocPrint(self.arena, "`{s} is {s}` is always false — `{s}` is not in `{s}`'s ancestor chain", .{ recv_name, class_name, class_name, recv_name });
+                        try self.diagnostics.append(self.diag_alloc, .{
+                            .severity = .warning,
+                            .code = "W_DEAD_TEST",
+                            .message = msg,
+                            .span = it.span,
+                        });
+                    }
+                }
+                return bool_ty;
+            },
+        }
+    }
+
+    /// `true` when `target_name` is an ancestor of `cd` (i.e. `cd`
+    /// extends `target_name` somewhere in its parent chain).
+    fn isAncestorOf(self: *const Checker, target_name: []const u8, cd: *const ast.ClassDecl) bool {
+        var cur: ?*const ast.ClassDecl = cd;
+        while (cur) |c| {
+            const ext = c.extends orelse return false;
+            const parent_name = self.lexeme(ext);
+            if (std.mem.eql(u8, parent_name, target_name)) return true;
+            cur = self.class_registry.get(parent_name);
+        }
+        return false;
     }
 
     /// `&x` — verify the inner is a place expression and not

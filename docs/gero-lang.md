@@ -785,6 +785,32 @@ end
 
 For payload extraction, use `match` (§4.8).
 
+`is` also accepts a **class name** on the RHS for runtime class-
+type checks via the vtable pointer (§6):
+
+```
+def report(a: Animal)
+  if a is Dog
+    print "found a Dog instance"
+  end
+end
+```
+
+Receiver must be a class-typed value (or `&Class` reference —
+auto-dereffed per §3.4.4). Returns `bool`. Statically-decidable
+shapes emit `W_DEAD_TEST`:
+
+| Receiver | RHS | Result |
+|----------|-----|--------|
+| `Dog` | `Dog` | statically `true` → `W_DEAD_TEST` |
+| `Dog` | `Animal` (ancestor of `Dog`) | statically `true` → `W_DEAD_TEST` |
+| `Dog` | `Bird` (unrelated) | statically `false` → `W_DEAD_TEST` |
+| `Animal` (parent) | `Dog` (subclass) | runtime check via vtable |
+
+Struct receivers reject with `E_TYPE_IS_NON_DYNAMIC` — structs
+have no runtime type identity (no vtable). Use an `enum` with a
+tag if you need a discriminated value.
+
 ### 3.7 Annotations
 
 `@`-prefixed directives that decorate the declaration on the next
@@ -2233,6 +2259,47 @@ both are built-in pseudo-functions:
 ```
 assert(self.hp >= 0, "hp went negative")        -- always live
 debug_assert(items.len() < 1000)                -- debug-only
+```
+
+Four more diverging / introspection builtins are always in scope:
+
+- `panic(msg: str) -> noreturn` — print `msg` via the host print
+  channel and halt the VM. Use when a runtime invariant has been
+  violated and there's no sensible recovery.
+- `unreachable() -> noreturn` — print `"unreachable code reached"`
+  and halt. Use to mark branches the compiler should be able to
+  prove are dead (exhaustive `match` fallthroughs, post-validation
+  arms). Helps the reader and traps cleanly if reached.
+- `todo(msg: str?) -> noreturn` — print `"TODO"` (or `"TODO: <msg>"`)
+  and halt. Scaffold for incremental development.
+- `sizeof(T) -> u16` — compile-time byte width of a type. Resolves
+  at codegen to a `u16` literal. Works on every type form:
+  primitives (`sizeof(i16)` = 2), arrays (`sizeof([i16; 64])` =
+  128), tuples (sum of slot sizes), named structs (sum of field
+  sizes), and named classes (returns `2` — the instance-pointer
+  width, not the heap-instance footprint).
+
+```
+match item
+  case Action.Heal(n) => heal(n)
+  case _              => panic("not a healing item")
+end
+
+def color_for(s: State) -> u8
+  match s
+    case .Idle    => return 0
+    case .Active  => return 1
+    case .Stopped => return 2
+  end
+  unreachable()
+end
+
+def init_audio()
+  todo("hook up DAC config")
+end
+
+const SAVE_SIZE = sizeof(SaveSlot)
+mem.memcpy(dst, src, sizeof([i16; 64]))
 ```
 
 #### 5.3.1 `mem` stdlib

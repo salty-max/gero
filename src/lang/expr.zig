@@ -74,14 +74,27 @@ pub fn parseExpression(p: *Parser, min_prec: u8) ParserError!*ast.Expr {
             const prec = Prec.is_test;
             if (prec < min_prec) break;
             p.pos += 1;
-            const head_tok = try p.expect(.ident, "enum name");
-            _ = try p.expect(.dot, ".");
-            const var_tok = try p.expect(.ident, "variant name");
-            const path: ast.Span = .{ .start = head_tok.start, .end = var_tok.end };
+            const head_tok = try p.expect(.ident, "enum or class name");
+            // Two shapes:
+            //   `is Enum.Variant` — qualified variant path (existing).
+            //   `is ClassName`    — bare ident → class-type probe.
+            if (p.check(.dot)) {
+                p.pos += 1;
+                const var_tok = try p.expect(.ident, "variant name");
+                const path: ast.Span = .{ .start = head_tok.start, .end = var_tok.end };
+                const new_node = try p.allocExpr(.{ .is_test = .{
+                    .lhs = lhs,
+                    .kind = .{ .variant = path },
+                    .span = .{ .start = lhs.span().start, .end = var_tok.end },
+                } });
+                lhs = new_node;
+                continue;
+            }
+            const class_span: ast.Span = .{ .start = head_tok.start, .end = head_tok.end };
             const new_node = try p.allocExpr(.{ .is_test = .{
                 .lhs = lhs,
-                .variant_path = path,
-                .span = .{ .start = lhs.span().start, .end = var_tok.end },
+                .kind = .{ .class_type = class_span },
+                .span = .{ .start = lhs.span().start, .end = head_tok.end },
             } });
             lhs = new_node;
             continue;
