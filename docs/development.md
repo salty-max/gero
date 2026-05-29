@@ -163,6 +163,30 @@ git push origin main --tags
 
 ---
 
+## Cache maintenance
+
+Zig content-hashes every build output into its own `.zig-cache/o/<hash>`
+dir and **never reclaims old ones** — there is no built-in GC. A
+cross-target / multi-mode workflow (`zig build ci` runs 4 release modes
+× 5 targets) mints fresh outputs every commit, so the cache grows without
+bound. Left alone it reaches tens or hundreds of GB.
+
+```bash
+zig build clean         # full wipe of zig-out + .zig-cache → next build is cold
+zig build clean-cache   # prune only .zig-cache/o dirs older than MAX_AGE_DAYS
+```
+
+`clean-cache` (`scripts/clean-cache.sh`) is the routine maintenance one:
+it drops stale output dirs while leaving the warm working set intact, so
+the next build is *not* cold. Active builds keep a fresh mtime and
+survive; only artifacts from commits you haven't touched in
+`MAX_AGE_DAYS` (default 3) go. A pruned output is just a cache miss —
+Zig rebuilds it on demand. Override with `MAX_AGE_DAYS=N zig build
+clean-cache`, or wire a scheduled job to the script for hands-off
+upkeep.
+
+---
+
 ## Tech stack (one-liner reference)
 
 Zig 0.16.0 minimum (pinned in `build.zig.zon`), zero runtime deps,

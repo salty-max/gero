@@ -429,6 +429,10 @@ pub fn build(b: *std.Build) void {
     const clean_step = b.step("clean", "Remove zig-out and .zig-cache (Unix only)");
     const clean_cmd = b.addSystemCommand(&.{ "rm", "-rf", "zig-out", ".zig-cache" });
     clean_step.dependOn(&clean_cmd.step);
+
+    const clean_cache_step = b.step("clean-cache", "Prune .zig-cache/o dirs older than MAX_AGE_DAYS (default 3), keeping the warm working set (Unix only)");
+    const clean_cache_cmd = b.addSystemCommand(&.{ "bash", "scripts/clean-cache.sh" });
+    clean_cache_step.dependOn(&clean_cache_cmd.step);
 }
 
 /// Walk tests/ at build time and collect every relative path ending in
