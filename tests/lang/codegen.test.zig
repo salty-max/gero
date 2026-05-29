@@ -3657,3 +3657,76 @@ test "codegen/sizeof: aggregate widths sum field / element sizes" {
         \\end
     , "4\n16\n");
 }
+
+/// Count non-overlapping occurrences of `needle` in `haystack`.
+fn countByteSeq(haystack: []const u8, needle: []const u8) usize {
+    var n: usize = 0;
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, from, needle)) |pos| {
+        n += 1;
+        from = pos + 1;
+    }
+    return n;
+}
+
+test "codegen: each MMIO @addr read compiles to its own bus load" {
+    // The emitter is intentionally literal — a period-authentic 8-bit
+    // code generator with no register caching or CSE. Every source read
+    // of an `@addr`-pinned global compiles to a real load, which is what
+    // memory-mapped IO depends on: a peripheral whose read has side
+    // effects (a gtx-16 RNG register auto-advances) is observable only
+    // if each read hits the bus. `@volatile` documents that guarantee at
+    // the source level; this pins that the emitter keeps it — two reads
+    // stay two loads.
+    var two = try compileSource(
+        \\@addr $FE40
+        \\let port: u16 = 0
+        \\def main()
+        \\  let a: u16 = port
+        \\  let b: u16 = port
+        \\end
+    );
+    defer two.deinit();
+    // `mov reg, [$FE40]` (0x13) — opcode byte then the LE address.
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        countByteSeq(two.image, &[_]u8{ 0x13, 0x40, 0xFE }),
+    );
+
+    // Control: a single read is exactly one load, proving the count
+    // tracks source reads rather than a coincidental byte run.
+    var one = try compileSource(
+        \\@addr $FE40
+        \\let port: u16 = 0
+        \\def main()
+        \\  let a: u16 = port
+        \\end
+    );
+    defer one.deinit();
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        countByteSeq(one.image, &[_]u8{ 0x13, 0x40, 0xFE }),
+    );
+}
+
+test "codegen: byte-width MMIO global loads via mov8, never a word load" {
+    // A `u8` MMIO register must read with `mov8 [addr]` (0x22), which
+    // touches exactly one byte. A word load (0x13) would also pull the
+    // adjacent address — a *different* register on real MMIO.
+    var compiled = try compileSource(
+        \\@addr $FE40
+        \\let flag: u8 = 0
+        \\def main()
+        \\  let a: u8 = flag
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        countByteSeq(compiled.image, &[_]u8{ 0x22, 0x40, 0xFE }),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        countByteSeq(compiled.image, &[_]u8{ 0x13, 0x40, 0xFE }),
+    );
+}
