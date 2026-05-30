@@ -175,6 +175,14 @@ See §3.7 for the canonical list.
 
 ## 3. Type system
 
+gero-lang is **strongly, statically typed**. Every binding and every
+expression has a concrete type known at compile time — there is no
+`any`, no dynamic value, and no implicit escape hatch. Where a type
+can't be resolved (an unbound payload, an unannotated empty
+collection, a missing inference), that's a **type error**, not a
+silent fallback. Conversions across types are always explicit (`as`,
+§3.5.1).
+
 ### 3.1 Primitive types
 
 | Type | Width | Range |
