@@ -931,7 +931,6 @@ pub const Checker = struct {
         for (arms, 0..) |arm, i| {
             if (arm.cond) |c| _ = try self.inferExpr(c, null);
             if (arm.let_expr) |e| _ = try self.inferExpr(e, null);
-            if (arm.let_guard) |g| _ = try self.inferExpr(g, null);
 
             const arm_gain: ?[]const u8 = if (i == 0 and nil_flow != null and nil_flow.?.is_neq)
                 nil_flow.?.name
@@ -944,6 +943,17 @@ pub const Checker = struct {
                 (if (c.* == .is_test) c.is_test.classBinding() else null)
             else
                 null;
+
+            // `if let PAT = expr [when guard]` binds PAT for the guard
+            // and the arm body. Open a child scope and register the
+            // bindings first — mirrors match-arm scoping — so the guard
+            // and body resolve the names (§4.4.1).
+            const saved = self.current_scope;
+            var child: Scope = .init(self.arena, saved);
+            self.current_scope = &child;
+            defer self.current_scope = saved;
+            if (arm.let_pattern) |pat| try self.registerPatternBindings(pat);
+            if (arm.let_guard) |g| _ = try self.inferExpr(g, null);
             try self.walkArmBodyWithIsBinding(arm.body, is_binding);
             if (added) self.popNonNil(arm_gain.?);
         }
@@ -992,8 +1002,15 @@ pub const Checker = struct {
     fn checkWhile(self: *Checker, ws: ast.WhileStmt) WalkError!void {
         if (ws.cond) |c| _ = try self.inferExpr(c, null);
         if (ws.let_expr) |e| _ = try self.inferExpr(e, null);
+        // `while let PAT = expr [when guard]` binds PAT for the guard
+        // and loop body — same scoping as `if let` / match arms.
+        const saved = self.current_scope;
+        var child: Scope = .init(self.arena, saved);
+        self.current_scope = &child;
+        defer self.current_scope = saved;
+        if (ws.let_pattern) |pat| try self.registerPatternBindings(pat);
         if (ws.let_guard) |g| _ = try self.inferExpr(g, null);
-        try self.walkInScope(ws.body);
+        try self.walkStatementSequence(ws.body);
     }
 
     fn checkFor(self: *Checker, fs: ast.ForStmt) WalkError!void {

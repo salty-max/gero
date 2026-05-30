@@ -247,6 +247,42 @@ test "typecheck: shadowing across scopes is allowed" {
     );
 }
 
+test "typecheck: if let binds the pattern in guard and body" {
+    // Regression: `if let` used to infer the matched expr but never
+    // register the pattern's bindings, so `n` read as undefined in
+    // both the `when` guard and the body (§4.4.1).
+    try expectClean(
+        \\enum E
+        \\  case A(x: i16)
+        \\  case B
+        \\end
+        \\
+        \\def f(e: E) -> i16
+        \\  if let E.A(n) = e when n > 0
+        \\    return n
+        \\  end
+        \\  return 0
+        \\end
+    );
+}
+
+test "typecheck: while let binds the pattern in the loop body" {
+    try expectClean(
+        \\enum E
+        \\  case A(x: i16)
+        \\  case B
+        \\end
+        \\
+        \\def f(e: E) -> i16
+        \\  let acc: i16 = 0
+        \\  while let E.A(v) = e
+        \\    return v
+        \\  end
+        \\  return acc
+        \\end
+    );
+}
+
 // ---------- slice 2: function signature registration ----------
 
 test "typecheck: def signature registered in scope" {
