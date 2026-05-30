@@ -4386,14 +4386,55 @@ test "codegen: a frame past the 127-byte fp-offset limit is a clean error (not a
     , "E_CODEGEN_FRAME_TOO_LARGE");
 }
 
-test "codegen/struct: printing a whole struct is rejected" {
-    try expectCodegenError(
+test "codegen/struct: `print` renders `Name { field: value, ... }`" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let p = P { x: 1, y: 2 }
+        \\  print p
+        \\end
+    , "P { x: 1, y: 2 }\n");
+}
+
+test "codegen/struct: `print` recurses into nested structs + str/char fields" {
+    try runAndExpect(
+        \\struct In
+        \\  v: i16
+        \\end
+        \\struct Out
+        \\  n: In
+        \\  tag: str
+        \\  c: char
+        \\end
+        \\def main()
+        \\  let o = Out { n: In { v: 9 }, tag: "hi", c: 'A' }
+        \\  print o
+        \\end
+    , "Out { n: In { v: 9 }, tag: hi, c: A }\n");
+}
+
+test "codegen/struct: `print` works on a literal + amid other args" {
+    try runAndExpect(
         \\struct P
         \\  x: i16
         \\end
         \\def main()
-        \\  let p = P { x: 5 }
-        \\  print p
+        \\  print "pt = ", P { x: 7 }, "!"
+        \\end
+    , "pt =  P { x: 7 } !\n");
+}
+
+test "codegen/struct: `print` of a struct with an array field is rejected" {
+    try expectCodegenError(
+        \\struct B
+        \\  d: [u8; 3]
+        \\end
+        \\def main()
+        \\  let b = B { d: [1, 2, 3] }
+        \\  print b
         \\end
     , "E_CODEGEN_UNSUPPORTED");
 }
