@@ -13,8 +13,10 @@ const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const class = @import("class.zig");
+const strings = @import("strings.zig");
 
 const Emitter = codegen.Emitter;
+const Op = opcodes.Op;
 const Reg = opcodes.Reg;
 
 /// Where a materialized struct lands. `frame` is fp-relative (a local
@@ -154,6 +156,161 @@ pub fn emitFieldStore(self: *Emitter, recv: *const ast.Expr, sname: []const u8, 
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
     try isa.popReg(self, Reg.r2);
     try class_storeAt(self, Reg.r1, info.offset, info.width, Reg.r2);
+}
+
+/// Lower `a == b` / `a != b` on struct operands (`negate` selects
+/// `!=`), leaving a 0/1 boolean in `acu` per §3.4 "structurally equal
+/// if fields equal". Each field compares with the same semantics its
+/// own `==` would use: scalars / `&T` / class / payload-free enum by
+/// value/pointer, `str` by content (§3.2.1), nested structs recursively.
+/// A struct whose fields are all value/pointer-comparable reduces to a
+/// fast byte compare over the packed width (no padding); a struct with
+/// any `str` field uses per-field dispatch so those compare by content.
+pub fn emitEquality(self: *Emitter, lhs: *const ast.Expr, rhs: *const ast.Expr, sname: []const u8, negate: bool) error{OutOfMemory}!void {
+    // Materialize BOTH operands as distinct by-value copies on the
+    // stack. Pushing addresses would alias when both operands share a
+    // buffer (e.g. two struct-returning calls reuse the sret scratch);
+    // copying also lets struct-literal operands (`p == P{ ... }`) work.
+    // The copies stay put (sp stable) so field addresses are `sp + ofs`.
+    const wslot = self.structSlotWidth(sname);
+    try pushArg(self, rhs, sname); // rhs copy at [sp + wslot ..] after the next push
+    try pushArg(self, lhs, sname); // lhs copy at [sp ..]
+
+    // The first field that differs jumps to the not-equal arm; falling
+    // through means every field matched.
+    var mismatch_patches: std.ArrayList(usize) = .empty;
+    defer mismatch_patches.deinit(self.allocator);
+
+    if (structHasContentField(self, sname)) {
+        try emitFieldwiseEq(self, sname, 0, wslot, &mismatch_patches);
+    } else {
+        try emitByteEq(self, wslot, self.structWidth(sname), &mismatch_patches);
+    }
+
+    // All fields equal → `==` yields 1, `!=` yields 0.
+    try isa.movImmToReg(self, if (negate) 0 else 1, Reg.acu);
+    const end_patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+
+    // Not-equal arm: the opposite result.
+    const mismatch_target = try self.currentOffset();
+    for (mismatch_patches.items) |p| try isa.patchJumpTo(self, p, mismatch_target);
+    try isa.movImmToReg(self, if (negate) 1 else 0, Reg.acu);
+
+    try isa.patchJumpTo(self, end_patch, try self.currentOffset());
+
+    // Drop both stack copies. `acu` (the result) survives the sp bump.
+    try isa.addImmToReg(self, 2 * wslot, Reg.sp);
+}
+
+/// Fast path for structs with no content-typed (`str`) field: compare
+/// the two stack copies word-by-word (advancing offset-0 pointers — no
+/// scratch-reg collision), with a trailing byte for an odd width. lhs
+/// copy is at `[sp ..]`, rhs at `[sp + wslot ..]`.
+fn emitByteEq(self: *Emitter, wslot: u16, width: u16, patches: *std.ArrayList(usize)) error{OutOfMemory}!void {
+    try isa.movRegToReg(self, Reg.sp, Reg.r1); // r1 = lhs copy base
+    try isa.movRegToReg(self, Reg.sp, Reg.r2);
+    try isa.addImmToReg(self, wslot, Reg.r2); // r2 = rhs copy base
+    var remaining = width;
+    while (remaining >= 2) : (remaining -= 2) {
+        try isa.movRegOffsetToReg(self, Reg.r1, 0, Reg.acu);
+        try isa.movRegOffsetToReg(self, Reg.r2, 0, Reg.r3);
+        try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+        try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+        try isa.addImmToReg(self, 2, Reg.r1);
+        try isa.addImmToReg(self, 2, Reg.r2);
+    }
+    if (remaining == 1) {
+        try class.emitByteLoadAtOffset(self, Reg.r1, 0, Reg.acu);
+        try class.emitByteLoadAtOffset(self, Reg.r2, 0, Reg.r3);
+        try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+        try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+    }
+}
+
+/// Per-field comparison for structs that contain a `str` field. The lhs
+/// copy is at `[sp + lhs_off ..]` and the rhs at `[sp + rhs_off ..]`;
+/// `sp` is stable, so each field reads at `sp + base_off + field_off`.
+/// `str` fields compare by content; nested structs recurse; every other
+/// field compares its stored word/byte (value or pointer identity).
+fn emitFieldwiseEq(self: *Emitter, sname: []const u8, lhs_off: u16, rhs_off: u16, patches: *std.ArrayList(usize)) error{OutOfMemory}!void {
+    const sd = self.struct_decls.get(sname).?;
+    var fo: u16 = 0;
+    for (sd.fields) |f| {
+        const fw = self.widthOfTypeAnn(f.type_ann.*);
+        if (isStrTypeAnn(self, f.type_ann.*)) {
+            // Content compare (§3.2.1): load both pointers, then streq.
+            // `sp` survives streq's register churn, so the next field
+            // re-addresses from it cleanly. (Checked before the nested-
+            // struct case so the `str` classification matches `eqSupported`
+            // / `structHasContentField`.)
+            try class.emitWordLoadAtOffset(self, Reg.sp, lhs_off + fo, Reg.r1);
+            try class.emitWordLoadAtOffset(self, Reg.sp, rhs_off + fo, Reg.r2);
+            try strings.emitContentEq(self, Reg.r1, Reg.r2, false);
+            try isa.cmpRegImm(self, Reg.acu, 0); // acu == 0 → strings differ
+            try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
+        } else if (self.structNameOfTypeAnn(f.type_ann.*)) |sub| {
+            try emitFieldwiseEq(self, sub, lhs_off + fo, rhs_off + fo, patches);
+        } else if (fw == 1) {
+            try class.emitByteLoadAtOffset(self, Reg.sp, lhs_off + fo, Reg.acu);
+            try class.emitByteLoadAtOffset(self, Reg.sp, rhs_off + fo, Reg.r3);
+            try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+            try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+        } else {
+            try class.emitWordLoadAtOffset(self, Reg.sp, lhs_off + fo, Reg.acu);
+            try class.emitWordLoadAtOffset(self, Reg.sp, rhs_off + fo, Reg.r3);
+            try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+            try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+        }
+        fo += fw;
+    }
+}
+
+/// `true` when `sname` has a `str` field (directly or via a nested
+/// struct) — those must compare by content, forcing the per-field path.
+fn structHasContentField(self: *const Emitter, sname: []const u8) bool {
+    const sd = self.struct_decls.get(sname) orelse return false;
+    for (sd.fields) |f| {
+        if (isStrTypeAnn(self, f.type_ann.*)) return true;
+        if (self.structNameOfTypeAnn(f.type_ann.*)) |sub| {
+            if (structHasContentField(self, sub)) return true;
+        }
+    }
+    return false;
+}
+
+fn isStrTypeAnn(self: *const Emitter, t: ast.TypeAnn) bool {
+    return t == .named and std.mem.eql(u8, self.source[t.named.name.start..t.named.name.end], "str");
+}
+
+/// Whether `==` can be lowered for struct `sname`. Supported field
+/// types compare by value (scalars / bool / char / fixed), pointer
+/// identity (class / `&T` / fn-ptr — correct per §3.4.2 / §3.4.4),
+/// content (`str`, §3.2.1), or recursively (nested struct). Rejected:
+/// array / tuple / `Vec` (element-wise equality not lowered) and
+/// payload-carrying enums (distinct heap slots — no defined content
+/// equality), so those surface a clean diagnostic rather than a
+/// silently-wrong pointer compare.
+pub fn eqSupported(self: *const Emitter, sname: []const u8) bool {
+    const sd = self.struct_decls.get(sname) orelse return false;
+    for (sd.fields) |f| {
+        if (!fieldEqSupported(self, f.type_ann.*)) return false;
+    }
+    return true;
+}
+
+fn fieldEqSupported(self: *const Emitter, t: ast.TypeAnn) bool {
+    switch (t) {
+        .named => |n| {
+            const name = self.source[n.name.start..n.name.end];
+            if (self.struct_decls.contains(name)) return eqSupported(self, name);
+            if (self.enum_decls.get(name)) |ed| return !self.enumHasPayload(ed);
+            // Primitive (incl. `str`) or class name — value / content /
+            // identity compare, all handled.
+            return true;
+        },
+        .reference, .fn_type => return true, // pointer identity
+        .nullable, .array, .vec, .tuple => return false,
+    }
 }
 
 /// Copy `width` bytes from `[src]` to `[dest]` — word strides with a
