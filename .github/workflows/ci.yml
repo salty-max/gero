@@ -115,5 +115,7 @@ jobs:
         run: zig build check-broken -freference-trace
       - name: fmt-check-examples (every example is canonical)
         run: zig build fmt-check-examples -freference-trace
+      - name: check-examples-gr (.gr examples fmt-clean + type-check)
+        run: zig build check-examples-gr -freference-trace
       - name: test-examples (assemble + run + diff + round-trip each example)
         run: zig build test-examples -freference-trace

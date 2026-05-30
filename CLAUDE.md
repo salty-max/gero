@@ -334,7 +334,8 @@ zig build quick   # inner loop (~1s) — fmt-check + Debug test.
                   # Use between edits while iterating.
 
 zig build verify  # pre-push (~3s) — quick + lint + asm example
-                  # gates. REQUIRED green before pushing.
+                  # gates + .gr example gate (fmt-check + type-check).
+                  # REQUIRED green before pushing.
 
 zig build ci      # full matrix (~4s warm / ~2m cold) — verify
                   # + test-modes (Debug/Safe/Fast/Small)
