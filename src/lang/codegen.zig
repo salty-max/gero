@@ -4,7 +4,10 @@ const types_mod = @import("types.zig");
 const typecheck_mod = @import("typecheck.zig");
 const diag_mod = @import("diagnostic.zig");
 const opcodes = @import("codegen/opcodes.zig");
-const disasm_decoder = @import("../disasm/decoder.zig");
+/// Instruction decoder, re-exported so codegen submodules reach it
+/// without a deep relative import (the `@inline` size gate decodes its
+/// spliced body to count real instructions).
+pub const disasm_decoder = @import("../disasm/decoder.zig");
 const archive = @import("codegen/archive.zig");
 const mem_builtin = @import("codegen/mem_builtin.zig");
 const strings = @import("codegen/strings.zig");
@@ -12,8 +15,11 @@ const pattern = @import("codegen/pattern.zig");
 const expr_emit = @import("codegen/expr.zig");
 const control_flow = @import("codegen/control_flow.zig");
 const class = @import("codegen/class.zig");
-const struct_emit = @import("codegen/struct_.zig");
 const lambda = @import("codegen/lambda.zig");
+const inline_call = @import("codegen/inline_call.zig");
+const globals = @import("codegen/globals.zig");
+const def_emit = @import("codegen/def.zig");
+const statements = @import("codegen/statements.zig");
 const isa = @import("codegen/isa.zig");
 const bake_mod = @import("bake.zig");
 
@@ -246,25 +252,6 @@ fn findEntryDef(source: []const u8, program: *const ast.Program, entry_name: []c
     return null;
 }
 
-/// The binary operator a compound-assignment desugars to —
-/// `+=` → `+`, `<<=` → `<<`, and so on. `.set` has no binary form.
-fn compoundBinaryOp(op: ast.AssignOp) ast.BinaryOp {
-    return switch (op) {
-        // plain `=` never reaches this desugar helper
-        .set => unreachable,
-        .add_set => .add,
-        .sub_set => .sub,
-        .mul_set => .mul,
-        .div_set => .div,
-        .mod_set => .mod,
-        .bit_and_set => .bit_and,
-        .bit_or_set => .bit_or,
-        .bit_xor_set => .bit_xor,
-        .shl_set => .shl,
-        .shr_set => .shr,
-    };
-}
-
 /// `true` when `dd` carries a bare flag annotation named `name`.
 /// Module-level helper so emit-loop branches in `emitProgram` can
 /// route on `@cold` / `@interrupt` / etc. without spinning up a
@@ -376,7 +363,7 @@ pub const LoopFrame = struct {
 /// One top-level `let` / `const` global. Addressed by `@addr`
 /// literal, `@zero_page` (from `zp_cursor`), or the data region
 /// (from `data_cursor`).
-const Global = struct {
+pub const Global = struct {
     /// Resolved absolute address.
     address: u16,
     /// Byte width: 1 for `u8`/`bool`/`char`; 2 for 16-bit
@@ -635,7 +622,7 @@ pub const Emitter = struct {
     /// Reserve `bytes` (2-aligned) of frame space and return the base
     /// offset, without registering a name. For anonymous slots (inline
     /// arg bindings) whose names bind into a scope set up afterward.
-    fn reserveFrameSlot(self: *Emitter, bytes: u16) i8 {
+    pub fn reserveFrameSlot(self: *Emitter, bytes: u16) i8 {
         const slot: u16 = alignUpU16(bytes, 2);
         const new_frame_bytes = self.frame_bytes + slot;
         // @as: i8 covers -128..127; the prologue caps total frame size.
@@ -1061,275 +1048,32 @@ pub const Emitter = struct {
         const tramp_offset: u16 = @intCast(self.code.items.len);
         self.trampoline_addr = code_base + tramp_offset;
 
-        // push mb
+        // Save the caller's bank, switch via r2, call the target in r1,
+        // restore. The byte sequence is the listing in the doc above.
         try self.emitByte(Op.push_reg);
         try self.emitByte(Reg.mb);
-        // mov r2, mb
         try isa.movRegToReg(self, Reg.r2, Reg.mb);
-        // call r1
         try self.emitByte(Op.call_reg);
         try self.emitByte(Reg.r1);
-        // pop mb
         try self.emitByte(Op.pop_reg);
         try self.emitByte(Reg.mb);
-        // ret
         try self.emitByte(Op.ret_op);
     }
 
-    /// Register every top-level `let` / `const` as a `Global`.
-    /// Placement rule:
-    /// 1. `@addr $XXXX` → that literal address.
-    /// 2. `@zero_page` → next `zp_cursor` slot (overflow →
-    ///    `E_CODEGEN_ZP_OVERFLOW`).
-    /// 3. `@align(N)` → pad the cursor to a multiple of `N`.
-    /// 4. No annotation → next `data_cursor` slot.
+    /// Register every top-level `let` / `const` as a `Global` —
+    /// placement + bake-const eval in `codegen/globals.zig`.
     fn registerGlobals(self: *Emitter, program: *const ast.Program) !void {
-        for (program.statements) |*stmt| switch (stmt.*) {
-            .let_decl => |*d| try self.registerGlobalLet(d),
-            .const_decl => |*d| try self.registerGlobalConst(d),
-            else => {},
-        };
+        return globals.registerGlobals(self, program);
     }
 
-    fn registerGlobalLet(self: *Emitter, d: *const ast.LetDecl) !void {
-        if (d.pattern.* != .ident) return; // destructuring at top-level — slice later
-        const name = self.source[d.pattern.ident.name.start..d.pattern.ident.name.end];
-        const width = self.widthOfLetDecl(d);
-        try self.placeGlobal(name, width, d.annotations, d.pattern.ident.name);
-    }
-
-    fn registerGlobalConst(self: *Emitter, d: *const ast.ConstDecl) !void {
-        const name = self.source[d.name.start..d.name.end];
-        // Run the bake evaluator first so the resulting value
-        // tells us both the storage width AND the bytes to write
-        // into the data region. Non-bake initializers fall back
-        // to the type-annotation-driven width path.
-        const baked: ?bake_mod.BakeValue = try self.evalConstIfBake(d);
-        const width: u16 = if (baked) |v| @intCast(bake_mod.widthOf(v)) else self.widthOfConstDecl(d);
-        try self.placeGlobal(name, width, d.annotations, d.name);
-
-        if (baked) |v| {
-            const g = self.globals.get(name) orelse return;
-            const bytes = try self.arena.alloc(u8, bake_mod.widthOf(v));
-            _ = bake_mod.serialize(v, bytes);
-            try self.bake_inits.put(self.allocator, g.address, bytes);
-        }
-    }
-
-    /// Evaluate a `const X = …` initializer when the RHS is a
-    /// `bake do` block or a `bake def` call. `null` for
-    /// non-bake initializers.
-    fn evalConstIfBake(self: *Emitter, d: *const ast.ConstDecl) !?bake_mod.BakeValue {
-        switch (d.init.*) {
-            .do_expr => |do| {
-                if (!do.is_bake) return null;
-                return try self.runBake(d.span, .{ .do_expr = &d.init.do_expr });
-            },
-            .call => |c| {
-                if (c.callee.* != .ident) return null;
-                const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
-                const decl = self.bake_defs.get(callee_name) orelse return null;
-                // Top-level entry call: args must be literal /
-                // const-foldable.
-                const args = try self.arena.alloc(bake_mod.BakeValue, c.args.len);
-                for (c.args, 0..) |a, i| {
-                    args[i] = bake_mod.literalAsBakeValue(self.source, a) orelse {
-                        try self.diagFatal(a.span(), "E_BAKE_UNSUPPORTED", "bake-call args at top-level must be literal values");
-                        return null;
-                    };
-                }
-                return try self.runBakeDef(d.span, decl, args);
-            },
-            else => return null,
-        }
-    }
-
-    /// Tagged input to `runBake` — pick the entry shape so a
-    /// single helper handles the diagnostic plumbing.
-    const BakeEntry = union(enum) {
-        do_expr: *const ast.DoExpr,
-    };
-
-    fn runBake(self: *Emitter, span: ast.Span, entry: BakeEntry) !?bake_mod.BakeValue {
-        const opts: bake_mod.Options = .{ .bake_defs = &self.bakeDefsAdapter() };
-        var result = switch (entry) {
-            .do_expr => |de| try bake_mod.evaluateDo(self.allocator, self.source, de, opts),
-        };
-        defer result.deinit(self.allocator);
-        for (result.diagnostics) |diag| {
-            try self.diagnostics.append(self.allocator, .{
-                .severity = diag.severity,
-                .code = diag.code,
-                .message = try self.diag_arena.dupe(u8, diag.message),
-                .span = diag.span,
-            });
-        }
-        if (result.value == null) {
-            try self.diagFatal(span, "E_BAKE_UNSUPPORTED", "bake evaluation failed; see diagnostics above");
-            return null;
-        }
-        return try bake_mod.cloneBakeValue(self.arena, result.value.?);
-    }
-
-    fn runBakeDef(self: *Emitter, span: ast.Span, decl: *const ast.DefDecl, args: []const bake_mod.BakeValue) !?bake_mod.BakeValue {
-        const adapter = self.bakeDefsAdapter();
-        const opts: bake_mod.Options = .{ .bake_defs = &adapter };
-        var result = try bake_mod.evaluateDef(self.allocator, self.source, decl, args, opts);
-        defer result.deinit(self.allocator);
-        for (result.diagnostics) |diag| {
-            try self.diagnostics.append(self.allocator, .{
-                .severity = diag.severity,
-                .code = diag.code,
-                .message = try self.diag_arena.dupe(u8, diag.message),
-                .span = diag.span,
-            });
-        }
-        if (result.value == null) {
-            try self.diagFatal(span, "E_BAKE_UNSUPPORTED", "bake evaluation failed; see diagnostics above");
-            return null;
-        }
-        return try bake_mod.cloneBakeValue(self.arena, result.value.?);
-    }
-
-    /// Snapshot the bake-def index into the std-StringHashMap
-    /// shape the evaluator expects. The evaluator borrows the
-    /// map for the duration of one call; we rebuild the snapshot
-    /// each time so any future bake-def discovery stays visible.
-    fn bakeDefsAdapter(self: *Emitter) std.StringHashMap(*const ast.DefDecl) {
-        var map = std.StringHashMap(*const ast.DefDecl).init(self.arena);
-        var it = self.bake_defs.iterator();
-        while (it.next()) |e| {
-            // allow-strict: copies fit in the same arena that owns `bake_defs`; OOM here would have surfaced upstream.
-            map.put(e.key_ptr.*, e.value_ptr.*) catch unreachable;
-        }
-        return map;
-    }
-
-    fn placeGlobal(
-        self: *Emitter,
-        name: []const u8,
-        width: u16,
-        annotations: []const ast.Annotation,
-        decl_span: ast.Span,
-    ) !void {
-        var pinned_addr: ?u16 = null;
-        var zero_page: bool = false;
-        var align_n: ?u16 = null;
-        for (annotations) |ann| {
-            const ann_name = self.source[ann.name.start..ann.name.end];
-            if (std.mem.eql(u8, ann_name, "addr") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
-                // @as: parser stores int_lit.value as i32; address literals are always non-negative per spec §3.7.1; truncating to u16 preserves bytes.
-                pinned_addr = @intCast(ann.args[0].int_lit.value & 0xFFFF);
-            } else if (std.mem.eql(u8, ann_name, "zero_page")) {
-                zero_page = true;
-            } else if (std.mem.eql(u8, ann_name, "align") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
-                // @as: typechecker verified the value is a power of two; coercing i32 → u16 fits the alignment range.
-                align_n = @intCast(ann.args[0].int_lit.value & 0xFFFF);
-            }
-        }
-        const dup = try self.arena.dupe(u8, name);
-
-        if (pinned_addr) |addr| {
-            try self.globals.put(self.arena, dup, .{
-                .address = addr,
-                .width = width,
-                .placement = .addr,
-            });
-            return;
-        }
-        if (zero_page) {
-            if (align_n) |n| self.zp_cursor = alignUpU16(self.zp_cursor, n);
-            const zp_end: u16 = self.zp_cursor + width;
-            if (zp_end > 0x100) {
-                try self.diagFatal(decl_span, "E_CODEGEN_ZP_OVERFLOW", "zero-page region exhausted — too many `@zero_page` globals");
-                return;
-            }
-            try self.globals.put(self.arena, dup, .{
-                .address = self.zp_cursor,
-                .width = width,
-                .placement = .zero_page,
-            });
-            self.zp_cursor += width;
-            return;
-        }
-        // Dynamic data region.
-        if (align_n) |n| self.data_cursor = alignUpU16(self.data_cursor, n);
-        try self.globals.put(self.arena, dup, .{
-            .address = self.data_cursor,
-            .width = width,
-            .placement = .data,
-        });
-        self.data_cursor += width;
-    }
-
-    /// 1 for `i8` / `u8` / `bool` / `char`, 2 otherwise. Type-name
-    /// resolution is purely lexical against the type annotation;
-    /// the typechecker has already validated that the name refers
-    /// to a primitive or a registered user-type.
-    fn widthOfLetDecl(self: *const Emitter, d: *const ast.LetDecl) u16 {
-        if (d.type_ann) |t| return self.widthOfTypeAnn(t.*);
-        // No annotation — default to the widest primitive (2 bytes).
-        return 2;
-    }
-
-    fn widthOfConstDecl(self: *const Emitter, d: *const ast.ConstDecl) u16 {
-        if (d.type_ann) |t| return self.widthOfTypeAnn(t.*);
-        return 2;
-    }
-
-    /// Emit a load of `g`'s value into `acu`. The instruction
-    /// shape depends on the placement family + byte width.
+    /// Load `g`'s value into `acu` — see `codegen/globals.zig`.
     pub fn emitGlobalLoad(self: *Emitter, g: Global) !void {
-        switch (g.placement) {
-            .addr => {
-                if (g.width == 1) {
-                    try isa.mov8AddrToReg(self, g.address, Reg.acu);
-                } else {
-                    try isa.movAddrToReg(self, g.address, Reg.acu);
-                }
-            },
-            .zero_page => {
-                // @as: zero-page address fits in u8; placement.zero_page guarantees address ≤ 0xFF.
-                const zp: u8 = @intCast(g.address);
-                if (g.width == 1) {
-                    try isa.mov8ZpToReg(self, zp, Reg.acu);
-                } else {
-                    try isa.movZpToReg(self, zp, Reg.acu);
-                }
-            },
-            .data => {
-                if (g.width == 1) {
-                    try isa.mov8AddrToReg(self, g.address, Reg.acu);
-                } else {
-                    try isa.movAddrToReg(self, g.address, Reg.acu);
-                }
-            },
-        }
+        return globals.emitGlobalLoad(self, g);
     }
 
-    /// Emit a store of `src` reg's value into `g`'s slot. Byte-
-    /// width globals use `movl` (low-byte store) so the
-    /// neighboring byte stays untouched — critical for MMIO where
-    /// adjacent addresses are distinct registers.
-    fn emitGlobalStore(self: *Emitter, src: u8, g: Global) !void {
-        switch (g.placement) {
-            .addr, .data => {
-                if (g.width == 1) {
-                    try isa.movlRegToAddr(self, src, g.address);
-                } else {
-                    try isa.movRegToAddr(self, src, g.address);
-                }
-            },
-            .zero_page => {
-                // @as: zero-page address fits in u8; placement.zero_page guarantees address ≤ 0xFF.
-                const zp: u8 = @intCast(g.address);
-                if (g.width == 1) {
-                    try isa.movlRegToZp(self, src, zp);
-                } else {
-                    try isa.movRegToZp(self, src, zp);
-                }
-            },
-        }
+    /// Store `src` into `g`'s slot — see `codegen/globals.zig`.
+    pub fn emitGlobalStore(self: *Emitter, src: u8, g: Global) !void {
+        return globals.emitGlobalStore(self, src, g);
     }
 
     /// Byte width of a type annotation: 1 for `i8`/`u8`/`bool`/
@@ -1378,189 +1122,23 @@ pub const Emitter = struct {
         };
     }
 
-    const DefKind = enum { entry, regular };
+    /// Whether a def is the program entry point (epilogue `hlt`, frame
+    /// starts with `fp == sp`) or a regular fn (`ret` epilogue).
+    pub const DefKind = enum { entry, regular };
 
-    /// Emit one def: prologue + body + epilogue. Resets per-fn
-    /// state for a fresh frame view.
+    /// Emit one def: prologue + body + epilogue — see `codegen/def.zig`.
     fn emitDef(self: *Emitter, def: *const ast.DefDecl, kind: DefKind) !void {
-        const name = self.source[def.name.start..def.name.end];
-        return self.emitDefWithLabel(def, kind, name);
+        return def_emit.emitDef(self, def, kind);
     }
 
-    /// Emit a method as a plain def under a mangled
-    /// `ClassName.methodName` label. Threads
-    /// `current_class_name` so `super` resolves correctly.
+    /// Emit a method as a plain def under a mangled label.
     pub fn emitMethodAsDef(self: *Emitter, def: *const ast.DefDecl, class_name: []const u8, label: []const u8) !void {
-        const saved = self.current_class_name;
-        self.current_class_name = class_name;
-        defer self.current_class_name = saved;
-        return self.emitDefWithLabel(def, .regular, label);
+        return def_emit.emitMethodAsDef(self, def, class_name, label);
     }
 
-    fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, label: []const u8) !void {
-        // Detect `@bank N` annotation — drives bank routing for
-        // this def's body bytes + the fn's resolved address.
-        // `@interrupt N` swaps the body epilogue from `ret` to
-        // `rti` (pop flg/fp/ip in reverse of entry).
-        var bank_target: ?u8 = null;
-        var is_isr: bool = false;
-        for (def.annotations) |ann| {
-            const ann_name = self.source[ann.name.start..ann.name.end];
-            if (std.mem.eql(u8, ann_name, "bank") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
-                // @as: typechecker enforces u8 range on `@bank N`.
-                bank_target = @intCast(ann.args[0].int_lit.value & 0xFF);
-            } else if (std.mem.eql(u8, ann_name, "interrupt")) {
-                is_isr = true;
-            }
-        }
-
-        // Save + restore per-fn state.
-        const saved_locals = self.locals;
-        const saved_params = self.params;
-        const saved_frame = self.frame_bytes;
-        const saved_entry = self.is_entry;
-        const saved_isr = self.is_isr;
-        const saved_bank = self.current_bank;
-        const saved_ret_struct = self.current_ret_struct;
-        const saved_sret_param = self.sret_param_ofs;
-        const saved_sret_scratch = self.sret_scratch_ofs;
-        self.locals = .{};
-        self.params = .{};
-        self.frame_bytes = 0;
-        self.is_entry = (kind == .entry);
-        self.is_isr = is_isr;
-        self.current_bank = bank_target;
-        self.sret_scratch_ofs = null;
-        defer {
-            self.locals = saved_locals;
-            self.params = saved_params;
-            self.frame_bytes = saved_frame;
-            self.is_entry = saved_entry;
-            self.is_isr = saved_isr;
-            self.current_bank = saved_bank;
-            self.current_ret_struct = saved_ret_struct;
-            self.sret_param_ofs = saved_sret_param;
-            self.sret_scratch_ofs = saved_sret_scratch;
-        }
-
-        const dup_name = try self.arena.dupe(u8, label);
-        // @as: narrow usize code offset to u16; per-buffer offset stays ≤ 64 KiB.
-        const code_offset: u16 = @intCast(try self.currentOffset());
-        const addr: u16 = if (bank_target) |_|
-            bank_window_base + code_offset
-        else
-            code_base + code_offset;
-        try self.fn_addresses.put(self.arena, dup_name, addr);
-
-        // Bind params to positive fp-relative offsets. `call` left
-        // the stack as: [low] ret_ip, old_fp, arg_N-1, ..., arg_1,
-        // arg_0 [high] (per right-to-left push order at the call
-        // site). fp points at ret_ip, so param 0 is at fp+4,
-        // param 1 at fp+6, etc.
-        // Each param sits just above the previous one; a struct param
-        // occupies its full width (passed by value), so offsets sum
-        // widths rather than stepping a fixed 2 bytes.
-        var param_ofs: i32 = 4;
-        for (def.params) |p| {
-            const p_name = self.source[p.name.start..p.name.end];
-            const dup_p = try self.arena.dupe(u8, p_name);
-            // @as: i8 fp-offset; the frame-size cap keeps offsets in range.
-            try self.params.put(self.arena, dup_p, @intCast(param_ofs));
-            param_ofs += self.paramWidthAligned(p);
-        }
-
-        // A struct-returning def takes a hidden sret destination pointer
-        // just above its last user param (the caller pushes it first).
-        // `return` copies the result there instead of into `acu`.
-        self.current_ret_struct = if (def.ret_type) |rt| self.structNameOfTypeAnn(rt.*) else null;
-        // @as: sits past the params; the frame-size cap keeps it small.
-        self.sret_param_ofs = @intCast(param_ofs);
-
-        // Reserve local slots up front (cheap fixed reservation —
-        // a real allocator would compute live ranges). The sret scratch
-        // buffer (holds a returned struct until its consumer copies it
-        // out) is carved first so its offset is stable across the body.
-        const scratch_bytes: u16 = self.global_sret_scratch;
-        const frame_bytes = self.countFrameBytes(def.body);
-        // @as: frame size capped well below u16 by the i8 offset cap.
-        const reserve_bytes: u16 = @intCast(frame_bytes + scratch_bytes);
-        if (reserve_bytes > 0) try isa.subImmFromReg(self, reserve_bytes, Reg.sp);
-        if (scratch_bytes > 0) self.sret_scratch_ofs = try self.allocLocalSized("\x00sret", scratch_bytes);
-
-        // Closure-analysis pre-pass — populates fn_closure_info
-        // with the lambda inventory, capture layouts, and the
-        // promotion set. Drives the heap-cell paths in
-        // emitLetDecl / emitIdent / emitAssign + the closure-call
-        // dispatch in emitCall.
-        try lambda.analyzeFn(self, def);
-        defer lambda.resetFnInfo(self);
-
-        // Entry-def prologue: write every `@interrupt N` handler's
-        // address into its IVT slot BEFORE the user body runs.
-        // Boot leaves `flg.I = 0` so an interrupt could otherwise
-        // fire against an uninitialized vector.
-        if (self.is_entry) try self.emitIvtInit();
-
-        // Function body opens the outermost block of the frame —
-        // `defer`s at the top of the body run before the implicit
-        // epilogue's `hlt` / `ret` / `rti`.
-        try self.pushBlock();
-        for (def.body) |stmt| try self.emitStatement(stmt);
-        try self.popBlockWithDefers();
-
-        // Implicit epilogue (no explicit `return`).
-        if (self.is_entry) {
-            try isa.hlt(
-                self,
-            );
-        } else if (is_isr) {
-            // ISR teardown — pop flg/fp/ip in reverse of entry.
-            try self.emitByte(Op.rti_op);
-        } else {
-            // `ret` resets sp = fp then pops ret_ip + old_fp. The
-            // VM handles the whole tear-down; we just need to land
-            // the return value in acu (callers read from there).
-            try self.emitByte(Op.ret_op);
-        }
-
-        // Emit any lambda bodies discovered during analyzeFn —
-        // they emit as plain defs adjacent to the parent so their
-        // call sites + closure-creation patches resolve normally.
-        try lambda.emitLambdaBodies(self, def);
-    }
-
-    /// Rewrite each unresolved call's 2-byte address slot.
-    /// Unknown callees emit `E_CODEGEN_UNDEFINED_FN`.
+    /// Resolve forward-reference call sites — see `codegen/def.zig`.
     fn patchCalls(self: *Emitter) !void {
-        for (self.call_patches.items) |p| {
-            const target_addr: u16 = switch (p.target) {
-                .fn_name => |name| self.fn_addresses.get(name) orelse {
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena,
-                        "codegen: call target `{s}` is not a known top-level def",
-                        .{name},
-                    );
-                    try self.diagnostics.append(self.allocator, .{
-                        .severity = .fatal,
-                        .code = "E_CODEGEN_UNDEFINED_FN",
-                        .message = msg,
-                        .span = p.span,
-                    });
-                    continue;
-                },
-                .trampoline => self.trampoline_addr orelse continue,
-            };
-            // Resolve which buffer holds this patch — base or
-            // one of the bank ArrayLists.
-            const buf: []u8 = if (p.bank) |b|
-                if (self.banks.getPtr(b)) |bl| bl.items else continue
-            else
-                self.code.items;
-            // Overwrite the 2-byte LE address slot.
-            // safety: u16 → 2 bytes by definition; both casts are byte-masks.
-            buf[p.code_offset] = @intCast(target_addr & 0xFF);
-            buf[p.code_offset + 1] = @intCast(target_addr >> 8);
-        }
+        return def_emit.patchCalls(self);
     }
 
     // ---------- statement emission ----------
@@ -1758,262 +1336,35 @@ pub const Emitter = struct {
         return 2;
     }
 
-    fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
-        var a = a_in;
-        if (a.op != .set) {
-            // Desugar `target op= value` into `target = (target op value)`
-            // and fall through to the plain-store path — same target
-            // support (ident + class field) as `=`.
-            const rhs = try self.arena.create(ast.Expr);
-            rhs.* = .{ .binary = .{
-                .op = compoundBinaryOp(a.op),
-                .lhs = a.target,
-                .rhs = a.value,
-                .span = a.span,
-            } };
-            a.value = rhs;
-            a.op = .set;
-        }
-        // Field-target assignment — `recv.field = value` on a class
-        // receiver routes to the class field-store path.
-        if (a.target.* == .field) {
-            if (self.classNameOf(a.target.field.receiver)) |cname| {
-                const fname = self.source[a.target.field.field.start..a.target.field.field.end];
-                try class.emitFieldStore(self, a.target.field.receiver, cname, fname, a.value, a.target.field.span);
-                return;
-            }
-            if (self.structNameOf(a.target.field.receiver)) |sname| {
-                const fname = self.source[a.target.field.field.start..a.target.field.field.end];
-                try struct_emit.emitFieldStore(self, a.target.field.receiver, sname, fname, a.value);
-                return;
-            }
-        }
-        if (a.target.* != .ident) {
-            try self.unsupported(a.span, "non-ident assignment targets (field / index)");
-            return;
-        }
-        const name = self.source[a.target.ident.span.start..a.target.ident.span.end];
-        // Struct-typed reassignment (`b = a`) copies the value's bytes
-        // into the binding's slot (§3.4 value semantics).
-        if (self.structNameOf(a.target)) |sname| {
-            if (self.locals.get(name)) |ofs| {
-                try struct_emit.emitInto(self, a.value, sname, ofs);
-                return;
-            }
-        }
-        // Captured-binding write inside a lambda body — store
-        // through the env-relative cell pointer (the parent
-        // promoted the binding so the write is visible everywhere).
-        if (self.captures.get(name)) |slot| {
-            try lambda.emitCaptureStore(self, slot, a.value);
-            return;
-        }
-        // Promoted local in the parent fn — store through the
-        // local-slot cell pointer.
-        if (lambda.isPromoted(self, name)) {
-            if (self.locals.get(name)) |ofs| {
-                try lambda.emitPromotedAssign(self, ofs, a.value);
-                return;
-            }
-        }
-        try self.emitExpr(a.value); // result in acu
-        if (self.locals.get(name)) |ofs| {
-            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
-            return;
-        }
-        if (self.params.get(name)) |ofs| {
-            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
-            return;
-        }
-        if (self.globals.get(name)) |g| {
-            try self.emitGlobalStore(Reg.acu, g);
-            return;
-        }
-        try self.unsupported(a.target.span(), "assignment target not in scope");
+    /// `target = value` (and compound / inc-dec desugarings) — see
+    /// `codegen/statements.zig`.
+    fn emitAssign(self: *Emitter, a: ast.AssignStmt) !void {
+        return statements.emitAssign(self, a);
     }
 
-    /// `target++` / `target--` — desugars to `target = target ± 1` and
-    /// reuses the assignment path.
+    /// `target++` / `target--` — see `codegen/statements.zig`.
     fn emitIncDec(self: *Emitter, id: ast.IncDecStmt) !void {
-        const one = try self.arena.create(ast.Expr);
-        one.* = .{ .int_lit = .{ .value = 1, .span = id.span } };
-        const rhs = try self.arena.create(ast.Expr);
-        rhs.* = .{ .binary = .{
-            .op = if (id.inc) .add else .sub,
-            .lhs = id.target,
-            .rhs = one,
-            .span = id.span,
-        } };
-        try self.emitAssign(.{ .target = id.target, .op = .set, .value = rhs, .span = id.span });
+        return statements.emitIncDec(self, id);
     }
 
+    /// `let` binding lowering — see `codegen/statements.zig`.
     fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
-        if (d.pattern.* != .ident) {
-            try self.unsupported(d.span, "non-ident `let` patterns");
-            return;
-        }
-        const name = self.source[d.pattern.ident.name.start..d.pattern.ident.name.end];
-        const dup_name = try self.arena.dupe(u8, name);
-
-        // Struct-typed binding: reserve the full inline slot and
-        // materialize the initializer (literal fields or a value copy)
-        // straight into it (§3.4 value semantics).
-        const struct_name: ?[]const u8 = if (d.type_ann) |t|
-            self.structNameOfTypeAnn(t.*)
-        else if (d.init) |e|
-            self.structNameOf(e)
-        else
-            null;
-        if (struct_name) |sname| {
-            const slot = try self.allocLocalSized(dup_name, self.structWidth(sname));
-            if (d.init) |init_expr| try struct_emit.emitInto(self, init_expr, sname, slot);
-            return;
-        }
-
-        const ofs = try self.allocLocal(dup_name);
-        // Promoted bindings live as heap cells — the slot holds
-        // the cell pointer instead of the value directly.
-        if (lambda.isPromoted(self, name)) {
-            try lambda.emitPromotedLetInit(self, d.init, ofs);
-            return;
-        }
-        if (d.init) |init_expr| {
-            try self.emitExpr(init_expr); // result in acu
-            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
-        }
-        // Uninitialized let leaves the slot at whatever the prologue
-        // memset gave it (sub_imm pads sp downward without zeroing).
+        return statements.emitLetDecl(self, d);
     }
 
+    /// `const` binding lowering — see `codegen/statements.zig`.
     fn emitConstDecl(self: *Emitter, d: ast.ConstDecl) !void {
-        const name = self.source[d.name.start..d.name.end];
-        const dup_name = try self.arena.dupe(u8, name);
-        const ofs = try self.allocLocal(dup_name);
-        try self.emitExpr(d.init);
-        try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+        return statements.emitConstDecl(self, d);
     }
 
+    /// `return [value]` lowering — see `codegen/statements.zig`.
     fn emitReturnStmt(self: *Emitter, r: ast.ReturnStmt) !void {
-        if (r.value) |v| {
-            if (self.inline_ret_struct) |sname| {
-                // Inlined struct return: materialize into the caller-
-                // frame result slot, then leave its address in `acu`.
-                try struct_emit.emitInto(self, v, sname, self.inline_ret_slot);
-                try isa.movRegToReg(self, Reg.fp, Reg.acu);
-                const slot = self.inline_ret_slot; // negative — a caller-frame local
-                // @as: widen i8 → i16 so negating the min value is safe; |slot| ≤ frame cap fits u16.
-                if (slot < 0) try isa.subImmFromReg(self, @intCast(-@as(i16, slot)), Reg.acu);
-            } else if (self.current_ret_struct) |sname| {
-                // Struct return: copy the value into the caller's sret
-                // buffer, then leave that buffer's address in `acu` (a
-                // struct value *is* an address).
-                try struct_emit.emitIntoSret(self, v, sname, self.sret_param_ofs);
-                try isa.movRegToReg(self, Reg.fp, Reg.acu);
-                if (self.sret_param_ofs > 0) try isa.addImmToReg(self, @intCast(self.sret_param_ofs), Reg.acu);
-                try isa.movRegOffsetToReg(self, Reg.acu, 0, Reg.acu);
-            } else {
-                try self.emitExpr(v);
-            }
-        }
-        // Defers attached to every still-active block fire before
-        // the frame tears down — innermost first, LIFO within each
-        // block. `acu` carries the return value through the cleanup
-        // (the defer-emitter saves / restores it).
-        try self.unwindAllDefersForReturn();
-        if (self.inline_returns) |*returns| {
-            // Inside an `@inline` body — redirect `return` to a
-            // forward jmp to the after-inlined site. Patch slot
-            // queued for resolution after the body emits.
-            try self.emitByte(Op.jmp_addr);
-            const patch = try self.currentOffset();
-            try self.emitU16Le(0);
-            try returns.append(self.allocator, patch);
-            return;
-        }
-        if (self.is_entry) {
-            try isa.hlt(
-                self,
-            );
-        } else if (self.is_isr) {
-            try self.emitByte(Op.rti_op);
-        } else {
-            try self.emitByte(Op.ret_op);
-        }
+        return statements.emitReturnStmt(self, r);
     }
 
-    /// Emit `mov_imm16_addr <handler>, ivt_base + 2*vec` for every
-    /// `@interrupt N` handler. Handler addresses patch later via
-    /// `call_patches`. Runs at the top of the entry body.
-    fn emitIvtInit(self: *Emitter) !void {
-        for (self.interrupt_defs.items) |handler| {
-            try self.emitByte(Op.mov_imm16_addr);
-            const addr_patch_offset = try self.currentOffset();
-            // 2-byte imm slot — will be patched with the handler's
-            // resolved address.
-            try self.emitU16Le(0);
-            // 2-byte addr slot — IVT slot for this vector (known
-            // at emit time, no patch needed).
-            // @as: widen u8 vector to u16 before doubling so the wrap-add against ivt_base stays in u16.
-            const slot: u16 = ivt_base +% (@as(u16, handler.vector) *% 2);
-            try self.emitU16Le(slot);
-            try self.call_patches.append(self.allocator, .{
-                .bank = self.current_bank,
-                .code_offset = addr_patch_offset,
-                .target = .{ .fn_name = handler.def_name },
-                .span = .{ .start = 0, .end = 0 },
-            });
-        }
-    }
-
+    /// `print a, b, …` lowering — see `codegen/statements.zig`.
     fn emitPrintStmt(self: *Emitter, p: ast.PrintStmt) !void {
-        for (p.args, 0..) |arg, i| {
-            if (i > 0) {
-                // Space separator between args per spec §4.9.
-                try isa.movImmToReg(self, ' ', Reg.acu);
-                try isa.sys(self, Sys.print_char);
-            }
-            try self.emitPrintArg(arg);
-        }
-        // Trailing newline per spec §4.9.
-        try isa.sys(self, Sys.print_newline);
-    }
-
-    /// Emit one `print` argument. Routes to the right syscall by
-    /// the arg's inferred type (spec §4.9):
-    ///
-    /// - `char` → `print_char`.
-    /// - `fixed` → `print_fixed`.
-    /// - String literals: per-part emission for interpolations.
-    /// - `str` non-literal → `print_str`.
-    /// - Otherwise → `print_int`.
-    fn emitPrintArg(self: *Emitter, arg: *const ast.Expr) !void {
-        if (arg.* == .str_lit) {
-            try self.emitPrintStrLit(arg.str_lit);
-            return;
-        }
-        if (self.isPrimitiveType(arg, .char)) {
-            try self.emitExpr(arg);
-            try isa.sys(self, Sys.print_char);
-            return;
-        }
-        if (self.isPrimitiveType(arg, .fixed)) {
-            try self.emitExpr(arg);
-            try isa.sys(self, Sys.print_fixed);
-            return;
-        }
-        if (self.isPrimitiveType(arg, .str)) {
-            try self.emitExpr(arg);
-            try isa.sys(self, Sys.print_str);
-            return;
-        }
-        // A struct has no scalar rendering — `print p` would otherwise
-        // emit `print_int` of its base address. Print fields explicitly.
-        if (self.structNameOf(arg)) |_| {
-            try self.unsupported(arg.span(), "printing a whole struct — print its fields instead");
-            return;
-        }
-        try self.emitExpr(arg);
-        try isa.sys(self, Sys.print_int);
+        return statements.emitPrintStmt(self, p);
     }
 
     /// Delegated to `codegen/strings.zig`.
@@ -2068,148 +1419,10 @@ pub const Emitter = struct {
     /// Max `@inline` nesting depth.
     pub const inline_max_depth: u8 = 8;
 
-    /// Splice an `@inline` callee's body at the current emit
-    /// position. Args land in fresh locals in the caller's frame;
-    /// `return` in the body redirects to a jmp past the splice.
-    /// Body size capped at `inline_body_instruction_cap` (over →
-    /// `E_ANN_INLINE_TOO_LARGE`).
-    pub fn emitInlineCall(
-        self: *Emitter,
-        callee: *const ast.DefDecl,
-        c: ast.CallExpr,
-    ) !void {
-        if (self.inline_depth >= inline_max_depth) {
-            try self.diagFatal(c.span, "E_ANN_INLINE_RECURSIVE", "codegen: `@inline` def expanded past nesting cap — likely recursive inlining");
-            return;
-        }
-        self.inline_depth += 1;
-        defer self.inline_depth -= 1;
-
-        if (c.args.len != callee.params.len) {
-            try self.diagFatal(c.span, "E_ANN_INLINE_ARITY", "codegen: `@inline` call arity mismatch — typechecker should have flagged");
-            return;
-        }
-
-        // Bind args → fresh locals in the caller's frame. Each local
-        // extends `frame_bytes` and stays addressable for the body's
-        // emit (gero pre-reserves the whole frame at the def's
-        // prologue, so a new sub-imm-from-sp is needed for the inline-
-        // only slots). Args are materialized in the CALLER's scope
-        // (locals still live), then their slots bind into the fresh
-        // body scope below.
-        const Binding = struct { name: []const u8, ofs: i8 };
-        const bindings = try self.arena.alloc(Binding, callee.params.len);
-        for (callee.params, c.args, bindings) |p, arg, *b| {
-            const dup = try self.arena.dupe(u8, self.source[p.name.start..p.name.end]);
-            // A struct param binds to a full-width local materialized by
-            // value; a scalar param to a single word.
-            if (self.argStructName(arg)) |sname| {
-                const w = self.structSlotWidth(sname);
-                try isa.subImmFromReg(self, w, Reg.sp);
-                const ofs = self.reserveFrameSlot(w);
-                try struct_emit.emitInto(self, arg, sname, ofs);
-                b.* = .{ .name = dup, .ofs = ofs };
-            } else {
-                try isa.subImmFromReg(self, 2, Reg.sp);
-                try expr_emit.emitExpr(self, arg);
-                const ofs = self.reserveFrameSlot(2);
-                try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
-                b.* = .{ .name = dup, .ofs = ofs };
-            }
-        }
-
-        const saved_locals = self.locals;
-        const saved_params = self.params;
-        self.locals = .{};
-        self.params = .{};
-        defer {
-            self.locals = saved_locals;
-            self.params = saved_params;
-        }
-        for (bindings) |b| try self.locals.put(self.arena, b.name, b.ofs);
-
-        // A struct-returning inline materializes its result into a
-        // caller-frame slot (no callee frame exists to hold it); each
-        // `return` writes there and leaves the slot's address in `acu`.
-        const saved_inline_ret = self.inline_ret_struct;
-        const saved_inline_slot = self.inline_ret_slot;
-        defer {
-            self.inline_ret_struct = saved_inline_ret;
-            self.inline_ret_slot = saved_inline_slot;
-        }
-        if (callee.ret_type) |rt| if (self.structNameOfTypeAnn(rt.*)) |sname| {
-            const w = self.structWidth(sname);
-            try isa.subImmFromReg(self, self.structSlotWidth(sname), Reg.sp);
-            self.inline_ret_struct = sname;
-            self.inline_ret_slot = self.reserveFrameSlot(w);
-        };
-
-        // Body-emit setup: capture starting offset for the
-        // instruction-count gate; install a fresh inline_returns
-        // collector so nested `return` statements rewrite to a
-        // forward jmp instead of `ret`.
-        const start_offset = try self.currentOffset();
-        const saved_returns = self.inline_returns;
-        self.inline_returns = std.ArrayList(usize).empty;
-        defer self.inline_returns = saved_returns;
-
-        // Lambdas inside `@inline` bodies are unsupported
-        // (their mangled labels would collide across call sites).
-        const saved_fn_info = self.fn_closure_info;
-        defer self.fn_closure_info = saved_fn_info;
-        try lambda.analyzeFn(self, callee);
-        if (self.fn_closure_info.lambdas.items.len > 0) {
-            const name = self.source[callee.name.start..callee.name.end];
-            const msg = try std.fmt.allocPrint(
-                self.arena,
-                "`@inline` def `{s}` declares a lambda in its body — unsupported (lambdas need a host def, but inlined bodies don't emit one)",
-                .{name},
-            );
-            try self.diagFatal(c.span, "E_ANN_INLINE_LAMBDA_BODY", msg);
-            return;
-        }
-
-        try self.pushBlock();
-        for (callee.body) |stmt| try self.emitStatement(stmt);
-        try self.popBlockWithDefers();
-
-        // Patch every `return`-redirected jmp to land HERE (after
-        // the body). The return value is in `acu` and stays there
-        // for the caller — matches the regular-call ABI.
-        const end_offset = try self.currentOffset();
-        const end_addr: u16 = self.codeOffsetToAddress(end_offset);
-        if (self.inline_returns) |*returns| {
-            const buf: []u8 = self.currentBufferMut();
-            for (returns.items) |patch| {
-                buf[patch] = @intCast(end_addr & 0xFF);
-                buf[patch + 1] = @intCast((end_addr >> 8) & 0xFF);
-            }
-            returns.deinit(self.allocator);
-        }
-
-        // Size gate: the body must emit ≤ 32 instructions. Walk
-        // the spliced bytes via the disasm decoder so the count
-        // matches what the ISA considers an instruction (not "Zig
-        // emit calls").
-        const buf: []const u8 = self.currentBufferMut();
-        var inst_count: usize = 0;
-        var cursor: usize = start_offset;
-        while (cursor < end_offset) {
-            const dec = disasm_decoder.decodeOne(self.allocator, buf, cursor) catch break;
-            defer self.allocator.free(dec.instruction.operands);
-            inst_count += 1;
-            if (cursor == dec.next_offset) break;
-            cursor = dec.next_offset;
-        }
-        if (inst_count > inline_body_instruction_cap) {
-            const name = self.source[callee.name.start..callee.name.end];
-            const msg = try std.fmt.allocPrint(
-                self.arena,
-                "`@inline` body of `{s}` lowers to {d} instructions — over the cap of {d}",
-                .{ name, inst_count, inline_body_instruction_cap },
-            );
-            try self.diagFatal(c.span, "E_ANN_INLINE_TOO_LARGE", msg);
-        }
+    /// Splice an `@inline` callee's body at the call site — see
+    /// `codegen/inline_call.zig`.
+    pub fn emitInlineCall(self: *Emitter, callee: *const ast.DefDecl, c: ast.CallExpr) !void {
+        return inline_call.emitInlineCall(self, callee, c);
     }
 
     /// Emit the debug-symbol section. Includes resolved fn
@@ -2255,7 +1468,7 @@ pub const Emitter = struct {
 
     /// Resolve a code-buffer offset to its run-time address.
     /// Picks `bank_window_base` or `code_base` from `current_bank`.
-    fn codeOffsetToAddress(self: *const Emitter, offset: usize) u16 {
+    pub fn codeOffsetToAddress(self: *const Emitter, offset: usize) u16 {
         // @as: per-buffer offsets stay ≤ 64 KiB by ISA constraint.
         const ofs: u16 = @intCast(offset);
         return if (self.current_bank != null) bank_window_base + ofs else code_base + ofs;
@@ -2263,7 +1476,7 @@ pub const Emitter = struct {
 
     /// Mutable view into the active code buffer. Used for emit-
     /// time slot patches.
-    fn currentBufferMut(self: *Emitter) []u8 {
+    pub fn currentBufferMut(self: *Emitter) []u8 {
         if (self.current_bank) |b| {
             if (self.banks.getPtr(b)) |bl| return bl.items;
         }
@@ -2288,7 +1501,7 @@ pub const Emitter = struct {
     }
 
     /// Delegated to `codegen/control_flow.zig`.
-    fn unwindAllDefersForReturn(self: *Emitter) !void {
+    pub fn unwindAllDefersForReturn(self: *Emitter) !void {
         return control_flow.unwindAllDefersForReturn(self);
     }
 

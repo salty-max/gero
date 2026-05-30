@@ -7,7 +7,7 @@ const archive = @import("archive.zig");
 const assert_builtin = @import("assert.zig");
 const diverge_builtin = @import("diverge.zig");
 const class = @import("class.zig");
-const struct_ = @import("struct_.zig");
+const value_struct = @import("value_struct.zig");
 const lambda = @import("lambda.zig");
 const overflow = @import("overflow.zig");
 
@@ -192,7 +192,7 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
     if (self.structNameOf(f.receiver)) |sname| {
         const fname = self.source[f.field.start..f.field.end];
         try emitExpr(self, f.receiver);
-        try struct_.emitFieldLoad(self, sname, fname);
+        try value_struct.emitFieldLoad(self, sname, fname);
         return;
     }
     if (f.receiver.* == .ident) {
@@ -706,7 +706,7 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     while (i > 0) {
         i -= 1;
         if (self.argStructName(c.args[i])) |sname| {
-            try struct_.pushArg(self, c.args[i], sname);
+            try value_struct.pushArg(self, c.args[i], sname);
         } else {
             try emitExpr(self, c.args[i]);
             try isa.pushReg(self, Reg.acu);
