@@ -233,7 +233,7 @@ fn formatStdinGr(
     }
 
     var allocating = std.Io.Writer.Allocating.init(arena);
-    try gero.lang.print(&allocating.writer, &tree.program, src);
+    try gero.lang.print(&allocating.writer, &tree.program, src, tree.comments);
     return emitStdin(stdout, src, allocating.written(), check_mode);
 }
 
@@ -348,7 +348,7 @@ fn formatOneGr(
     }
 
     var allocating = std.Io.Writer.Allocating.init(arena);
-    try gero.lang.print(&allocating.writer, &tree.program, src);
+    try gero.lang.print(&allocating.writer, &tree.program, src, tree.comments);
     const formatted = allocating.written();
 
     if (std.mem.eql(u8, src, formatted)) {

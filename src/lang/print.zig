@@ -1,16 +1,21 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const lexer = @import("lexer.zig");
 
 /// Emit canonical `.gr` text for `program` into `writer`. `source`
 /// is the original source buffer the AST was parsed from; the
 /// printer slices identifier names, char literals, format specs
-/// and similar atoms from it.
+/// and similar atoms from it. `comments` are the lexer's line
+/// comments in source order — re-emitted as leading/trailing lines so
+/// formatting is lossless. Pass `&.{}` when comment fidelity isn't
+/// needed (e.g. AST round-trip tests).
 pub fn print(
     writer: *std.Io.Writer,
     program: *const ast.Program,
     source: []const u8,
+    comments: []const lexer.Comment,
 ) std.Io.Writer.Error!void {
-    var p: Printer = .{ .writer = writer, .source = source, .indent = 0 };
+    var p: Printer = .{ .writer = writer, .source = source, .indent = 0, .comments = comments, .comment_idx = 0 };
     for (program.statements, 0..) |s, i| {
         if (i > 0) {
             try p.writer.writeByte('\n');
@@ -22,9 +27,13 @@ pub fn print(
                 try p.writer.writeByte('\n');
             }
         }
+        try p.flushLeading(s.span().start);
         try p.writeStatement(s);
+        try p.flushTrailing(s.span().end);
     }
     if (program.statements.len > 0) try p.writer.writeByte('\n');
+    // File-trailing comments after the last statement.
+    try p.flushLeading(@intCast(source.len));
 }
 
 fn isMultiLineStatement(s: ast.Statement) bool {
@@ -48,6 +57,41 @@ const Printer = struct {
     writer: *std.Io.Writer,
     source: []const u8,
     indent: usize,
+    /// Line comments in source order; `comment_idx` is the next one
+    /// not yet emitted. The printer drains this as it walks spanned
+    /// items so every comment lands exactly once.
+    comments: []const lexer.Comment,
+    comment_idx: usize,
+
+    // ---------- comments ----------
+
+    /// Emit every pending comment that starts before `offset`, each on
+    /// its own line at the current indent. Drives leading + standalone
+    /// comments; call it just before printing a spanned item (or the
+    /// closing `end`) so the comment lands above it.
+    fn flushLeading(self: *Printer, offset: u32) std.Io.Writer.Error!void {
+        while (self.comment_idx < self.comments.len and self.comments[self.comment_idx].start < offset) {
+            const c = self.comments[self.comment_idx];
+            try self.writeIndent();
+            try self.writer.writeAll(std.mem.trimEnd(u8, self.source[c.start..c.end], " \t"));
+            try self.writer.writeByte('\n');
+            self.comment_idx += 1;
+        }
+    }
+
+    /// If the next pending comment sits on the same source line as the
+    /// item that just ended at byte `after`, emit it inline as a
+    /// trailing ` -- …`. No-op otherwise (it'll flush as a leading
+    /// comment before the next item).
+    fn flushTrailing(self: *Printer, after: u32) std.Io.Writer.Error!void {
+        if (self.comment_idx >= self.comments.len) return;
+        const c = self.comments[self.comment_idx];
+        if (c.start < after) return;
+        if (std.mem.indexOfScalar(u8, self.source[after..c.start], '\n') != null) return;
+        try self.writer.writeByte(' ');
+        try self.writer.writeAll(std.mem.trimEnd(u8, self.source[c.start..c.end], " \t"));
+        self.comment_idx += 1;
+    }
 
     // ---------- low-level ----------
 
@@ -63,15 +107,24 @@ const Printer = struct {
     /// Bump indent by one and emit each body statement as its own
     /// line. `writeStatement` is responsible for prefixing its own
     /// indent, so this function only sets up indentation depth.
+    /// Interleaves leading/trailing comments per statement; `end_off`
+    /// (the byte offset of the construct's closing keyword) flushes any
+    /// comment between the last statement and `end`. Pass `null` when
+    /// that boundary isn't cleanly known (e.g. `if`/`elif` arms) — such
+    /// comments still emit losslessly, just before the next item.
     fn writeBodyBlock(
         self: *Printer,
         body: []const ast.Statement,
+        end_off: ?u32,
     ) std.Io.Writer.Error!void {
         self.indent += 1;
         for (body) |s| {
+            try self.flushLeading(s.span().start);
             try self.writeStatement(s);
+            try self.flushTrailing(s.span().end);
             try self.writer.writeByte('\n');
         }
+        if (end_off) |off| try self.flushLeading(off);
         self.indent -= 1;
     }
 
@@ -129,7 +182,7 @@ const Printer = struct {
                 try self.writeExpr(d.expr, .lowest);
             },
             .expr_stmt => |es| try self.writeExpr(es.expr, .lowest),
-            .block => |b| try self.writeBlockStmt(b.body),
+            .block => |b| try self.writeBlockStmt(b.body, b.span.end),
             .if_stmt => |is_| try self.writeIfStmt(is_),
             .while_stmt => |ws| try self.writeWhileStmt(ws),
             .for_stmt => |fs| try self.writeForStmt(fs),
@@ -213,32 +266,38 @@ const Printer = struct {
     fn writeBlockStmt(
         self: *Printer,
         body: []const ast.Statement,
+        end_off: u32,
     ) std.Io.Writer.Error!void {
         try self.writer.writeAll("do\n");
-        try self.writeBodyBlock(body);
+        try self.writeBodyBlock(body, end_off);
         try self.writeIndent();
         try self.writer.writeAll("end");
     }
 
     fn writeIfStmt(self: *Printer, s: ast.IfStmt) std.Io.Writer.Error!void {
-        try self.writeIfChain(s.arms, s.else_body);
+        try self.writeIfChain(s.arms, s.else_body, s.span.end);
     }
 
     fn writeIfChain(
         self: *Printer,
         arms: []const ast.IfArm,
         else_body: ?[]const ast.Statement,
+        end_off: u32,
     ) std.Io.Writer.Error!void {
         for (arms, 0..) |arm, i| {
             try self.writer.writeAll(if (i == 0) "if " else "elif ");
             try self.writeIfArmHead(arm);
             try self.writer.writeByte('\n');
-            try self.writeBodyBlock(arm.body);
+            // Arm boundary (next elif/else) isn't a clean offset, so pass
+            // null on non-final arms; the else body (or the final arm
+            // when there's no else) is bounded by the `if`'s `end`.
+            const bound: ?u32 = if (i == arms.len - 1 and else_body == null) end_off else null;
+            try self.writeBodyBlock(arm.body, bound);
         }
         if (else_body) |eb| {
             try self.writeIndent();
             try self.writer.writeAll("else\n");
-            try self.writeBodyBlock(eb);
+            try self.writeBodyBlock(eb, end_off);
         }
         try self.writeIndent();
         try self.writer.writeAll("end");
@@ -278,7 +337,7 @@ const Printer = struct {
             try self.writer.writeAll(self.lexeme(lbl));
         }
         try self.writer.writeByte('\n');
-        try self.writeBodyBlock(s.body);
+        try self.writeBodyBlock(s.body, s.span.end);
         try self.writeIndent();
         try self.writer.writeAll("end");
     }
@@ -297,7 +356,7 @@ const Printer = struct {
             try self.writer.writeAll(self.lexeme(lbl));
         }
         try self.writer.writeByte('\n');
-        try self.writeBodyBlock(s.body);
+        try self.writeBodyBlock(s.body, s.span.end);
         try self.writeIndent();
         try self.writer.writeAll("end");
     }
@@ -309,7 +368,9 @@ const Printer = struct {
             try self.writer.writeAll(self.lexeme(lbl));
         }
         try self.writer.writeByte('\n');
-        try self.writeBodyBlock(s.body);
+        // Body is closed by `until`, which sits just before the cond at
+        // `span.end`; bounding there flushes any pre-`until` comment.
+        try self.writeBodyBlock(s.body, s.span.end);
         try self.writeIndent();
         try self.writer.writeAll("until ");
         try self.writeExpr(s.cond, .lowest);
@@ -321,6 +382,7 @@ const Printer = struct {
         try self.writer.writeByte('\n');
         self.indent += 1;
         for (s.arms) |arm| {
+            try self.flushLeading(arm.pattern.span().start);
             try self.writeIndent();
             try self.writer.writeAll("case ");
             try self.writePattern(arm.pattern);
@@ -332,12 +394,15 @@ const Printer = struct {
             if (arm.body.len == 1 and isSingleLineStatement(arm.body[0])) {
                 try self.writer.writeByte(' ');
                 try self.writeStatementInline(arm.body[0]);
+                try self.flushTrailing(arm.body[0].span().end);
                 try self.writer.writeByte('\n');
             } else {
+                // Arm boundary (next case) isn't a clean offset → null.
                 try self.writer.writeByte('\n');
-                try self.writeBodyBlock(arm.body);
+                try self.writeBodyBlock(arm.body, null);
             }
         }
+        try self.flushLeading(s.span.end);
         self.indent -= 1;
         try self.writeIndent();
         try self.writer.writeAll("end");
@@ -382,11 +447,11 @@ const Printer = struct {
             try self.writer.writeAll(" -> ");
             try self.writeTypeAnn(r);
         }
-        if (d.body.len == 0 and hasAnnotationNamed(d.annotations, "abstract")) {
-            return; // abstract method — no body
+        if (d.body.len == 0 and hasAnnotationNamed(self.source, d.annotations, "abstract")) {
+            return; // abstract method — no body, no `end`
         }
         try self.writer.writeByte('\n');
-        try self.writeBodyBlock(d.body);
+        try self.writeBodyBlock(d.body, d.span.end);
         try self.writeIndent();
         try self.writer.writeAll("end");
     }
@@ -421,6 +486,7 @@ const Printer = struct {
         try self.writer.writeByte('\n');
         self.indent += 1;
         for (d.fields) |f| {
+            try self.flushLeading(f.span.start);
             try self.writeIndent();
             try self.writeAnnotations(f.annotations);
             try self.writer.writeAll("let ");
@@ -433,15 +499,19 @@ const Printer = struct {
                 try self.writer.writeAll(" = ");
                 try self.writeExpr(init_, .lowest);
             }
+            try self.flushTrailing(f.span.end);
             try self.writer.writeByte('\n');
         }
         if (d.fields.len > 0 and d.methods.len > 0) try self.writer.writeByte('\n');
         for (d.methods, 0..) |m, i| {
             if (i > 0) try self.writer.writeByte('\n');
+            try self.flushLeading(m.span.start);
             try self.writeIndent();
             try self.writeDefDecl(m);
+            try self.flushTrailing(m.span.end);
             try self.writer.writeByte('\n');
         }
+        try self.flushLeading(d.span.end);
         self.indent -= 1;
         try self.writeIndent();
         try self.writer.writeAll("end");
@@ -455,12 +525,15 @@ const Printer = struct {
         try self.writer.writeByte('\n');
         self.indent += 1;
         for (d.fields) |f| {
+            try self.flushLeading(f.span.start);
             try self.writeIndent();
             try self.writer.writeAll(self.lexeme(f.name));
             try self.writer.writeAll(": ");
             try self.writeTypeAnn(f.type_ann);
+            try self.flushTrailing(f.span.end);
             try self.writer.writeByte('\n');
         }
+        try self.flushLeading(d.span.end);
         self.indent -= 1;
         try self.writeIndent();
         try self.writer.writeAll("end");
@@ -474,6 +547,7 @@ const Printer = struct {
         try self.writer.writeByte('\n');
         self.indent += 1;
         for (d.variants) |v| {
+            try self.flushLeading(v.span.start);
             try self.writeIndent();
             try self.writer.writeAll("case ");
             try self.writer.writeAll(self.lexeme(v.name));
@@ -492,8 +566,10 @@ const Printer = struct {
                 }
                 try self.writer.writeByte(')');
             }
+            try self.flushTrailing(v.span.end);
             try self.writer.writeByte('\n');
         }
+        try self.flushLeading(d.span.end);
         self.indent -= 1;
         try self.writeIndent();
         try self.writer.writeAll("end");
@@ -762,11 +838,11 @@ const Printer = struct {
             .do_expr => |d| {
                 if (d.is_bake) try self.writer.writeAll("bake ");
                 try self.writer.writeAll("do\n");
-                try self.writeBodyBlock(d.body);
+                try self.writeBodyBlock(d.body, d.span.end);
                 try self.writeIndent();
                 try self.writer.writeAll("end");
             },
-            .if_expr => |ie| try self.writeIfChain(ie.arms, ie.else_body),
+            .if_expr => |ie| try self.writeIfChain(ie.arms, ie.else_body, ie.span.end),
             .lambda => |l| try self.writeLambda(l),
             .list_lit => |ll| {
                 try self.writer.writeByte('[');
@@ -889,7 +965,7 @@ const Printer = struct {
             try self.writeTypeAnn(r);
         }
         try self.writer.writeByte('\n');
-        try self.writeBodyBlock(l.body);
+        try self.writeBodyBlock(l.body, l.span.end);
         try self.writeIndent();
         try self.writer.writeAll("end");
     }
@@ -920,12 +996,14 @@ fn binOpLexeme(op: ast.BinaryOp) []const u8 {
     };
 }
 
-fn hasAnnotationNamed(anns: []const ast.Annotation, _name: []const u8) bool {
-    _ = anns;
-    _ = _name;
-    // The parser already stripped `@abstract` bodies from the AST
-    // (body is empty). We don't need to inspect annotations here —
-    // a body-less def_decl is the signal. Reserved for future use.
+/// `true` when `anns` carries an annotation whose name lexeme equals
+/// `name`. Lets the printer tell an abstract method (body-less +
+/// `@abstract` → no `end`) from an empty-bodied regular def (`def f()
+/// end` → keeps its `end`); both have `body.len == 0`.
+fn hasAnnotationNamed(source: []const u8, anns: []const ast.Annotation, name: []const u8) bool {
+    for (anns) |a| {
+        if (std.mem.eql(u8, source[a.name.start..a.name.end], name)) return true;
+    }
     return false;
 }
 

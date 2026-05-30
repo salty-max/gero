@@ -16,6 +16,10 @@ const Kind = lexer.Token.Kind;
 pub const ParseTree = struct {
     program: ast.Program,
     errors: []core.ParseError,
+    /// Line comments from the lexer, carried through so the formatter
+    /// can re-emit them. Duped into the tree's allocator — the source
+    /// `TokenStream` is freed independently of the tree.
+    comments: []lexer.Comment,
     /// Owned message strings the parser allocPrint'd for richer
     /// diagnostics (e.g. `expect` building `"expected )"`).
     /// String literals don't land here — only heap-allocated bytes
@@ -29,6 +33,7 @@ pub const ParseTree = struct {
         self.allocator.free(self.allocated_messages);
         self.program.deinit();
         self.allocator.free(self.errors);
+        self.allocator.free(self.comments);
     }
 
     /// `true` when at least one diagnostic was recorded.
@@ -112,6 +117,7 @@ pub fn parse(
             .allocator = allocator,
         },
         .errors = try errors.toOwnedSlice(allocator),
+        .comments = try allocator.dupe(lexer.Comment, stream.comments),
         .allocated_messages = try allocated_messages.toOwnedSlice(allocator),
         .allocator = allocator,
     };

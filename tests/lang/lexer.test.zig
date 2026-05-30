@@ -438,3 +438,22 @@ test "lex: char literal compares natural in expressions" {
         .eq_eq, .int_lit,
     });
 }
+
+test "tokenize: line comments captured off the token stream" {
+    var ts = try tokenize("-- header\nlet x = 1  -- trailing\n");
+    defer ts.deinit();
+    // Comments don't perturb the grammar stream — still `let x = 1`.
+    try std.testing.expectEqual(Token.Kind.kw_let, ts.tokens[0].kind);
+    // Both comments are recorded in source order with their spans.
+    const src = "-- header\nlet x = 1  -- trailing\n";
+    try std.testing.expectEqual(@as(usize, 2), ts.comments.len);
+    try std.testing.expectEqualStrings("-- header", src[ts.comments[0].start..ts.comments[0].end]);
+    try std.testing.expectEqualStrings("-- trailing", src[ts.comments[1].start..ts.comments[1].end]);
+}
+
+test "tokenize: `x--` decrement is not captured as a comment" {
+    var ts = try tokenize("x--\n");
+    defer ts.deinit();
+    try std.testing.expectEqual(@as(usize, 0), ts.comments.len);
+    try std.testing.expectEqual(Token.Kind.minus_minus, ts.tokens[1].kind);
+}
