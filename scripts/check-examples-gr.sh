@@ -19,16 +19,12 @@
 set -euo pipefail
 
 GERO_BIN="${GERO_BIN:-./zig-out/bin/gero}"
-EXAMPLES_DIR="${EXAMPLES_DIR:-docs/examples}"
+# Space-separated roots: the doc tours plus the runnable lang suite.
+EXAMPLES_DIRS="${EXAMPLES_DIRS:-docs/examples examples/lang}"
 FMT_ONLY_MARKER="gero-example: fmt-only"
 
 if [[ ! -x "$GERO_BIN" ]]; then
     printf 'check-examples-gr: %s not found — run `zig build install` first\n' "$GERO_BIN" >&2
-    exit 1
-fi
-
-if [[ ! -d "$EXAMPLES_DIR" ]]; then
-    printf 'check-examples-gr: %s missing\n' "$EXAMPLES_DIR" >&2
     exit 1
 fi
 
@@ -38,10 +34,19 @@ else
     GREEN=''; RED=''; DIM=''; BOLD=''; RESET=''
 fi
 
-mapfile -t -d '' gr_files < <(find "$EXAMPLES_DIR" -type f -name '*.gr' -print0 | sort -z)
+present_dirs=()
+for d in $EXAMPLES_DIRS; do
+    [[ -d "$d" ]] && present_dirs+=("$d")
+done
+if [[ ${#present_dirs[@]} -eq 0 ]]; then
+    printf 'check-examples-gr: none of [%s] exist\n' "$EXAMPLES_DIRS" >&2
+    exit 1
+fi
+
+mapfile -t -d '' gr_files < <(find "${present_dirs[@]}" -type f -name '*.gr' -print0 | sort -z)
 
 if [[ ${#gr_files[@]} -eq 0 ]]; then
-    printf 'check-examples-gr: no .gr files under %s\n' "$EXAMPLES_DIR" >&2
+    printf 'check-examples-gr: no .gr files under [%s]\n' "$EXAMPLES_DIRS" >&2
     exit 1
 fi
 

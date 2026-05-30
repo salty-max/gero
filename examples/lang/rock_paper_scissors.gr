@@ -1,0 +1,40 @@
+-- rock_paper_scissors.gr — settle a round with an enum + match.
+--
+-- `Move` is a three-variant tagged union; `beats(a, b)` matches on
+-- `a` and uses the `is` test to decide whether it defeats `b`.
+-- `outcome` prints 1 for a first-player win, 0 for a loss, 2 for a
+-- tie (neither move beats the other). Exercises enum declarations,
+-- `match` arms, the `is` variant test, and `bool` results.
+--
+-- Run:
+--   gero compile rock_paper_scissors.gr -o rock_paper_scissors.gx
+--   gero run rock_paper_scissors.gx
+enum Move
+  case Rock
+  case Paper
+  case Scissors
+end
+
+def beats(a: Move, b: Move) -> bool
+  match a
+    case Move.Rock => return b is Move.Scissors
+    case Move.Paper => return b is Move.Rock
+    case Move.Scissors => return b is Move.Paper
+  end
+end
+
+def outcome(a: Move, b: Move)
+  if beats(a, b)
+    print 1
+  elif beats(b, a)
+    print 0
+  else
+    print 2
+  end
+end
+
+def main()
+  outcome(Move.Rock, Move.Scissors)
+  outcome(Move.Paper, Move.Scissors)
+  outcome(Move.Scissors, Move.Scissors)
+end

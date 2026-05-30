@@ -119,3 +119,5 @@ jobs:
         run: zig build check-examples-gr -freference-trace
       - name: test-examples (assemble + run + diff + round-trip each example)
         run: zig build test-examples -freference-trace
+      - name: test-examples-lang (compile + run + diff each .gr example)
+        run: zig build test-examples-lang -freference-trace

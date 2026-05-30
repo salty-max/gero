@@ -1,0 +1,23 @@
+-- fizzbuzz.gr — the classic, in gero-lang.
+--
+-- Prints 1..15, replacing multiples of 3 with "Fizz", of 5 with
+-- "Buzz", and of both with "FizzBuzz". Exercises a `for` range loop,
+-- the `if`/`elif`/`else` chain, the `%` operator, and `print` of both
+-- integers and strings.
+--
+-- Run:
+--   gero compile fizzbuzz.gr -o fizzbuzz.gx
+--   gero run fizzbuzz.gx
+def main()
+  for i in 1..16
+    if i % 15 == 0
+      print "FizzBuzz"
+    elif i % 3 == 0
+      print "Fizz"
+    elif i % 5 == 0
+      print "Buzz"
+    else
+      print i
+    end
+  end
+end

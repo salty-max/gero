@@ -1,0 +1,25 @@
+-- collatz.gr — Collatz (3n+1) stopping times.
+--
+-- `steps(n)` counts how many halve-or-(3n+1) steps reach 1. `main`
+-- prints the stopping time for a handful of starting values.
+-- Exercises recursion that branches on parity (`n % 2`) and combines
+-- the two recursive cases.
+--
+-- Run:
+--   gero compile collatz.gr -o collatz.gx
+--   gero run collatz.gx
+def steps(n: i16) -> i16
+  if n == 1
+    return 0
+  end
+  if n % 2 == 0
+    return 1 + steps(n / 2)
+  end
+  return 1 + steps(3 * n + 1)
+end
+
+def main()
+  print steps(6)
+  print steps(11)
+  print steps(27)
+end

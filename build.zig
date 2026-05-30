@@ -366,6 +366,14 @@ pub fn build(b: *std.Build) void {
     );
     test_examples_step.dependOn(&test_examples_cmd.step);
 
+    const test_examples_lang_cmd = b.addSystemCommand(&.{ "bash", "scripts/test-examples-lang.sh" });
+    test_examples_lang_cmd.step.dependOn(b.getInstallStep());
+    const test_examples_lang_step = b.step(
+        "test-examples-lang",
+        "Compile + run every examples/lang/*.gr and diff against its .expected",
+    );
+    test_examples_lang_step.dependOn(&test_examples_lang_cmd.step);
+
     const check_examples_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-examples.sh" });
     check_examples_cmd.step.dependOn(b.getInstallStep());
     const check_examples_step = b.step(
@@ -416,7 +424,7 @@ pub fn build(b: *std.Build) void {
 
     // ----- All-in-one CI ---------------------------------------------------
 
-    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + check-examples + check-broken + fmt-check-examples + check-examples-gr + test-examples");
+    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + check-examples + check-broken + fmt-check-examples + check-examples-gr + test-examples + test-examples-lang");
     ci_step.dependOn(lint_step);
     ci_step.dependOn(test_modes_step);
     ci_step.dependOn(test_all);
@@ -425,6 +433,7 @@ pub fn build(b: *std.Build) void {
     ci_step.dependOn(&fmt_check_examples_cmd.step);
     ci_step.dependOn(&check_examples_gr_cmd.step);
     ci_step.dependOn(&test_examples_cmd.step);
+    ci_step.dependOn(&test_examples_lang_cmd.step);
 
     // ----- Changesets ------------------------------------------------------
 

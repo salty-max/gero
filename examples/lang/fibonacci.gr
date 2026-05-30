@@ -1,0 +1,21 @@
+-- fibonacci.gr — naive recursive Fibonacci.
+--
+-- `fib(n)` recurses on the two-term recurrence; `main` prints the
+-- first ten terms, one per line. Exercises recursion, multiple
+-- returns from one function, and integer arithmetic.
+--
+-- Run:
+--   gero compile fibonacci.gr -o fibonacci.gx
+--   gero run fibonacci.gx
+def fib(n: i16) -> i16
+  if n < 2
+    return n
+  end
+  return fib(n - 1) + fib(n - 2)
+end
+
+def main()
+  for i in 0..10
+    print fib(i)
+  end
+end
