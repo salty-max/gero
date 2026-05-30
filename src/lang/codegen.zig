@@ -133,6 +133,7 @@ pub fn compile(
         .locals = .{},
         .params = .{},
         .frame_bytes = 0,
+        .frame_overflow = false,
         .is_entry = false,
         .is_isr = false,
         .current_ret_struct = null,
@@ -419,6 +420,10 @@ pub const Emitter = struct {
     /// Total bytes reserved for this fn's locals — the prologue
     /// emits `sub frame_bytes, sp`.
     frame_bytes: u8,
+    /// Set when a frame slot or param offset exceeds the i8 fp-relative
+    /// addressing range (±127); `emitDefWithLabel` reports it as
+    /// `E_CODEGEN_FRAME_TOO_LARGE`. Reset per def.
+    frame_overflow: bool,
     /// `true` while emitting the entry def's body. Drives the
     /// `return` lowering (`hlt` vs `ret`) and skips the
     /// `push fp` / `mov sp, fp` parts of the prologue (the VM
@@ -624,8 +629,18 @@ pub const Emitter = struct {
     /// arg bindings) whose names bind into a scope set up afterward.
     pub fn reserveFrameSlot(self: *Emitter, bytes: u16) i8 {
         const slot: u16 = alignUpU16(bytes, 2);
-        const new_frame_bytes = self.frame_bytes + slot;
-        // @as: i8 covers -128..127; the prologue caps total frame size.
+        // @as: widen the u8 cursor so the sum can exceed 255 + be range-checked below instead of wrapping.
+        const new_frame_bytes = @as(u16, self.frame_bytes) + slot;
+        // The ISA's only fp-relative addressing is `[fp + imm8]` (±127),
+        // so a frame past 127 bytes can't be addressed. Flag it and
+        // return a placeholder; `emitDefWithLabel` turns the flag into a
+        // clean `E_CODEGEN_FRAME_TOO_LARGE` rather than panicking on the
+        // i8 cast (the compile fails, so the placeholder is never run).
+        if (new_frame_bytes > 127) {
+            self.frame_overflow = true;
+            return -1;
+        }
+        // @as: bounded ≤127 by the check above.
         const ofs: i8 = -@as(i8, @intCast(new_frame_bytes));
         self.frame_bytes = @intCast(new_frame_bytes);
         return ofs;

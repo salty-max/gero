@@ -346,9 +346,11 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
     // unsupported error rather than copying through the parent's buffer.
     const saved_ret_struct = self.current_ret_struct;
     const saved_inline_ret = self.inline_ret_struct;
+    const saved_overflow = self.frame_overflow;
     self.locals = .{};
     self.params = .{};
     self.frame_bytes = 0;
+    self.frame_overflow = false;
     self.is_entry = false;
     self.current_ret_struct = null;
     self.inline_ret_struct = null;
@@ -362,6 +364,7 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
         self.locals = saved_locals;
         self.params = saved_params;
         self.frame_bytes = saved_frame;
+        self.frame_overflow = saved_overflow;
         self.is_entry = saved_entry;
         self.current_bank = saved_bank;
         self.current_ret_struct = saved_ret_struct;
@@ -428,6 +431,10 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
     try self.popBlockWithDefers();
 
     try self.emitByte(Op.ret_op);
+
+    if (self.frame_overflow) {
+        try self.diagFatal(lambda.span, "E_CODEGEN_FRAME_TOO_LARGE", "lambda frame exceeds the 127-byte limit on fp-relative addressing");
+    }
 }
 
 /// One captured binding inside a lambda body — drives the
