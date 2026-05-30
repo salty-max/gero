@@ -50,6 +50,7 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     const saved_locals = self.locals;
     const saved_params = self.params;
     const saved_frame = self.frame_bytes;
+    const saved_overflow = self.frame_overflow;
     const saved_entry = self.is_entry;
     const saved_isr = self.is_isr;
     const saved_bank = self.current_bank;
@@ -59,6 +60,7 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     self.locals = .{};
     self.params = .{};
     self.frame_bytes = 0;
+    self.frame_overflow = false;
     self.is_entry = (kind == .entry);
     self.is_isr = is_isr;
     self.current_bank = bank_target;
@@ -67,6 +69,7 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
         self.locals = saved_locals;
         self.params = saved_params;
         self.frame_bytes = saved_frame;
+        self.frame_overflow = saved_overflow;
         self.is_entry = saved_entry;
         self.is_isr = saved_isr;
         self.current_bank = saved_bank;
@@ -89,8 +92,14 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     var param_ofs: i32 = 4;
     for (def.params) |p| {
         const dup_p = try self.arena.dupe(u8, self.source[p.name.start..p.name.end]);
-        // @as: i8 fp-offset; the frame-size cap keeps offsets in range.
-        try self.params.put(self.arena, dup_p, @intCast(param_ofs));
+        // Params sit at positive fp-offsets, addressed via `[fp + imm8]`
+        // (±127). Past that, flag it (reported below) and bind a
+        // placeholder so we don't panic on the i8 cast.
+        const ofs: i8 = if (param_ofs > 127) blk: {
+            self.frame_overflow = true;
+            break :blk 4;
+        } else @intCast(param_ofs);
+        try self.params.put(self.arena, dup_p, ofs);
         param_ofs += self.paramWidthAligned(p);
     }
 
@@ -136,6 +145,13 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
         try self.emitByte(Op.rti_op);
     } else {
         try self.emitByte(Op.ret_op);
+    }
+
+    // A frame slot or param that overran the i8 fp-offset range during
+    // body emission can't be addressed — fail cleanly rather than ship
+    // the placeholder offsets reserveFrameSlot / the param loop emitted.
+    if (self.frame_overflow) {
+        try self.diagFatal(def.span, "E_CODEGEN_FRAME_TOO_LARGE", "function frame exceeds the 127-byte limit on fp-relative addressing — reduce its locals or parameters");
     }
 
     // Lambda bodies discovered during analysis emit as plain defs

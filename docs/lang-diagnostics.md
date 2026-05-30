@@ -711,6 +711,33 @@ note: defers run after the enclosing block's control flow is
       already decided (spec §4.10)
 ```
 
+### 5.15 Codegen (E_CODEGEN_*)
+
+Emitted by the lowering pass when a construct can't be turned into
+valid bytecode. Most indicate a not-yet-lowered feature or a resource
+the target can't satisfy; a few are internal invariants the front-end
+should have already enforced.
+
+| Code | Meaning |
+|------|---------|
+| `E_CODEGEN_UNSUPPORTED` | A syntactically + type-valid construct the codegen doesn't lower yet (the catch-all — e.g. printing a whole struct, an ordering comparison on structs, a struct `==` with an array / tuple / `Vec` / payload-enum / nullable field). |
+| `E_CODEGEN_FRAME_TOO_LARGE` | A function's locals or parameters exceed the 127-byte limit on `[fp + imm8]` fp-relative addressing (the ISA's only frame-offset mode). Reduce locals/params. |
+| `E_CODEGEN_UNDEFINED_FN` | A call's target isn't a known top-level `def` (an unresolved forward reference at patch time). |
+| `E_CODEGEN_UNKNOWN_CLASS` | A constructor / field / method targets a class with no computed layout. |
+| `E_CODEGEN_UNDEFINED_FIELD` | A `recv.field` names a field the class doesn't declare. |
+| `E_CODEGEN_UNDEFINED_METHOD` | A `recv.method(…)` / `super.method(…)` resolves to no method on the class or its ancestors. |
+| `E_CODEGEN_UNDEFINED_VARIANT` | An `Enum.Variant` names a variant the enum doesn't declare. |
+| `E_CODEGEN_BAD_VARIANT_PATH` | A variant constructor path isn't the expected `Enum.Variant` shape. |
+| `E_CODEGEN_NO_PARENT` | `super` used in a class with no `extends` parent. |
+| `E_CODEGEN_NO_SELF` | `super.method` / `self` used outside a method body. |
+| `E_CODEGEN_ZP_OVERFLOW` | The zero-page region is exhausted — too many `@zero_page` globals. |
+| `E_CODEGEN_DATA_OVERFLOW` | The static data region is exhausted (globals + string pool + vtables). |
+| `E_CODEGEN_DEFER_NO_BLOCK` | A `defer` was emitted with no enclosing block frame (internal invariant). |
+| `E_CODEGEN_LOOP_JUMP_NO_LOOP` | `break` / `continue` reached codegen outside any loop (internal — the typechecker normally catches this). |
+| `E_CODEGEN_LAMBDA_NOT_ANALYZED` | Internal: a lambda body was missing from the closure-analysis pass. |
+| `E_CODEGEN_UNBOUND_CAPTURE` | A captured binding has no env slot — e.g. calling a free `def` from inside a lambda body, which closure analysis doesn't support. |
+| `E_CODEGEN_NONPROMOTED_CAPTURE_WRITE` | A write targets a captured binding the analysis didn't promote to a heap cell. |
+
 ---
 
 ## 6. Error code registry
@@ -783,6 +810,23 @@ Codes are stable. New ones append; old ones never change meaning.
 | `W_DEAD_TEST` | `is` runtime type test | v0.3 |
 | `E_BUILTIN_SHADOW` | Builtin shadowing | v0.3 |
 | `E_UNDEFINED_SYMBOL` | Name resolution | v0.3 |
+| `E_CODEGEN_UNSUPPORTED` | Codegen | v0.3 |
+| `E_CODEGEN_FRAME_TOO_LARGE` | Codegen | v0.3 |
+| `E_CODEGEN_UNDEFINED_FN` | Codegen | v0.3 |
+| `E_CODEGEN_UNKNOWN_CLASS` | Codegen | v0.3 |
+| `E_CODEGEN_UNDEFINED_FIELD` | Codegen | v0.3 |
+| `E_CODEGEN_UNDEFINED_METHOD` | Codegen | v0.3 |
+| `E_CODEGEN_UNDEFINED_VARIANT` | Codegen | v0.3 |
+| `E_CODEGEN_BAD_VARIANT_PATH` | Codegen | v0.3 |
+| `E_CODEGEN_NO_PARENT` | Codegen | v0.3 |
+| `E_CODEGEN_NO_SELF` | Codegen | v0.3 |
+| `E_CODEGEN_ZP_OVERFLOW` | Codegen | v0.3 |
+| `E_CODEGEN_DATA_OVERFLOW` | Codegen | v0.3 |
+| `E_CODEGEN_DEFER_NO_BLOCK` | Codegen | v0.3 |
+| `E_CODEGEN_LOOP_JUMP_NO_LOOP` | Codegen | v0.3 |
+| `E_CODEGEN_LAMBDA_NOT_ANALYZED` | Codegen | v0.3 |
+| `E_CODEGEN_UNBOUND_CAPTURE` | Codegen | v0.3 |
+| `E_CODEGEN_NONPROMOTED_CAPTURE_WRITE` | Codegen | v0.3 |
 
 ---
 

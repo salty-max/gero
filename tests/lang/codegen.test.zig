@@ -4375,6 +4375,17 @@ test "codegen/struct: payload-free enum field compares by tag" {
     , "1\n0\n");
 }
 
+test "codegen: a frame past the 127-byte fp-offset limit is a clean error (not a panic)" {
+    try expectCodegenError(
+        \\struct Big
+        \\  a: [i16; 70]
+        \\end
+        \\def main()
+        \\  let b: Big
+        \\end
+    , "E_CODEGEN_FRAME_TOO_LARGE");
+}
+
 test "codegen/struct: printing a whole struct is rejected" {
     try expectCodegenError(
         \\struct P
