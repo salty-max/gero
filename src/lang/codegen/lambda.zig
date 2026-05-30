@@ -340,10 +340,18 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
     const saved_bank = self.current_bank;
     const saved_promoted = self.fn_closure_info.promoted;
     const saved_closure_bindings = self.fn_closure_info.closure_bindings;
+    // A lambda body has its own return contract — don't let the
+    // enclosing fn's sret state leak in. The closure-call path passes
+    // no sret destination, so a struct `return` here surfaces a clean
+    // unsupported error rather than copying through the parent's buffer.
+    const saved_ret_struct = self.current_ret_struct;
+    const saved_inline_ret = self.inline_ret_struct;
     self.locals = .{};
     self.params = .{};
     self.frame_bytes = 0;
     self.is_entry = false;
+    self.current_ret_struct = null;
+    self.inline_ret_struct = null;
     // Swap the scope-dependent analysis fields to this lambda's
     // own — promoted bindings + closure_bindings differ per
     // scope. The lambdas list stays shared across nested levels
@@ -356,6 +364,8 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
         self.frame_bytes = saved_frame;
         self.is_entry = saved_entry;
         self.current_bank = saved_bank;
+        self.current_ret_struct = saved_ret_struct;
+        self.inline_ret_struct = saved_inline_ret;
         self.fn_closure_info.promoted = saved_promoted;
         self.fn_closure_info.closure_bindings = saved_closure_bindings;
     }
@@ -406,10 +416,10 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
 
     // Reserve local slots up front (lambda body uses locals like
     // any other fn).
-    const local_count = self.countLocalsInBody(lambda.body);
-    if (local_count > 0) {
-        // @as: 2 bytes per slot, caps well below u16.
-        const reserve_bytes: u16 = @intCast(local_count * 2);
+    const frame_bytes = self.countFrameBytes(lambda.body);
+    if (frame_bytes > 0) {
+        // @as: frame size caps well below u16 by the i8 offset cap.
+        const reserve_bytes: u16 = @intCast(frame_bytes);
         try isa.subImmFromReg(self, reserve_bytes, Reg.sp);
     }
 

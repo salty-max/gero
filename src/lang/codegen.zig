@@ -12,6 +12,7 @@ const pattern = @import("codegen/pattern.zig");
 const expr_emit = @import("codegen/expr.zig");
 const control_flow = @import("codegen/control_flow.zig");
 const class = @import("codegen/class.zig");
+const struct_emit = @import("codegen/struct_.zig");
 const lambda = @import("codegen/lambda.zig");
 const isa = @import("codegen/isa.zig");
 const bake_mod = @import("bake.zig");
@@ -128,9 +129,16 @@ pub fn compile(
         .frame_bytes = 0,
         .is_entry = false,
         .is_isr = false,
+        .current_ret_struct = null,
+        .sret_param_ofs = 0,
+        .sret_scratch_ofs = null,
+        .inline_ret_struct = null,
+        .inline_ret_slot = 0,
         .fn_addresses = .{},
         .fn_banks = .{},
         .noreturn_defs = .{},
+        .fn_ret_struct = .{},
+        .global_sret_scratch = 0,
         .inline_defs = .{},
         .interrupt_defs = .empty,
         .inline_returns = null,
@@ -432,6 +440,25 @@ pub const Emitter = struct {
     /// Emitting the body of an `@interrupt N` def. Flips `return`
     /// lowering to `rti`.
     is_isr: bool,
+    /// Struct return-type name of the def currently being emitted, or
+    /// `null` for a scalar-returning def. When set, `return` copies the
+    /// value into the caller-provided sret buffer.
+    current_ret_struct: ?[]const u8,
+    /// fp-offset of the hidden sret destination pointer in the current
+    /// frame (`4 + Σ user-param widths` — it sits just above the last
+    /// user param). Valid only while `current_ret_struct` is set.
+    sret_param_ofs: i16,
+    /// fp-offset of this frame's sret scratch buffer (a returned
+    /// struct's holding space), or `null` when the program returns no
+    /// structs.
+    sret_scratch_ofs: ?i16,
+    /// While splicing a struct-returning `@inline` body: the struct
+    /// name + the caller-frame slot its `return` materializes into
+    /// (`acu` then holds that slot's address). `null` outside such an
+    /// inline. Takes precedence over the sret path — an inlined body
+    /// has no callee frame, so its result lives in a caller local.
+    inline_ret_struct: ?[]const u8,
+    inline_ret_slot: i8,
     /// `def` name → absolute address. Banked defs live in the
     /// bank window; un-banked defs live in the base image.
     fn_addresses: std.StringHashMapUnmanaged(u16),
@@ -442,6 +469,16 @@ pub const Emitter = struct {
     /// `def` names carrying `@noreturn`. `emitCall` skips the
     /// post-call epilogue for these.
     noreturn_defs: std.StringHashMapUnmanaged(void),
+    /// `def` name → struct return-type name, for the ones that return
+    /// a struct by value. Drives the sret calling convention: the
+    /// caller passes a hidden destination pointer and the callee copies
+    /// its result there (§3.4). Absent → returns a scalar in `acu`.
+    fn_ret_struct: std.StringHashMapUnmanaged([]const u8),
+    /// Largest (2-aligned) struct return width across the program — the
+    /// size of the per-frame sret scratch buffer that holds a returned
+    /// struct until its consumer copies it out. 0 when no def returns a
+    /// struct.
+    global_sret_scratch: u16,
     /// `def` names carrying `@inline`. `emitCall` inlines the
     /// body rather than emitting `call addr`.
     inline_defs: std.StringHashMapUnmanaged(*const ast.DefDecl),
@@ -581,77 +618,132 @@ pub const Emitter = struct {
     /// Reserve a 2-byte slot for `name` at the next fp-relative
     /// offset. Returns the offset (negative — locals grow down).
     pub fn allocLocal(self: *Emitter, name: []const u8) !i8 {
-        const new_frame_bytes = self.frame_bytes + 2;
-        // @as: i8 covers -128..127; with 2 bytes per slot we cap at 64 locals per frame, fits.
-        const ofs: i8 = -@as(i8, @intCast(new_frame_bytes));
+        return self.allocLocalSized(name, 2);
+    }
+
+    /// Allocate a frame slot of `bytes` (rounded up to a 2-byte
+    /// boundary so word access stays aligned) and return the offset
+    /// of its base. Multi-byte slots back inline value aggregates —
+    /// a struct local occupies its full width, addressed as
+    /// `[fp + ofs + field_offset]`.
+    pub fn allocLocalSized(self: *Emitter, name: []const u8, bytes: u16) !i8 {
+        const ofs = self.reserveFrameSlot(bytes);
         try self.locals.put(self.arena, name, ofs);
-        self.frame_bytes = new_frame_bytes;
         return ofs;
     }
 
-    /// Conservatively count locals the body could need so the
-    /// prologue can `sub frame_bytes, sp`. Reserves slots for
+    /// Reserve `bytes` (2-aligned) of frame space and return the base
+    /// offset, without registering a name. For anonymous slots (inline
+    /// arg bindings) whose names bind into a scope set up afterward.
+    fn reserveFrameSlot(self: *Emitter, bytes: u16) i8 {
+        const slot: u16 = alignUpU16(bytes, 2);
+        const new_frame_bytes = self.frame_bytes + slot;
+        // @as: i8 covers -128..127; the prologue caps total frame size.
+        const ofs: i8 = -@as(i8, @intCast(new_frame_bytes));
+        self.frame_bytes = @intCast(new_frame_bytes);
+        return ofs;
+    }
+
+    /// Byte width of a checked type. Mirrors `widthOfTypeAnn` but over
+    /// `types.Type` — 1 for `i8`/`u8`/`bool`/`char`, the field sum for
+    /// a named struct, 2 otherwise (16-bit primitives, references,
+    /// class/enum pointers).
+    pub fn widthOfType(self: *const Emitter, ty: *const Type) u16 {
+        switch (ty.*) {
+            .primitive => |p| return switch (p) {
+                .i8, .u8, .bool_, .char => 1,
+                else => 2,
+            },
+            .named => |n| {
+                if (self.struct_decls.get(n.name)) |sd| {
+                    var total: u16 = 0;
+                    for (sd.fields) |f| total +%= self.widthOfTypeAnn(f.type_ann.*);
+                    return total;
+                }
+                return 2;
+            },
+            else => return 2,
+        }
+    }
+
+    /// Bytes of frame space the body could need so the prologue can
+    /// `sub frame_bytes, sp`. A scalar local is 2 bytes; a struct
+    /// local takes its full (2-aligned) width. Reserves space for
     /// every arm of control-flow forms.
-    pub fn countLocalsInBody(self: *const Emitter, body: []const ast.Statement) usize {
+    pub fn countFrameBytes(self: *const Emitter, body: []const ast.Statement) usize {
         var n: usize = 0;
-        for (body) |s| n += self.countLocalsInStmt(s);
+        for (body) |s| n += self.countStmtFrameBytes(s);
         return n;
     }
 
-    fn countLocalsInStmt(self: *const Emitter, stmt: ast.Statement) usize {
+    fn countStmtFrameBytes(self: *const Emitter, stmt: ast.Statement) usize {
         return switch (stmt) {
-            .let_decl, .const_decl => 1,
-            .block => |b| self.countLocalsInBody(b.body),
+            .let_decl => |d| self.letFrameBytes(d),
+            .const_decl => 2,
+            .block => |b| self.countFrameBytes(b.body),
             .if_stmt => |is_| blk: {
                 var n: usize = 0;
                 for (is_.arms) |a| {
-                    if (a.let_pattern) |p| n += countBindingsInPattern(p.*);
+                    if (a.let_pattern) |p| n += countBindingBytes(p.*);
                     // `if expr is Class as h` — `h` parks the
                     // instance pointer in a fresh local slot.
                     if (a.cond) |c| if (c.* == .is_test and c.is_test.classBinding() != null) {
-                        n += 1;
+                        n += 2;
                     };
-                    n += self.countLocalsInBody(a.body);
+                    n += self.countFrameBytes(a.body);
                 }
-                if (is_.else_body) |eb| n += self.countLocalsInBody(eb);
+                if (is_.else_body) |eb| n += self.countFrameBytes(eb);
                 break :blk n;
             },
             .while_stmt => |ws| blk: {
                 var n: usize = 0;
-                if (ws.let_pattern) |p| n += countBindingsInPattern(p.*);
-                n += self.countLocalsInBody(ws.body);
+                if (ws.let_pattern) |p| n += countBindingBytes(p.*);
+                n += self.countFrameBytes(ws.body);
                 break :blk n;
             },
-            // Range-based `for` reserves 1 hidden slot for the
-            // `end` bound (the iteration variable uses its own slot).
-            .for_stmt => |fs| 1 + 1 + self.countLocalsInBody(fs.body),
-            .repeat_stmt => |rs| self.countLocalsInBody(rs.body),
+            // Range-based `for` reserves 1 hidden slot for the `end`
+            // bound (the iteration variable uses its own slot).
+            .for_stmt => |fs| 2 + 2 + self.countFrameBytes(fs.body),
+            .repeat_stmt => |rs| self.countFrameBytes(rs.body),
             .match_stmt => |ms| blk: {
                 // 1 scratch slot to bind the scrutinee when it isn't
                 // already an ident (so subsequent cmps don't re-eval).
-                var n: usize = if (ms.scrutinee.* == .ident) 0 else 1;
+                var n: usize = if (ms.scrutinee.* == .ident) 0 else 2;
                 for (ms.arms) |a| {
-                    n += countBindingsInPattern(a.pattern.*);
-                    n += self.countLocalsInBody(a.body);
+                    n += countBindingBytes(a.pattern.*);
+                    n += self.countFrameBytes(a.body);
                 }
                 break :blk n;
             },
-            .defer_stmt => |ds| self.countLocalsInStmt(ds.body.*),
+            .defer_stmt => |ds| self.countStmtFrameBytes(ds.body.*),
             else => 0,
         };
     }
 
-    /// Count the local-slot bindings a pattern introduces. A bare
-    /// ident binds one; a variant pattern binds one slot per payload
-    /// binder (`E.A(n, m)` → 2). These must be counted so the prologue
-    /// reserves their frame space — an unreserved binder slot would
-    /// overlap the stack-push region used by later binary ops.
-    fn countBindingsInPattern(pat: ast.Pattern) usize {
+    /// Frame bytes a `let` reserves: the 2-aligned width of its type
+    /// (struct fields summed), 2 for scalars. Non-ident patterns
+    /// (destructuring) reserve minimally — lowering them is separate.
+    fn letFrameBytes(self: *const Emitter, d: ast.LetDecl) usize {
+        if (d.pattern.* != .ident) return 2;
+        const w: u16 = if (d.type_ann) |t|
+            self.widthOfTypeAnn(t.*)
+        else if (d.init) |e|
+            (if (self.typeOf(e)) |ty| self.widthOfType(ty) else 2)
+        else
+            2;
+        return alignUpU16(w, 2);
+    }
+
+    /// Frame bytes a pattern's binders introduce. A bare ident binds
+    /// one 2-byte slot; a variant pattern binds one per payload field.
+    /// These must be reserved so a binder slot doesn't overlap the
+    /// stack-push region used by later binary ops.
+    fn countBindingBytes(pat: ast.Pattern) usize {
         return switch (pat) {
-            .ident => 1,
+            .ident => 2,
             .variant_pattern => |vp| blk: {
                 var n: usize = 0;
-                for (vp.args) |arg| n += countBindingsInPattern(arg.*);
+                for (vp.args) |arg| n += countBindingBytes(arg.*);
                 break :blk n;
             },
             else => 0,
@@ -916,6 +1008,11 @@ pub const Emitter = struct {
                     }
                 }
                 try self.fn_banks.put(self.arena, dup, bank);
+                if (dd.ret_type) |rt| if (self.structNameOfTypeAnn(rt.*)) |sname| {
+                    try self.fn_ret_struct.put(self.arena, dup, sname);
+                    const w = self.structSlotWidth(sname);
+                    if (w > self.global_sret_scratch) self.global_sret_scratch = w;
+                };
                 if (noreturn_marked) try self.noreturn_defs.put(self.arena, dup, {});
                 if (inline_marked) try self.inline_defs.put(self.arena, dup, dd);
                 if (interrupt_vec) |vec| {
@@ -1324,12 +1421,16 @@ pub const Emitter = struct {
         const saved_entry = self.is_entry;
         const saved_isr = self.is_isr;
         const saved_bank = self.current_bank;
+        const saved_ret_struct = self.current_ret_struct;
+        const saved_sret_param = self.sret_param_ofs;
+        const saved_sret_scratch = self.sret_scratch_ofs;
         self.locals = .{};
         self.params = .{};
         self.frame_bytes = 0;
         self.is_entry = (kind == .entry);
         self.is_isr = is_isr;
         self.current_bank = bank_target;
+        self.sret_scratch_ofs = null;
         defer {
             self.locals = saved_locals;
             self.params = saved_params;
@@ -1337,6 +1438,9 @@ pub const Emitter = struct {
             self.is_entry = saved_entry;
             self.is_isr = saved_isr;
             self.current_bank = saved_bank;
+            self.current_ret_struct = saved_ret_struct;
+            self.sret_param_ofs = saved_sret_param;
+            self.sret_scratch_ofs = saved_sret_scratch;
         }
 
         const dup_name = try self.arena.dupe(u8, label);
@@ -1353,22 +1457,35 @@ pub const Emitter = struct {
         // arg_0 [high] (per right-to-left push order at the call
         // site). fp points at ret_ip, so param 0 is at fp+4,
         // param 1 at fp+6, etc.
-        for (def.params, 0..) |p, i| {
+        // Each param sits just above the previous one; a struct param
+        // occupies its full width (passed by value), so offsets sum
+        // widths rather than stepping a fixed 2 bytes.
+        var param_ofs: i32 = 4;
+        for (def.params) |p| {
             const p_name = self.source[p.name.start..p.name.end];
             const dup_p = try self.arena.dupe(u8, p_name);
-            // @as: u8 frame index → i8 fp-offset; cap at 62 params → fits.
-            const offset: i8 = @intCast(4 + 2 * @as(i32, @intCast(i)));
-            try self.params.put(self.arena, dup_p, offset);
+            // @as: i8 fp-offset; the frame-size cap keeps offsets in range.
+            try self.params.put(self.arena, dup_p, @intCast(param_ofs));
+            param_ofs += self.paramWidthAligned(p);
         }
 
+        // A struct-returning def takes a hidden sret destination pointer
+        // just above its last user param (the caller pushes it first).
+        // `return` copies the result there instead of into `acu`.
+        self.current_ret_struct = if (def.ret_type) |rt| self.structNameOfTypeAnn(rt.*) else null;
+        // @as: sits past the params; the frame-size cap keeps it small.
+        self.sret_param_ofs = @intCast(param_ofs);
+
         // Reserve local slots up front (cheap fixed reservation —
-        // a real allocator would compute live ranges).
-        const local_count = self.countLocalsInBody(def.body);
-        if (local_count > 0) {
-            // @as: 2 bytes per slot capped well below u16.
-            const reserve_bytes: u16 = @intCast(local_count * 2);
-            try isa.subImmFromReg(self, reserve_bytes, Reg.sp);
-        }
+        // a real allocator would compute live ranges). The sret scratch
+        // buffer (holds a returned struct until its consumer copies it
+        // out) is carved first so its offset is stable across the body.
+        const scratch_bytes: u16 = self.global_sret_scratch;
+        const frame_bytes = self.countFrameBytes(def.body);
+        // @as: frame size capped well below u16 by the i8 offset cap.
+        const reserve_bytes: u16 = @intCast(frame_bytes + scratch_bytes);
+        if (reserve_bytes > 0) try isa.subImmFromReg(self, reserve_bytes, Reg.sp);
+        if (scratch_bytes > 0) self.sret_scratch_ofs = try self.allocLocalSized("\x00sret", scratch_bytes);
 
         // Closure-analysis pre-pass — populates fn_closure_info
         // with the lambda inventory, capture layouts, and the
@@ -1562,6 +1679,85 @@ pub const Emitter = struct {
         return name;
     }
 
+    /// Struct name when `e`'s type is a registered struct (auto-deref
+    /// through a `&T` reference). Structs are inline value aggregates,
+    /// so a struct-typed expression evaluates to its base address.
+    pub fn structNameOf(self: *const Emitter, e: *const ast.Expr) ?[]const u8 {
+        const ty = self.typeOf(e) orelse return null;
+        const inner = if (ty.* == .reference) ty.reference else ty;
+        if (inner.* != .named) return null;
+        const name = inner.named.name;
+        if (!self.struct_decls.contains(name)) return null;
+        return name;
+    }
+
+    /// Layout of one struct field: byte offset, byte width, and — when
+    /// the field is itself a struct — that struct's name (so codegen
+    /// recurses into nested aggregates rather than storing a scalar).
+    pub const FieldInfo = struct { offset: u16, width: u16, struct_name: ?[]const u8 };
+
+    /// `FieldInfo` for `field_name` within `struct_name`, or `null` if
+    /// unknown. Fields are laid out contiguously in declaration order
+    /// (§3.4).
+    pub fn structFieldInfo(self: *const Emitter, struct_name: []const u8, field_name: []const u8) ?FieldInfo {
+        const sd = self.struct_decls.get(struct_name) orelse return null;
+        var ofs: u16 = 0;
+        for (sd.fields) |f| {
+            const w = self.widthOfTypeAnn(f.type_ann.*);
+            if (std.mem.eql(u8, self.source[f.name.start..f.name.end], field_name)) {
+                return .{ .offset = ofs, .width = w, .struct_name = self.structNameOfTypeAnn(f.type_ann.*) };
+            }
+            ofs +%= w;
+        }
+        return null;
+    }
+
+    /// Struct name if `t` names a registered struct, else `null`.
+    pub fn structNameOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) ?[]const u8 {
+        if (t != .named) return null;
+        const name = self.source[t.named.name.start..t.named.name.end];
+        return if (self.struct_decls.contains(name)) name else null;
+    }
+
+    /// Total byte width of struct `struct_name` (its fields summed).
+    pub fn structWidth(self: *const Emitter, struct_name: []const u8) u16 {
+        const sd = self.struct_decls.get(struct_name) orelse return 0;
+        var total: u16 = 0;
+        for (sd.fields) |f| total +%= self.widthOfTypeAnn(f.type_ann.*);
+        return total;
+    }
+
+    /// Struct `struct_name`'s footprint rounded up to a 2-byte slot —
+    /// the word-aligned size used for inline-value frame, param, and
+    /// arg layout.
+    pub fn structSlotWidth(self: *const Emitter, struct_name: []const u8) u16 {
+        return alignUpU16(self.structWidth(struct_name), 2);
+    }
+
+    /// Struct name of a call argument, or `null` for a scalar arg. A
+    /// struct literal carries its name directly; other struct-typed
+    /// expressions resolve through their inferred type. Drives the
+    /// pass-by-value path in free-fn and method calls alike.
+    pub fn argStructName(self: *const Emitter, arg: *const ast.Expr) ?[]const u8 {
+        if (arg.* == .struct_lit) {
+            const name = self.source[arg.struct_lit.type_name.start..arg.struct_lit.type_name.end];
+            return if (self.struct_decls.contains(name)) name else null;
+        }
+        return self.structNameOf(arg);
+    }
+
+    /// Stack footprint of a parameter: a struct param occupies its
+    /// full (2-aligned) width — passed by value as a contiguous copy
+    /// (§3.4) — and a scalar param one word. Drives both the param
+    /// fp-offsets and the caller's arg-push width.
+    pub fn paramWidthAligned(self: *const Emitter, p: ast.Param) u16 {
+        const t = p.type_ann orelse return 2;
+        if (self.structNameOfTypeAnn(t.*)) |sname| {
+            return self.structSlotWidth(sname);
+        }
+        return 2;
+    }
+
     fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
         var a = a_in;
         if (a.op != .set) {
@@ -1586,12 +1782,25 @@ pub const Emitter = struct {
                 try class.emitFieldStore(self, a.target.field.receiver, cname, fname, a.value, a.target.field.span);
                 return;
             }
+            if (self.structNameOf(a.target.field.receiver)) |sname| {
+                const fname = self.source[a.target.field.field.start..a.target.field.field.end];
+                try struct_emit.emitFieldStore(self, a.target.field.receiver, sname, fname, a.value);
+                return;
+            }
         }
         if (a.target.* != .ident) {
             try self.unsupported(a.span, "non-ident assignment targets (field / index)");
             return;
         }
         const name = self.source[a.target.ident.span.start..a.target.ident.span.end];
+        // Struct-typed reassignment (`b = a`) copies the value's bytes
+        // into the binding's slot (§3.4 value semantics).
+        if (self.structNameOf(a.target)) |sname| {
+            if (self.locals.get(name)) |ofs| {
+                try struct_emit.emitInto(self, a.value, sname, ofs);
+                return;
+            }
+        }
         // Captured-binding write inside a lambda body — store
         // through the env-relative cell pointer (the parent
         // promoted the binding so the write is visible everywhere).
@@ -1645,6 +1854,22 @@ pub const Emitter = struct {
         }
         const name = self.source[d.pattern.ident.name.start..d.pattern.ident.name.end];
         const dup_name = try self.arena.dupe(u8, name);
+
+        // Struct-typed binding: reserve the full inline slot and
+        // materialize the initializer (literal fields or a value copy)
+        // straight into it (§3.4 value semantics).
+        const struct_name: ?[]const u8 = if (d.type_ann) |t|
+            self.structNameOfTypeAnn(t.*)
+        else if (d.init) |e|
+            self.structNameOf(e)
+        else
+            null;
+        if (struct_name) |sname| {
+            const slot = try self.allocLocalSized(dup_name, self.structWidth(sname));
+            if (d.init) |init_expr| try struct_emit.emitInto(self, init_expr, sname, slot);
+            return;
+        }
+
         const ofs = try self.allocLocal(dup_name);
         // Promoted bindings live as heap cells — the slot holds
         // the cell pointer instead of the value directly.
@@ -1669,7 +1894,27 @@ pub const Emitter = struct {
     }
 
     fn emitReturnStmt(self: *Emitter, r: ast.ReturnStmt) !void {
-        if (r.value) |v| try self.emitExpr(v);
+        if (r.value) |v| {
+            if (self.inline_ret_struct) |sname| {
+                // Inlined struct return: materialize into the caller-
+                // frame result slot, then leave its address in `acu`.
+                try struct_emit.emitInto(self, v, sname, self.inline_ret_slot);
+                try isa.movRegToReg(self, Reg.fp, Reg.acu);
+                const slot = self.inline_ret_slot; // negative — a caller-frame local
+                // @as: widen i8 → i16 so negating the min value is safe; |slot| ≤ frame cap fits u16.
+                if (slot < 0) try isa.subImmFromReg(self, @intCast(-@as(i16, slot)), Reg.acu);
+            } else if (self.current_ret_struct) |sname| {
+                // Struct return: copy the value into the caller's sret
+                // buffer, then leave that buffer's address in `acu` (a
+                // struct value *is* an address).
+                try struct_emit.emitIntoSret(self, v, sname, self.sret_param_ofs);
+                try isa.movRegToReg(self, Reg.fp, Reg.acu);
+                if (self.sret_param_ofs > 0) try isa.addImmToReg(self, @intCast(self.sret_param_ofs), Reg.acu);
+                try isa.movRegOffsetToReg(self, Reg.acu, 0, Reg.acu);
+            } else {
+                try self.emitExpr(v);
+            }
+        }
         // Defers attached to every still-active block fire before
         // the frame tears down — innermost first, LIFO within each
         // block. `acu` carries the return value through the cleanup
@@ -1761,6 +2006,12 @@ pub const Emitter = struct {
             try isa.sys(self, Sys.print_str);
             return;
         }
+        // A struct has no scalar rendering — `print p` would otherwise
+        // emit `print_int` of its base address. Print fields explicitly.
+        if (self.structNameOf(arg)) |_| {
+            try self.unsupported(arg.span(), "printing a whole struct — print its fields instead");
+            return;
+        }
         try self.emitExpr(arg);
         try isa.sys(self, Sys.print_int);
     }
@@ -1839,11 +2090,34 @@ pub const Emitter = struct {
             return;
         }
 
-        // Bind args → fresh locals in the caller's frame. Each
-        // local extends `frame_bytes` and stays addressable for
-        // the body's emit (gero pre-reserves the whole frame at
-        // the def's prologue, so a new sub-imm-from-sp is needed
-        // for the inline-only slots).
+        // Bind args → fresh locals in the caller's frame. Each local
+        // extends `frame_bytes` and stays addressable for the body's
+        // emit (gero pre-reserves the whole frame at the def's
+        // prologue, so a new sub-imm-from-sp is needed for the inline-
+        // only slots). Args are materialized in the CALLER's scope
+        // (locals still live), then their slots bind into the fresh
+        // body scope below.
+        const Binding = struct { name: []const u8, ofs: i8 };
+        const bindings = try self.arena.alloc(Binding, callee.params.len);
+        for (callee.params, c.args, bindings) |p, arg, *b| {
+            const dup = try self.arena.dupe(u8, self.source[p.name.start..p.name.end]);
+            // A struct param binds to a full-width local materialized by
+            // value; a scalar param to a single word.
+            if (self.argStructName(arg)) |sname| {
+                const w = self.structSlotWidth(sname);
+                try isa.subImmFromReg(self, w, Reg.sp);
+                const ofs = self.reserveFrameSlot(w);
+                try struct_emit.emitInto(self, arg, sname, ofs);
+                b.* = .{ .name = dup, .ofs = ofs };
+            } else {
+                try isa.subImmFromReg(self, 2, Reg.sp);
+                try expr_emit.emitExpr(self, arg);
+                const ofs = self.reserveFrameSlot(2);
+                try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+                b.* = .{ .name = dup, .ofs = ofs };
+            }
+        }
+
         const saved_locals = self.locals;
         const saved_params = self.params;
         self.locals = .{};
@@ -1852,14 +2126,23 @@ pub const Emitter = struct {
             self.locals = saved_locals;
             self.params = saved_params;
         }
-        for (callee.params, c.args) |p, arg| {
-            try isa.subImmFromReg(self, 2, Reg.sp);
-            try expr_emit.emitExpr(self, arg);
-            const pname = self.source[p.name.start..p.name.end];
-            const dup = try self.arena.dupe(u8, pname);
-            const ofs = try self.allocLocal(dup);
-            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+        for (bindings) |b| try self.locals.put(self.arena, b.name, b.ofs);
+
+        // A struct-returning inline materializes its result into a
+        // caller-frame slot (no callee frame exists to hold it); each
+        // `return` writes there and leaves the slot's address in `acu`.
+        const saved_inline_ret = self.inline_ret_struct;
+        const saved_inline_slot = self.inline_ret_slot;
+        defer {
+            self.inline_ret_struct = saved_inline_ret;
+            self.inline_ret_slot = saved_inline_slot;
         }
+        if (callee.ret_type) |rt| if (self.structNameOfTypeAnn(rt.*)) |sname| {
+            const w = self.structWidth(sname);
+            try isa.subImmFromReg(self, self.structSlotWidth(sname), Reg.sp);
+            self.inline_ret_struct = sname;
+            self.inline_ret_slot = self.reserveFrameSlot(w);
+        };
 
         // Body-emit setup: capture starting offset for the
         // instruction-count gate; install a fresh inline_returns

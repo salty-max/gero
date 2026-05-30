@@ -434,7 +434,7 @@ features.
 | Inheritance | None | Single inheritance + `extends` |
 | Memory cost | Sum of field bytes | 2-byte vtable pointer + sum of field bytes |
 | Construction | Literal: `Stats { hp: 100, mp: 30, ... }` | Constructor call: `Player("Cecil")` (calls `init`) |
-| Passing semantics | By value (copied at assignment / arg passing) | By reference (vtable pointer copied; instance shared) |
+| Passing semantics | By value (copied at assignment, argument passing, and return) | By reference (vtable pointer copied; instance shared) |
 | Identity | None (structurally equal if fields equal) | Yes (two `Player` instances are distinct even with equal fields) |
 | Use case | "value" — stats, position, range, span, color | "entity" — player, monster, scene, game-state |
 

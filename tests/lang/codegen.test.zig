@@ -3907,3 +3907,283 @@ test "codegen: `is` tag test on a payload enum" {
         \\end
     , "1\n3\n");
 }
+
+// ---------- value structs (§3.4) ----------
+
+test "codegen/struct: literal construction + field read" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let p = P { x: 3, y: 4 }
+        \\  print p.x + p.y
+        \\end
+    , "7\n");
+}
+
+test "codegen/struct: field write mutates in place" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def main()
+        \\  let p = P { x: 1 }
+        \\  p.x = 5
+        \\  print p.x
+        \\end
+    , "5\n");
+}
+
+test "codegen/struct: assignment copies by value (a unchanged)" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def main()
+        \\  let a = P { x: 9 }
+        \\  let b = a
+        \\  b.x = 1
+        \\  print a.x
+        \\  print b.x
+        \\end
+    , "9\n1\n");
+}
+
+test "codegen/struct: byte-packed fields (u8 + u8 + i16)" {
+    try runAndExpect(
+        \\struct S
+        \\  a: u8
+        \\  b: u8
+        \\  c: i16
+        \\end
+        \\def main()
+        \\  let s = S { a: 1, b: 2, c: 300 }
+        \\  s.a = 7
+        \\  print s.a
+        \\  print s.c
+        \\end
+    , "7\n300\n");
+}
+
+test "codegen/struct: nested struct field access" {
+    try runAndExpect(
+        \\struct In
+        \\  v: i16
+        \\end
+        \\struct Out
+        \\  n: In
+        \\  k: i16
+        \\end
+        \\def main()
+        \\  let o = Out { n: In { v: 10 }, k: 5 }
+        \\  print o.n.v + o.k
+        \\end
+    , "15\n");
+}
+
+test "codegen/struct: pass-by-value isolates callee mutation" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def bump(p: P) -> i16
+        \\  p.x = 99
+        \\  return p.x
+        \\end
+        \\def main()
+        \\  let q = P { x: 1 }
+        \\  let r = bump(q)
+        \\  print r
+        \\  print q.x
+        \\end
+    , "99\n1\n");
+}
+
+test "codegen/struct: struct arg after scalar param" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def f(p: P, k: i16) -> i16
+        \\  return p.x + p.y + k
+        \\end
+        \\def main()
+        \\  print f(P { x: 1, y: 2 }, 100)
+        \\end
+    , "103\n");
+}
+
+test "codegen/struct: return-by-value via sret" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def mk(a: i16, b: i16) -> P
+        \\  return P { x: a, y: b }
+        \\end
+        \\def main()
+        \\  let p = mk(3, 4)
+        \\  print p.x + p.y
+        \\end
+    , "7\n");
+}
+
+test "codegen/struct: returned struct fed straight into a pass-by-value call" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def mk() -> P
+        \\  return P { x: 3, y: 4 }
+        \\end
+        \\def sum(p: P) -> i16
+        \\  return p.x + p.y
+        \\end
+        \\def main()
+        \\  print sum(mk())
+        \\end
+    , "7\n");
+}
+
+test "codegen/struct: two returned structs hold distinct buffers" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def mk(v: i16) -> P
+        \\  return P { x: v }
+        \\end
+        \\def main()
+        \\  let a = mk(1)
+        \\  let b = mk(2)
+        \\  a.x = 9
+        \\  print a.x
+        \\  print b.x
+        \\end
+    , "9\n2\n");
+}
+
+test "codegen/struct: pass struct by value to a method" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\class C
+        \\  def s(self, p: P) -> i16
+        \\    return p.x + p.y
+        \\  end
+        \\end
+        \\def main()
+        \\  let c = C()
+        \\  print c.s(P { x: 4, y: 5 })
+        \\end
+    , "9\n");
+}
+
+test "codegen/struct: method returns a struct by value" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\class C
+        \\  def make(self, a: i16) -> P
+        \\    return P { x: a, y: a }
+        \\  end
+        \\end
+        \\def main()
+        \\  let c = C()
+        \\  let p = c.make(7)
+        \\  print p.x + p.y
+        \\end
+    , "14\n");
+}
+
+test "codegen/struct: struct stored inline as a class field" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\class E
+        \\  let hp: i16
+        \\  let pos: P
+        \\  def init(self)
+        \\    self.hp = 100
+        \\    self.pos = P { x: 7, y: 0 }
+        \\  end
+        \\  def move_x(self, dx: i16)
+        \\    self.pos.x = self.pos.x + dx
+        \\  end
+        \\end
+        \\def main()
+        \\  let e = E()
+        \\  e.move_x(3)
+        \\  print e.hp + e.pos.x
+        \\end
+    , "110\n");
+}
+
+test "codegen/struct: pass struct by value to an @inline fn" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\@inline
+        \\def s(p: P) -> i16
+        \\  return p.x + p.y
+        \\end
+        \\def main()
+        \\  let q = P { x: 5, y: 6 }
+        \\  print s(q)
+        \\end
+    , "11\n");
+}
+
+/// Compile `source` and assert codegen surfaced a diagnostic with
+/// `code` — for struct operations not yet lowered (rejected rather
+/// than miscompiled).
+fn expectCodegenError(source: []const u8, code: []const u8) !void {
+    var compiled = try compileSource(source);
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, code)) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen/struct: equality is rejected (no silent address compare)" {
+    try expectCodegenError(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def main()
+        \\  let a = P { x: 1 }
+        \\  let b = P { x: 1 }
+        \\  if a == b
+        \\    print 1
+        \\  end
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/struct: printing a whole struct is rejected" {
+    try expectCodegenError(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def main()
+        \\  let p = P { x: 5 }
+        \\  print p
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
