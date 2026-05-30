@@ -520,6 +520,31 @@ test "print: idempotent on HOF chains" {
     try expectIdempotent("let r = xs.filter(|x| x > 0).map(|x| x * 2)");
 }
 
+test "print: elif arms indent to their if inside a body" {
+    try expectPrint(
+        \\def f(x)
+        \\  if x > 0
+        \\    print 1
+        \\  elif x < 0
+        \\    print 2
+        \\  else
+        \\    print 3
+        \\  end
+        \\end
+    ,
+        \\def f(x)
+        \\  if x > 0
+        \\    print 1
+        \\  elif x < 0
+        \\    print 2
+        \\  else
+        \\    print 3
+        \\  end
+        \\end
+        \\
+    );
+}
+
 // ---------- comments ----------
 
 test "print: preserves a leading line comment" {
