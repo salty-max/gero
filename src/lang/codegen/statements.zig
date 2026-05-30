@@ -3,6 +3,7 @@
 // dispatch hub (`emitStatement`) and control-flow forms live elsewhere;
 // these are the terminal statement shapes.
 
+const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
@@ -259,12 +260,113 @@ fn emitPrintArg(self: *Emitter, arg: *const ast.Expr) !void {
         try isa.sys(self, Sys.print_str);
         return;
     }
-    // A struct has no scalar rendering — `print p` would otherwise emit
-    // `print_int` of its base address. Print fields explicitly.
-    if (self.structNameOf(arg)) |_| {
-        try self.unsupported(arg.span(), "printing a whole struct — print its fields instead");
+    // A struct renders as `Name { field: value, ... }` — its base
+    // address is in `acu` after evaluation.
+    if (self.structNameOf(arg)) |sname| {
+        if (!printSupported(self, sname)) {
+            try self.unsupported(arg.span(), "printing a struct with a field type that has no default rendering (array / tuple / Vec / payload-carrying enum / class / reference)");
+            return;
+        }
+        // A struct literal has no standalone address — materialize it as
+        // a by-value stack copy first; struct *values* already evaluate
+        // to a base address.
+        if (arg.* == .struct_lit) {
+            try value_struct.pushArg(self, arg, sname);
+            try isa.movRegToReg(self, Reg.sp, Reg.acu);
+            try emitPrintStruct(self, sname);
+            try isa.addImmToReg(self, self.structSlotWidth(sname), Reg.sp);
+        } else {
+            try self.emitExpr(arg);
+            try emitPrintStruct(self, sname);
+        }
         return;
     }
     try self.emitExpr(arg);
     try isa.sys(self, Sys.print_int);
+}
+
+/// Render struct `sname` (base address in `acu`) as
+/// `Name { f1: v1, f2: v2 }`. Each field prints per its type; nested
+/// structs recurse. The base is parked on the stack across the field
+/// prints (the `print_*` syscalls + recursion churn registers but
+/// leave `sp` alone), and reloaded per field.
+fn emitPrintStruct(self: *Emitter, sname: []const u8) error{OutOfMemory}!void {
+    const sd = self.struct_decls.get(sname).?;
+    try isa.pushReg(self, Reg.acu); // park base at [sp]
+
+    try printLiteral(self, try std.fmt.allocPrint(self.arena, "{s} {{ ", .{sname}));
+
+    var fo: u16 = 0;
+    for (sd.fields, 0..) |f, i| {
+        if (i > 0) try printLiteral(self, ", ");
+        const fname = self.source[f.name.start..f.name.end];
+        try printLiteral(self, try std.fmt.allocPrint(self.arena, "{s}: ", .{fname}));
+        try emitPrintField(self, f.type_ann.*, fo);
+        fo += self.widthOfTypeAnn(f.type_ann.*);
+    }
+
+    try printLiteral(self, " }");
+    try isa.addImmToReg(self, 2, Reg.sp); // drop the parked base
+}
+
+/// Print the field at `fo` of the struct whose base is parked at `[sp]`.
+/// Dispatches per type; a nested struct recurses (its base = base + fo).
+fn emitPrintField(self: *Emitter, t: ast.TypeAnn, fo: u16) error{OutOfMemory}!void {
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // r1 = parked base
+    if (self.structNameOfTypeAnn(t)) |sub| {
+        try isa.movRegToReg(self, Reg.r1, Reg.acu);
+        if (fo != 0) try isa.addImmToReg(self, fo, Reg.acu); // acu = nested base
+        try emitPrintStruct(self, sub);
+        return;
+    }
+    if (isPrimNamed(self, t, "char")) {
+        try class.emitByteLoadAtOffset(self, Reg.r1, fo, Reg.acu);
+        try isa.sys(self, Sys.print_char);
+    } else if (isPrimNamed(self, t, "fixed")) {
+        try class.emitWordLoadAtOffset(self, Reg.r1, fo, Reg.acu);
+        try isa.sys(self, Sys.print_fixed);
+    } else if (isPrimNamed(self, t, "str")) {
+        try class.emitWordLoadAtOffset(self, Reg.r1, fo, Reg.acu);
+        try isa.sys(self, Sys.print_str);
+    } else if (self.widthOfTypeAnn(t) == 1) {
+        try class.emitByteLoadAtOffset(self, Reg.r1, fo, Reg.acu);
+        try isa.sys(self, Sys.print_int);
+    } else {
+        try class.emitWordLoadAtOffset(self, Reg.r1, fo, Reg.acu);
+        try isa.sys(self, Sys.print_int);
+    }
+}
+
+/// Intern `text` and emit a `print_str` of it (the constant separators
+/// + field labels in a struct rendering).
+fn printLiteral(self: *Emitter, text: []const u8) error{OutOfMemory}!void {
+    const id = try strings.internString(self, text);
+    try strings.emitMovStringAddrToReg(self, id, Reg.acu);
+    try isa.sys(self, Sys.print_str);
+}
+
+/// Whether `print` can render every field of `sname`. Supported:
+/// scalars / bool / char / fixed (decimal/char/fixed), `str`,
+/// payload-free enum (tag as int), and nested supported structs.
+/// Rejected: array / tuple / `Vec` / payload-carrying enum / class /
+/// reference / fn-ptr / nullable — no default rendering yet.
+fn printSupported(self: *const Emitter, sname: []const u8) bool {
+    const sd = self.struct_decls.get(sname) orelse return false;
+    for (sd.fields) |f| {
+        if (!fieldPrintSupported(self, f.type_ann.*)) return false;
+    }
+    return true;
+}
+
+fn fieldPrintSupported(self: *const Emitter, t: ast.TypeAnn) bool {
+    if (t != .named) return false; // array / tuple / vec / reference / fn / nullable
+    const name = self.source[t.named.name.start..t.named.name.end];
+    if (self.struct_decls.contains(name)) return printSupported(self, name);
+    if (self.enum_decls.get(name)) |ed| return !self.enumHasPayload(ed);
+    if (self.class_decls.contains(name)) return false;
+    return true; // a primitive (i8/u8/i16/u16/bool/char/fixed/str)
+}
+
+fn isPrimNamed(self: *const Emitter, t: ast.TypeAnn, name: []const u8) bool {
+    return t == .named and std.mem.eql(u8, self.source[t.named.name.start..t.named.name.end], name);
 }
