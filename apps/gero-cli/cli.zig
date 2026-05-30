@@ -32,8 +32,8 @@ pub const Format = enum { human, json };
 
 /// `--lang=<l>` for `gero fmt --stdin` — which front-end parses the
 /// piped source. File-path mode dispatches on extension instead;
-/// stdin has no filename, so the language is explicit (default
-/// `gas` preserves the original stdin behavior).
+/// stdin has no filename, so the language is explicit. `gas` is the
+/// default, so a bare `--stdin` formats asm.
 pub const Lang = enum { gas, gr };
 
 /// Maximum positional args a single invocation can hold. Today's
@@ -85,8 +85,7 @@ pub const Options = struct {
     werror: bool = false,
     /// `--lang=<gas|gr>` for `gero fmt --stdin` — selects the
     /// front-end for piped source. Ignored outside stdin mode, where
-    /// the file extension decides. `gas` (default) keeps prior stdin
-    /// behavior.
+    /// the file extension decides. Defaults to `gas`.
     lang: Lang = .gas,
     /// `--target=<vm|gtx-16>` for `gero build` — overrides the
     /// manifest's `package.target`. `null` = inherit from manifest;
@@ -765,8 +764,8 @@ test "parse: --lang defaults to gas, --lang=gr selects the lang front-end" {
 }
 
 test "parse: --lang with an unknown value errors" {
-    // Regression: `--lang` must be in `needsValue`, else an inline
-    // `=value` is rejected as a no-value flag before `parseLang` runs.
+    // `--lang` takes a value, so an inline `--lang=<bad>` reaches
+    // `parseLang` and rejects unknown languages with InvalidEnumValue.
     const args = [_][]const u8{ "fmt", "--stdin", "--lang=python" };
     try testing.expectError(error.InvalidEnumValue, parse(&args));
 }
