@@ -1,14 +1,11 @@
 -- Small canonical sample exercising the gero-lang v1 surface.
 -- Round-trips through `gero fmt docs/examples/playground.gr --check`
 -- and produces zero diff.
-
 use math
 use input as keys from "./io"
-
 const MAX_HP = 100
 const SEED = $C0DE
-
-@addr $FE40
+@addr($FE40)
 @volatile
 let DISPCTL: u8 = 0
 
