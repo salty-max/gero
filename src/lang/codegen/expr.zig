@@ -7,6 +7,7 @@ const archive = @import("archive.zig");
 const assert_builtin = @import("assert.zig");
 const diverge_builtin = @import("diverge.zig");
 const class = @import("class.zig");
+const struct_ = @import("struct_.zig");
 const lambda = @import("lambda.zig");
 const overflow = @import("overflow.zig");
 
@@ -47,6 +48,12 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .char_lit => |c| try isa.movImmToReg(self, c.value, Reg.acu),
         .paren => |p| try emitExpr(self, p.inner),
         .ident => |i| {
+            // A struct-typed binding evaluates to its base address —
+            // struct values are addressed inline, not loaded as a word.
+            if (self.structNameOf(e) != null) {
+                try self.emitAddrOf(e);
+                return;
+            }
             const name = self.source[i.span.start..i.span.end];
             // Lookup order: captures (lambda body) → locals → params
             // → globals. Captures take precedence so they shadow any
@@ -180,6 +187,14 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
         try class.emitFieldLoad(self, f.receiver, cname, fname, f.span);
         return;
     }
+    // Struct-typed receiver — evaluate the receiver to its base
+    // address, then load the field (or compute the nested address).
+    if (self.structNameOf(f.receiver)) |sname| {
+        const fname = self.source[f.field.start..f.field.end];
+        try emitExpr(self, f.receiver);
+        try struct_.emitFieldLoad(self, sname, fname);
+        return;
+    }
     if (f.receiver.* == .ident) {
         const recv_name = self.source[f.receiver.ident.span.start..f.receiver.ident.span.end];
         if (self.enum_decls.get(recv_name)) |ed| {
@@ -293,6 +308,15 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
             return;
         },
         else => {},
+    }
+
+    // A struct-typed operand would evaluate to its base address, so a
+    // bare `==`/`!=` compares addresses, not fields — never what §3.4's
+    // structural-equality contract means. Reject it rather than emit a
+    // silently-wrong address compare.
+    if (self.structNameOf(b.lhs) != null or self.structNameOf(b.rhs) != null) {
+        try self.unsupported(b.span, "a struct operand in a binary expression — structural equality on structs is not yet implemented");
+        return;
     }
 
     const fixed_op = self.isPrimitiveType(b.lhs, .fixed) and
@@ -413,6 +437,14 @@ pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
         const b = e.binary;
         switch (b.op) {
             .eq, .neq, .lt, .lte, .gt, .gte => {
+                // A struct operand evaluates to its base address, so this
+                // would compare addresses, not fields — reject rather
+                // than emit a silently-wrong compare (§3.4 calls for
+                // structural equality, not yet implemented).
+                if (self.structNameOf(b.lhs) != null or self.structNameOf(b.rhs) != null) {
+                    try self.unsupported(b.span, "a struct operand in a comparison — structural equality on structs is not yet implemented");
+                    return;
+                }
                 // Eval LHS into acu, eval RHS into r1, cmp acu, r1.
                 try emitExpr(self, b.rhs);
                 try isa.pushReg(self, Reg.acu);
@@ -654,12 +686,31 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     const target_bank: ?u8 = self.fn_banks.get(callee_name) orelse null;
     const cross_bank = !archive.banksEqual(self.current_bank, target_bank);
 
-    // Push args right-to-left (caller-cleans-up).
+    // A struct-returning callee takes a hidden sret destination pointer
+    // pushed first (it sits just above the user args). Point it at this
+    // frame's scratch buffer; the callee copies its result there and
+    // returns the pointer in `acu`.
+    const returns_struct = self.fn_ret_struct.contains(callee_name);
+    if (returns_struct) {
+        // Invariant: a struct-returning callee implies the program has a
+        // struct return type, so every frame reserved a scratch slot.
+        const sofs = self.sret_scratch_ofs.?;
+        try isa.movRegToReg(self, Reg.fp, Reg.acu);
+        if (sofs < 0) try isa.subImmFromReg(self, @intCast(-sofs), Reg.acu);
+        try isa.pushReg(self, Reg.acu);
+    }
+
+    // Push args right-to-left (caller-cleans-up). A struct arg is
+    // passed by value — its (2-aligned) width copied onto the stack.
     var i: usize = c.args.len;
     while (i > 0) {
         i -= 1;
-        try emitExpr(self, c.args[i]);
-        try isa.pushReg(self, Reg.acu);
+        if (self.argStructName(c.args[i])) |sname| {
+            try struct_.pushArg(self, c.args[i], sname);
+        } else {
+            try emitExpr(self, c.args[i]);
+            try isa.pushReg(self, Reg.acu);
+        }
     }
 
     if (cross_bank) {
@@ -707,9 +758,15 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     // The args we pushed leak on the stack, which is fine: control
     // never returns to use that space.
     const skip_cleanup = self.noreturn_defs.contains(callee_name);
-    if (c.args.len > 0 and !skip_cleanup) {
-        // @as: each arg is one 16-bit word; arg count capped by parser.
-        const drop_bytes: u16 = @intCast(c.args.len * 2);
-        try isa.addImmToReg(self, drop_bytes, Reg.sp);
+    if (!skip_cleanup) {
+        var drop_bytes: u16 = if (returns_struct) 2 else 0; // hidden sret pointer
+        for (c.args) |a| {
+            if (self.argStructName(a)) |sname| {
+                drop_bytes += self.structSlotWidth(sname);
+            } else {
+                drop_bytes += 2; // one 16-bit word per scalar arg
+            }
+        }
+        if (drop_bytes > 0) try isa.addImmToReg(self, drop_bytes, Reg.sp);
     }
 }

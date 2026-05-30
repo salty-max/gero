@@ -3,6 +3,7 @@ const ast = @import("../ast.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const codegen_mod = @import("../codegen.zig");
+const struct_ = @import("struct_.zig");
 
 const Emitter = codegen_mod.Emitter;
 const Op = opcodes.Op;
@@ -42,6 +43,10 @@ pub const ClassLayout = struct {
 pub const FieldInfo = struct {
     offset: u16,
     width: u8,
+    /// Set when the field is itself a struct value (stored inline in
+    /// the instance) — names that struct so field access recurses into
+    /// it rather than loading a scalar word.
+    struct_name: ?[]const u8 = null,
 };
 
 /// Pre-pass: index every top-level class decl by name. Layouts
@@ -116,11 +121,10 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
     // The parent's slot remains in memory (instance_size already
     // counted it) and stays reachable via `super.X`.
     for (cd.fields) |field| {
-        // Class fields are primitive-width (1) or pointer-width
-        // (2) — aggregates aren't supported as class field types
-        // by the typechecker. Truncate the typecheck-wide u16
-        // back to u8 for the layout entry.
-        // safety: class field widths bounded to 1 or 2 by the typechecker; the truncate is a no-op for that range.
+        // A scalar field is primitive- (1) or pointer-width (2); a
+        // struct field is stored inline at its full width (§3.4).
+        const struct_name: ?[]const u8 = if (field.type_ann) |t| self.structNameOfTypeAnn(t.*) else null;
+        // safety: field widths stay small (structs are POD, <256 bytes); the truncate is lossless in that range.
         const width: u8 = @truncate(if (field.type_ann) |t|
             self.widthOfTypeAnn(t.*)
         else
@@ -130,6 +134,7 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
         try layout.field_offsets.put(self.arena, dup_f, .{
             .offset = layout.instance_size,
             .width = width,
+            .struct_name = struct_name,
         });
         layout.instance_size += width;
     }
@@ -150,6 +155,15 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
             try layout.method_owners.put(self.arena, dup_m, dup_class);
             try layout.method_order.append(self.arena, dup_m);
         }
+    }
+
+    // A struct-returning method needs the same sret scratch buffer as
+    // a free fn — size the per-frame scratch to the widest return.
+    for (cd.methods) |method| {
+        if (method.ret_type) |rt| if (self.structNameOfTypeAnn(rt.*)) |sname| {
+            const w = self.structSlotWidth(sname);
+            if (w > self.global_sret_scratch) self.global_sret_scratch = w;
+        };
     }
 
     try self.class_layouts.put(self.arena, dup_class, layout);
@@ -237,6 +251,58 @@ pub fn patchVtableSlots(self: *Emitter) !void {
     }
 }
 
+/// Struct return-type name of `class_name`.`method_name` (resolving
+/// the owner up the inheritance chain), or `null` when it returns a
+/// scalar. Drives the sret convention at the call site.
+fn methodRetStruct(self: *Emitter, class_name: []const u8, method_name: []const u8) ?[]const u8 {
+    const layout = self.class_layouts.get(class_name) orelse return null;
+    const owner = layout.method_owners.get(method_name) orelse return null;
+    const cd = self.class_decls.get(owner) orelse return null;
+    for (cd.methods) |m| {
+        if (std.mem.eql(u8, self.source[m.name.start..m.name.end], method_name)) {
+            return if (m.ret_type) |rt| self.structNameOfTypeAnn(rt.*) else null;
+        }
+    }
+    return null;
+}
+
+/// Push an optional sret destination pointer (this frame's scratch
+/// buffer) then the method args right-to-left — each struct arg by
+/// value. Returns the bytes pushed (self excluded). Clobbers every
+/// temp, so callers spill anything they still need (e.g. the instance
+/// pointer) above these pushes and reload it afterward.
+fn pushSretAndArgs(self: *Emitter, args: []const *const ast.Expr, sret: bool) !u16 {
+    var total: u16 = 0;
+    if (sret) {
+        const sofs = self.sret_scratch_ofs.?;
+        try isa.movRegToReg(self, Reg.fp, Reg.acu);
+        if (sofs < 0) try isa.subImmFromReg(self, @intCast(-sofs), Reg.acu);
+        try isa.pushReg(self, Reg.acu);
+        total += 2;
+    }
+    var i = args.len;
+    while (i > 0) {
+        i -= 1;
+        if (self.argStructName(args[i])) |sname| {
+            try struct_.pushArg(self, args[i], sname);
+            total += self.structSlotWidth(sname);
+        } else {
+            try self.emitExpr(args[i]);
+            try isa.pushReg(self, Reg.acu);
+            total += 2;
+        }
+    }
+    return total;
+}
+
+/// Load the word at `[sp + ofs]` into `dst` — reload a pointer spilled
+/// just above the freshly pushed args.
+fn loadFromStack(self: *Emitter, ofs: u16, dst: u8) !void {
+    try isa.movRegToReg(self, Reg.sp, dst);
+    if (ofs > 0) try isa.addImmToReg(self, ofs, dst);
+    try emitWordLoadAtOffset(self, dst, 0, dst);
+}
+
 /// Lower `ClassName(args)` — bump-allocate an instance, write the
 /// vtable pointer at offset 0, optionally call `init`, then leave
 /// the instance address in `acu` (so callers can store it in a
@@ -280,16 +346,14 @@ pub fn emitConstructor(
     //    (self=r1, user_args...). The free-fn calling convention
     //    pushes right-to-left.
     if (initOwner(self, class_name)) |owner| {
-        // Push user args right-to-left, preserving r1 across eval.
-        var i: usize = c.args.len;
-        while (i > 0) {
-            i -= 1;
-            try isa.pushReg(self, Reg.r1);
-            try self.emitExpr(c.args[i]);
-            try isa.popReg(self, Reg.r1);
-            try isa.pushReg(self, Reg.acu);
-        }
-        // Push self last so it lands at fp+4 in the callee frame.
+        // Spill the instance pointer above the args; a struct arg's
+        // by-value push moves `sp`, so it can't ride a register across
+        // arg materialization. `init` returns no value, so no sret.
+        try isa.pushReg(self, Reg.r1);
+        const arg_bytes = try pushSretAndArgs(self, c.args, false);
+        // Reload the instance pointer (spilled at `sp + arg_bytes`) and
+        // push it as self so it lands at fp+4 in the callee frame.
+        try loadFromStack(self, arg_bytes, Reg.r1);
         try isa.pushReg(self, Reg.r1);
 
         // Direct-call the inheritance-resolved `init` — may live
@@ -297,13 +361,11 @@ pub fn emitConstructor(
         const init_label = try methodLabel(self, owner, "init");
         try emitDirectCall(self, init_label, c.span);
 
-        // Drop args: 1 (self) + user args, 2 bytes each.
-        // @as: widen usize args.len to u16 — practical method arity caps well below 32k.
-        const drop_bytes: u16 = 2 + @as(u16, @intCast(c.args.len * 2));
-        try isa.addImmToReg(self, drop_bytes, Reg.sp);
-        // init may have clobbered acu — restore the instance ptr
-        // from r1 so the caller's let-bind reads the right value.
-        try isa.movRegToReg(self, Reg.r1, Reg.acu);
+        // Reload the instance pointer from its spill slot (init may
+        // have clobbered every register) so the caller's let-bind reads
+        // the right value, then drop self + args + the spill.
+        try loadFromStack(self, 2 + arg_bytes, Reg.acu);
+        try isa.addImmToReg(self, 2 + arg_bytes + 2, Reg.sp);
     }
     // No-init path leaves acu holding the instance ptr from the
     // `sys alloc` above — none of the intervening ops touched it.
@@ -388,6 +450,12 @@ pub fn emitFieldLoad(
     };
 
     try emitInstancePtr(self, recv);
+    // A struct field is stored inline — its value *is* the address
+    // `instance + offset`; leave that in `acu` rather than loading.
+    if (field.struct_name != null) {
+        if (field.offset != 0) try isa.addImmToReg(self, field.offset, Reg.acu);
+        return;
+    }
     // acu = instance ptr; load at acu + field.offset.
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
     if (field.width == 1) {
@@ -415,6 +483,22 @@ pub fn emitFieldStore(
         try self.diagFatal(recv_span, "E_CODEGEN_UNDEFINED_FIELD", "codegen: unknown class field");
         return;
     };
+
+    // A struct field is stored inline — materialize the value's bytes
+    // on the stack, then copy them into `[instance + offset]` (§3.4
+    // value semantics). The temp rides the stack across the receiver
+    // eval (which is `sp`-balanced) and is released afterward.
+    if (field.struct_name) |sname| {
+        const w = self.structSlotWidth(sname);
+        try struct_.pushArg(self, value, sname); // value bytes at [sp ..]
+        try emitInstancePtr(self, recv); // acu = instance ptr
+        if (field.offset != 0) try isa.addImmToReg(self, field.offset, Reg.acu);
+        try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = dest
+        try isa.movRegToReg(self, Reg.sp, Reg.r1); // r1 = src (stack temp)
+        try struct_.copyBytes(self, Reg.r1, Reg.r2, self.structWidth(sname));
+        try isa.addImmToReg(self, w, Reg.sp); // release the temp
+        return;
+    }
 
     try self.emitExpr(value);
     try isa.pushReg(self, Reg.acu);
@@ -449,42 +533,32 @@ pub fn emitMethodDispatch(
         return;
     };
 
-    // 1. Evaluate receiver (auto-deref if `&T`), stash instance ptr in r1.
+    // 1. Evaluate receiver (auto-deref if `&T`) and spill the instance
+    //    pointer above the args — a struct arg's by-value push moves
+    //    `sp`, so the pointer can't ride a register across arg eval.
     try emitInstancePtr(self, recv);
-    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try isa.pushReg(self, Reg.acu);
 
-    // 2. Load vtable pointer from [r1+0] into r2.
+    // 2. Push the optional sret destination + args (struct-aware).
+    const returns_struct = methodRetStruct(self, class_name, method_name) != null;
+    const arg_bytes = try pushSretAndArgs(self, args, returns_struct);
+
+    // 3. Reload the instance pointer (spilled at `sp + arg_bytes`),
+    //    then resolve the method address through its vtable slot.
+    try loadFromStack(self, arg_bytes, Reg.r1);
     try emitWordLoadAtOffset(self, Reg.r1, 0, Reg.r2);
-
-    // 3. Load method address from [r2 + slot*2] into r3.
     // @as: slot index fits u16; the *2 product fits comfortably.
     const slot_offset: u16 = @as(u16, slot) * 2;
     try emitWordLoadAtOffset(self, Reg.r2, slot_offset, Reg.r3);
 
-    // 4. Push args right-to-left, preserving r1 (instance ptr)
-    //    and r3 (method addr) across arg eval.
-    var i: usize = args.len;
-    while (i > 0) {
-        i -= 1;
-        try isa.pushReg(self, Reg.r1);
-        try isa.pushReg(self, Reg.r3);
-        try self.emitExpr(args[i]);
-        try isa.popReg(self, Reg.r3);
-        try isa.popReg(self, Reg.r1);
-        try isa.pushReg(self, Reg.acu);
-    }
-
-    // 5. Push self last so it lands at fp+4 in the callee frame.
+    // 4. Push self last so it lands at fp+4, then indirect-call.
     try isa.pushReg(self, Reg.r1);
-
-    // 6. call_reg r3 — indirect call to the resolved method.
     try self.emitByte(Op.call_reg);
     try self.emitByte(Reg.r3);
 
-    // 7. Drop args: 1 (self) + user args.
-    // @as: widen usize args.len to u16 — practical method arity caps well below 32k.
-    const drop_bytes: u16 = 2 + @as(u16, @intCast(args.len * 2));
-    try isa.addImmToReg(self, drop_bytes, Reg.sp);
+    // 5. Drop self + args + the spilled instance pointer. The method's
+    //    result (scalar or sret pointer) survives in `acu`.
+    try isa.addImmToReg(self, 2 + arg_bytes + 2, Reg.sp);
 }
 
 /// Lower `super.method(args)` — direct call to the named method
@@ -511,33 +585,25 @@ pub fn emitSuperMethodCall(
         return;
     };
 
-    // self for the super call is the current method's self (fp+4).
-    // Load it into r1 first so arg eval can clobber acu freely.
-    if (self.params.get("self")) |ofs| {
-        try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.r1);
-    } else {
+    // self for the super call is the current method's self — a stable
+    // `fp+4` param, so it reloads cleanly after the args (no spill).
+    const self_ofs = self.params.get("self") orelse {
         try self.diagFatal(span, "E_CODEGEN_NO_SELF", "codegen: `super.method` used outside a method body");
         return;
-    }
+    };
 
-    // Push args right-to-left, preserving r1 across eval.
-    var i: usize = args.len;
-    while (i > 0) {
-        i -= 1;
-        try isa.pushReg(self, Reg.r1);
-        try self.emitExpr(args[i]);
-        try isa.popReg(self, Reg.r1);
-        try isa.pushReg(self, Reg.acu);
-    }
-    // Push self last so it lands at fp+4 in the callee frame.
+    // Push the optional sret destination + args (struct-aware), then
+    // reload self and push it last so it lands at fp+4.
+    const returns_struct = methodRetStruct(self, owner, method_name) != null;
+    const arg_bytes = try pushSretAndArgs(self, args, returns_struct);
+    try isa.movRegOffsetToReg(self, Reg.fp, self_ofs, Reg.r1);
     try isa.pushReg(self, Reg.r1);
 
     const label = try methodLabel(self, owner, method_name);
     try emitDirectCall(self, label, span);
 
-    // @as: widen usize args.len to u16 — practical method arity caps well below 32k.
-    const drop_bytes: u16 = 2 + @as(u16, @intCast(args.len * 2));
-    try isa.addImmToReg(self, drop_bytes, Reg.sp);
+    // Drop self + args. The method's result survives in `acu`.
+    try isa.addImmToReg(self, 2 + arg_bytes, Reg.sp);
 }
 
 /// Lower `super.field` read — load `self`, then read at the

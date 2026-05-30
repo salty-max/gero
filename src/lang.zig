@@ -31,6 +31,7 @@ const cg_pattern = @import("lang/codegen/pattern.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 const cg_class = @import("lang/codegen/class.zig");
+const cg_struct = @import("lang/codegen/struct_.zig");
 const cg_lambda = @import("lang/codegen/lambda.zig");
 const cg_isa = @import("lang/codegen/isa.zig");
 
@@ -188,6 +189,9 @@ pub const internal = struct {
         pub const control_flow = cg_control_flow;
         /// Class lowering (vtable + constructor + field rw + method dispatch).
         pub const class = cg_class;
+        /// Inline value-struct lowering (construction, field rw, value-copy,
+        /// pass-by-value, return-by-value via sret).
+        pub const struct_ = cg_struct;
         /// Closure lowering (capture analysis, heap promotion, dispatch).
         pub const lambda = cg_lambda;
         /// ISA-instruction emit helpers.
