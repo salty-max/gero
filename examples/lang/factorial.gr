@@ -1,0 +1,25 @@
+-- factorial.gr — iterative factorial with compound assignment.
+--
+-- Multiplies an accumulator down from `n` in a `while` loop, using
+-- `*=` and `-=`. Exercises mutation: compound assignment, a counter
+-- decrement, and a `while` head — the iterative counterpart to the
+-- recursive examples.
+--
+-- Run:
+--   gero compile factorial.gr -o factorial.gx
+--   gero run factorial.gx
+def factorial(n: i16) -> i16
+  let acc: i16 = 1
+  let k: i16 = n
+  while k > 1
+    acc *= k
+    k -= 1
+  end
+  return acc
+end
+
+def main()
+  print factorial(1)
+  print factorial(5)
+  print factorial(7)
+end
