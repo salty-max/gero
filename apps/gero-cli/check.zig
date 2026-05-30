@@ -333,25 +333,23 @@ fn checkOneGr(
     const src = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch {
         return .{ .source = "", .diagnostics = &.{}, .read_error = true };
     };
+    return .{ .source = src, .diagnostics = try collectGrDiagnostics(arena, src) };
+}
 
+/// Tokenize + parse + typecheck a gero-lang source into one flat
+/// diagnostic slice. Pure over `src` (no IO) so `checkOneGr` and the
+/// tests share it. The lexer + parser populate `expected` with the
+/// stable `E_SYNTAX_*` code (see `docs/lang-diagnostics.md`); we fall
+/// back to a generic code only when an emission site predates the
+/// retrofit.
+fn collectGrDiagnostics(arena: std.mem.Allocator, src: []const u8) ![]gero.lang.Diagnostic {
     const stream = try gero.lang.tokenize(arena, src);
-    // Tokenizer / parser errors travel through the same lang.Diagnostic
-    // shape so the renderer surfaces them in the canonical layout.
-    // The lexer + parser populate `expected` with the stable
-    // `E_SYNTAX_*` code (see `docs/lang-diagnostics.md`); we fall
-    // back to a generic code only when an emission site predates
-    // the retrofit.
     var combined: std.ArrayList(gero.lang.Diagnostic) = .empty;
-    for (stream.errors) |e| {
-        try combined.append(arena, .{
-            .severity = .fatal,
-            .code = e.expected orelse "E_SYNTAX_GENERIC",
-            // safety: ParseError.index fits in u32 — bounded by file size.
-            .message = try arena.dupe(u8, e.message),
-            .span = .{ .start = @intCast(e.index), .end = @intCast(e.index) },
-        });
-    }
 
+    // `parse` folds the lexer's `stream.errors` into `tree.errors`
+    // (src/lang/parser.zig), so iterating `tree.errors` alone covers
+    // both phases — appending `stream.errors` separately would
+    // double-report every lexer diagnostic.
     const tree = try gero.lang.parse(arena, src, stream);
     for (tree.errors) |e| {
         try combined.append(arena, .{
@@ -370,10 +368,7 @@ fn checkOneGr(
         for (checked.diagnostics) |d| try combined.append(arena, d);
     }
 
-    return .{
-        .source = src,
-        .diagnostics = try combined.toOwnedSlice(arena),
-    };
+    return combined.toOwnedSlice(arena);
 }
 
 fn printPassGr(
@@ -478,4 +473,31 @@ fn writePhaseTimings(
         try footer.writeDuration(stdout, p.ns);
         try stdout.writeByte('\n');
     }
+}
+
+test "collectGrDiagnostics: clean source yields no diagnostics" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const diags = try collectGrDiagnostics(arena_state.allocator(), "def add(x, y)\n  return x + y\nend\n");
+    try std.testing.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "collectGrDiagnostics: lexer diagnostic is not double-counted" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    // `parse` folds the lexer's `0x`-prefix error into `tree.errors`;
+    // appending `stream.errors` separately used to surface it twice.
+    const diags = try collectGrDiagnostics(arena_state.allocator(), "let x = 0x1\n");
+    var hex_count: usize = 0;
+    for (diags) |d| {
+        if (std.mem.eql(u8, d.code, "E_SYNTAX_HEX_PREFIX")) hex_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), hex_count);
+}
+
+test "collectGrDiagnostics: type error surfaces when parse succeeds" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const diags = try collectGrDiagnostics(arena_state.allocator(), "def f()\n  return undefined_name\nend\n");
+    try std.testing.expect(diags.len > 0);
 }
