@@ -1,0 +1,21 @@
+-- gcd.gr — Euclid's algorithm for the greatest common divisor.
+--
+-- `gcd(a, b)` recurses on `gcd(b, a % b)` until the remainder is
+-- zero. `main` prints a few worked pairs. Exercises recursion, the
+-- `%` operator, and an early `return` on the base case.
+--
+-- Run:
+--   gero compile gcd.gr -o gcd.gx
+--   gero run gcd.gx
+def gcd(a: i16, b: i16) -> i16
+  if b == 0
+    return a
+  end
+  return gcd(b, a % b)
+end
+
+def main()
+  print gcd(48, 36)
+  print gcd(1071, 462)
+  print gcd(17, 5)
+end

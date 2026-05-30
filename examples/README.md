@@ -1,41 +1,48 @@
 # Examples
 
-Hand-crafted `.gx` bytecode for poking at the VM before the assembler
-lands. Each one ships with a Python generator that recreates the
-binary — review the generator to see the bytecode breakdown.
+Runnable gero programs, each verified in CI by compiling, running, and
+diffing stdout against a golden `.expected` file alongside it.
 
-## Run
+## Layout
 
-After `zig build`:
+| Directory | Language | Gate |
+|---|---|---|
+| [`asm/`](asm) | gero-asm (`.gas`) | `zig build test-examples` — assemble → run → diff → disasm round-trip |
+| [`lang/`](lang) | gero-lang (`.gr`) | `zig build test-examples-lang` — compile → run → diff |
+
+Both suites are also format-checked: `*.gas` via `zig build
+fmt-check-examples`, `*.gr` via `zig build check-examples-gr` (which
+also type-checks them).
+
+The exhaustive *syntax tours* — one per language, embedded in the
+language docs — live under [`../docs/examples/`](../docs/examples),
+not here. Those are reference material (`gero check` / `gero fmt`
+clean) rather than standalone programs.
+
+## Running one
 
 ```bash
-./zig-out/bin/gero run examples/hello.gx
-# Hello, gero!
+# asm
+gero asm asm/counter.gas && gero run counter.gx
+
+# lang
+gero compile lang/fizzbuzz.gr -o fizzbuzz.gx && gero run fizzbuzz.gx
 ```
 
-## Regenerate
+## Adding an example
 
-```bash
-python3 examples/gen-hello.py > examples/hello.gx
-```
+1. Drop `<name>.gas` / `<name>.gr` in the matching directory with a
+   header comment: what it does, what it exercises, and how to run it.
+2. Generate the golden output: run it and save stdout to
+   `<name>.expected`.
+3. `zig build ci` — the example must compile, run, match its golden
+   output, and (for `.gr`) format + type-check clean.
 
-## Programs
+## Scope of the `lang/` suite
 
-### `hello.gx`
-
-Prints `Hello, gero!\n` then halts. Exercises a real loop —
-pointer-walk through a null-terminated string in user RAM, byte-load,
-`cmp` for the terminator, conditional `jeq` exit, `int 0x10` host
-syscall for `stdout`, `inc` + `jmp` for the loop tail.
-
-| Address  | Bytes              | Mnemonic                               |
-|----------|--------------------|----------------------------------------|
-| `0x0000` | `10 16 00 03`      | `mov 0x0016, r2` — `r2 ← string addr`  |
-| `0x0004` | `24 03 02`         | `mov8 [r2], r1` — `r1.lo ← mem[r2]`    |
-| `0x0007` | `60 02 00 00`      | `cmp r1, 0` — null check               |
-| `0x000B` | `72 15 00`         | `jeq 0x0015` — branch to `hlt` on zero |
-| `0x000E` | `FC 10`            | `int 0x10` — host: stdout ← `r1.lo`    |
-| `0x0010` | `48 03`            | `inc r2` — advance the pointer         |
-| `0x0012` | `70 04 00`         | `jmp 0x0004` — loop                    |
-| `0x0015` | `FF`               | `hlt`                                  |
-| `0x0016` | `Hello, gero!\n\0` | the string                             |
+The `.gr` examples stay within what the codegen backend executes today
+— functions, recursion, `for` / `while`, `if` / `elif` / `else`,
+`match` over enums, integer arithmetic, and `print`. Data-structure
+programs (arrays, structs, classes, compound assignment) aren't here
+yet because the backend doesn't lower them; they'll join as codegen
+grows.
