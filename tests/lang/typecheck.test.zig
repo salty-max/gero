@@ -282,6 +282,42 @@ test "typecheck: while let binds the pattern in the loop body" {
     );
 }
 
+test "typecheck: match payload binder carries the variant's field type" {
+    // `n` binds the `i16` payload, so returning it where `str` is
+    // expected is a mismatch (the binder isn't left untyped).
+    try expectCode(
+        \\enum E
+        \\  case A(x: i16)
+        \\  case B
+        \\end
+        \\def f(e: E) -> str
+        \\  match e
+        \\    case E.A(n) => return n
+        \\    case E.B => return "x"
+        \\  end
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: payload binder typed for an inline-constructor scrutinee" {
+    // The scrutinee `E.A(1)` surfaces no inferred type, so the enum is
+    // recovered from the arm path — `n` is still typed `i16`.
+    try expectCode(
+        \\enum E
+        \\  case A(x: i16)
+        \\  case B
+        \\end
+        \\def main()
+        \\  match E.A(1)
+        \\    case E.A(n) =>
+        \\      let bad: str = n
+        \\      print bad
+        \\    case E.B => print 0
+        \\  end
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
 // ---------- slice 2: function signature registration ----------
 
 test "typecheck: def signature registered in scope" {

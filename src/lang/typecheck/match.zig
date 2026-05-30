@@ -15,11 +15,11 @@ const WalkError = error{OutOfMemory};
 pub fn checkMatch(self: *Checker, ms: ast.MatchStmt) WalkError!void {
     const scrut_ty = try self.inferExpr(ms.scrutinee, null);
 
-    // Lookup enum decl when scrutinee resolves to a named-enum.
-    const enum_decl: ?*const ast.EnumDecl = if (scrut_ty) |st|
-        enumDeclForType(self, st.*)
-    else
-        null;
+    // Lookup the enum being matched. Prefer the scrutinee's inferred
+    // type; fall back to a variant arm's path (`EnumName.Variant`) so
+    // payload binders are still typed when the scrutinee form doesn't
+    // surface a type (e.g. an inline constructor call).
+    const enum_decl: ?*const ast.EnumDecl = resolveMatchEnum(self, ms, scrut_ty);
     // `bool` is the only primitive with a closed value set the
     // checker reasons about; track it the same way as enums.
     const is_bool: bool = if (scrut_ty) |st|
@@ -244,6 +244,18 @@ fn checkExhaustiveness(
 /// Split a dotted path like `Enum.Variant` into `(head="Enum",
 /// tail="Variant")`. Returns an empty head when there is no
 /// `.` in the path.
+/// Resolve the enum a `match` dispatches on: the scrutinee's inferred
+/// type when available, else a variant arm's enum (`EnumName.Variant`).
+fn resolveMatchEnum(self: *Checker, ms: ast.MatchStmt, scrut_ty: ?*const types.Type) ?*const ast.EnumDecl {
+    if (scrut_ty) |st| if (enumDeclForType(self, st.*)) |ed| return ed;
+    for (ms.arms) |arm| {
+        if (arm.pattern.* != .variant_pattern) continue;
+        const head = splitPath(self.lexeme(arm.pattern.variant_pattern.path)).head;
+        if (head.len > 0) if (self.enum_registry.get(head)) |ed| return ed;
+    }
+    return null;
+}
+
 /// Register a match arm's bindings, typing enum-variant payload
 /// binders from the variant's declared field types — `case E.A(n)`
 /// gives `n` the payload's type, not unknown. Non-variant patterns
@@ -267,6 +279,9 @@ fn registerArmBindings(self: *Checker, pat: *const ast.Pattern, enum_decl: ?*con
     try self.registerPatternBindings(pat);
 }
 
+/// Split a variant path `EnumName.Variant` at the last `.` into its
+/// head (`EnumName`) and tail (`Variant`). Head is empty when the
+/// text carries no `.`.
 pub fn splitPath(text: []const u8) struct { head: []const u8, tail: []const u8 } {
     if (std.mem.lastIndexOfScalar(u8, text, '.')) |dot| {
         return .{ .head = text[0..dot], .tail = text[dot + 1 ..] };

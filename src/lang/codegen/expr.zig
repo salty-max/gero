@@ -113,6 +113,54 @@ pub fn emitExprDiscard(self: *Emitter, e: *const ast.Expr) !void {
 
 /// Lower an `EnumName.Variant` field expression — a nullary
 /// enum-variant constructor. Loads the variant's tag byte into
+/// Construct a payload-carrying enum value: bump-allocate a
+/// `[tag | payload]` slot, write the tag byte, then each payload
+/// field at its offset. Leaves the slot pointer in `acu`. `args` is
+/// the constructor's call arguments — empty for a nullary variant of
+/// an otherwise payload-carrying enum (which still needs a slot).
+pub fn emitEnumConstruct(
+    self: *Emitter,
+    ed: *const ast.EnumDecl,
+    variant: ast.EnumVariant,
+    tag: u8,
+    args: []const *ast.Expr,
+) !void {
+    // Evaluate the payload args onto the stack first (no frame slot —
+    // an uncounted local would overlap the prologue's reservation).
+    for (args) |arg| {
+        try emitExpr(self, arg);
+        try isa.pushReg(self, Reg.acu);
+    }
+
+    // Allocate the slot; `acu` → pointer, kept in `r1` across the
+    // stores below.
+    try isa.movImmToReg(self, self.enumSlotSize(ed), Reg.acu);
+    try self.emitByte(Op.sys);
+    try self.emitByte(opcodes.Sys.alloc);
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+
+    // Tag byte at offset 0.
+    try isa.movImmToReg(self, tag, Reg.r2);
+    try class.emitByteStoreAtOffset(self, Reg.r1, 0, Reg.r2);
+
+    // Pop the args in reverse (stack is LIFO) and store each at its
+    // field offset.
+    var i = args.len;
+    while (i > 0) {
+        i -= 1;
+        try isa.popReg(self, Reg.r2);
+        const ofs = self.variantFieldOffset(variant, i);
+        if (self.widthOfTypeAnn(variant.payload[i].type_ann.*) == 1) {
+            try class.emitByteStoreAtOffset(self, Reg.r1, ofs, Reg.r2);
+        } else {
+            try class.emitWordStoreAtOffset(self, Reg.r1, ofs, Reg.r2);
+        }
+    }
+
+    // Result is the slot pointer.
+    try isa.movRegToReg(self, Reg.r1, Reg.acu);
+}
+
 /// `acu`. Field access on non-enum receivers is not yet
 /// supported.
 pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void {
@@ -140,17 +188,24 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
                 try self.diagFatal(f.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant");
                 return;
             };
-            // A bare `Item.Potion` reference at expression
-            // position (without a call) requires the payload to
-            // be empty — payload-bearing constructors come
-            // through the `CallExpr` path with field-callee.
             for (ed.variants) |v| {
-                if (std.mem.eql(u8, self.source[v.name.start..v.name.end], variant_name)) {
-                    if (v.payload.len != 0) {
-                        try self.unsupported(f.span, "payload-bearing enum-variant constructors");
-                        return;
-                    }
+                if (!std.mem.eql(u8, self.source[v.name.start..v.name.end], variant_name)) continue;
+                if (v.payload.len != 0) {
+                    // A bare `Item.Potion` (no call) is a constructor
+                    // value with no args — payload construction comes
+                    // through the call path instead.
+                    try self.unsupported(f.span, "payload-bearing enum-variant constructors");
+                    return;
                 }
+                // A payload-carrying enum is uniformly a slot, so even
+                // a nullary variant allocates one; a payload-free enum
+                // stays a bare register tag.
+                if (self.enumHasPayload(ed)) {
+                    try emitEnumConstruct(self, ed, v, tag, &.{});
+                } else {
+                    try isa.movImmToReg(self, tag, Reg.acu);
+                }
+                return;
             }
             try isa.movImmToReg(self, tag, Reg.acu);
             return;
@@ -180,6 +235,12 @@ pub fn emitIsTest(self: *Emitter, it: ast.IsTestExpr) !void {
                 return;
             };
             try emitExpr(self, it.lhs);
+            // A payload-carrying enum is a slot pointer — read the tag
+            // byte from `[ptr]` before comparing.
+            if (self.enum_decls.get(enum_name)) |ed| if (self.enumHasPayload(ed)) {
+                try isa.movRegToReg(self, Reg.acu, Reg.r1);
+                try class.emitByteLoadAtOffset(self, Reg.r1, 0, Reg.acu);
+            };
             try isa.cmpRegImm(self, Reg.acu, tag);
             try materializeBoolFromFlags(self, .eq);
         },
@@ -476,6 +537,18 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
     }
     if (m.receiver.* == .ident) {
         const recv = self.source[m.receiver.ident.span.start..m.receiver.ident.span.end];
+        // Payload-variant constructor — `Enum.Variant(args)` parses as
+        // a method call on the enum name.
+        if (self.enum_decls.get(recv)) |ed| {
+            const variant_name = self.source[m.method.start..m.method.end];
+            if (self.variantTag(recv, variant_name)) |tag| {
+                for (ed.variants) |v| {
+                    if (!std.mem.eql(u8, self.source[v.name.start..v.name.end], variant_name)) continue;
+                    try emitEnumConstruct(self, ed, v, tag, m.args);
+                    return;
+                }
+            }
+        }
         if (std.mem.eql(u8, recv, "mem")) {
             // Build a synthetic `FieldExpr` + `CallExpr` shape so
             // the existing mem dispatch can flow through without
@@ -554,6 +627,17 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
             if (std.mem.eql(u8, recv, "mem")) {
                 try self.emitMemCall(fe, c);
                 return;
+            }
+            // Payload-variant constructor — `Enum.Variant(args)`.
+            if (self.enum_decls.get(recv)) |ed| {
+                const variant_name = self.source[fe.field.start..fe.field.end];
+                if (self.variantTag(recv, variant_name)) |tag| {
+                    for (ed.variants) |v| {
+                        if (!std.mem.eql(u8, self.source[v.name.start..v.name.end], variant_name)) continue;
+                        try emitEnumConstruct(self, ed, v, tag, c.args);
+                        return;
+                    }
+                }
             }
         }
     }
