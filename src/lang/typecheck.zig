@@ -1356,6 +1356,22 @@ pub const Checker = struct {
         }
     }
 
+    /// Register one binder with a known type — the typed counterpart
+    /// to `registerPatternBindings`, used where the value's type is
+    /// known (an enum-variant payload field). A bare ident binds at
+    /// `ty`; nested destructuring falls back to the untyped walk.
+    pub fn registerTypedBinding(self: *Checker, pat: *const ast.Pattern, ty: ?*const types.Type) WalkError!void {
+        switch (pat.*) {
+            .ident => |i| try self.registerName(self.lexeme(i.name), .{
+                .kind = .let_binding,
+                .decl_span = i.name,
+                .ty = ty,
+            }),
+            .wildcard, .int_lit, .str_lit, .char_lit, .bool_lit, .nil_lit, .range_pattern => {},
+            else => try self.registerPatternBindings(pat),
+        }
+    }
+
     fn bodyMentions(self: *const Checker, body: []const ast.Statement, name: []const u8) bool {
         for (body) |s| if (self.stmtMentions(s, name)) return true;
         return false;
