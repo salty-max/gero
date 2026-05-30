@@ -285,6 +285,9 @@ const Printer = struct {
         end_off: u32,
     ) std.Io.Writer.Error!void {
         for (arms, 0..) |arm, i| {
+            // The caller indents the first arm's `if`; later `elif`
+            // arms begin their own line and indent themselves.
+            if (i > 0) try self.writeIndent();
             try self.writer.writeAll(if (i == 0) "if " else "elif ");
             try self.writeIfArmHead(arm);
             try self.writer.writeByte('\n');
