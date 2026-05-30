@@ -3730,3 +3730,73 @@ test "codegen: byte-width MMIO global loads via mov8, never a word load" {
         countByteSeq(compiled.image, &[_]u8{ 0x13, 0x40, 0xFE }),
     );
 }
+
+// ---------- compound assignment + inc/dec ----------
+
+test "codegen: compound `op=` chain folds into the binding" {
+    try runAndExpect(
+        \\def main()
+        \\  let x = 0
+        \\  x += 5
+        \\  x *= 3
+        \\  x -= 1
+        \\  print x
+        \\end
+    , "14\n");
+}
+
+test "codegen: compound `*=` / `-=` drive a factorial loop" {
+    try runAndExpect(
+        \\def main()
+        \\  let n = 5
+        \\  let acc = 1
+        \\  while n > 1
+        \\    acc *= n
+        \\    n -= 1
+        \\  end
+        \\  print acc
+        \\end
+    , "120\n");
+}
+
+test "codegen: bitwise / shift compound assignment" {
+    try runAndExpect(
+        \\def main()
+        \\  let x = 1
+        \\  x <<= 4
+        \\  x |= 1
+        \\  print x
+        \\end
+    , "17\n");
+}
+
+test "codegen: `++` and `--` increment / decrement in place" {
+    try runAndExpect(
+        \\def main()
+        \\  let x = 10
+        \\  x++
+        \\  x++
+        \\  x--
+        \\  print x
+        \\end
+    , "11\n");
+}
+
+test "codegen: compound assignment to a class field" {
+    try runAndExpect(
+        \\class C
+        \\  let v: i16
+        \\  def init(self, v: i16)
+        \\    self.v = v
+        \\  end
+        \\  def bump(self)
+        \\    self.v += 100
+        \\  end
+        \\end
+        \\def main()
+        \\  let c = C(5)
+        \\  c.bump()
+        \\  print c.v
+        \\end
+    , "105\n");
+}

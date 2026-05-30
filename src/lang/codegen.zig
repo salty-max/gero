@@ -238,6 +238,25 @@ fn findEntryDef(source: []const u8, program: *const ast.Program, entry_name: []c
     return null;
 }
 
+/// The binary operator a compound-assignment desugars to —
+/// `+=` → `+`, `<<=` → `<<`, and so on. `.set` has no binary form.
+fn compoundBinaryOp(op: ast.AssignOp) ast.BinaryOp {
+    return switch (op) {
+        // plain `=` never reaches this desugar helper
+        .set => unreachable,
+        .add_set => .add,
+        .sub_set => .sub,
+        .mul_set => .mul,
+        .div_set => .div,
+        .mod_set => .mod,
+        .bit_and_set => .bit_and,
+        .bit_or_set => .bit_or,
+        .bit_xor_set => .bit_xor,
+        .shl_set => .shl,
+        .shr_set => .shr,
+    };
+}
+
 /// `true` when `dd` carries a bare flag annotation named `name`.
 /// Module-level helper so emit-loop branches in `emitProgram` can
 /// route on `@cold` / `@interrupt` / etc. without spinning up a
@@ -1377,6 +1396,7 @@ pub const Emitter = struct {
             .let_decl => |d| try self.emitLetDecl(d),
             .const_decl => |d| try self.emitConstDecl(d),
             .assign => |a| try self.emitAssign(a),
+            .inc_dec => |id| try self.emitIncDec(id),
             .return_stmt => |r| try self.emitReturnStmt(r),
             .print_stmt => |p| try self.emitPrintStmt(p),
             .expr_stmt => |es| try self.emitExprDiscard(es.expr),
@@ -1483,10 +1503,21 @@ pub const Emitter = struct {
         return name;
     }
 
-    fn emitAssign(self: *Emitter, a: ast.AssignStmt) !void {
+    fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
+        var a = a_in;
         if (a.op != .set) {
-            try self.unsupported(a.span, "compound `op=` assignments — only plain `=` is supported");
-            return;
+            // Desugar `target op= value` into `target = (target op value)`
+            // and fall through to the plain-store path — same target
+            // support (ident + class field) as `=`.
+            const rhs = try self.arena.create(ast.Expr);
+            rhs.* = .{ .binary = .{
+                .op = compoundBinaryOp(a.op),
+                .lhs = a.target,
+                .rhs = a.value,
+                .span = a.span,
+            } };
+            a.value = rhs;
+            a.op = .set;
         }
         // Field-target assignment — `recv.field = value` on a class
         // receiver routes to the class field-store path.
@@ -1531,6 +1562,21 @@ pub const Emitter = struct {
             return;
         }
         try self.unsupported(a.target.span(), "assignment target not in scope");
+    }
+
+    /// `target++` / `target--` — desugars to `target = target ± 1` and
+    /// reuses the assignment path.
+    fn emitIncDec(self: *Emitter, id: ast.IncDecStmt) !void {
+        const one = try self.arena.create(ast.Expr);
+        one.* = .{ .int_lit = .{ .value = 1, .span = id.span } };
+        const rhs = try self.arena.create(ast.Expr);
+        rhs.* = .{ .binary = .{
+            .op = if (id.inc) .add else .sub,
+            .lhs = id.target,
+            .rhs = one,
+            .span = id.span,
+        } };
+        try self.emitAssign(.{ .target = id.target, .op = .set, .value = rhs, .span = id.span });
     }
 
     fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
