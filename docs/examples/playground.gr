@@ -1,6 +1,9 @@
 -- Small canonical sample exercising the gero-lang v1 surface.
 -- Round-trips through `gero fmt docs/examples/playground.gr --check`
--- and produces zero diff.
+-- and produces zero diff. A syntax showcase: it references
+-- illustrative externals (Entity, GameState, draw, …) that aren't
+-- defined here, so it is not type-checked.
+-- gero-example: fmt-only
 use math
 use input as keys from "./io"
 const MAX_HP = 100
