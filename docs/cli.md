@@ -252,18 +252,20 @@ debug:       yes (symbols: 142)
 
 ### 3.8 `gero fmt <files...>` — format source
 
-Canonical formatter for `.gas` (and eventually `.gr`). Style is
-fixed per-invocation — no `--option`s, no `.editorconfig` lookup.
-Inside a gero project, the manifest's `[fmt]` section overrides
-the compile-time defaults (see below).
+Canonical formatter for `.gas` and `.gr`. Style is fixed
+per-invocation — no `--option`s, no `.editorconfig` lookup. Inside
+a gero project, the manifest's `[fmt]` section overrides the
+compile-time defaults (see below).
 
 ```bash
 gero fmt main.gas                 # format in place
+gero fmt main.gr                  # gero-lang source — same UX
 gero fmt --check main.gas         # check only (exit 8 if changes needed)
-gero fmt src/                     # recurse into directory
-gero fmt a.gas b.gas src/         # any mix of files and directories
+gero fmt src/                     # recurse into directory (.gas + .gr)
+gero fmt a.gas b.gr src/          # any mix of files and directories
 gero fmt                          # project-aware: [build].entry + [test].include
-cat main.gas | gero fmt --stdin   # editor format-on-save (stdin → stdout)
+cat main.gas | gero fmt --stdin             # editor format-on-save (stdin → stdout)
+cat main.gr | gero fmt --stdin --lang=gr    # gero-lang from stdin
 ```
 
 **Behavior:**
@@ -283,9 +285,15 @@ cat main.gas | gero fmt --stdin   # editor format-on-save (stdin → stdout)
   apply. `--stdin --check` exits 0 if already canonical, 8 if it
   would reformat (no stdout in `--check` mode). Use case: editor
   format-on-save (VS Code / Neovim / Helix).
-- Recurses into directories, formats every `.gas` found. `.gr`
-  sources route to "not yet implemented" until the
-  gero-lang front-end.
+- `--lang=<gas|gr>` selects the front-end for `--stdin` — stdin
+  carries no filename to dispatch on, so the language is explicit.
+  Defaults to `gas`. Ignored outside stdin mode (path mode
+  dispatches on the file extension). Editors pass `--lang=gr` when
+  formatting a gero-lang buffer on save.
+- Recurses into directories, formats every `.gas` and `.gr` found.
+  `.gr` sources parse via the gero-lang front-end and re-emit
+  through the AST printer; `.gas` round-trips through the asm
+  printer.
 - `include "..."` directives round-trip verbatim — fmt doesn't
   expand includes (that's `gero asm`'s job).
 

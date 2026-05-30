@@ -30,6 +30,12 @@ pub const ColorChoice = enum { auto, always, never };
 /// consume.
 pub const Format = enum { human, json };
 
+/// `--lang=<l>` for `gero fmt --stdin` — which front-end parses the
+/// piped source. File-path mode dispatches on extension instead;
+/// stdin has no filename, so the language is explicit (default
+/// `gas` preserves the original stdin behavior).
+pub const Lang = enum { gas, gr };
+
 /// Maximum positional args a single invocation can hold. Today's
 /// commands top out at 1-2; keep it generous to absorb future
 /// `gero build` multi-source forms without re-architecting.
@@ -77,6 +83,11 @@ pub const Options = struct {
     /// integrations can surface warnings without blocking the
     /// build; CI gates set this for zero-warning policies.
     werror: bool = false,
+    /// `--lang=<gas|gr>` for `gero fmt --stdin` — selects the
+    /// front-end for piped source. Ignored outside stdin mode, where
+    /// the file extension decides. `gas` (default) keeps prior stdin
+    /// behavior.
+    lang: Lang = .gas,
     /// `--target=<vm|gtx-16>` for `gero build` — overrides the
     /// manifest's `package.target`. `null` = inherit from manifest;
     /// `gtx-16` is reserved (errors with "not yet implemented").
@@ -306,12 +317,13 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero check prog.gas -v{s}          {s}# per-phase timings (include / parse / codegen){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .fmt => {
-            try out.print("  {s}gero fmt{s} <path...> [--check] [--stdin] [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("  {s}gero fmt{s} <path...> [--check] [--stdin] [--lang=<gas|gr>] [--quiet]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
             try out.print("  {s}gero fmt prog.gas{s}               {s}# rewrite in place if not canonical{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
-            try out.print("  {s}gero fmt src/{s}                   {s}# recurse + format every .gas{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero fmt src/{s}                   {s}# recurse + format every .gas / .gr{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero fmt --check src/{s}           {s}# CI mode — exit 8 if any file would change{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}cat prog.gas | gero fmt --stdin{s} {s}# editor format-on-save (stdin → stdout){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}cat prog.gr | gero fmt --stdin --lang=gr{s} {s}# format gero-lang from stdin{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .new => {
             try out.print("  {s}gero new{s} <name> [--quiet]\n\n", .{ a.cyan, a.reset });
@@ -377,6 +389,7 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .format => .{ .sig = "--format=<m>", .desc = "human (default) / json. JSON output suppresses human messages." },
         .target => .{ .sig = "--target=<m>", .desc = "vm (default) / gtx-16. Overrides manifest's [package].target." },
         .werror => .{ .sig = "--werror", .desc = "Treat warnings as errors (escalates exit code to 4)." },
+        .lang => .{ .sig = "--lang=<l>", .desc = "gas (default) / gr. Picks the front-end for --stdin (paths use the extension)." },
     };
 }
 
@@ -391,7 +404,7 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .disasm => &.{ .help, .bank, .no_show_bytes, .check_roundtrip, .quiet, .color, .no_color },
         .test_ => &.{ .help, .verbose, .color, .no_color },
         .check => &.{ .help, .format, .werror, .quiet, .verbose, .color, .no_color },
-        .fmt => &.{ .help, .check, .stdin, .quiet, .color, .no_color },
+        .fmt => &.{ .help, .check, .stdin, .lang, .quiet, .color, .no_color },
         .new => &.{ .help, .quiet, .color, .no_color },
         .init => &.{ .help, .quiet, .color, .no_color },
         .build => &.{ .help, .target, .quiet, .verbose, .color, .no_color },
@@ -426,7 +439,13 @@ fn parseFormat(s: []const u8) ParseError!Format {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, stdin, format, target, werror };
+fn parseLang(s: []const u8) ParseError!Lang {
+    if (std.mem.eql(u8, s, "gas")) return .gas;
+    if (std.mem.eql(u8, s, "gr")) return .gr;
+    return error.InvalidEnumValue;
+}
+
+const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, stdin, format, target, werror, lang };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
@@ -446,6 +465,7 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "format")) return .format;
     if (std.mem.eql(u8, s, "target")) return .target;
     if (std.mem.eql(u8, s, "werror")) return .werror;
+    if (std.mem.eql(u8, s, "lang")) return .lang;
     return null;
 }
 
@@ -479,6 +499,7 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .format => opts.format = try parseFormat(value orelse return error.MissingFlagValue),
         .target => opts.target = value orelse return error.MissingFlagValue,
         .werror => opts.werror = true,
+        .lang => opts.lang = try parseLang(value orelse return error.MissingFlagValue),
     }
 }
 
@@ -488,7 +509,7 @@ fn parseBank(s: []const u8) ParseError!u8 {
 
 fn needsValue(kind: FlagKind) bool {
     return switch (kind) {
-        .optimize, .out, .color, .bank, .format, .target => true,
+        .optimize, .out, .color, .bank, .format, .target, .lang => true,
         else => false,
     };
 }
@@ -733,6 +754,21 @@ test "parse: --optimize=release accepted" {
     const args = [_][]const u8{ "asm", "--optimize=release" };
     const p = try parse(&args);
     try testing.expectEqual(Optimize.release, p.options.optimize);
+}
+
+test "parse: --lang defaults to gas, --lang=gr selects the lang front-end" {
+    const default_p = try parse(&[_][]const u8{ "fmt", "--stdin" });
+    try testing.expectEqual(Lang.gas, default_p.options.lang);
+
+    const gr_p = try parse(&[_][]const u8{ "fmt", "--stdin", "--lang=gr" });
+    try testing.expectEqual(Lang.gr, gr_p.options.lang);
+}
+
+test "parse: --lang with an unknown value errors" {
+    // Regression: `--lang` must be in `needsValue`, else an inline
+    // `=value` is rejected as a no-value flag before `parseLang` runs.
+    const args = [_][]const u8{ "fmt", "--stdin", "--lang=python" };
+    try testing.expectError(error.InvalidEnumValue, parse(&args));
 }
 
 test "parse: --show-bytes default is true, --no-show-bytes disables" {

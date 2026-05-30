@@ -39,7 +39,7 @@ pub fn execute(
             try term.err("gero fmt: --stdin is mutually exclusive with positional paths", .{});
             return 2;
         }
-        return try formatStdin(io, arena, stdout, term, style, opts.check);
+        return try formatStdin(io, arena, stdout, term, opts.check, opts.lang);
     }
 
     // Always try to load gero.toml — both [fmt] overrides and the
@@ -144,9 +144,11 @@ pub fn printOptionsFromManifest(fmt: project.Manifest.Fmt) gero.asm_.PrintOption
     };
 }
 
-/// `--stdin` mode: read source from stdin, run the canonical
-/// printer, write the result to stdout. `check_mode` flips behavior
-/// to exit 8 (no stdout) when the input would reformat.
+/// `--stdin` mode: read source from stdin, run the canonical printer
+/// for `lang`, write the result to stdout. `check_mode` flips behavior
+/// to exit 8 (no stdout) when the input would reformat. The language
+/// is explicit (`--lang`) because stdin carries no extension to
+/// dispatch on; `.gas` is the default.
 ///
 /// The manifest's `[fmt]` overrides are **not** consulted — stdin
 /// mode has no project root context. Always uses compile-time
@@ -160,11 +162,9 @@ fn formatStdin(
     arena: std.mem.Allocator,
     stdout: *std.Io.Writer,
     term: *term_mod.Term,
-    style: gero.asm_.Style,
     check_mode: bool,
+    lang: cli.Lang,
 ) !u8 {
-    _ = style;
-
     // 16 MiB ceiling matches src/asm/include.zig::max_file_size.
     const max_stdin_bytes: usize = 16 * 1024 * 1024;
     var read_buf: [4096]u8 = undefined;
@@ -174,6 +174,20 @@ fn formatStdin(
         return 1;
     };
 
+    return switch (lang) {
+        .gas => formatStdinGas(arena, stdout, term, src, check_mode),
+        .gr => formatStdinGr(arena, stdout, term, src, check_mode),
+    };
+}
+
+/// Asm stdin path: parse, drop include-line noise, print canonically.
+fn formatStdinGas(
+    arena: std.mem.Allocator,
+    stdout: *std.Io.Writer,
+    term: *term_mod.Term,
+    src: []const u8,
+    check_mode: bool,
+) !u8 {
     var pt = try gero.asm_.parse(arena, src);
 
     var real_errors: std.ArrayList(gero.asm_.Diagnostic) = .empty;
@@ -192,13 +206,44 @@ fn formatStdin(
 
     var allocating = std.Io.Writer.Allocating.init(arena);
     try gero.asm_.printProgram(&allocating.writer, &pt.program, src, gero.asm_.default_print_options);
-    const formatted = allocating.written();
+    return emitStdin(stdout, src, allocating.written(), check_mode);
+}
 
+/// Lang stdin path: tokenize + parse via the gero-lang front-end,
+/// re-emit through the AST printer. `parse` folds lexer errors into
+/// `tree.errors`, so a single pass over it covers both phases.
+fn formatStdinGr(
+    arena: std.mem.Allocator,
+    stdout: *std.Io.Writer,
+    term: *term_mod.Term,
+    src: []const u8,
+    check_mode: bool,
+) !u8 {
+    var stream = try gero.lang.tokenize(arena, src);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(arena, src, stream);
+    defer tree.deinit();
+    if (tree.errors.len > 0) {
+        for (tree.errors) |d| {
+            // @as: ParseError.index fits in u32 — bounded by max_stdin_bytes.
+            const lc = lineColAt(src, @as(u32, @intCast(d.index)));
+            try term.err("{d}:{d}: {s}", .{ lc.line, lc.col, d.message });
+        }
+        return 3;
+    }
+
+    var allocating = std.Io.Writer.Allocating.init(arena);
+    try gero.lang.print(&allocating.writer, &tree.program, src);
+    return emitStdin(stdout, src, allocating.written(), check_mode);
+}
+
+/// Shared stdin tail: in `--check` mode report would-reformat via the
+/// exit code (8) without writing; otherwise stream the formatted bytes.
+fn emitStdin(stdout: *std.Io.Writer, src: []const u8, formatted: []const u8, check_mode: bool) !u8 {
     if (check_mode) {
         // Canonical → exit 0 silent; otherwise exit 8, also silent.
         return if (std.mem.eql(u8, src, formatted)) 0 else 8;
     }
-
     try stdout.writeAll(formatted);
     return 0;
 }
@@ -485,4 +530,20 @@ fn mkDiag(index: u32) gero.asm_.Diagnostic {
             .kind = .semantic,
         },
     };
+}
+
+test "fmt: emitStdin writes formatted bytes and exits 0 outside check mode" {
+    var out = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out.deinit();
+    const code = try emitStdin(&out.writer, "src", "formatted", false);
+    try testing.expectEqual(@as(u8, 0), code);
+    try testing.expectEqualStrings("formatted", out.written());
+}
+
+test "fmt: emitStdin --check exits 8 when reformatting, 0 when canonical, never writes" {
+    var out = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out.deinit();
+    try testing.expectEqual(@as(u8, 8), try emitStdin(&out.writer, "messy", "clean", true));
+    try testing.expectEqual(@as(u8, 0), try emitStdin(&out.writer, "same", "same", true));
+    try testing.expectEqual(@as(usize, 0), out.written().len);
 }
