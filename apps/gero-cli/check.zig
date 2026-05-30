@@ -338,18 +338,16 @@ fn checkOneGr(
 
 /// Tokenize + parse + typecheck a gero-lang source into one flat
 /// diagnostic slice. Pure over `src` (no IO) so `checkOneGr` and the
-/// tests share it. The lexer + parser populate `expected` with the
-/// stable `E_SYNTAX_*` code (see `docs/lang-diagnostics.md`); we fall
-/// back to a generic code only when an emission site predates the
-/// retrofit.
+/// tests share it. Each diagnostic's `code` is the lexer/parser's
+/// stable `E_SYNTAX_*` code (see `docs/lang-diagnostics.md`), or
+/// `E_SYNTAX_GENERIC` when the emission site carries none.
 fn collectGrDiagnostics(arena: std.mem.Allocator, src: []const u8) ![]gero.lang.Diagnostic {
     const stream = try gero.lang.tokenize(arena, src);
     var combined: std.ArrayList(gero.lang.Diagnostic) = .empty;
 
     // `parse` folds the lexer's `stream.errors` into `tree.errors`
-    // (src/lang/parser.zig), so iterating `tree.errors` alone covers
-    // both phases — appending `stream.errors` separately would
-    // double-report every lexer diagnostic.
+    // (src/lang/parser.zig), so `tree.errors` is the complete set —
+    // iterate it alone, never `stream.errors` as well.
     const tree = try gero.lang.parse(arena, src, stream);
     for (tree.errors) |e| {
         try combined.append(arena, .{
@@ -485,8 +483,8 @@ test "collectGrDiagnostics: clean source yields no diagnostics" {
 test "collectGrDiagnostics: lexer diagnostic is not double-counted" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    // `parse` folds the lexer's `0x`-prefix error into `tree.errors`;
-    // appending `stream.errors` separately used to surface it twice.
+    // A lexer diagnostic (the `0x`-prefix error) surfaces exactly
+    // once, not once per phase — `tree.errors` already includes it.
     const diags = try collectGrDiagnostics(arena_state.allocator(), "let x = 0x1\n");
     var hex_count: usize = 0;
     for (diags) |d| {

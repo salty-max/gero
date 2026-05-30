@@ -248,9 +248,8 @@ test "typecheck: shadowing across scopes is allowed" {
 }
 
 test "typecheck: if let binds the pattern in guard and body" {
-    // Regression: `if let` used to infer the matched expr but never
-    // register the pattern's bindings, so `n` read as undefined in
-    // both the `when` guard and the body (§4.4.1).
+    // The `when` guard and the arm body both resolve the pattern's
+    // bindings — here `n` from `E.A(n)` (§4.4.1).
     try expectClean(
         \\enum E
         \\  case A(x: i16)

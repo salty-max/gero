@@ -283,6 +283,15 @@ Never a third "LGTM with footnotes" shape.
 - **Version markers** (`v0.X`, `Phase Y`, `Roadmap:`) — code
   describes what works today, factually. Versioning lives in
   CHANGELOG / git tags / project board.
+- **Change-history narration** — comments document the code as it
+  stands, never how it got there. No `previously`, `used to`, `was
+  a bug`, `Regression:`, `now fixed`, `surfaced while…`,
+  `predates the retrofit`. A reader needs the invariant the code
+  upholds, not the story of the fix that produced it. This includes
+  test comments: state the property the test pins (e.g. "the `when`
+  guard resolves the pattern's bindings"), not the bug it once
+  caught. Write every comment as if the code had always been this
+  way — the fix narrative lives in the commit / changeset / PR.
 - **AI attribution** (see "The contract").
 
 ### Tests
