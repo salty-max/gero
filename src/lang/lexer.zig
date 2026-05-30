@@ -210,18 +210,31 @@ pub const Token = struct {
     }
 };
 
+/// A line comment (`-- …`) captured verbatim. `start..end` are byte
+/// offsets covering the `--` through the last byte before the
+/// newline. The parser never sees these — they're kept off the token
+/// stream so they don't perturb grammar rules — but the formatter
+/// re-emits them, so they ride along on `TokenStream` / `ParseTree`.
+pub const Comment = struct {
+    start: u32,
+    end: u32,
+};
+
 /// Output of `tokenize`. `tokens` always ends with `.eof`. Any
 /// `ParseError` raised during lexing is collected in `errors` so
 /// the caller can drain every problem in a single pass.
 pub const TokenStream = struct {
     tokens: []Token,
     errors: []core.ParseError,
+    /// Line comments in source order. Empty for comment-free input.
+    comments: []Comment,
     allocator: std.mem.Allocator,
 
-    /// Release both slices.
+    /// Release the slices.
     pub fn deinit(self: *TokenStream) void {
         self.allocator.free(self.tokens);
         self.allocator.free(self.errors);
+        self.allocator.free(self.comments);
     }
 
     /// `true` when at least one token-level error was recorded.
@@ -361,6 +374,9 @@ const State = struct {
     index: u32,
     tokens: std.ArrayList(Token),
     errors: std.ArrayList(core.ParseError),
+    /// Line comments collected as the scanner skips them. Off the
+    /// token stream; the formatter consumes them.
+    comments: std.ArrayList(Comment),
     /// Most-recent emitted kind, used by `-` disambiguation +
     /// trailing-newline collapsing.
     last_kind: ?Token.Kind,
@@ -655,6 +671,7 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
         .index = 0,
         .tokens = .empty,
         .errors = .empty,
+        .comments = .empty,
         .last_kind = null,
         .str_stack = .empty,
         .allocator = allocator,
@@ -662,6 +679,7 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
     defer state.str_stack.deinit(allocator);
     errdefer state.tokens.deinit(allocator);
     errdefer state.errors.deinit(allocator);
+    errdefer state.comments.deinit(allocator);
 
     while (state.index < source.len) {
         // --- string-body mode ---
@@ -741,7 +759,9 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
                 break :blk prev == ' ' or prev == '\t' or prev == '\n' or prev == '\r';
             };
             if (preceded_by_ws) {
+                const comment_start = state.index;
                 while (state.index < source.len and source[state.index] != '\n') : (state.index += 1) {}
+                try state.comments.append(state.allocator, .{ .start = comment_start, .end = state.index });
                 continue;
             }
             // Directly attached → decrement.
@@ -990,6 +1010,7 @@ pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenStream {
     return .{
         .tokens = try state.tokens.toOwnedSlice(allocator),
         .errors = try state.errors.toOwnedSlice(allocator),
+        .comments = try state.comments.toOwnedSlice(allocator),
         .allocator = allocator,
     };
 }

@@ -40,6 +40,8 @@ const cg_isa = @import("lang/codegen/isa.zig");
 pub const Token = lexer_mod.Token;
 /// Lexer output stream.
 pub const TokenStream = lexer_mod.TokenStream;
+/// A captured line comment (`-- …`); carried through to the formatter.
+pub const Comment = lexer_mod.Comment;
 /// Tokenize `.gr` source.
 pub const tokenize = lexer_mod.tokenize;
 

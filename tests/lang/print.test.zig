@@ -38,7 +38,7 @@ fn renderSource(source: []const u8) ![]u8 {
     var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
     defer writer.deinit();
 
-    try gero.lang.print(&writer.writer, &tree.program, source);
+    try gero.lang.print(&writer.writer, &tree.program, source, tree.comments);
     return writer.toOwnedSlice();
 }
 
@@ -518,6 +518,34 @@ test "print: idempotent on nested expressions" {
 
 test "print: idempotent on HOF chains" {
     try expectIdempotent("let r = xs.filter(|x| x > 0).map(|x| x * 2)");
+}
+
+// ---------- comments ----------
+
+test "print: preserves a leading line comment" {
+    try expectPrint("-- a greeting\nlet x = 1", "-- a greeting\nlet x = 1\n");
+}
+
+test "print: preserves a trailing line comment inline" {
+    try expectPrint("let x = 1  -- the answer-ish", "let x = 1 -- the answer-ish\n");
+}
+
+test "print: keeps a comment trailing the last statement in a body" {
+    try expectPrint(
+        "def f()\n  return 0  -- done\nend",
+        "def f()\n  return 0 -- done\nend\n",
+    );
+}
+
+test "print: idempotent with comments throughout a def" {
+    try expectIdempotent(
+        \\-- module header
+        \\def f(x)
+        \\  -- leading
+        \\  let y = x + 1  -- trailing
+        \\  return y
+        \\end
+    );
 }
 
 // ---------- fixture-driven round-trip property ----------
