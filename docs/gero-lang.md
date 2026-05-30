@@ -1102,11 +1102,9 @@ const SIN_TABLE = make_sin_table()
 -- 512 bytes of static data; no runtime cost
 ```
 
-(`fixed_sin` ships with the `math.*` stdlib — see #284 for the
-implementation. Until then, bake bodies inline a Taylor-series
-approximation in pure gero-lang or use simpler example tables
-like `make_squares_table`. The bake interpreter itself is fully
-ready; only the curated stdlib allowlist is pending.)
+(`fixed_sin` is part of the `math` stdlib — §5.3. A bake body may
+equally inline its own approximation or build a simpler table such as
+`make_squares_table`.)
 
 `bake do` is the same idea inline, without a named function:
 
@@ -2478,6 +2476,13 @@ Old-school enough — same model NES games used for actor systems.
 | Module | Translation unit; one `.gr` → one set of labels |
 | Import | Linker resolves the symbol; all imports must be in the linkage set |
 
+**Entry point.** Execution begins at `def main()` — a parameterless
+top-level function in the root module. The compiler requires it; a
+program without a `main` is rejected. The rest of a module body is
+**declarations** (`def` / `class` / `struct` / `enum` / `const` /
+`let` / `use`); code that should run at startup lives in `main` or the
+functions it calls.
+
 ### 7.2 Memory layout of a compiled program
 
 ```
@@ -2546,7 +2551,9 @@ calls compile to plain `call addr` with no overhead.
 ### 8.1 Hello, world
 
 ```
-print "Hello, world!"
+def main()
+  print "Hello, world!"
+end
 ```
 
 ### 8.2 Fibonacci
@@ -2559,7 +2566,9 @@ def fib(n: i16) -> i16
   return fib(n - 1) + fib(n - 2)
 end
 
-print fib(10)   -- 55
+def main()
+  print fib(10)   -- 55
+end
 ```
 
 ### 8.3 J-RPG main loop sketch
@@ -2608,11 +2617,13 @@ class GameState
   end
 end
 
-let state = GameState()
+def main()
+  let state = GameState()
 
-while true
-  state.update()
-  state.draw()
+  while true
+    state.update()
+    state.draw()
+  end
 end
 ```
 
