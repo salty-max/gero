@@ -602,7 +602,7 @@ fn emitDirectCall(self: *Emitter, label: []const u8, span: ast.Span) !void {
 /// Word load: `mov [base + offset], dst`. The native opcode
 /// takes an i8 offset; widen via `add` + indirect load when the
 /// offset exceeds 127.
-fn emitWordLoadAtOffset(self: *Emitter, base: u8, offset: u16, dst: u8) !void {
+pub fn emitWordLoadAtOffset(self: *Emitter, base: u8, offset: u16, dst: u8) !void {
     if (offset <= 127) {
         // @as: offset fits i8 (≤127); the cast is a no-op for the value range.
         try isa.movRegOffsetToReg(self, base, @as(i8, @intCast(offset)), dst);
@@ -616,7 +616,7 @@ fn emitWordLoadAtOffset(self: *Emitter, base: u8, offset: u16, dst: u8) !void {
 
 /// Word store: `mov src, [base + offset]`. Same `i8`-vs-widen
 /// rule as the load helper.
-fn emitWordStoreAtOffset(self: *Emitter, base: u8, offset: u16, src: u8) !void {
+pub fn emitWordStoreAtOffset(self: *Emitter, base: u8, offset: u16, src: u8) !void {
     if (offset <= 127) {
         // @as: offset fits i8 (≤127); the cast is a no-op for the value range.
         try isa.movRegToRegOffset(self, src, base, @as(i8, @intCast(offset)));
@@ -630,7 +630,7 @@ fn emitWordStoreAtOffset(self: *Emitter, base: u8, offset: u16, src: u8) !void {
 /// Byte load with `+offset` addressing — synthesized via a temp
 /// pointer register. No native indexed-byte load opcode exists.
 /// `mov8_ptr_to_reg` (0x24) operand order: ptr_reg byte, dst byte.
-fn emitByteLoadAtOffset(self: *Emitter, base: u8, offset: u16, dst: u8) !void {
+pub fn emitByteLoadAtOffset(self: *Emitter, base: u8, offset: u16, dst: u8) !void {
     if (offset == 0) {
         try self.emitByte(Op.mov8_ptr_to_reg);
         try self.emitByte(base);
@@ -646,7 +646,7 @@ fn emitByteLoadAtOffset(self: *Emitter, base: u8, offset: u16, dst: u8) !void {
 
 /// Byte store with `+offset` addressing. `mov8_reg_to_ptr` (0x23)
 /// operand order: src byte, ptr_reg byte.
-fn emitByteStoreAtOffset(self: *Emitter, base: u8, offset: u16, src: u8) !void {
+pub fn emitByteStoreAtOffset(self: *Emitter, base: u8, offset: u16, src: u8) !void {
     if (offset == 0) {
         try self.emitByte(Op.mov8_reg_to_ptr);
         try self.emitByte(src);

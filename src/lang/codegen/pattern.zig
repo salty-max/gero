@@ -104,10 +104,9 @@ pub fn emitPatternTest(
             for (match_patches.items) |p| try isa.patchJumpTo(self, p, body_offset);
         },
         .variant_pattern => |vp| {
-            if (vp.args.len > 0) {
-                try self.unsupported(vp.span, "enum-variant patterns with payload binders");
-                return;
-            }
+            // Payload binders don't affect the tag test — they're
+            // extracted into locals by the match lowerer once the tag
+            // matches. The test is the tag comparison either way.
             const path = self.source[vp.path.start..vp.path.end];
             const dot = std.mem.indexOfScalar(u8, path, '.') orelse {
                 try self.diagFatal(vp.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: variant pattern must be `EnumName.Variant`");

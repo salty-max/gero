@@ -4,6 +4,7 @@ const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const pattern = @import("pattern.zig");
+const class = @import("class.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -17,6 +18,46 @@ pub fn emitScopedBody(self: *Emitter, body: []const ast.Statement) error{OutOfMe
     try pushBlock(self);
     for (body) |s| try self.emitStatement(s);
     try popBlockWithDefers(self);
+}
+
+/// Bind a payload-enum arm's variant payload fields to fresh locals,
+/// loaded straight from `[ptr + field_offset]`. Runs after the tag
+/// test and before the guard / body so both can read the binders.
+fn emitPayloadBinders(
+    self: *Emitter,
+    arm: ast.MatchArm,
+    scrutinee_ofs: i8,
+    scrutinee_is_ident: bool,
+    scrutinee: *const ast.Expr,
+    ed: *const ast.EnumDecl,
+) error{OutOfMemory}!void {
+    if (arm.pattern.* != .variant_pattern or arm.pattern.variant_pattern.args.len == 0) return;
+    const vp = arm.pattern.variant_pattern;
+    const path = self.source[vp.path.start..vp.path.end];
+    const tail = if (std.mem.lastIndexOfScalar(u8, path, '.')) |d| path[d + 1 ..] else path;
+    for (ed.variants) |v| {
+        if (!std.mem.eql(u8, self.source[v.name.start..v.name.end], tail)) continue;
+        // Reload the slot pointer into r1, then read each binder.
+        if (scrutinee_is_ident) {
+            try self.emitExpr(scrutinee);
+        } else {
+            try isa.movRegOffsetToReg(self, Reg.fp, scrutinee_ofs, Reg.acu);
+        }
+        try isa.movRegToReg(self, Reg.acu, Reg.r1);
+        for (vp.args, 0..) |arg, i| {
+            if (arg.* != .ident or i >= v.payload.len) continue;
+            const ofs = self.variantFieldOffset(v, i);
+            if (self.widthOfTypeAnn(v.payload[i].type_ann.*) == 1) {
+                try class.emitByteLoadAtOffset(self, Reg.r1, ofs, Reg.acu);
+            } else {
+                try class.emitWordLoadAtOffset(self, Reg.r1, ofs, Reg.acu);
+            }
+            const name = self.source[arg.ident.name.start..arg.ident.name.end];
+            const local_ofs = try self.allocLocal(try self.arena.dupe(u8, name));
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, local_ofs);
+        }
+        return;
+    }
 }
 
 /// Lower a `do…end` block at statement position — opens a
@@ -454,6 +495,14 @@ fn emitMatchSequential(self: *Emitter, ms: ast.MatchStmt) !void {
     };
     const scrutinee_is_ident = ms.scrutinee.* == .ident;
 
+    // Payload-carrying enums are a `[tag | payload]` slot addressed
+    // by pointer (§3.6). The scrutinee load yields that pointer, so
+    // dispatch reads the tag byte from `[ptr]` and arms extract their
+    // payload binders from the slot. Payload-free enums stay a bare
+    // register tag (the common path below).
+    const enum_decl = self.enumDeclForMatch(ms);
+    const is_payload_enum = if (enum_decl) |ed| self.enumHasPayload(ed) else false;
+
     var end_patches: std.ArrayList(usize) = .empty;
     defer end_patches.deinit(self.allocator);
 
@@ -463,10 +512,21 @@ fn emitMatchSequential(self: *Emitter, ms: ast.MatchStmt) !void {
         } else {
             try isa.movRegOffsetToReg(self, Reg.fp, scrutinee_ofs, Reg.acu);
         }
+        if (is_payload_enum) {
+            // acu = slot pointer → load the tag byte into acu.
+            try isa.movRegToReg(self, Reg.acu, Reg.r1);
+            try class.emitByteLoadAtOffset(self, Reg.r1, 0, Reg.acu);
+        }
 
         var skip_patches: std.ArrayList(usize) = .empty;
         defer skip_patches.deinit(self.allocator);
         try pattern.emitPatternTest(self, arm.pattern.*, scrutinee_ofs, scrutinee_is_ident, &skip_patches);
+
+        // Bind payload binders before the guard so a `when` clause can
+        // reference them (`case Hit(d) when d > 10`).
+        if (is_payload_enum) {
+            try emitPayloadBinders(self, arm, scrutinee_ofs, scrutinee_is_ident, ms.scrutinee, enum_decl.?);
+        }
 
         if (arm.guard) |g| {
             try self.emitExpr(g);
@@ -522,6 +582,9 @@ fn emitMatchSequential(self: *Emitter, ms: ast.MatchStmt) !void {
 ///   ISA's `mul reg, reg` semantics without overflow concerns)
 fn tryEmitTagJumpTable(self: *Emitter, ms: ast.MatchStmt) !bool {
     const enum_decl = self.enumDeclForExpr(ms.scrutinee) orelse return false;
+    // Payload enums are slot pointers, not bare tags — the jump table
+    // indexes on a register tag, so they take the sequential path.
+    if (self.enumHasPayload(enum_decl)) return false;
     if (enum_decl.variants.len == 0) return false;
     // Cap table size to keep the dispatch sequence trivial. 32
     // variants × 3 bytes per entry = 96 bytes of table, well

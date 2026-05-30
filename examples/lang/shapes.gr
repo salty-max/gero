@@ -1,0 +1,30 @@
+-- shapes.gr — payload-carrying enums (sum types with data).
+--
+-- `Shape` is a tagged union whose variants carry their own fields;
+-- `area` matches on the shape and binds each variant's payload to
+-- compute a result. Exercises payload-variant construction
+-- (`Shape.Rect(4, 6)`), `match` arms that bind payload fields, and
+-- using those binders in arithmetic.
+--
+-- Run:
+--   gero compile shapes.gr -o shapes.gx
+--   gero run shapes.gx
+enum Shape
+  case Square(side: i16)
+  case Rect(w: i16, h: i16)
+  case Unit
+end
+
+def area(s: Shape) -> i16
+  match s
+    case Shape.Square(side) => return side * side
+    case Shape.Rect(w, h) => return w * h
+    case Shape.Unit => return 1
+  end
+end
+
+def main()
+  print area(Shape.Square(5))
+  print area(Shape.Rect(4, 6))
+  print area(Shape.Unit)
+end

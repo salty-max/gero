@@ -641,12 +641,19 @@ pub const Emitter = struct {
         };
     }
 
-    /// Count the local-slot bindings a pattern introduces. Only
-    /// the ident pattern binds; or-patterns reject inner binders
-    /// (parser already enforces this).
+    /// Count the local-slot bindings a pattern introduces. A bare
+    /// ident binds one; a variant pattern binds one slot per payload
+    /// binder (`E.A(n, m)` → 2). These must be counted so the prologue
+    /// reserves their frame space — an unreserved binder slot would
+    /// overlap the stack-push region used by later binary ops.
     fn countBindingsInPattern(pat: ast.Pattern) usize {
         return switch (pat) {
             .ident => 1,
+            .variant_pattern => |vp| blk: {
+                var n: usize = 0;
+                for (vp.args) |arg| n += countBindingsInPattern(arg.*);
+                break :blk n;
+            },
             else => 0,
         };
     }
@@ -814,6 +821,42 @@ pub const Emitter = struct {
         return null;
     }
 
+    /// Whether any variant of `ed` carries a payload. This picks the
+    /// runtime representation: a payload-free enum is a bare tag in a
+    /// register; a payload-carrying enum is a `[tag | payload]` slot
+    /// addressed by pointer (§3.6).
+    pub fn enumHasPayload(self: *const Emitter, ed: *const ast.EnumDecl) bool {
+        _ = self;
+        for (ed.variants) |v| if (v.payload.len > 0) return true;
+        return false;
+    }
+
+    /// Byte size of one variant's payload fields (no tag).
+    pub fn variantPayloadSize(self: *const Emitter, v: ast.EnumVariant) u16 {
+        var total: u16 = 0;
+        for (v.payload) |f| total +%= self.widthOfTypeAnn(f.type_ann.*);
+        return total;
+    }
+
+    /// Slot size of a payload-carrying enum: 1-byte tag + payload
+    /// bytes sized to the largest variant (§3.6).
+    pub fn enumSlotSize(self: *const Emitter, ed: *const ast.EnumDecl) u16 {
+        var max_payload: u16 = 0;
+        for (ed.variants) |v| {
+            const sz = self.variantPayloadSize(v);
+            if (sz > max_payload) max_payload = sz;
+        }
+        return 1 + max_payload;
+    }
+
+    /// Byte offset of payload field `i` within a variant's slot — the
+    /// 1-byte tag, then each prior field's width.
+    pub fn variantFieldOffset(self: *const Emitter, v: ast.EnumVariant, i: usize) u16 {
+        var ofs: u16 = 1;
+        for (v.payload[0..i]) |f| ofs +%= self.widthOfTypeAnn(f.type_ann.*);
+        return ofs;
+    }
+
     /// `true` when the type is a `Named` variant whose name matches
     /// a registered enum. Used to detect enum-typed expressions
     /// during print / match / store lowering.
@@ -829,6 +872,22 @@ pub const Emitter = struct {
         const ty = self.typeOf(e) orelse return null;
         if (ty.* != .named) return null;
         return self.enum_decls.get(ty.named.name);
+    }
+
+    /// Resolve the enum a `match` dispatches on. Prefers the
+    /// scrutinee's inferred type; falls back to a variant arm's path
+    /// (`EnumName.Variant`) when the scrutinee carries no recorded
+    /// type, so payload-enum lowering doesn't depend on inference
+    /// reaching every scrutinee form.
+    pub fn enumDeclForMatch(self: *const Emitter, ms: ast.MatchStmt) ?*const ast.EnumDecl {
+        if (self.enumDeclForExpr(ms.scrutinee)) |ed| return ed;
+        for (ms.arms) |arm| {
+            if (arm.pattern.* != .variant_pattern) continue;
+            const path = self.source[arm.pattern.variant_pattern.path.start..arm.pattern.variant_pattern.path.end];
+            const dot = std.mem.indexOfScalar(u8, path, '.') orelse continue;
+            if (self.enum_decls.get(path[0..dot])) |ed| return ed;
+        }
+        return null;
     }
 
     /// Scan top-level `def`s, recording each name → its `@bank N`

@@ -3800,3 +3800,110 @@ test "codegen: compound assignment to a class field" {
         \\end
     , "105\n");
 }
+
+// ---------- enum payload variants ----------
+
+test "codegen: enum payload construct + match-bind" {
+    try runAndExpect(
+        \\enum E
+        \\  case A(x: i16)
+        \\  case B
+        \\end
+        \\def f(e: E) -> i16
+        \\  match e
+        \\    case E.A(n) => return n
+        \\    case E.B => return 0
+        \\  end
+        \\end
+        \\def main()
+        \\  print f(E.A(42))
+        \\  print f(E.B)
+        \\end
+    , "42\n0\n");
+}
+
+test "codegen: payload binder usable in arithmetic" {
+    try runAndExpect(
+        \\enum E
+        \\  case A(x: i16)
+        \\  case B
+        \\end
+        \\def main()
+        \\  match E.A(7)
+        \\    case E.A(n) => print n + 1
+        \\    case E.B => print 0
+        \\  end
+        \\end
+    , "8\n");
+}
+
+test "codegen: multi-field payload binders" {
+    try runAndExpect(
+        \\enum Item
+        \\  case Sword
+        \\  case Key(id: i16, count: i16)
+        \\end
+        \\def main()
+        \\  match Item.Key(100, 7)
+        \\    case Item.Sword => print 1
+        \\    case Item.Key(id, c) => print id + c
+        \\  end
+        \\end
+    , "107\n");
+}
+
+test "codegen: guard reads a payload binder" {
+    try runAndExpect(
+        \\enum Act
+        \\  case Hit(dmg: i16)
+        \\  case Miss
+        \\end
+        \\def resolve(a: Act) -> i16
+        \\  match a
+        \\    case Act.Hit(d) when d > 10 => return 2
+        \\    case Act.Miss => return 0
+        \\    case _ => return 1
+        \\  end
+        \\end
+        \\def main()
+        \\  print resolve(Act.Hit(20))
+        \\  print resolve(Act.Hit(5))
+        \\  print resolve(Act.Miss)
+        \\end
+    , "2\n1\n0\n");
+}
+
+test "codegen: str payload binder prints as a string" {
+    try runAndExpect(
+        \\enum Msg
+        \\  case Text(s: str)
+        \\  case Empty
+        \\end
+        \\def main()
+        \\  match Msg.Text("hello")
+        \\    case Msg.Text(s) => print s
+        \\    case Msg.Empty => print "none"
+        \\  end
+        \\end
+    , "hello\n");
+}
+
+test "codegen: `is` tag test on a payload enum" {
+    try runAndExpect(
+        \\enum E
+        \\  case A(x: i16)
+        \\  case B
+        \\end
+        \\def main()
+        \\  let e = E.A(7)
+        \\  if e is E.A
+        \\    print 1
+        \\  end
+        \\  if e is E.B
+        \\    print 2
+        \\  else
+        \\    print 3
+        \\  end
+        \\end
+    , "1\n3\n");
+}
