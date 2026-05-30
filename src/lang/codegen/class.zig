@@ -3,7 +3,7 @@ const ast = @import("../ast.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const codegen_mod = @import("../codegen.zig");
-const struct_ = @import("struct_.zig");
+const value_struct = @import("value_struct.zig");
 
 const Emitter = codegen_mod.Emitter;
 const Op = opcodes.Op;
@@ -284,7 +284,7 @@ fn pushSretAndArgs(self: *Emitter, args: []const *const ast.Expr, sret: bool) !u
     while (i > 0) {
         i -= 1;
         if (self.argStructName(args[i])) |sname| {
-            try struct_.pushArg(self, args[i], sname);
+            try value_struct.pushArg(self, args[i], sname);
             total += self.structSlotWidth(sname);
         } else {
             try self.emitExpr(args[i]);
@@ -330,7 +330,7 @@ pub fn emitConstructor(
     //    `patchVtableSlots` rewrites once `emitVtables` runs.
     try self.emitByte(Op.mov_imm16_reg);
     const vtable_slot = try self.currentOffset();
-    try self.emitU16Le(0); // placeholder, patched in patchVtableSlots
+    try self.emitU16Le(0);
     try self.emitByte(Reg.r2);
     try self.vtable_patches.append(self.allocator, .{
         .bank = self.current_bank,
@@ -490,12 +490,12 @@ pub fn emitFieldStore(
     // eval (which is `sp`-balanced) and is released afterward.
     if (field.struct_name) |sname| {
         const w = self.structSlotWidth(sname);
-        try struct_.pushArg(self, value, sname); // value bytes at [sp ..]
-        try emitInstancePtr(self, recv); // acu = instance ptr
+        try value_struct.pushArg(self, value, sname);
+        try emitInstancePtr(self, recv);
         if (field.offset != 0) try isa.addImmToReg(self, field.offset, Reg.acu);
-        try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = dest
-        try isa.movRegToReg(self, Reg.sp, Reg.r1); // r1 = src (stack temp)
-        try struct_.copyBytes(self, Reg.r1, Reg.r2, self.structWidth(sname));
+        try isa.movRegToReg(self, Reg.acu, Reg.r2); // dest = instance + field offset
+        try isa.movRegToReg(self, Reg.sp, Reg.r1); // src = the stack temp holding the value
+        try value_struct.copyBytes(self, Reg.r1, Reg.r2, self.structWidth(sname));
         try isa.addImmToReg(self, w, Reg.sp); // release the temp
         return;
     }

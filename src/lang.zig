@@ -21,6 +21,9 @@ const tc_suggestions = @import("lang/typecheck/suggestions.zig");
 const tc_type_resolve = @import("lang/typecheck/type_resolve.zig");
 const tc_fields = @import("lang/typecheck/fields.zig");
 const tc_operators = @import("lang/typecheck/operators.zig");
+const tc_diagnostics = @import("lang/typecheck/diagnostics.zig");
+const tc_decls = @import("lang/typecheck/decls.zig");
+const tc_class_check = @import("lang/typecheck/class_check.zig");
 const tc_calls = @import("lang/typecheck/calls.zig");
 const bake_mod = @import("lang/bake.zig");
 const cg_opcodes = @import("lang/codegen/opcodes.zig");
@@ -31,7 +34,11 @@ const cg_pattern = @import("lang/codegen/pattern.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 const cg_class = @import("lang/codegen/class.zig");
-const cg_struct = @import("lang/codegen/struct_.zig");
+const cg_value_struct = @import("lang/codegen/value_struct.zig");
+const cg_inline_call = @import("lang/codegen/inline_call.zig");
+const cg_globals = @import("lang/codegen/globals.zig");
+const cg_def = @import("lang/codegen/def.zig");
+const cg_statements = @import("lang/codegen/statements.zig");
 const cg_lambda = @import("lang/codegen/lambda.zig");
 const cg_isa = @import("lang/codegen/isa.zig");
 
@@ -161,6 +168,12 @@ pub const internal = struct {
         pub const operators = tc_operators;
         /// Call type-checking: regular, assert builtins, variadic (§4.6.2), bake (§3.8).
         pub const calls = tc_calls;
+        /// Diagnostic emission + symbol-suggestion helpers.
+        pub const diagnostics = tc_diagnostics;
+        /// Pass-1 top-level name registration.
+        pub const decls = tc_decls;
+        /// `def` / `class` declaration checking + inheritance rules.
+        pub const class_check = tc_class_check;
     };
 
     /// Codegen submodule seams.
@@ -191,9 +204,17 @@ pub const internal = struct {
         pub const class = cg_class;
         /// Inline value-struct lowering (construction, field rw, value-copy,
         /// pass-by-value, return-by-value via sret).
-        pub const struct_ = cg_struct;
+        pub const value_struct = cg_value_struct;
         /// Closure lowering (capture analysis, heap promotion, dispatch).
         pub const lambda = cg_lambda;
+        /// `@inline` call expansion (body splice + size gate).
+        pub const inline_call = cg_inline_call;
+        /// Global placement (`@addr` / `@zero_page` / data) + bake-const eval.
+        pub const globals = cg_globals;
+        /// Per-def emission (prologue + body + epilogue) + call patching.
+        pub const def = cg_def;
+        /// Leaf statement lowering (let / const / assign / return / print).
+        pub const statements = cg_statements;
         /// ISA-instruction emit helpers.
         pub const isa = cg_isa;
     };

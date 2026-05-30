@@ -144,6 +144,9 @@ const suggestions = @import("typecheck/suggestions.zig");
 const type_resolve = @import("typecheck/type_resolve.zig");
 const fields = @import("typecheck/fields.zig");
 const operators = @import("typecheck/operators.zig");
+const diag_check = @import("typecheck/diagnostics.zig");
+const decls = @import("typecheck/decls.zig");
+const class_check = @import("typecheck/class_check.zig");
 const calls = @import("typecheck/calls.zig");
 
 const T = annotations.T;
@@ -245,22 +248,19 @@ pub const Checker = struct {
 
     // ---------- diagnostic helpers ----------
 
-    /// Emit a fatal diagnostic at `span`.
+    // ---------- diagnostic helpers (delegated to typecheck/diagnostics.zig) ----------
+
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn emitSpan(
         self: *Checker,
         code: []const u8,
         span: ast.Span,
         message: []const u8,
     ) WalkError!void {
-        try self.diagnostics.append(self.diag_alloc, .{
-            .severity = .fatal,
-            .code = code,
-            .message = message,
-            .span = span,
-        });
+        return diag_check.emitSpan(self, code, span, message);
     }
 
-    /// Like `emitSpan` plus a `help:` block.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn emitSpanHelp(
         self: *Checker,
         code: []const u8,
@@ -268,35 +268,20 @@ pub const Checker = struct {
         message: []const u8,
         help: []const u8,
     ) WalkError!void {
-        try self.diagnostics.append(self.diag_alloc, .{
-            .severity = .fatal,
-            .code = code,
-            .message = message,
-            .span = span,
-            .help = help,
-        });
+        return diag_check.emitSpanHelp(self, code, span, message, help);
     }
 
-    /// Emit `E_TYPE_MISMATCH` for an expected-vs-actual mismatch
-    /// at a single span.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn emitMismatch(
         self: *Checker,
         span: ast.Span,
         expected_ty: *const types.Type,
         actual_ty: *const types.Type,
     ) WalkError!void {
-        const expected_s = try types.render(self.arena, expected_ty.*);
-        const actual_s = try types.render(self.arena, actual_ty.*);
-        const msg = try std.fmt.allocPrint(
-            self.arena,
-            "type mismatch: expected `{s}`, found `{s}`",
-            .{ expected_s, actual_s },
-        );
-        try self.emitSpan("E_TYPE_MISMATCH", span, msg);
+        return diag_check.emitMismatch(self, span, expected_ty, actual_ty);
     }
 
-    /// Like `emitMismatch` but anchors the expected type to a
-    /// `: T` annotation span via a secondary label.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn emitMismatchAnnotated(
         self: *Checker,
         span: ast.Span,
@@ -304,175 +289,65 @@ pub const Checker = struct {
         actual_ty: *const types.Type,
         annotation_span: ast.Span,
     ) WalkError!void {
-        const expected_s = try types.render(self.arena, expected_ty.*);
-        const actual_s = try types.render(self.arena, actual_ty.*);
-        const msg = try std.fmt.allocPrint(
-            self.arena,
-            "type mismatch: expected `{s}`, found `{s}`",
-            .{ expected_s, actual_s },
-        );
-        const label_msg = try std.fmt.allocPrint(
-            self.arena,
-            "expected `{s}` because of this annotation",
-            .{expected_s},
-        );
-        const sec = try self.singleSecondary(annotation_span, label_msg, .underline);
-        try self.diagnostics.append(self.diag_alloc, .{
-            .severity = .fatal,
-            .code = "E_TYPE_MISMATCH",
-            .message = msg,
-            .span = span,
-            .secondary = sec,
-        });
+        return diag_check.emitMismatchAnnotated(self, span, expected_ty, actual_ty, annotation_span);
     }
 
-    /// Allocate a one-element `SpanLabel` slice on `self.arena`,
-    /// suitable for `Diagnostic.secondary`.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn singleSecondary(
         self: *Checker,
         span: ast.Span,
         message: []const u8,
         decoration: diag_mod.SpanLabel.Decoration,
     ) WalkError![]const diag_mod.SpanLabel {
-        const sec = try self.arena.alloc(diag_mod.SpanLabel, 1);
-        sec[0] = .{ .span = span, .message = message, .decoration = decoration };
-        return sec;
+        return diag_check.singleSecondary(self, span, message, decoration);
     }
 
-    /// Assignability + narrowing check for "store into a typed
-    /// slot" sites (let-init, assignment, call arg, return).
-    /// Routes per spec §3.5.1:
-    /// - Assignable → no diagnostic.
-    /// - Integer narrowing without `as` → `E_CAST_PRECISION_LOSS`
-    ///   (warning).
-    /// - Otherwise → `E_TYPE_MISMATCH` (fatal).
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn checkStoreCompat(
         self: *Checker,
         span: ast.Span,
         expected: *const types.Type,
         actual: *const types.Type,
     ) WalkError!void {
-        if (relations.assignable(actual.*, expected.*)) return;
-        if (self.isClassSubtype(actual.*, expected.*)) return;
-        if (relations.isNarrowingInt(actual.*, expected.*)) {
-            try self.emitNarrowingWarning(span, expected, actual);
-            return;
-        }
-        try self.emitMismatch(span, expected, actual);
+        return diag_check.checkStoreCompat(self, span, expected, actual);
     }
 
-    /// `true` when `actual` is a class derived from `expected`
-    /// (transitively, via `extends`). Also covers `&Sub` → `&Sup`
-    /// reference subtyping by peeling one layer per side.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn isClassSubtype(self: *const Checker, actual: types.Type, expected: types.Type) bool {
-        const a = if (actual == .reference) actual.reference.* else actual;
-        const e = if (expected == .reference) expected.reference.* else expected;
-        if (a != .named or e != .named) return false;
-        const expected_name = e.named.name;
-        var cur = self.class_registry.get(a.named.name) orelse return false;
-        while (cur.extends) |ext| {
-            const parent_name = self.lexeme(ext);
-            if (std.mem.eql(u8, parent_name, expected_name)) return true;
-            cur = self.class_registry.get(parent_name) orelse return false;
-        }
-        return false;
+        return diag_check.isClassSubtype(self, actual, expected);
     }
 
-    fn emitNarrowingWarning(
-        self: *Checker,
-        span: ast.Span,
-        expected_ty: *const types.Type,
-        actual_ty: *const types.Type,
-    ) WalkError!void {
-        const expected_s = try types.render(self.arena, expected_ty.*);
-        const actual_s = try types.render(self.arena, actual_ty.*);
-        const msg = try std.fmt.allocPrint(
-            self.arena,
-            "implicit narrowing from `{s}` to `{s}` may lose precision — use an explicit `as {s}` cast to silence this warning",
-            .{ actual_s, expected_s, expected_s },
-        );
-        try self.diagnostics.append(self.diag_alloc, .{
-            .severity = .warning,
-            .code = "E_CAST_PRECISION_LOSS",
-            .message = msg,
-            .span = span,
-        });
-    }
-
-    /// Return the source-text slice for `span`.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn lexeme(self: *const Checker, span: ast.Span) []const u8 {
-        return self.source[span.start..span.end];
+        return diag_check.lexeme(self, span);
     }
 
-    // ---------- "did you mean…?" suggestions ----------
-
-    /// Closest near-spelling match for an undefined symbol across
-    /// the scope chain + type registries. `null` when nothing is
-    /// within `suggestions.max_distance`.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn suggestSymbol(self: *Checker, name: []const u8) WalkError!?[]const u8 {
-        var pool: std.ArrayList([]const u8) = .empty;
-        defer pool.deinit(self.arena);
-        var scope: ?*const Scope = self.current_scope;
-        while (scope) |s| : (scope = s.parent) {
-            var it = s.entries.keyIterator();
-            while (it.next()) |k| try pool.append(self.arena, k.*);
-        }
-        return suggestions.bestMatch(name, pool.items);
+        return diag_check.suggestSymbol(self, name);
     }
 
-    /// Same pool as `suggestSymbol` plus the primitive type names —
-    /// used by `E_TYPE_UNDEFINED` when an unknown type name shows
-    /// up in an annotation / struct-lit position.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn suggestTypeName(self: *Checker, name: []const u8) WalkError!?[]const u8 {
-        var pool: std.ArrayList([]const u8) = .empty;
-        defer pool.deinit(self.arena);
-        // Primitives matched first so `let x: i8` wins over a stray
-        // `i9` local. Mirrors `types.primitiveFromName`.
-        const primitives = [_][]const u8{ "i8", "u8", "i16", "u16", "int", "uint", "bool", "nil", "str", "fixed", "char" };
-        for (primitives) |p| try pool.append(self.arena, p);
-        var struct_it = self.struct_registry.keyIterator();
-        while (struct_it.next()) |k| try pool.append(self.arena, k.*);
-        var class_it = self.class_registry.keyIterator();
-        while (class_it.next()) |k| try pool.append(self.arena, k.*);
-        var enum_it = self.enum_registry.keyIterator();
-        while (enum_it.next()) |k| try pool.append(self.arena, k.*);
-        return suggestions.bestMatch(name, pool.items);
+        return diag_check.suggestTypeName(self, name);
     }
 
-    /// Best-match field name on a struct.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn suggestStructField(self: *Checker, sd: *const ast.StructDecl, name: []const u8) WalkError!?[]const u8 {
-        var pool: std.ArrayList([]const u8) = .empty;
-        defer pool.deinit(self.arena);
-        for (sd.fields) |f| try pool.append(self.arena, self.lexeme(f.name));
-        return suggestions.bestMatch(name, pool.items);
+        return diag_check.suggestStructField(self, sd, name);
     }
 
-    /// Best-match field name across a class and its parents.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn suggestClassField(self: *Checker, cd: *const ast.ClassDecl, name: []const u8) WalkError!?[]const u8 {
-        var pool: std.ArrayList([]const u8) = .empty;
-        defer pool.deinit(self.arena);
-        var cur: ?*const ast.ClassDecl = cd;
-        while (cur) |c| {
-            for (c.fields) |f| try pool.append(self.arena, self.lexeme(f.name));
-            cur = if (c.extends) |ext| self.class_registry.get(self.lexeme(ext)) else null;
-        }
-        return suggestions.bestMatch(name, pool.items);
+        return diag_check.suggestClassField(self, cd, name);
     }
 
-    /// Best-match method name across a class and its parents.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn suggestClassMethod(self: *Checker, cd: *const ast.ClassDecl, name: []const u8) WalkError!?[]const u8 {
-        var pool: std.ArrayList([]const u8) = .empty;
-        defer pool.deinit(self.arena);
-        var cur: ?*const ast.ClassDecl = cd;
-        while (cur) |c| {
-            for (c.methods) |m| try pool.append(self.arena, self.lexeme(m.name));
-            cur = if (c.extends) |ext| self.class_registry.get(self.lexeme(ext)) else null;
-        }
-        return suggestions.bestMatch(name, pool.items);
+        return diag_check.suggestClassMethod(self, cd, name);
     }
 
-    /// Emit a fatal diagnostic; appends `help: did you mean \`X\`?`
-    /// when `candidate` is non-null.
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn emitSpanWithSuggestion(
         self: *Checker,
         code: []const u8,
@@ -480,171 +355,30 @@ pub const Checker = struct {
         message: []const u8,
         candidate: ?[]const u8,
     ) WalkError!void {
-        const name = candidate orelse return self.emitSpan(code, span, message);
-        const help = try std.fmt.allocPrint(self.arena, "did you mean `{s}`?", .{name});
-        try self.emitSpanHelp(code, span, message, help);
+        return diag_check.emitSpanWithSuggestion(self, code, span, message, candidate);
     }
-
     // ---------- Pass 1: top-level decl registration ----------
 
-    fn registerTopLevel(self: *Checker, s: ast.Statement) WalkError!void {
-        switch (s) {
-            .let_decl => |d| try self.registerLetPattern(d.pattern, .let_binding, d.type_ann),
-            .const_decl => |d| try self.registerName(
-                self.lexeme(d.name),
-                .{ .kind = .const_binding, .decl_span = d.name, .ty = null },
-            ),
-            .def_decl => |d| {
-                const sig = try self.signatureFromDef(d);
-                try self.registerName(self.lexeme(d.name), .{
-                    .kind = .function,
-                    .decl_span = d.name,
-                    .ty = sig,
-                });
-            },
-            .class_decl => |d| try self.registerName(self.lexeme(d.name), .{
-                .kind = .class,
-                .decl_span = d.name,
-                .ty = null,
-            }),
-            .struct_decl => |d| try self.registerName(self.lexeme(d.name), .{
-                .kind = .struct_,
-                .decl_span = d.name,
-                .ty = null,
-            }),
-            .enum_decl => |d| try self.registerName(self.lexeme(d.name), .{
-                .kind = .enum_,
-                .decl_span = d.name,
-                .ty = null,
-            }),
-            .use_decl => |d| try self.registerUseDecl(d),
-            else => {},
-        }
+    // ---------- Pass 1: top-level decl registration (delegated to typecheck/decls.zig) ----------
+
+    /// Delegated to `typecheck/decls.zig`.
+    pub fn registerTopLevel(self: *Checker, s: ast.Statement) WalkError!void {
+        return decls.registerTopLevel(self, s);
     }
 
-    fn registerLetPattern(
-        self: *Checker,
-        pat: *const ast.Pattern,
-        kind: scope_mod.SymbolKind,
-        type_ann: ?*const ast.TypeAnn,
-    ) WalkError!void {
-        // Only the simple `let name = …` form registers a single
-        // symbol here. Tuple / struct destructuring registers each
-        // bound name in pass 2 (where the rhs type is known).
-        switch (pat.*) {
-            .ident => |i| {
-                const ty: ?*const types.Type = if (type_ann) |t|
-                    try type_resolve.resolveType(self, t)
-                else
-                    null;
-                try self.registerName(self.lexeme(i.name), .{
-                    .kind = kind,
-                    .decl_span = i.name,
-                    .ty = ty,
-                });
-            },
-            else => {
-                // Destructuring patterns will register their inner
-                // names during pass 2 when the type is known.
-            },
-        }
-    }
-
-    fn registerUseDecl(self: *Checker, d: ast.UseDecl) WalkError!void {
-        if (d.items.len > 0) {
-            // `use a [as al], b [as bl] from module` — each item
-            // becomes its own imported symbol.
-            for (d.items) |it| {
-                const name = if (it.alias) |a| self.lexeme(a) else self.lexeme(it.name);
-                try self.registerName(name, .{
-                    .kind = .imported,
-                    .decl_span = it.name,
-                    .ty = null,
-                });
-            }
-        } else {
-            // Whole-module import — register the alias (or the
-            // module lexeme itself if no alias).
-            const name = if (d.alias) |a| self.lexeme(a) else self.lexeme(d.module);
-            try self.registerName(name, .{
-                .kind = .module_alias,
-                .decl_span = d.module,
-                .ty = null,
-            });
-        }
-    }
-
-    fn registerName(
+    /// Delegated to `typecheck/decls.zig`.
+    pub fn registerName(
         self: *Checker,
         name: []const u8,
         info: scope_mod.SymbolInfo,
     ) WalkError!void {
-        if (isReservedBuiltinName(name)) {
-            const msg = try std.fmt.allocPrint(
-                self.arena,
-                "cannot shadow always-in-scope builtin `{s}`",
-                .{name},
-            );
-            try self.emitSpan("E_BUILTIN_SHADOW", info.decl_span, msg);
-            return;
-        }
-        self.current_scope.define(name, info) catch |err| switch (err) {
-            error.AlreadyDefined => {
-                const existing = self.current_scope.lookupLocal(name).?;
-                const msg = try std.fmt.allocPrint(
-                    self.arena,
-                    "`{s}` is already defined in this scope",
-                    .{name},
-                );
-                const sec = try self.singleSecondary(existing.decl_span, "previous definition here", .underline);
-                try self.diagnostics.append(self.diag_alloc, .{
-                    .severity = .fatal,
-                    .code = "E_TYPE_REDEFINED",
-                    .message = msg,
-                    .span = info.decl_span,
-                    .secondary = sec,
-                });
-                return;
-            },
-            error.OutOfMemory => return error.OutOfMemory,
-        };
-        // Track function-body locals for the `return &local`
-        // stack-lifetime check. `null` at module / class scope.
-        if (self.fn_locals) |*set| {
-            _ = try set.put(self.arena, name, {});
-        }
-        // Track lambda-body locals for the `@no_capture`
-        // capture-mutation check. `null` outside a tracked lambda.
-        if (self.lambda_locals) |*set| {
-            _ = try set.put(self.arena, name, {});
-        }
+        return decls.registerName(self, name, info);
     }
 
-    /// Build the function-pointer type for a `def`. Unannotated
-    /// params produce a `nil` placeholder slot (treated as "skip
-    /// arg-type check" by `checkCall`).
-    fn signatureFromDef(self: *Checker, d: ast.DefDecl) WalkError!*const types.Type {
-        var param_types: std.ArrayList(*const types.Type) = .empty;
-        errdefer param_types.deinit(self.arena);
-        for (d.params) |p| {
-            const pt: *const types.Type = if (p.type_ann) |t|
-                try type_resolve.resolveType(self, t)
-            else
-                try self.primitive(.nil_); // unknown until call-site inference
-            try param_types.append(self.arena, pt);
-        }
-        const ret_ty: *const types.Type = if (d.ret_type) |r|
-            try type_resolve.resolveType(self, r)
-        else
-            try self.primitive(.nil_);
-        const sig = try self.arena.create(types.Type);
-        sig.* = .{ .function = .{
-            .params = try param_types.toOwnedSlice(self.arena),
-            .ret = ret_ty,
-        } };
-        return sig;
+    /// Delegated to `typecheck/decls.zig`.
+    pub fn signatureFromDef(self: *Checker, d: ast.DefDecl) WalkError!*const types.Type {
+        return decls.signatureFromDef(self, d);
     }
-
     // ---------- Pass 2: resolution + inference + checking ----------
 
     fn walkStatement(self: *Checker, s: ast.Statement) WalkError!void {
@@ -748,7 +482,7 @@ pub const Checker = struct {
             // annotation as a secondary span so the renderer
             // surfaces "expected `T` because of this annotation"
             // — sole call site that overrides the plain
-            // `checkStoreCompat` path (#254 AC).
+            // `checkStoreCompat` path.
             if (!relations.assignable(init_ty.?.*, ann_ty.?.*) and
                 !self.isClassSubtype(init_ty.?.*, ann_ty.?.*) and
                 !relations.isNarrowingInt(init_ty.?.*, ann_ty.?.*) and
@@ -1097,250 +831,21 @@ pub const Checker = struct {
         try self.emitSpan("E_REF_STACK_LIFETIME", v.span(), msg);
     }
 
-    fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
-        try annotations.validateAnnotations(self, d.annotations, T.DEF);
-        if (d.is_bake) try calls.checkBakeAnnotationConflicts(self, d.annotations);
-        try calls.checkVariadicPosition(self, d);
-        const saved_scope = self.current_scope;
-        var fn_scope: Scope = .init(self.arena, saved_scope);
-        self.current_scope = &fn_scope;
-        defer self.current_scope = saved_scope;
+    // ---------- class + def declaration checking (delegated to typecheck/class_check.zig) ----------
 
-        // Fresh `fn_locals` per fn — params and inner `let`s land
-        // here; nested `def`s push their own frame too so an inner
-        // fn doesn't inherit outer-fn locals.
-        const saved_locals = self.fn_locals;
-        self.fn_locals = .{};
-        defer self.fn_locals = saved_locals;
-
-        // Bake context: `bake def` body satisfies bake rules.
-        // Nested non-bake defs reset the flag for the inner body.
-        const saved_bake = self.in_bake;
-        self.in_bake = d.is_bake;
-        defer self.in_bake = saved_bake;
-
-        // `@no_capture` context: inherited by nested defs.
-        const saved_nc = self.in_no_capture;
-        self.in_no_capture = saved_nc or annotations.defHasNoCapture(self, d);
-        defer self.in_no_capture = saved_nc;
-
-        // Bake fn return type must be bakeable. `Vec(T)` and `&T`
-        // are runtime-only.
-        if (d.is_bake) if (d.ret_type) |r| {
-            const rt = try type_resolve.resolveType(self, r);
-            if (!predicates.isBakeableType(rt.*)) {
-                const ty_s = try types.render(self.arena, rt.*);
-                const msg = try std.fmt.allocPrint(
-                    self.arena,
-                    "`bake def` cannot return `{s}` — only types representable as static data are bakeable",
-                    .{ty_s},
-                );
-                try self.emitSpan("E_BAKE_NON_BAKEABLE_VALUE", r.span(), msg);
-            }
-        };
-
-        for (d.params) |p| {
-            const pt: ?*const types.Type = if (p.type_ann) |t|
-                try type_resolve.resolveType(self, t)
-            else
-                null;
-            try self.registerName(self.lexeme(p.name), .{
-                .kind = .param,
-                .decl_span = p.name,
-                .ty = pt,
-            });
-        }
-
-        if (d.ret_type == null and self.bodyMentions(d.body, self.lexeme(d.name))) {
-            const msg = try std.fmt.allocPrint(
-                self.arena,
-                "recursive function `{s}` needs an explicit return type",
-                .{self.lexeme(d.name)},
-            );
-            try self.emitSpan("E_TYPE_RECURSIVE_NO_RET", d.name, msg);
-        }
-
-        // Track ret type for `return expr` checking inside the body.
-        const saved_ret = self.current_ret_ty;
-        self.current_ret_ty = if (d.ret_type) |r| try type_resolve.resolveType(self, r) else null;
-        defer self.current_ret_ty = saved_ret;
-
-        try self.walkStatementSequence(d.body);
+    /// Delegated to `typecheck/class_check.zig`.
+    pub fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
+        return class_check.checkDefDecl(self, d);
     }
 
-    fn checkClassDecl(self: *Checker, d: ast.ClassDecl) WalkError!void {
-        try annotations.validateAnnotations(self, d.annotations, T.CLASS);
-        const saved = self.current_scope;
-        var class_scope: Scope = .init(self.arena, saved);
-        self.current_scope = &class_scope;
-        defer self.current_scope = saved;
-
-        const saved_extends = self.current_class_extends;
-        self.current_class_extends = d.extends;
-        defer self.current_class_extends = saved_extends;
-
-        const saved_name = self.current_class_name;
-        self.current_class_name = self.lexeme(d.name);
-        defer self.current_class_name = saved_name;
-
-        if (d.extends) |ext| if (self.class_registry.get(self.lexeme(ext))) |parent| {
-            if (annotations.hasAnnotation(self, parent.annotations, "final")) {
-                const msg = try std.fmt.allocPrint(
-                    self.arena,
-                    "cannot extend `{s}` — parent class is marked `@final`",
-                    .{self.lexeme(ext)},
-                );
-                try self.emitSpan("E_CLASS_FINAL_EXTENDS", ext, msg);
-            }
-        };
-
-        for (d.fields) |f| {
-            try annotations.validateAnnotations(self, f.annotations, T.CLASS_FIELD);
-            const ty: ?*const types.Type = if (f.type_ann) |t|
-                try type_resolve.resolveType(self, t)
-            else
-                null;
-            try self.registerName(self.lexeme(f.name), .{
-                .kind = .let_binding,
-                .decl_span = f.name,
-                .ty = ty,
-            });
-            if (f.init) |init_| _ = try self.inferExpr(init_, ty);
-        }
-        for (d.methods) |m| {
-            try self.checkMethodAnnotations(&d, m);
-            const sig = try self.signatureFromDef(m);
-            try self.registerName(self.lexeme(m.name), .{
-                .kind = .function,
-                .decl_span = m.name,
-                .ty = sig,
-            });
-            try self.checkDefDecl(m);
-        }
-
-        if (!annotations.classIsAbstract(self, &d)) {
-            try self.checkAbstractMethodsImplemented(&d);
-        }
+    /// Delegated to `typecheck/class_check.zig`.
+    pub fn checkClassDecl(self: *Checker, d: ast.ClassDecl) WalkError!void {
+        return class_check.checkClassDecl(self, d);
     }
 
-    /// Validate OOP annotations on a method against its class
-    /// and parent chain.
-    ///
-    /// - `@override` without a parent method → `E_OVERRIDE_NO_PARENT`.
-    /// - Overriding a `@final` method → `E_METHOD_FINAL_OVERRIDE`.
-    /// - `@static` with a `self` first param → `E_STATIC_HAS_SELF`.
-    fn checkMethodAnnotations(
-        self: *Checker,
-        cd: *const ast.ClassDecl,
-        m: ast.DefDecl,
-    ) WalkError!void {
-        const m_name = self.lexeme(m.name);
-        const is_override = annotations.hasAnnotation(self, m.annotations, "override");
-        const is_static = annotations.hasAnnotation(self, m.annotations, "static");
-
-        if (is_static and m.params.len > 0) {
-            const first = self.lexeme(m.params[0].name);
-            if (std.mem.eql(u8, first, "self")) {
-                try self.emitSpan(
-                    "E_STATIC_HAS_SELF",
-                    m.params[0].name,
-                    "`@static` method must not take a `self` parameter — it's called as `ClassName.method(...)`",
-                );
-            }
-        }
-
-        const parent_method = self.lookupParentMethod(cd, m_name);
-        if (is_override) {
-            if (parent_method == null) {
-                const msg = try std.fmt.allocPrint(
-                    self.arena,
-                    "`@override` on `{s}` but no parent class declares a method by that name",
-                    .{m_name},
-                );
-                try self.emitSpan("E_OVERRIDE_NO_PARENT", m.name, msg);
-            }
-        }
-        if (parent_method) |pm| {
-            if (annotations.hasAnnotation(self, pm.annotations, "final")) {
-                const msg = try std.fmt.allocPrint(
-                    self.arena,
-                    "cannot override `{s}` — parent method is marked `@final`",
-                    .{m_name},
-                );
-                try self.emitSpan("E_METHOD_FINAL_OVERRIDE", m.name, msg);
-            }
-        }
-    }
-
-    /// Walk `cd`'s ancestor chain looking for a method named
-    /// `name`. Returns the closest ancestor's declaration so the
-    /// caller can inspect its annotations (final / abstract /
-    /// private). Returns `null` when no ancestor declares it.
-    fn lookupParentMethod(
-        self: *const Checker,
-        cd: *const ast.ClassDecl,
-        name: []const u8,
-    ) ?*const ast.DefDecl {
-        var cursor = cd;
-        while (cursor.extends) |ext| {
-            const parent = self.class_registry.get(self.lexeme(ext)) orelse return null;
-            for (parent.methods) |*m| {
-                if (std.mem.eql(u8, self.lexeme(m.name), name)) return m;
-            }
-            cursor = parent;
-        }
-        return null;
-    }
-
-    /// Every abstract method inherited by the concrete class `cd`
-    /// must be overridden. Missing impls emit
-    /// `E_ABSTRACT_NOT_IMPLEMENTED`.
-    fn checkAbstractMethodsImplemented(
-        self: *Checker,
-        cd: *const ast.ClassDecl,
-    ) WalkError!void {
-        var cursor: ?*const ast.ClassDecl = cd;
-        while (cursor) |c| : ({
-            cursor = if (c.extends) |ext| self.class_registry.get(self.lexeme(ext)) else null;
-        }) {
-            for (c.methods) |m| {
-                if (!annotations.hasAnnotation(self, m.annotations, "abstract")) continue;
-                if (self.hasConcreteImpl(cd, self.lexeme(m.name), c)) continue;
-                const msg = try std.fmt.allocPrint(
-                    self.arena,
-                    "concrete class `{s}` must override abstract method `{s}` inherited from `{s}`",
-                    .{ self.lexeme(cd.name), self.lexeme(m.name), self.lexeme(c.name) },
-                );
-                try self.emitSpan("E_ABSTRACT_NOT_IMPLEMENTED", cd.name, msg);
-            }
-        }
-    }
-
-    /// Walk from `cd` up through ancestors stopping at (not
-    /// including) `stop_at` — true when some intermediate class
-    /// declares a non-abstract method named `name`.
-    fn hasConcreteImpl(
-        self: *const Checker,
-        cd: *const ast.ClassDecl,
-        name: []const u8,
-        stop_at: *const ast.ClassDecl,
-    ) bool {
-        var cursor: ?*const ast.ClassDecl = cd;
-        while (cursor) |c| {
-            if (c == stop_at) return false;
-            for (c.methods) |m| {
-                if (!std.mem.eql(u8, self.lexeme(m.name), name)) continue;
-                if (annotations.hasAnnotation(self, m.annotations, "abstract")) continue;
-                return true;
-            }
-            cursor = if (c.extends) |ext| self.class_registry.get(self.lexeme(ext)) else null;
-        }
-        return false;
-    }
-
-    /// Register every binder in a pattern (ident binders +
-    /// payload binders inside variant / tuple / struct
-    /// patterns) into the current scope.
+    /// Register every binder a pattern introduces into the current
+    /// scope (untyped — the binding's type resolves later). Recurses
+    /// through tuple / variant / struct / or-pattern alternatives.
     pub fn registerPatternBindings(self: *Checker, p: *const ast.Pattern) WalkError!void {
         switch (p.*) {
             .ident => |i| try self.registerName(self.lexeme(i.name), .{
@@ -1372,7 +877,9 @@ pub const Checker = struct {
         }
     }
 
-    fn bodyMentions(self: *const Checker, body: []const ast.Statement, name: []const u8) bool {
+    /// `true` when `name` appears anywhere in `body` — drives the
+    /// no-capture-mutation check + abstract-method implementation scan.
+    pub fn bodyMentions(self: *const Checker, body: []const ast.Statement, name: []const u8) bool {
         for (body) |s| if (self.stmtMentions(s, name)) return true;
         return false;
     }
@@ -1901,23 +1408,6 @@ fn structLitMentions(c: *const Checker, lit_fields: []const ast.StructLitField, 
 }
 
 // ---------- builtin name reservation ----------
-
-/// `true` when `name` is an always-in-scope builtin per spec §5.3.
-/// User declarations matching these names get `E_BUILTIN_SHADOW`.
-/// `sizeof` is a keyword and rejected by the parser before reaching
-/// here.
-fn isReservedBuiltinName(name: []const u8) bool {
-    const reserved = [_][]const u8{
-        "assert",
-        "debug_assert",
-        "panic",
-        // allow-strict: lang builtin name; the Zig keyword sense doesn't apply on this line.
-        "unreachable",
-        "todo",
-    };
-    for (reserved) |kw| if (std.mem.eql(u8, name, kw)) return true;
-    return false;
-}
 
 // ---------- place expression check ----------
 

@@ -106,7 +106,7 @@ fn emitLitInto(self: *Emitter, sl: ast.StructLit, sname: []const u8, dest: Dest)
         if (info.struct_name) |sub| {
             try emitIntoDest(self, value, sub, field_dest);
         } else {
-            try self.emitExpr(value); // acu = scalar value
+            try self.emitExpr(value);
             try isa.movRegToReg(self, Reg.acu, Reg.r2);
             try destAddrToReg(self, field_dest, Reg.r1);
             try storeWidth(self, Reg.r1, info.width, Reg.r2);
@@ -136,19 +136,21 @@ pub fn emitFieldLoad(self: *Emitter, sname: []const u8, field_name: []const u8) 
 /// `recv`. A nested struct field copies the value's bytes.
 pub fn emitFieldStore(self: *Emitter, recv: *const ast.Expr, sname: []const u8, field_name: []const u8, value: *const ast.Expr) !void {
     const info = self.structFieldInfo(sname, field_name).?;
+    // Evaluate the value first and stash it on the stack — computing
+    // the receiver's address reuses acu, so the value can't stay there.
     if (info.struct_name) |sub| {
-        try self.emitExpr(value); // acu = source address
+        try self.emitExpr(value);
         try isa.pushReg(self, Reg.acu);
-        try self.emitExpr(recv); // acu = receiver base address
+        try self.emitExpr(recv);
         if (info.offset != 0) try isa.addImmToReg(self, info.offset, Reg.acu);
-        try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = dest addr
-        try isa.popReg(self, Reg.r1); // r1 = src addr
+        try isa.movRegToReg(self, Reg.acu, Reg.r2);
+        try isa.popReg(self, Reg.r1);
         try copyBytes(self, Reg.r1, Reg.r2, self.structWidth(sub));
         return;
     }
     try self.emitExpr(value);
     try isa.pushReg(self, Reg.acu);
-    try self.emitExpr(recv); // acu = receiver base address
+    try self.emitExpr(recv);
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
     try isa.popReg(self, Reg.r2);
     try class_storeAt(self, Reg.r1, info.offset, info.width, Reg.r2);

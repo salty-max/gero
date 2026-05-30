@@ -1,9 +1,8 @@
 const std = @import("std");
 
-/// Maximum edit distance for a suggestion to count. Per spec
-/// (issue #257). Values above this cap return `null` from
-/// `bestMatch` so the diagnostic stays clean — no suggestion is
-/// better than a misleading one.
+/// Maximum edit distance for a suggestion to count. Values above this
+/// cap return `null` from `bestMatch` so the diagnostic stays clean —
+/// no suggestion is better than a misleading one.
 pub const max_distance: usize = 2;
 
 /// Bounded Levenshtein distance — returns the actual distance when
