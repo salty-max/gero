@@ -4,6 +4,7 @@ const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const archive = @import("archive.zig");
+const class = @import("class.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -103,6 +104,37 @@ pub fn emitMovStringAddrToReg(self: *Emitter, string_id: usize, reg: u8) !void {
         .code_offset = slot,
         .string_id = string_id,
     });
+}
+
+/// Compare two null-terminated strings by content (§3.2.1 —
+/// lexicographic, byte-wise equality), leaving `1`/`0` in `acu`
+/// (`negate` selects `!=`). `p1` and `p2` hold the string pointers and
+/// are advanced (consumed); `acu` and `r3` are byte scratch — neither
+/// may be passed as `p1`/`p2`.
+pub fn emitContentEq(self: *Emitter, p1: u8, p2: u8, negate: bool) !void {
+    // Walk both strings in lockstep: a differing byte is not-equal;
+    // reaching the shared null terminator is equal.
+    const loop_start = try self.currentOffset();
+    try class.emitByteLoadAtOffset(self, p1, 0, Reg.acu);
+    try class.emitByteLoadAtOffset(self, p2, 0, Reg.r3);
+    try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+    const ne_patch = try isa.emitJumpPlaceholder(self, Op.jne_addr);
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const eq_patch = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    try isa.addImmToReg(self, 1, p1);
+    try isa.addImmToReg(self, 1, p2);
+    try isa.emitJumpBack(self, loop_start);
+
+    // Equal arm.
+    try isa.patchJumpTo(self, eq_patch, try self.currentOffset());
+    try isa.movImmToReg(self, if (negate) 0 else 1, Reg.acu);
+    const end_patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+
+    // Not-equal arm.
+    try isa.patchJumpTo(self, ne_patch, try self.currentOffset());
+    try isa.movImmToReg(self, if (negate) 1 else 0, Reg.acu);
+
+    try isa.patchJumpTo(self, end_patch, try self.currentOffset());
 }
 
 /// Lower a `str_lit` at expression position. Single-literal

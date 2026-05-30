@@ -4161,19 +4161,218 @@ fn expectCodegenError(source: []const u8, code: []const u8) !void {
     try std.testing.expect(found);
 }
 
-test "codegen/struct: equality is rejected (no silent address compare)" {
+test "codegen/struct: `==` is field-wise structural equality" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let a = P { x: 3, y: 4 }
+        \\  let b = P { x: 3, y: 4 }
+        \\  let c = P { x: 3, y: 9 }
+        \\  print a == b
+        \\  print a == c
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/struct: `!=` is the negation of `==`" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def main()
+        \\  let a = P { x: 5 }
+        \\  let b = P { x: 5 }
+        \\  let c = P { x: 6 }
+        \\  print a != b
+        \\  print a != c
+        \\end
+    , "0\n1\n");
+}
+
+test "codegen/struct: equality recurses into nested + byte-packed fields" {
+    try runAndExpect(
+        \\struct In
+        \\  a: u8
+        \\  b: u8
+        \\end
+        \\struct Out
+        \\  n: In
+        \\  k: i16
+        \\end
+        \\def main()
+        \\  let p = Out { n: In { a: 1, b: 2 }, k: 300 }
+        \\  let q = Out { n: In { a: 1, b: 2 }, k: 300 }
+        \\  let r = Out { n: In { a: 1, b: 9 }, k: 300 }
+        \\  print p == q
+        \\  print p == r
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/struct: equality of two struct-returning calls (distinct buffers)" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def mk(v: i16) -> P
+        \\  return P { x: v, y: v }
+        \\end
+        \\def main()
+        \\  print mk(5) == mk(5)
+        \\  print mk(5) == mk(6)
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/struct: ordering comparison on structs is rejected" {
     try expectCodegenError(
         \\struct P
         \\  x: i16
         \\end
         \\def main()
         \\  let a = P { x: 1 }
-        \\  let b = P { x: 1 }
-        \\  if a == b
+        \\  let b = P { x: 2 }
+        \\  if a < b
         \\    print 1
         \\  end
         \\end
     , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/str: `==` compares content, not pointer identity" {
+    // Both strings are built at runtime in distinct interpolation
+    // buffers, so a pointer compare would (wrongly) say not-equal.
+    try runAndExpect(
+        \\def main()
+        \\  let n: i16 = 5
+        \\  let a = "v$(n)"
+        \\  let b = "v$(n)"
+        \\  print a == b
+        \\  print a != b
+        \\  print a == "v9"
+        \\end
+    , "1\n0\n0\n");
+}
+
+test "codegen/str: `==` distinguishes differing length + content" {
+    try runAndExpect(
+        \\def main()
+        \\  print "ab$(1)" == "ab"
+        \\  print "a$(1)" == "b$(1)"
+        \\  print "a$(1)" == "a$(1)"
+        \\end
+    , "0\n0\n1\n");
+}
+
+test "codegen/struct: a `str` field compares by content" {
+    try runAndExpect(
+        \\struct Named
+        \\  id: i16
+        \\  name: str
+        \\end
+        \\def main()
+        \\  let a = Named { id: 1, name: "p$(1)" }
+        \\  let b = Named { id: 1, name: "p$(1)" }
+        \\  let c = Named { id: 1, name: "q$(1)" }
+        \\  let d = Named { id: 2, name: "p$(1)" }
+        \\  print a == b
+        \\  print a == c
+        \\  print a == d
+        \\end
+    , "1\n0\n0\n");
+}
+
+test "codegen/struct: a `str` field inside a nested struct compares by content" {
+    try runAndExpect(
+        \\struct In
+        \\  tag: str
+        \\end
+        \\struct Out
+        \\  n: In
+        \\  k: i16
+        \\end
+        \\def main()
+        \\  let a = Out { n: In { tag: "t$(1)" }, k: 7 }
+        \\  let b = Out { n: In { tag: "t$(1)" }, k: 7 }
+        \\  let c = Out { n: In { tag: "z$(1)" }, k: 7 }
+        \\  print a == b
+        \\  print a == c
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/struct: a `str` field followed by a scalar (sp stable across content compare)" {
+    try runAndExpect(
+        \\struct SI
+        \\  name: str
+        \\  n: i16
+        \\end
+        \\def main()
+        \\  let a = SI { name: "p$(1)", n: 5 }
+        \\  let b = SI { name: "p$(1)", n: 5 }
+        \\  let c = SI { name: "p$(1)", n: 6 }
+        \\  print a == b
+        \\  print a == c
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/struct: a `str`-field struct `==` works in a condition" {
+    try runAndExpect(
+        \\struct N
+        \\  name: str
+        \\end
+        \\def main()
+        \\  let a = N { name: "k$(2)" }
+        \\  let b = N { name: "k$(2)" }
+        \\  if a == b
+        \\    print 1
+        \\  end
+        \\  print 0
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/struct: `==` on a struct with a payload-carrying enum field is rejected" {
+    try expectCodegenError(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\struct Slot
+        \\  qty: i16
+        \\  it: Item
+        \\end
+        \\def main()
+        \\  let a = Slot { qty: 1, it: Item.Potion(20) }
+        \\  let b = Slot { qty: 1, it: Item.Potion(20) }
+        \\  print a == b
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/struct: payload-free enum field compares by tag" {
+    try runAndExpect(
+        \\enum Dir
+        \\  case N
+        \\  case S
+        \\end
+        \\struct Cell
+        \\  d: Dir
+        \\  v: i16
+        \\end
+        \\def main()
+        \\  let a = Cell { d: Dir.N, v: 1 }
+        \\  let b = Cell { d: Dir.N, v: 1 }
+        \\  let c = Cell { d: Dir.S, v: 1 }
+        \\  print a == b
+        \\  print a == c
+        \\end
+    , "1\n0\n");
 }
 
 test "codegen/struct: printing a whole struct is rejected" {

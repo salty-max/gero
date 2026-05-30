@@ -8,6 +8,7 @@ const assert_builtin = @import("assert.zig");
 const diverge_builtin = @import("diverge.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
+const strings = @import("strings.zig");
 const lambda = @import("lambda.zig");
 const overflow = @import("overflow.zig");
 
@@ -297,6 +298,12 @@ pub fn emitUnary(self: *Emitter, u: ast.UnaryExpr) !void {
     }
 }
 
+/// `true` when either operand of a comparison is a `str` — its `==` /
+/// `!=` is content-based (§3.2.1) rather than a pointer compare.
+fn isStrComparison(self: *Emitter, b: ast.BinaryExpr) bool {
+    return self.isPrimitiveType(b.lhs, .str) or self.isPrimitiveType(b.rhs, .str);
+}
+
 /// Lower a binary infix expression. Short-circuit operators
 /// (`and`, `or`) take a separate path so the RHS isn't always
 /// evaluated. Comparison ops materialize a `0` / `1` in `acu`.
@@ -310,13 +317,25 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
         else => {},
     }
 
-    // A struct-typed operand would evaluate to its base address, so a
-    // bare `==`/`!=` compares addresses, not fields — never what §3.4's
-    // structural-equality contract means. Reject it rather than emit a
-    // silently-wrong address compare.
-    if (self.structNameOf(b.lhs) != null or self.structNameOf(b.rhs) != null) {
-        try self.unsupported(b.span, "a struct operand in a binary expression — structural equality on structs is not yet implemented");
-        return;
+    // A struct operand evaluates to its base address, so a plain `cmp`
+    // would compare addresses, not fields. `==`/`!=` lower to a
+    // structural (byte-wise) comparison (§3.4); ordering operators are
+    // undefined on structs.
+    if (self.structNameOf(b.lhs) orelse self.structNameOf(b.rhs)) |sname| {
+        switch (b.op) {
+            .eq, .neq => {
+                if (!value_struct.eqSupported(self, sname)) {
+                    try self.unsupported(b.span, "struct `==` not yet supported for a struct with an array, tuple, `Vec`, payload-carrying enum, or nullable field");
+                    return;
+                }
+                try value_struct.emitEquality(self, b.lhs, b.rhs, sname, b.op == .neq);
+                return;
+            },
+            else => {
+                try self.unsupported(b.span, "ordering comparison on structs — only `==` and `!=` are defined");
+                return;
+            },
+        }
     }
 
     const fixed_op = self.isPrimitiveType(b.lhs, .fixed) and
@@ -420,6 +439,13 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
         .shl => try isa.shlRegReg(self, Reg.acu, Reg.r1),
         .shr => try isa.shrRegReg(self, Reg.acu, Reg.r1),
         .eq, .neq, .lt, .lte, .gt, .gte => {
+            // `str` equality is content-based (§3.2.1), not pointer
+            // identity — acu / r1 hold the two string pointers.
+            if ((b.op == .eq or b.op == .neq) and isStrComparison(self, b)) {
+                try isa.movRegToReg(self, Reg.acu, Reg.r2);
+                try strings.emitContentEq(self, Reg.r1, Reg.r2, b.op == .neq);
+                return;
+            }
             try isa.cmpRegReg(self, Reg.acu, Reg.r1);
             try materializeBoolFromFlags(self, b.op);
         },
@@ -437,19 +463,40 @@ pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
         const b = e.binary;
         switch (b.op) {
             .eq, .neq, .lt, .lte, .gt, .gte => {
-                // A struct operand evaluates to its base address, so this
-                // would compare addresses, not fields — reject rather
-                // than emit a silently-wrong compare (§3.4 calls for
-                // structural equality, not yet implemented).
-                if (self.structNameOf(b.lhs) != null or self.structNameOf(b.rhs) != null) {
-                    try self.unsupported(b.span, "a struct operand in a comparison — structural equality on structs is not yet implemented");
-                    return;
+                // A struct operand compares structurally (byte-wise);
+                // the resulting 0/1 in acu is then tested against 0 so
+                // the branch consumes its flags like any scalar cond.
+                // Ordering operators are undefined on structs.
+                if (self.structNameOf(b.lhs) orelse self.structNameOf(b.rhs)) |sname| {
+                    switch (b.op) {
+                        .eq, .neq => {
+                            if (!value_struct.eqSupported(self, sname)) {
+                                try self.unsupported(b.span, "struct `==` not yet supported for a struct with an array, tuple, `Vec`, payload-carrying enum, or nullable field");
+                                return;
+                            }
+                            try value_struct.emitEquality(self, b.lhs, b.rhs, sname, b.op == .neq);
+                            try isa.cmpRegImm(self, Reg.acu, 0);
+                            return;
+                        },
+                        else => {
+                            try self.unsupported(b.span, "ordering comparison on structs — only `==` and `!=` are defined");
+                            return;
+                        },
+                    }
                 }
                 // Eval LHS into acu, eval RHS into r1, cmp acu, r1.
                 try emitExpr(self, b.rhs);
                 try isa.pushReg(self, Reg.acu);
                 try emitExpr(self, b.lhs);
                 try isa.popReg(self, Reg.r1);
+                // `str` equality compares content (§3.2.1); the 0/1 it
+                // leaves in acu is then tested against 0 like any cond.
+                if ((b.op == .eq or b.op == .neq) and isStrComparison(self, b)) {
+                    try isa.movRegToReg(self, Reg.acu, Reg.r2);
+                    try strings.emitContentEq(self, Reg.r1, Reg.r2, b.op == .neq);
+                    try isa.cmpRegImm(self, Reg.acu, 0);
+                    return;
+                }
                 try isa.cmpRegReg(self, Reg.acu, Reg.r1);
                 try materializeBoolFromFlags(self, b.op);
                 try isa.cmpRegImm(self, Reg.acu, 0);
