@@ -1250,11 +1250,9 @@ test "codegen: fixed-point `print c` uses print_fixed (Q8.8 formatting)" {
         "0.250\n");
 }
 
-test "codegen: non-print interpolation formats into a per-site data buffer" {
-    // `let s = "x=$(x)"; print s` formats into a static buffer
-    // reserved in the data region (one allocation per interp
-    // site per spec §3.2.2). Reading `s` later prints the same
-    // bytes since the buffer persists.
+test "codegen: interpolation bound to a `let` formats into a fresh heap buffer" {
+    // `let s = "x=$(x)"; print s` allocates a buffer (§3.2.2) and reads
+    // back the same bytes — the allocation outlives the statement.
     try runAndExpect(
         \\def main()
         \\  let x: i16 = 42
@@ -1262,6 +1260,73 @@ test "codegen: non-print interpolation formats into a per-site data buffer" {
         \\  print s
         \\end
     , "x=42\n");
+}
+
+test "codegen: each interpolation evaluation allocates a distinct buffer" {
+    // Two evaluations of the same interpolated literal must not alias —
+    // binding the second can't retroactively mutate the first.
+    try runAndExpect(
+        \\def tag(n: i16) -> str
+        \\  return "n=$(n)"
+        \\end
+        \\def main()
+        \\  let a = tag(1)
+        \\  let b = tag(2)
+        \\  print a
+        \\  print b
+        \\  print a == b
+        \\end
+    , "n=1\nn=2\n0\n");
+}
+
+test "codegen: `$$` collapses to a literal `$` (a lone `$` is preserved)" {
+    try runAndExpect(
+        \\def main()
+        \\  print "cost: $$5"
+        \\  print "$$$$"
+        \\end
+    , "cost: $5\n$$\n");
+}
+
+test "codegen: interpolating an aggregate renders its default form to the host" {
+    try runAndExpect(
+        \\struct S
+        \\  a: i16
+        \\  b: i16
+        \\end
+        \\def main()
+        \\  let s = S { a: 1, b: 2 }
+        \\  print "v=$(s)!"
+        \\end
+    , "v=S { a: 1, b: 2 }!\n");
+}
+
+test "codegen: interpolating an aggregate into a `let` renders into the buffer" {
+    try runAndExpect(
+        \\struct S
+        \\  name: str
+        \\  hp: i16
+        \\end
+        \\def main()
+        \\  let s = S { name: "hero", hp: 99 }
+        \\  let m = "info: $(s)"
+        \\  print m
+        \\end
+    , "info: S { name: hero, hp: 99 }\n");
+}
+
+test "codegen: interpolating a value whose type has no rendering is a clean error" {
+    // A struct with an array field has no default rendering — reject,
+    // matching `print` (§4.9), rather than emit a meaningless value.
+    try expectCodegenError(
+        \\struct S
+        \\  a: [i16; 2]
+        \\end
+        \\def main()
+        \\  let s = S { a: [1, 2] }
+        \\  print "s=$(s)"
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
 }
 
 test "codegen: format-spec `$(x:d)` is rejected with E_CODEGEN_UNSUPPORTED" {
@@ -3535,6 +3600,19 @@ test "codegen/bake: array baked into static data" {
     }
 }
 
+test "codegen/bake: a baked global past the data-region ceiling is a clean error" {
+    // `[i16; 30000]` = 60000 bytes overruns the static-data region
+    // (`data_base` 0x2000 .. `data_region_end` 0xFE40) — flag it rather
+    // than wrap the data cursor.
+    try expectCodegenError(
+        \\const TABLE = bake do
+        \\  let t: [i16; 30000] = [0; 30000]
+        \\  t
+        \\end
+        \\def main() end
+    , "E_CODEGEN_DATA_OVERFLOW");
+}
+
 test "codegen/bake: program without bake stays small (image doesn't grow to data region)" {
     // Regression: extending the image to cover the data region
     // should only happen when bake-init bytes need to ship.
@@ -4053,32 +4131,211 @@ test "codegen/tuple: passed by value through an `@inline` fn" {
     , "7\n");
 }
 
-test "codegen/tuple: `==` is not lowered yet (clean error, not address compare)" {
+test "codegen/tuple: `==` / `!=` compares element-wise" {
+    // All-scalar tuples byte-sweep; a `str` element compares by content
+    // even across distinct interpolation buffers.
+    try runAndExpect(
+        \\def main()
+        \\  let n = 1
+        \\  print (1, 2) == (1, 2)
+        \\  print (1, 2) == (1, 3)
+        \\  print (1, 2) != (1, 3)
+        \\  print ("a$(n)", 5) == ("a$(n)", 5)
+        \\  print ("a$(n)", 5) == ("b$(n)", 5)
+        \\end
+    , "1\n0\n1\n1\n0\n");
+}
+
+test "codegen/tuple: `==` recurses into a struct element (str by content)" {
+    try runAndExpect(
+        \\struct P
+        \\  name: str
+        \\end
+        \\def main()
+        \\  let n = 1
+        \\  print (P { name: "x$(n)" }, 3) == (P { name: "x$(n)" }, 3)
+        \\  print (P { name: "x$(n)" }, 3) == (P { name: "y$(n)" }, 3)
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/tuple: ordering comparison is a clean error" {
     try expectCodegenError(
         \\def main()
-        \\  let a = (1, 2)
-        \\  let b = (1, 2)
-        \\  print a == b
+        \\  print (1, 2) < (1, 3)
         \\end
     , "E_CODEGEN_UNSUPPORTED");
 }
 
-test "codegen/tuple: whole-tuple `print` is a clean error" {
-    try expectCodegenError(
+test "codegen/tuple: whole-tuple `print` renders `(v0, v1, …)`" {
+    try runAndExpect(
+        \\enum E
+        \\  case A
+        \\  case V(n: i16)
+        \\end
+        \\def main()
+        \\  print (1, "hi", -3 as i8)
+        \\  print ((1, 2), 3)
+        \\  print (E.V(7), 9)
+        \\end
+    , "(1, hi, -3)\n((1, 2), 3)\n(E.V(7), 9)\n");
+}
+
+test "codegen/tuple: nested aggregate elements construct + access" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\struct S
+        \\  p: (i16, i16)
+        \\  n: i16
+        \\end
+        \\def main()
+        \\  let t = (P { x: 1, y: 2 }, 7)
+        \\  print t.0.x
+        \\  print t.1
+        \\  let u = ((10, 20), 30)
+        \\  print u.0.0
+        \\  print u.0.1
+        \\  let s = S { p: (4, 5), n: 9 }
+        \\  print s.p.0
+        \\  print s.n
+        \\end
+    , "1\n7\n10\n20\n4\n9\n");
+}
+
+test "codegen/tuple: element store `t.N = x`" {
+    try runAndExpect(
         \\def main()
         \\  let t = (1, 2)
-        \\  print t
+        \\  t.0 = 9
+        \\  t.1 += 10
+        \\  print t.0
+        \\  print t.1
         \\end
-    , "E_CODEGEN_UNSUPPORTED");
+    , "9\n12\n");
 }
 
-test "codegen/tuple: a nested-aggregate element is a clean error" {
+test "codegen/tuple: storing into an aggregate element is a clean error" {
     try expectCodegenError(
         \\def main()
         \\  let t = ((1, 2), 3)
-        \\  print t.1
+        \\  t.0 = (9, 9)
+        \\  print 0
         \\end
     , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/tuple: `==` on `@inline`-returned tuple operands compares by value" {
+    // The caller's prologue backs the inline expansion's frame, so its
+    // slots sit above any pushed operand and the comparison is exact.
+    try runAndExpect(
+        \\@inline
+        \\def pair(n: i16) -> (i16, i16)
+        \\  return (n, n * 2)
+        \\end
+        \\def main()
+        \\  print pair(3) == pair(3)
+        \\  print pair(3) == pair(4)
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/struct: `==` on `@inline`-returned struct operands compares by value" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\@inline
+        \\def mk(n: i16) -> P
+        \\  return P { x: n, y: n }
+        \\end
+        \\def main()
+        \\  print mk(3) == mk(3)
+        \\  print mk(3) == mk(4)
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/struct: `==` compares a struct literal whose field runs an `@inline` call" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\@inline
+        \\def mk(n: i16) -> P
+        \\  return P { x: n, y: n }
+        \\end
+        \\def main()
+        \\  let p = P { x: 3, y: 3 }
+        \\  print P { x: mk(3).x, y: 3 } == p
+        \\end
+    , "1\n");
+}
+
+test "codegen/inline: two `@inline` calls in one expression don't collide" {
+    // Each expansion's frame is prologue-backed, so the second call's
+    // slots can't alias the first call's result already pushed for the `+`.
+    try runAndExpect(
+        \\@inline
+        \\def sq(n: i16) -> i16
+        \\  let t = n * n
+        \\  return t
+        \\end
+        \\def main()
+        \\  print sq(3) + sq(4)
+        \\end
+    , "25\n");
+}
+
+test "codegen/inline: an aggregate-returning body with inner locals is exact" {
+    // Inner `let`s in an `@inline` body that feed a returned struct get
+    // their own prologue-backed slots — the result reads back correctly.
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\@inline
+        \\def mk(a: i16, b: i16) -> P
+        \\  let t = a + b
+        \\  let u = a - b
+        \\  return P { x: t, y: u }
+        \\end
+        \\def main()
+        \\  print mk(10, 3).x
+        \\  print mk(10, 3).y
+        \\end
+    , "13\n7\n");
+}
+
+test "codegen/tuple: `print` of a struct renders a tuple field inline" {
+    try runAndExpect(
+        \\struct S
+        \\  n: i16
+        \\  p: (i8, str)
+        \\end
+        \\def main()
+        \\  print S { n: 7, p: (-3, "hi") }
+        \\end
+    , "S { n: 7, p: (-3, hi) }\n");
+}
+
+test "codegen/tuple: return-by-value from an `@inline` fn" {
+    try runAndExpect(
+        \\@inline
+        \\def pair() -> (i16, i16)
+        \\  return (11, 22)
+        \\end
+        \\def main()
+        \\  let t = pair()
+        \\  print t.0
+        \\  print t.1
+        \\end
+    , "11\n22\n");
 }
 
 // ---------- value structs (§3.4) ----------

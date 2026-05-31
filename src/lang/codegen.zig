@@ -38,6 +38,11 @@ pub const ivt_base: u16 = 0x1000;
 pub const code_base: u16 = 0x1100;
 /// First byte of static-data emission.
 pub const data_base: u16 = 0x2000;
+/// Upper bound (exclusive) of the static-data region. Data globals grow
+/// up from `data_base` and must stay below the host IO / command surface
+/// just above (gtx-16 maps its command surface at `0xFE50`); past this a
+/// global can't be addressed safely.
+pub const data_region_end: u16 = 0xFE40;
 
 // ---------- .gx file constants (re-exported from archive) ----------
 
@@ -142,6 +147,8 @@ pub fn compile(
         .sret_scratch_ofs = null,
         .inline_ret_struct = null,
         .inline_ret_slot = 0,
+        .inline_ret_is_tuple = false,
+        .inline_ret_tuple_slot = 0,
         .fn_addresses = .{},
         .fn_banks = .{},
         .noreturn_defs = .{},
@@ -480,6 +487,12 @@ pub const Emitter = struct {
     /// has no callee frame, so its result lives in a caller local.
     inline_ret_struct: ?[]const u8,
     inline_ret_slot: i8,
+    /// While splicing a tuple-returning `@inline` body: `true` + the
+    /// caller-frame result slot its `return` materializes into (element
+    /// layout comes from the return expression's type). Mirrors
+    /// `inline_ret_struct`.
+    inline_ret_is_tuple: bool,
+    inline_ret_tuple_slot: i8,
     /// `def` name → absolute address. Banked defs live in the
     /// bank window; un-banked defs live in the base image.
     fn_addresses: std.StringHashMapUnmanaged(u16),
@@ -714,16 +727,28 @@ pub const Emitter = struct {
     /// local takes its full (2-aligned) width. Reserves space for
     /// every arm of control-flow forms.
     pub fn countFrameBytes(self: *const Emitter, body: []const ast.Statement) usize {
+        return self.countFrameBytesDepth(body, 0);
+    }
+
+    /// Frame bytes the prologue must reserve for `body`: the def's own
+    /// locals plus the frame every `@inline` call-site splices in. Inline
+    /// expansions reserve fp-relative slots but emit no `sub sp` of their
+    /// own — the prologue backs them here, so a slot always sits above the
+    /// entry `sp` and a mid-expression inline call can't alias a value the
+    /// surrounding expression already pushed. `depth` bounds the recursion
+    /// at the same cap the expander uses for recursive inlines.
+    fn countFrameBytesDepth(self: *const Emitter, body: []const ast.Statement, depth: u8) usize {
         var n: usize = 0;
-        for (body) |s| n += self.countStmtFrameBytes(s);
+        for (body) |s| n += self.countStmtFrameBytes(s, depth);
         return n;
     }
 
-    fn countStmtFrameBytes(self: *const Emitter, stmt: ast.Statement) usize {
-        return switch (stmt) {
+    fn countStmtFrameBytes(self: *const Emitter, stmt: ast.Statement, depth: u8) usize {
+        // Locals + nested-body bytes the statement reserves directly...
+        const own: usize = switch (stmt) {
             .let_decl => |d| self.letFrameBytes(d),
             .const_decl => 2,
-            .block => |b| self.countFrameBytes(b.body),
+            .block => |b| self.countFrameBytesDepth(b.body, depth),
             .if_stmt => |is_| blk: {
                 var n: usize = 0;
                 for (is_.arms) |a| {
@@ -733,34 +758,180 @@ pub const Emitter = struct {
                     if (a.cond) |c| if (c.* == .is_test and c.is_test.classBinding() != null) {
                         n += 2;
                     };
-                    n += self.countFrameBytes(a.body);
+                    n += self.countFrameBytesDepth(a.body, depth);
                 }
-                if (is_.else_body) |eb| n += self.countFrameBytes(eb);
+                if (is_.else_body) |eb| n += self.countFrameBytesDepth(eb, depth);
                 break :blk n;
             },
             .while_stmt => |ws| blk: {
                 var n: usize = 0;
                 if (ws.let_pattern) |p| n += countBindingBytes(p.*);
-                n += self.countFrameBytes(ws.body);
+                n += self.countFrameBytesDepth(ws.body, depth);
                 break :blk n;
             },
             // Range-based `for` reserves 1 hidden slot for the `end`
             // bound (the iteration variable uses its own slot).
-            .for_stmt => |fs| 2 + 2 + self.countFrameBytes(fs.body),
-            .repeat_stmt => |rs| self.countFrameBytes(rs.body),
+            .for_stmt => |fs| 2 + 2 + self.countFrameBytesDepth(fs.body, depth),
+            .repeat_stmt => |rs| self.countFrameBytesDepth(rs.body, depth),
             .match_stmt => |ms| blk: {
                 // 1 scratch slot to bind the scrutinee when it isn't
                 // already an ident (so subsequent cmps don't re-eval).
                 var n: usize = if (ms.scrutinee.* == .ident) 0 else 2;
                 for (ms.arms) |a| {
                     n += countBindingBytes(a.pattern.*);
-                    n += self.countFrameBytes(a.body);
+                    n += self.countFrameBytesDepth(a.body, depth);
                 }
                 break :blk n;
             },
-            .defer_stmt => |ds| self.countStmtFrameBytes(ds.body.*),
+            .defer_stmt => |ds| self.countStmtFrameBytes(ds.body.*, depth),
             else => 0,
         };
+        // ...plus the inline frames in the statement's own expressions
+        // (sub-bodies are covered by the recursion above).
+        return own + self.stmtInlineFrameBytes(stmt, depth);
+    }
+
+    /// Inline-expansion bytes reachable from a statement's own
+    /// expressions (conditions / initializers / arguments / values),
+    /// mirroring `freeStatement`'s expression walk. Sub-statement bodies
+    /// are not visited here — `countStmtFrameBytes` recurses into those.
+    fn stmtInlineFrameBytes(self: *const Emitter, stmt: ast.Statement, depth: u8) usize {
+        return switch (stmt) {
+            .let_decl => |d| if (d.init) |e| self.countExprInlineBytes(e, depth) else 0,
+            .const_decl => |d| self.countExprInlineBytes(d.init, depth),
+            .assign => |a| self.countExprInlineBytes(a.target, depth) + self.countExprInlineBytes(a.value, depth),
+            .inc_dec => |id| self.countExprInlineBytes(id.target, depth),
+            .discard => |d| self.countExprInlineBytes(d.expr, depth),
+            .expr_stmt => |es| self.countExprInlineBytes(es.expr, depth),
+            .if_stmt => |is_| blk: {
+                var n: usize = 0;
+                for (is_.arms) |a| {
+                    if (a.cond) |c| n += self.countExprInlineBytes(c, depth);
+                    if (a.let_expr) |e| n += self.countExprInlineBytes(e, depth);
+                    if (a.let_guard) |g| n += self.countExprInlineBytes(g, depth);
+                }
+                break :blk n;
+            },
+            .while_stmt => |ws| blk: {
+                var n: usize = 0;
+                if (ws.cond) |c| n += self.countExprInlineBytes(c, depth);
+                if (ws.let_expr) |e| n += self.countExprInlineBytes(e, depth);
+                if (ws.let_guard) |g| n += self.countExprInlineBytes(g, depth);
+                break :blk n;
+            },
+            .for_stmt => |fs| blk: {
+                var n: usize = self.countExprInlineBytes(fs.iter, depth);
+                if (fs.step) |s| n += self.countExprInlineBytes(s, depth);
+                break :blk n;
+            },
+            .repeat_stmt => |rs| self.countExprInlineBytes(rs.cond, depth),
+            .match_stmt => |ms| blk: {
+                var n: usize = self.countExprInlineBytes(ms.scrutinee, depth);
+                for (ms.arms) |a| if (a.guard) |g| {
+                    n += self.countExprInlineBytes(g, depth);
+                };
+                break :blk n;
+            },
+            .return_stmt => |rs| if (rs.value) |v| self.countExprInlineBytes(v, depth) else 0,
+            .print_stmt => |ps| blk: {
+                var n: usize = 0;
+                for (ps.args) |a| n += self.countExprInlineBytes(a, depth);
+                break :blk n;
+            },
+            else => 0,
+        };
+    }
+
+    /// Sum of every `@inline` expansion frame reachable from `e`,
+    /// recursing into sub-expressions exactly like `freeExpr`.
+    fn countExprInlineBytes(self: *const Emitter, e: *const ast.Expr, depth: u8) usize {
+        return switch (e.*) {
+            .int_lit, .fixed_lit, .bool_lit, .nil_lit, .char_lit, .ident, .self_expr, .super_expr, .sizeof => 0,
+            // `if` / `do` expressions and lambda bodies don't splice an
+            // inline frame into THIS frame (unsupported at value position
+            // / compile-time-only / a separate def with its own prologue).
+            .if_expr, .do_expr, .lambda => 0,
+            .str_lit => |s| blk: {
+                var n: usize = 0;
+                var has_aggregate = false;
+                for (s.parts) |p| switch (p) {
+                    .lit => {},
+                    .interp => |ip| {
+                        n += self.countExprInlineBytes(ip.expr, depth);
+                        // A non-scalar interpolation buffers its render
+                        // through a cursor slot (see `emitInterpFill`).
+                        if (!self.interpFormattable(ip.expr)) has_aggregate = true;
+                    },
+                };
+                if (has_aggregate) n += 2;
+                break :blk n;
+            },
+            .paren => |p| self.countExprInlineBytes(p.inner, depth),
+            .unary => |u| self.countExprInlineBytes(u.operand, depth),
+            .binary => |b| self.countExprInlineBytes(b.lhs, depth) + self.countExprInlineBytes(b.rhs, depth),
+            .range => |r| self.countExprInlineBytes(r.start, depth) + self.countExprInlineBytes(r.end, depth),
+            .call => |c| blk: {
+                var n: usize = 0;
+                for (c.args) |a| n += self.countExprInlineBytes(a, depth);
+                if (c.callee.* == .ident) {
+                    const name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
+                    if (self.inline_defs.get(name)) |callee| n += self.inlineExpansionBytes(callee, c.args, depth);
+                } else n += self.countExprInlineBytes(c.callee, depth);
+                break :blk n;
+            },
+            .method_call => |m| blk: {
+                var n: usize = self.countExprInlineBytes(m.receiver, depth);
+                for (m.args) |a| n += self.countExprInlineBytes(a, depth);
+                break :blk n;
+            },
+            .field => |f| self.countExprInlineBytes(f.receiver, depth),
+            .tuple_index => |t| self.countExprInlineBytes(t.receiver, depth),
+            .index => |i| self.countExprInlineBytes(i.receiver, depth) + self.countExprInlineBytes(i.index, depth),
+            .list_lit => |ll| blk: {
+                var n: usize = 0;
+                for (ll.elems) |x| n += self.countExprInlineBytes(x, depth);
+                break :blk n;
+            },
+            .list_repeat => |lr| self.countExprInlineBytes(lr.value, depth) + self.countExprInlineBytes(lr.count, depth),
+            .struct_lit => |sl| blk: {
+                var n: usize = 0;
+                for (sl.fields) |f| n += self.countExprInlineBytes(f.value, depth);
+                break :blk n;
+            },
+            .tuple_lit => |tl| blk: {
+                var n: usize = 0;
+                for (tl.elems) |x| n += self.countExprInlineBytes(x, depth);
+                break :blk n;
+            },
+            .is_test => |it| self.countExprInlineBytes(it.lhs, depth),
+            .cast => |c| self.countExprInlineBytes(c.inner, depth),
+            .ref_of => |r| self.countExprInlineBytes(r.inner, depth),
+        };
+    }
+
+    /// Frame an `@inline` call-site reserves when it splices: an arg slot
+    /// per argument (by the argument's shape), the return slot for an
+    /// aggregate return, and the callee body's own frame (recursively).
+    /// Mirrors the reservations `emitInlineCall` makes. Past the inline
+    /// nesting cap it returns 0 — the expander rejects that as recursive.
+    fn inlineExpansionBytes(self: *const Emitter, callee: *const ast.DefDecl, args: []const *ast.Expr, depth: u8) usize {
+        if (depth >= inline_max_depth) return 0;
+        var n: usize = 0;
+        for (args) |arg| {
+            if (self.argStructName(arg)) |sname|
+                n += self.structSlotWidth(sname)
+            else if (self.tupleElemsOf(arg)) |elems|
+                n += self.tupleSlotWidth(elems)
+            else
+                n += 2;
+        }
+        if (callee.ret_type) |rt| {
+            if (self.structNameOfTypeAnn(rt.*)) |sname|
+                n += self.structSlotWidth(sname)
+            else if (rt.* == .tuple)
+                n += alignUpU16(self.widthOfTypeAnn(rt.*), 2);
+        }
+        return n + self.countFrameBytesDepth(callee.body, depth + 1);
     }
 
     /// Frame bytes a `let` reserves: the 2-aligned width of its type
@@ -896,6 +1067,17 @@ pub const Emitter = struct {
     pub fn isPrimitiveType(self: *const Emitter, e: *const ast.Expr, p: types_mod.Primitive) bool {
         const t = self.typeOf(e) orelse return false;
         return t.* == .primitive and t.primitive == p;
+    }
+
+    /// `true` when `e` has a direct scalar `$(…)` formatter (a primitive).
+    /// A non-primitive interpolation — struct / tuple / enum — renders via
+    /// the shared `emitRenderValue` machinery into the buffer instead; this
+    /// distinguishes the fast scalar path from that aggregate path. A
+    /// missing type falls through as scalar (the dispatch then formats it
+    /// as an integer).
+    pub fn interpFormattable(self: *const Emitter, e: *const ast.Expr) bool {
+        const t = self.typeOf(e) orelse return true;
+        return t.* == .primitive;
     }
 
     /// `true` when the type annotation is the named primitive `name`
@@ -1349,7 +1531,7 @@ pub const Emitter = struct {
     /// Layout of one struct field: byte offset, byte width, and — when
     /// the field is itself a struct — that struct's name (so codegen
     /// recurses into nested aggregates rather than storing a scalar).
-    pub const FieldInfo = struct { offset: u16, width: u16, struct_name: ?[]const u8, signed_byte: bool = false };
+    pub const FieldInfo = struct { offset: u16, width: u16, struct_name: ?[]const u8, signed_byte: bool = false, is_tuple: bool = false };
 
     /// `FieldInfo` for `field_name` within `struct_name`, or `null` if
     /// unknown. Fields are laid out contiguously in declaration order
@@ -1365,6 +1547,7 @@ pub const Emitter = struct {
                     .width = w,
                     .struct_name = self.structNameOfTypeAnn(f.type_ann.*),
                     .signed_byte = self.isPrimitiveTypeAnn(f.type_ann.*, "i8"),
+                    .is_tuple = f.type_ann.* == .tuple,
                 };
             }
             ofs +%= w;
@@ -1458,15 +1641,18 @@ pub const Emitter = struct {
         };
     }
 
-    /// `true` if any element is itself an inline aggregate (a tuple or a
-    /// named struct). #305 lowers register-width elements (scalar / `str`
-    /// / enum / class / reference); nested inline aggregates are deferred.
-    pub fn tupleHasAggregateElem(self: *const Emitter, elems: []const *const Type) bool {
-        for (elems) |e| {
-            if (e.* == .tuple) return true;
-            if (e.* == .named and self.struct_decls.contains(e.named.name)) return true;
-        }
-        return false;
+    /// Classifies a tuple element as a register-width scalar, an inline
+    /// named struct, or a nested tuple — so construction / `.N` access /
+    /// `==` / `print` can recurse into aggregate elements.
+    pub const TupleElemKind = union(enum) { scalar, structure: []const u8, tuple: []const *const Type };
+
+    /// Classify tuple element `index` — a register-width scalar, an
+    /// inline named struct, or a nested tuple.
+    pub fn tupleElemAggregate(self: *const Emitter, elems: []const *const Type, index: u8) TupleElemKind {
+        const et = elems[index];
+        if (et.* == .tuple) return .{ .tuple = et.tuple };
+        if (et.* == .named and self.struct_decls.contains(et.named.name)) return .{ .structure = et.named.name };
+        return .scalar;
     }
 
     /// `target = value` (and compound / inc-dec desugarings) — see

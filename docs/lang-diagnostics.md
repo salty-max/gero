@@ -724,7 +724,7 @@ should have already enforced.
 
 | Code | Meaning |
 |------|---------|
-| `E_CODEGEN_UNSUPPORTED` | A syntactically + type-valid construct the codegen doesn't lower yet (the catch-all — e.g. an ordering comparison on structs, a `==` over an array / tuple / `Vec` / nullable field or a recursive enum, printing a value with no default rendering (array / tuple / `Vec` / class / reference) or a recursive type). |
+| `E_CODEGEN_UNSUPPORTED` | A syntactically + type-valid construct the codegen doesn't lower yet (the catch-all — e.g. an ordering comparison on a struct or tuple, a `==` over an array / `Vec` / nullable field or a recursive enum, printing a value with no default rendering (array / `Vec` / class / reference) or a recursive type, storing into a tuple's aggregate element). |
 | `E_CODEGEN_FRAME_TOO_LARGE` | A function's locals or parameters exceed the 127-byte limit on `[fp + imm8]` fp-relative addressing (the ISA's only frame-offset mode). Reduce locals/params. |
 | `E_CODEGEN_UNDEFINED_FN` | A call's target isn't a known top-level `def` (an unresolved forward reference at patch time). |
 | `E_CODEGEN_UNKNOWN_CLASS` | A constructor / field / method targets a class with no computed layout. |
@@ -735,7 +735,7 @@ should have already enforced.
 | `E_CODEGEN_NO_PARENT` | `super` used in a class with no `extends` parent. |
 | `E_CODEGEN_NO_SELF` | `super.method` / `self` used outside a method body. |
 | `E_CODEGEN_ZP_OVERFLOW` | The zero-page region is exhausted — too many `@zero_page` globals. |
-| `E_CODEGEN_DATA_OVERFLOW` | The static data region is exhausted (globals + string pool + vtables). |
+| `E_CODEGEN_DATA_OVERFLOW` | The static data region is exhausted — too many data globals. |
 | `E_CODEGEN_DEFER_NO_BLOCK` | A `defer` was emitted with no enclosing block frame (internal invariant). |
 | `E_CODEGEN_LOOP_JUMP_NO_LOOP` | `break` / `continue` reached codegen outside any loop (internal — the typechecker normally catches this). |
 | `E_CODEGEN_LAMBDA_NOT_ANALYZED` | Internal: a lambda body was missing from the closure-analysis pass. |

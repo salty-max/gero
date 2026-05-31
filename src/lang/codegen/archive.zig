@@ -106,11 +106,11 @@ pub fn writeU16Le(dst: *[2]u8, value: u16) void {
 }
 
 /// Decode the standard backslash escapes (`\n`, `\r`, `\t`, `\\`,
-/// `\"`, `\0`) into raw bytes. The source slice is the part
-/// between the surrounding `"` delimiters with escapes still
-/// encoded; the returned slice owns its bytes (caller's
-/// allocator). Unknown escape sequences pass through as the
-/// bare character following the backslash.
+/// `\"`, `\0`) plus the interpolation escape `$$` → `$` (§3.2.2) into
+/// raw bytes. The source slice is the part between the surrounding `"`
+/// delimiters with escapes still encoded; the returned slice owns its
+/// bytes (caller's allocator). Unknown escape sequences pass through as
+/// the bare character following the backslash.
 pub fn decodeStringEscapes(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -129,6 +129,13 @@ pub fn decodeStringEscapes(allocator: std.mem.Allocator, raw: []const u8) ![]u8 
                 else => next,
             };
             try out.append(allocator, decoded);
+            i += 2;
+            continue;
+        }
+        // `$$` is the escape for a literal `$` (the lexer leaves it in the
+        // literal run; a lone `$` — e.g. `$5` — passes through unchanged).
+        if (c == '$' and i + 1 < raw.len and raw[i + 1] == '$') {
+            try out.append(allocator, '$');
             i += 2;
             continue;
         }

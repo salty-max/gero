@@ -307,6 +307,34 @@ fn parseFieldOrMethod(p: *Parser, receiver: *ast.Expr) ParserError!*ast.Expr {
             },
         });
     }
+    // `t.0.1` — the lexer folds `0.1` into one `fixed_lit`; split its
+    // `N.M` text into two chained tuple-index accesses (nested-tuple
+    // element). The Q8.8-encoded `value` can't recover the indices, so
+    // read the raw digits.
+    if (p.check(.fixed_lit)) {
+        const tok = p.peek();
+        const txt = p.source[tok.start..tok.end];
+        const dot = std.mem.indexOfScalar(u8, txt, '.');
+        const lo: ?u8 = if (dot) |d| std.fmt.parseInt(u8, txt[0..d], 10) catch null else null;
+        const hi: ?u8 = if (dot) |d| std.fmt.parseInt(u8, txt[d + 1 ..], 10) catch null else null;
+        if (lo == null or hi == null) {
+            try p.recordError("expected a tuple element index (`.0`, `.1`, …)", "E_SYNTAX_MISSING_TOKEN");
+            return error.ParseFailed;
+        }
+        p.pos += 1;
+        // @as: `dot` is an index within the token text, well under u32.
+        const inner_end: u32 = tok.start + @as(u32, @intCast(dot.?));
+        const inner = try p.allocExpr(.{ .tuple_index = .{
+            .receiver = receiver,
+            .index = lo.?,
+            .span = .{ .start = receiver.span().start, .end = inner_end },
+        } });
+        return try p.allocExpr(.{ .tuple_index = .{
+            .receiver = inner,
+            .index = hi.?,
+            .span = .{ .start = receiver.span().start, .end = tok.end },
+        } });
+    }
     const name_tok = try p.expect(.ident, "field or method name");
     if (p.check(.lparen)) {
         p.pos += 1;
