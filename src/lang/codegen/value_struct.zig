@@ -1,14 +1,16 @@
-// Codegen for inline value structs (§3.4). A struct value lives in
-// its owner's frame as contiguous bytes; a struct-typed expression
-// evaluates to that base address. Construction writes each field at
-// its offset (recursing into nested struct fields); assignment copies
-// the bytes (value semantics). Nested structs work because they sit
-// inline at a fixed frame offset within the parent. A struct argument
-// is passed by value: the caller reserves its width on the stack and
-// materializes a copy there (`pushArg`).
+// Codegen for inline value aggregates (§3.4) — structs and tuples. An
+// aggregate value lives in its owner's frame as contiguous bytes; an
+// aggregate-typed expression evaluates to that base address.
+// Construction writes each field/element at its offset (recursing into
+// nested struct fields); assignment copies the bytes (value semantics).
+// An aggregate argument is passed by value: the caller reserves its
+// width on the stack and materializes a copy there (`pushArg` /
+// `pushTupleArg`). Tuples reuse the same `Dest` / `copyBytes` plumbing
+// but key on the element type list rather than a struct name.
 
 const std = @import("std");
 const ast = @import("../ast.zig");
+const types = @import("../types.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
@@ -95,6 +97,66 @@ fn emitIntoDest(self: *Emitter, src: *const ast.Expr, sname: []const u8, dest: D
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
     try destAddrToReg(self, dest, Reg.r2);
     try copyBytes(self, Reg.r1, Reg.r2, self.structWidth(sname));
+}
+
+// ---- tuple values (§3.4) ----
+// A tuple is an anonymous positional aggregate stored inline like a
+// struct (contiguous, byte-packed slots). #305 lowers register-width
+// elements (scalar / `str` / enum / class / reference); nested inline
+// aggregates are rejected at the dispatch sites (deferred).
+
+/// Materialize a tuple value into the frame slot based at `dest_ofs`
+/// (fp-relative).
+pub fn emitTupleInto(self: *Emitter, src: *const ast.Expr, elems: []const *const types.Type, dest_ofs: i16) error{OutOfMemory}!void {
+    try emitTupleIntoDest(self, src, elems, .{ .frame = dest_ofs });
+}
+
+/// Pass a tuple argument by value: reserve its (2-aligned) width on the
+/// stack and materialize a copy there.
+pub fn pushTupleArg(self: *Emitter, arg: *const ast.Expr, elems: []const *const types.Type) error{OutOfMemory}!void {
+    try isa.subImmFromReg(self, self.tupleSlotWidth(elems), Reg.sp);
+    try emitTupleIntoDest(self, arg, elems, .{ .sp = 0 });
+}
+
+/// Materialize a returned tuple into the caller's sret buffer.
+pub fn emitTupleIntoSret(self: *Emitter, src: *const ast.Expr, elems: []const *const types.Type, ptr_ofs: i16) error{OutOfMemory}!void {
+    try emitTupleIntoDest(self, src, elems, .{ .indirect = .{ .ptr_ofs = ptr_ofs, .delta = 0 } });
+}
+
+fn emitTupleIntoDest(self: *Emitter, src: *const ast.Expr, elems: []const *const types.Type, dest: Dest) error{OutOfMemory}!void {
+    if (self.tupleHasAggregateElem(elems)) {
+        try self.unsupported(src.span(), "a tuple with a nested struct/tuple element");
+        return;
+    }
+    if (src.* == .tuple_lit) {
+        for (src.tuple_lit.elems, 0..) |elem, i| {
+            // safety: tuple arity ≤ 4 (§3.4) fits u8.
+            const info = self.tupleElemInfo(elems, @intCast(i));
+            try self.emitExpr(elem);
+            try isa.movRegToReg(self, Reg.acu, Reg.r2);
+            try destAddrToReg(self, dest.at(@intCast(info.offset)), Reg.r1);
+            try storeWidth(self, Reg.r1, info.width, Reg.r2);
+        }
+        return;
+    }
+    // A tuple value — byte-copy its contiguous slots into the dest.
+    try self.emitExpr(src); // acu = source base address
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try destAddrToReg(self, dest, Reg.r2);
+    try copyBytes(self, Reg.r1, Reg.r2, self.tupleWidth(elems));
+}
+
+/// Load element `index` of the tuple whose base address is in `acu`,
+/// leaving the element value in `acu` (`i8` sign-extends).
+pub fn emitTupleElemLoad(self: *Emitter, elems: []const *const types.Type, index: u8) error{OutOfMemory}!void {
+    const info = self.tupleElemInfo(elems, index);
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    if (info.width == 1) {
+        try class.emitByteLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+        if (info.signed_byte) try isa.signExtendByte(self, Reg.acu);
+    } else {
+        try class.emitWordLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+    }
 }
 
 fn emitLitInto(self: *Emitter, sl: ast.StructLit, sname: []const u8, dest: Dest) error{OutOfMemory}!void {

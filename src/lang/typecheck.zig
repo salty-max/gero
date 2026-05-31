@@ -978,6 +978,7 @@ pub const Checker = struct {
             .call => |c| self.exprMentions(c.callee, name) or anyExprMentions(self, c.args, name),
             .method_call => |m| self.exprMentions(m.receiver, name) or anyExprMentions(self, m.args, name),
             .field => |f| self.exprMentions(f.receiver, name),
+            .tuple_index => |ti| self.exprMentions(ti.receiver, name),
             .index => |ix| self.exprMentions(ix.receiver, name) or self.exprMentions(ix.index, name),
             .do_expr => |d| self.bodyMentions(d.body, name),
             .if_expr => |ie| ifChainMentions(self, ie.arms, ie.else_body, name),
@@ -1118,6 +1119,25 @@ pub const Checker = struct {
                 try self.checkNotNullableDeref(f.receiver, recv_ty, f.span);
                 return try fields.resolveFieldAccess(self, f, peelReference(recv_ty));
             },
+            .tuple_index => |ti| {
+                const recv_ty = try self.inferExpr(ti.receiver, null);
+                try self.checkNotNullableDeref(ti.receiver, recv_ty, ti.span);
+                const peeled = peelReference(recv_ty) orelse return null;
+                if (peeled.* != .tuple) {
+                    const ty_s = try types.render(self.arena, peeled.*);
+                    const msg = try std.fmt.allocPrint(self.arena, "`.{d}` element access requires a tuple, found `{s}`", .{ ti.index, ty_s });
+                    try self.emitSpan("E_TYPE_NOT_A_TUPLE", ti.span, msg);
+                    return null;
+                }
+                const elems = peeled.tuple;
+                if (ti.index >= elems.len) {
+                    const suffix: []const u8 = if (elems.len == 1) "" else "s";
+                    const msg = try std.fmt.allocPrint(self.arena, "tuple index {d} out of range — tuple has {d} element{s}", .{ ti.index, elems.len, suffix });
+                    try self.emitSpan("E_TYPE_TUPLE_INDEX_OOR", ti.span, msg);
+                    return null;
+                }
+                return elems[ti.index];
+            },
             .index => |ix| {
                 _ = try self.inferExpr(ix.receiver, null);
                 _ = try self.inferExpr(ix.index, null);
@@ -1195,6 +1215,10 @@ pub const Checker = struct {
             .list_repeat => |lr| return try self.inferListRepeat(lr, hint),
             .struct_lit => |sl| return try fields.checkStructLit(self, sl),
             .tuple_lit => |tl| {
+                if (tl.elems.len > 4) {
+                    const msg = try std.fmt.allocPrint(self.arena, "a tuple has at most 4 elements (§3.4) — found {d}; use a struct for more", .{tl.elems.len});
+                    try self.emitSpan("E_TYPE_TUPLE_TOO_MANY", tl.span, msg);
+                }
                 // Bidirectional: when the hint is a same-arity
                 // tuple, each element pins to its slot's expected
                 // type so `(0, nil)` against `(i16, str?)` works.

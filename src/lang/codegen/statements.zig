@@ -80,6 +80,13 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
             return;
         }
     }
+    // Tuple-typed reassignment — same inline value copy.
+    if (self.tupleElemsOf(a.target)) |elems| {
+        if (self.locals.get(name)) |ofs| {
+            try value_struct.emitTupleInto(self, a.value, elems, ofs);
+            return;
+        }
+    }
     // Captured-binding write inside a lambda body — store through the
     // env-relative cell pointer (the parent promoted the binding so the
     // write is visible everywhere).
@@ -151,6 +158,21 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
         return;
     }
 
+    // Tuple-typed binding — inline value semantics like a struct, sized
+    // by the tuple width (annotated width, or the initializer's).
+    const tuple_elems = if (d.init) |e| self.tupleElemsOf(e) else null;
+    const ann_tuple = if (d.type_ann) |t| t.* == .tuple else false;
+    if (tuple_elems != null or ann_tuple) {
+        const width = if (d.type_ann) |t| self.widthOfTypeAnn(t.*) else self.tupleWidth(tuple_elems.?);
+        const slot = try self.allocLocalSized(dup_name, width);
+        if (d.init) |init_expr| {
+            if (tuple_elems) |elems| {
+                try value_struct.emitTupleInto(self, init_expr, elems, slot);
+            } else try self.unsupported(d.span, "tuple binding initialized from a non-tuple value");
+        }
+        return;
+    }
+
     const ofs = try self.allocLocal(dup_name);
     // Promoted bindings live as heap cells — the slot holds the cell
     // pointer instead of the value directly.
@@ -196,6 +218,15 @@ pub fn emitReturnStmt(self: *Emitter, r: ast.ReturnStmt) !void {
             try isa.movRegToReg(self, Reg.fp, Reg.acu);
             if (self.sret_param_ofs > 0) try isa.addImmToReg(self, @intCast(self.sret_param_ofs), Reg.acu);
             try isa.movRegOffsetToReg(self, Reg.acu, 0, Reg.acu);
+        } else if (self.current_ret_is_tuple) {
+            // Tuple return: same sret convention as a struct. The element
+            // layout comes from the return expression's inferred type.
+            if (self.tupleElemsOf(v)) |elems| {
+                try value_struct.emitTupleIntoSret(self, v, elems, self.sret_param_ofs);
+                try isa.movRegToReg(self, Reg.fp, Reg.acu);
+                if (self.sret_param_ofs > 0) try isa.addImmToReg(self, @intCast(self.sret_param_ofs), Reg.acu);
+                try isa.movRegOffsetToReg(self, Reg.acu, 0, Reg.acu);
+            } else try self.unsupported(r.span, "tuple return from a non-tuple value");
         } else {
             try self.emitExpr(v);
         }
@@ -290,6 +321,12 @@ fn emitPrintArg(self: *Emitter, arg: *const ast.Expr) !void {
         }
         try self.emitExpr(arg);
         try emitPrintEnum(self, ed);
+        return;
+    }
+    // A whole-tuple default rendering isn't lowered yet (deferred from
+    // #305) — reject rather than print the base address as an int.
+    if (self.tupleElemsOf(arg) != null) {
+        try self.unsupported(arg.span(), "printing a whole tuple — print its elements (`t.0`, `t.1`, …)");
         return;
     }
     try self.emitExpr(arg);

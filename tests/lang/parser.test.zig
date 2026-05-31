@@ -248,6 +248,28 @@ test "parse: field access" {
     try std.testing.expect(init.* == .field);
 }
 
+test "parse: tuple index access `t.0`" {
+    var tree = try parseClean("let r = t.0");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .tuple_index);
+    try std.testing.expectEqual(@as(u8, 0), init.tuple_index.index);
+}
+
+test "parse: `2.0` still lexes as a fixed literal, not a tuple index" {
+    var tree = try parseClean("let r = 2.0");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .fixed_lit);
+}
+
+test "parse: `n.foo()` is a method call, not a tuple index" {
+    var tree = try parseClean("let r = n.foo()");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .method_call);
+}
+
 test "parse: index access" {
     var tree = try parseClean("let r = arr[i]");
     defer tree.deinit();

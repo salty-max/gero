@@ -56,6 +56,10 @@ pub fn resolveType(self: *Checker, t: *const ast.TypeAnn) WalkError!*const types
             return try types.mkVec(self.arena, elem);
         },
         .tuple => |tu| {
+            if (tu.elems.len > 4) {
+                const msg = try std.fmt.allocPrint(self.arena, "a tuple has at most 4 elements (§3.4) — found {d}; use a struct for more", .{tu.elems.len});
+                try self.emitSpan("E_TYPE_TUPLE_TOO_MANY", tu.span, msg);
+            }
             var elems: std.ArrayList(*const types.Type) = .empty;
             errdefer elems.deinit(self.arena);
             for (tu.elems) |e| try elems.append(self.arena, try resolveType(self, e));

@@ -333,6 +333,8 @@ pub const Expr = union(enum) {
     method_call: MethodCallExpr,
     /// `obj.field` — direct field access, no parentheses.
     field: FieldExpr,
+    /// `tuple.0` / `tuple.1` — positional tuple element access (§3.4).
+    tuple_index: TupleIndexExpr,
     /// `obj[index]` — bracket-index access. For `Vec(T)` and arrays
     /// codegen emits the `at`/`get` opcode; for strings it's byte
     /// access.
@@ -392,6 +394,7 @@ pub const Expr = union(enum) {
             .call => |e| e.span,
             .method_call => |e| e.span,
             .field => |e| e.span,
+            .tuple_index => |e| e.span,
             .index => |e| e.span,
             .do_expr => |e| e.span,
             .if_expr => |e| e.span,
@@ -577,6 +580,15 @@ pub const FieldExpr = struct {
     receiver: *Expr,
     /// Field name span.
     field: Span,
+    span: Span,
+};
+
+/// `tuple.N` — positional access of element `index` (§3.4). Distinct
+/// from `FieldExpr` because the selector is an ordinal, not an ident.
+pub const TupleIndexExpr = struct {
+    receiver: *Expr,
+    /// Element ordinal (`0`-based). Bounds-checked in typecheck.
+    index: u8,
     span: Span,
 };
 
@@ -1365,6 +1377,7 @@ pub fn freeExpr(allocator: std.mem.Allocator, e: *Expr) void {
             allocator.free(m.args);
         },
         .field => |f| freeExpr(allocator, f.receiver),
+        .tuple_index => |t| freeExpr(allocator, t.receiver),
         .index => |i| {
             freeExpr(allocator, i.receiver);
             freeExpr(allocator, i.index);

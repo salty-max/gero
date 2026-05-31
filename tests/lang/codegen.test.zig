@@ -3943,6 +3943,144 @@ test "codegen: `is` tag test on a payload enum" {
     , "1\n3\n");
 }
 
+// ---------- value tuples (§3.4) ----------
+
+test "codegen/tuple: literal construction + `.N` element read" {
+    try runAndExpect(
+        \\def main()
+        \\  let t = (3, 4)
+        \\  print t.0
+        \\  print t.1
+        \\  print t.0 + t.1
+        \\end
+    , "3\n4\n7\n");
+}
+
+test "codegen/tuple: mixed-width elements pack contiguously" {
+    try runAndExpect(
+        \\def main()
+        \\  let t = (1 as u8, 300, 2 as u8)
+        \\  print t.0
+        \\  print t.1
+        \\  print t.2
+        \\end
+    , "1\n300\n2\n");
+}
+
+test "codegen/tuple: a `str` element reads back by pointer" {
+    try runAndExpect(
+        \\def main()
+        \\  let t = (5, "hi")
+        \\  print t.0
+        \\  print t.1
+        \\end
+    , "5\nhi\n");
+}
+
+test "codegen/tuple: a signed `i8` element sign-extends on read" {
+    try runAndExpect(
+        \\def main()
+        \\  let t = (-5 as i8, 1)
+        \\  print t.0
+        \\end
+    , "-5\n");
+}
+
+test "codegen/tuple: value copy on `let` + reassignment leaves the source intact" {
+    try runAndExpect(
+        \\def main()
+        \\  let a = (1, 2)
+        \\  let b = a
+        \\  let c = (0, 0)
+        \\  c = a
+        \\  print b.0
+        \\  print c.1
+        \\  print a.0
+        \\  print a.1
+        \\end
+    , "1\n2\n1\n2\n");
+}
+
+test "codegen/tuple: return-by-value (multi-return) + element read" {
+    try runAndExpect(
+        \\def pair() -> (i16, i16)
+        \\  return (1, 2)
+        \\end
+        \\def main()
+        \\  let t = pair()
+        \\  print t.0
+        \\  print t.1
+        \\end
+    , "1\n2\n");
+}
+
+test "codegen/tuple: pass-by-value param (mutation-isolated) after a scalar arg" {
+    try runAndExpect(
+        \\def snd(n: i16, t: (i16, i16)) -> i16
+        \\  return n + t.1
+        \\end
+        \\def main()
+        \\  let a = (5, 6)
+        \\  print snd(100, a)
+        \\  print a.0
+        \\end
+    , "106\n5\n");
+}
+
+test "codegen/tuple: a returned tuple feeds straight into a by-value param" {
+    try runAndExpect(
+        \\def mk() -> (i16, i16)
+        \\  return (10, 20)
+        \\end
+        \\def snd(t: (i16, i16)) -> i16
+        \\  return t.1
+        \\end
+        \\def main()
+        \\  print snd(mk())
+        \\end
+    , "20\n");
+}
+
+test "codegen/tuple: passed by value through an `@inline` fn" {
+    try runAndExpect(
+        \\@inline
+        \\def fst(t: (i16, i16)) -> i16
+        \\  return t.0
+        \\end
+        \\def main()
+        \\  print fst((7, 8))
+        \\end
+    , "7\n");
+}
+
+test "codegen/tuple: `==` is not lowered yet (clean error, not address compare)" {
+    try expectCodegenError(
+        \\def main()
+        \\  let a = (1, 2)
+        \\  let b = (1, 2)
+        \\  print a == b
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/tuple: whole-tuple `print` is a clean error" {
+    try expectCodegenError(
+        \\def main()
+        \\  let t = (1, 2)
+        \\  print t
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/tuple: a nested-aggregate element is a clean error" {
+    try expectCodegenError(
+        \\def main()
+        \\  let t = ((1, 2), 3)
+        \\  print t.1
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
 // ---------- value structs (§3.4) ----------
 
 test "codegen/struct: literal construction + field read" {
