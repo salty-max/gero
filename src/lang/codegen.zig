@@ -137,6 +137,7 @@ pub fn compile(
         .is_entry = false,
         .is_isr = false,
         .current_ret_struct = null,
+        .current_ret_is_tuple = false,
         .sret_param_ofs = 0,
         .sret_scratch_ofs = null,
         .inline_ret_struct = null,
@@ -145,6 +146,7 @@ pub fn compile(
         .fn_banks = .{},
         .noreturn_defs = .{},
         .fn_ret_struct = .{},
+        .fn_ret_tuple = .{},
         .global_sret_scratch = 0,
         .inline_defs = .{},
         .interrupt_defs = .empty,
@@ -457,9 +459,15 @@ pub const Emitter = struct {
     /// `null` for a scalar-returning def. When set, `return` copies the
     /// value into the caller-provided sret buffer.
     current_ret_struct: ?[]const u8,
+    /// `true` while emitting a tuple-returning def — `return` copies the
+    /// tuple into the caller's sret buffer (same convention as
+    /// `current_ret_struct`; the element layout comes from the return
+    /// expression's inferred type).
+    current_ret_is_tuple: bool,
     /// fp-offset of the hidden sret destination pointer in the current
     /// frame (`4 + Σ user-param widths` — it sits just above the last
-    /// user param). Valid only while `current_ret_struct` is set.
+    /// user param). Valid while `current_ret_struct` is set or
+    /// `current_ret_is_tuple` is true.
     sret_param_ofs: i16,
     /// fp-offset of this frame's sret scratch buffer (a returned
     /// struct's holding space), or `null` when the program returns no
@@ -487,6 +495,10 @@ pub const Emitter = struct {
     /// caller passes a hidden destination pointer and the callee copies
     /// its result there (§3.4). Absent → returns a scalar in `acu`.
     fn_ret_struct: std.StringHashMapUnmanaged([]const u8),
+    /// `def` names that return a tuple by value — drives the same sret
+    /// convention as `fn_ret_struct` (a set: the element layout is read
+    /// from the call/return expression's inferred type).
+    fn_ret_tuple: std.StringHashMapUnmanaged(void),
     /// Largest (2-aligned) struct return width across the program — the
     /// size of the per-frame sret scratch buffer that holds a returned
     /// struct until its consumer copies it out. 0 when no def returns a
@@ -671,9 +683,9 @@ pub const Emitter = struct {
     }
 
     /// Byte width of a checked type. Mirrors `widthOfTypeAnn` but over
-    /// `types.Type` — 1 for `i8`/`u8`/`bool`/`char`, the field sum for
-    /// a named struct, 2 otherwise (16-bit primitives, references,
-    /// class/enum pointers).
+    /// `types.Type` — 1 for `i8`/`u8`/`bool`/`char`, the element sum for
+    /// a named struct or tuple, 2 otherwise (16-bit primitives,
+    /// references, class/enum pointers).
     pub fn widthOfType(self: *const Emitter, ty: *const Type) u16 {
         switch (ty.*) {
             .primitive => |p| return switch (p) {
@@ -687,6 +699,11 @@ pub const Emitter = struct {
                     return total;
                 }
                 return 2;
+            },
+            .tuple => |elems| {
+                var total: u16 = 0;
+                for (elems) |elem| total +%= self.widthOfType(elem);
+                return total;
             },
             else => return 2,
         }
@@ -1054,6 +1071,12 @@ pub const Emitter = struct {
                     const w = self.structSlotWidth(sname);
                     if (w > self.global_sret_scratch) self.global_sret_scratch = w;
                 };
+                // A tuple-returning def uses the same sret scratch buffer.
+                if (dd.ret_type) |rt| if (rt.* == .tuple) {
+                    try self.fn_ret_tuple.put(self.arena, dup, {});
+                    const w = alignUpU16(self.widthOfTypeAnn(rt.*), 2);
+                    if (w > self.global_sret_scratch) self.global_sret_scratch = w;
+                };
                 if (noreturn_marked) try self.noreturn_defs.put(self.arena, dup, {});
                 if (inline_marked) try self.inline_defs.put(self.arena, dup, dd);
                 if (interrupt_vec) |vec| {
@@ -1383,8 +1406,8 @@ pub const Emitter = struct {
         return self.structNameOf(arg);
     }
 
-    /// Stack footprint of a parameter: a struct param occupies its
-    /// full (2-aligned) width — passed by value as a contiguous copy
+    /// Stack footprint of a parameter: a struct or tuple param occupies
+    /// its full (2-aligned) width — passed by value as a contiguous copy
     /// (§3.4) — and a scalar param one word. Drives both the param
     /// fp-offsets and the caller's arg-push width.
     pub fn paramWidthAligned(self: *const Emitter, p: ast.Param) u16 {
@@ -1392,7 +1415,58 @@ pub const Emitter = struct {
         if (self.structNameOfTypeAnn(t.*)) |sname| {
             return self.structSlotWidth(sname);
         }
+        if (t.* == .tuple) return alignUpU16(self.widthOfTypeAnn(t.*), 2);
         return 2;
+    }
+
+    /// Element list of a tuple-typed expression, or `null` for a
+    /// non-tuple. The tuple analog of `structNameOf`: a tuple value is
+    /// its base address (inline contiguous slots, §3.4).
+    pub fn tupleElemsOf(self: *const Emitter, e: *const ast.Expr) ?[]const *const Type {
+        const ty = self.typeOf(e) orelse return null;
+        const inner = if (ty.* == .reference) ty.reference else ty;
+        return if (inner.* == .tuple) inner.tuple else null;
+    }
+
+    /// Total byte width of a tuple (elements summed).
+    pub fn tupleWidth(self: *const Emitter, elems: []const *const Type) u16 {
+        var total: u16 = 0;
+        for (elems) |e| total +%= self.widthOfType(e);
+        return total;
+    }
+
+    /// A tuple's footprint rounded up to a 2-byte slot — the aligned
+    /// size for inline-value frame, param, and arg layout.
+    pub fn tupleSlotWidth(self: *const Emitter, elems: []const *const Type) u16 {
+        return alignUpU16(self.tupleWidth(elems), 2);
+    }
+
+    /// Layout of one tuple element: byte offset (sum of prior element
+    /// widths, byte-packed) + width, and whether it is a signed byte
+    /// (`i8`, sign-extended on load).
+    pub const TupleElemInfo = struct { offset: u16, width: u16, signed_byte: bool };
+
+    /// Layout of tuple element `index` within its inline slots.
+    pub fn tupleElemInfo(self: *const Emitter, elems: []const *const Type, index: u8) TupleElemInfo {
+        var ofs: u16 = 0;
+        for (elems[0..index]) |e| ofs +%= self.widthOfType(e);
+        const et = elems[index];
+        return .{
+            .offset = ofs,
+            .width = self.widthOfType(et),
+            .signed_byte = et.* == .primitive and et.primitive == .i8,
+        };
+    }
+
+    /// `true` if any element is itself an inline aggregate (a tuple or a
+    /// named struct). #305 lowers register-width elements (scalar / `str`
+    /// / enum / class / reference); nested inline aggregates are deferred.
+    pub fn tupleHasAggregateElem(self: *const Emitter, elems: []const *const Type) bool {
+        for (elems) |e| {
+            if (e.* == .tuple) return true;
+            if (e.* == .named and self.struct_decls.contains(e.named.name)) return true;
+        }
+        return false;
     }
 
     /// `target = value` (and compound / inc-dec desugarings) — see

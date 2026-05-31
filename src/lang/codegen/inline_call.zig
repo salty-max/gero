@@ -34,6 +34,14 @@ pub fn emitInlineCall(self: *Emitter, callee: *const ast.DefDecl, c: ast.CallExp
         return;
     }
 
+    // A tuple-returning `@inline` body would need the inline-return
+    // buffer plumbing the struct path has; not lowered yet (deferred
+    // from #305). Reject before any frame mutation.
+    if (callee.ret_type) |rt| if (rt.* == .tuple) {
+        try self.unsupported(c.span, "a tuple return from an `@inline` function");
+        return;
+    };
+
     // Bind args → fresh caller-frame locals. Each slot extends
     // `frame_bytes` via its own sub-imm (the prologue's bulk reservation
     // already ran). Args materialize in the CALLER's scope — locals
@@ -48,6 +56,11 @@ pub fn emitInlineCall(self: *Emitter, callee: *const ast.DefDecl, c: ast.CallExp
             try isa.subImmFromReg(self, self.structSlotWidth(sname), Reg.sp);
             const ofs = self.reserveFrameSlot(self.structSlotWidth(sname));
             try value_struct.emitInto(self, arg, sname, ofs);
+            b.* = .{ .name = dup, .ofs = ofs };
+        } else if (self.tupleElemsOf(arg)) |elems| {
+            try isa.subImmFromReg(self, self.tupleSlotWidth(elems), Reg.sp);
+            const ofs = self.reserveFrameSlot(self.tupleSlotWidth(elems));
+            try value_struct.emitTupleInto(self, arg, elems, ofs);
             b.* = .{ .name = dup, .ofs = ofs };
         } else {
             try isa.subImmFromReg(self, 2, Reg.sp);

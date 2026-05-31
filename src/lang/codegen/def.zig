@@ -108,6 +108,7 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     // just above its last user param (the caller pushes it first);
     // `return` copies the result there instead of into `acu`.
     self.current_ret_struct = if (def.ret_type) |rt| self.structNameOfTypeAnn(rt.*) else null;
+    self.current_ret_is_tuple = if (def.ret_type) |rt| rt.* == .tuple else false;
     // @as: sits past the params; the frame-size cap keeps it small.
     self.sret_param_ofs = @intCast(param_ofs);
 

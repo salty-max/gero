@@ -49,9 +49,10 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .char_lit => |c| try isa.movImmToReg(self, c.value, Reg.acu),
         .paren => |p| try emitExpr(self, p.inner),
         .ident => |i| {
-            // A struct-typed binding evaluates to its base address —
-            // struct values are addressed inline, not loaded as a word.
-            if (self.structNameOf(e) != null) {
+            // A struct- or tuple-typed binding evaluates to its base
+            // address — aggregate values are addressed inline, not
+            // loaded as a word.
+            if (self.structNameOf(e) != null or self.tupleElemsOf(e) != null) {
                 try self.emitAddrOf(e);
                 return;
             }
@@ -88,6 +89,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .call => |c| try emitCall(self, c),
         .method_call => |m| try emitMethodCall(self, m, e),
         .field => |f| try emitFieldExpr(self, f, e),
+        .tuple_index => |ti| try emitTupleIndexExpr(self, ti),
         .self_expr => |se| {
             // `self` inside a method body lives at fp+4 (the first
             // implicit param). Outside a method it's a typecheck
@@ -230,6 +232,22 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
     try self.unsupported(e.span(), "non-enum field access");
 }
 
+/// Lower a `tuple.N` element access — evaluate the receiver to its base
+/// address, then load element `N`. Tuples with a nested struct/tuple
+/// element aren't lowered yet (deferred from #305).
+fn emitTupleIndexExpr(self: *Emitter, ti: ast.TupleIndexExpr) !void {
+    const elems = self.tupleElemsOf(ti.receiver) orelse {
+        try self.unsupported(ti.span, "tuple element access on a non-tuple value");
+        return;
+    };
+    if (self.tupleHasAggregateElem(elems)) {
+        try self.unsupported(ti.span, "a tuple with a nested struct/tuple element");
+        return;
+    }
+    try emitExpr(self, ti.receiver); // acu = tuple base address
+    try value_struct.emitTupleElemLoad(self, elems, ti.index);
+}
+
 /// Lower an `is` test. Two shapes:
 /// - `expr is Enum.Variant` — compares the tag in `acu` against
 ///   the variant's compile-time tag.
@@ -354,6 +372,13 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
                 return;
             },
         }
+    }
+
+    // Tuple `==` / `!=` (element-wise) isn't lowered yet — reject rather
+    // than compare the operand addresses (deferred from #305).
+    if (self.tupleElemsOf(b.lhs) != null or self.tupleElemsOf(b.rhs) != null) {
+        try self.unsupported(b.span, "`==` / `!=` on tuples");
+        return;
     }
 
     const fixed_op = self.isPrimitiveType(b.lhs, .fixed) and
@@ -530,6 +555,11 @@ pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
                             return;
                         },
                     }
+                }
+                // Tuple comparison isn't lowered yet (deferred from #305).
+                if (self.tupleElemsOf(b.lhs) != null or self.tupleElemsOf(b.rhs) != null) {
+                    try self.unsupported(b.span, "`==` / `!=` on tuples");
+                    return;
                 }
                 // Eval LHS into acu, eval RHS into r1, cmp acu, r1.
                 try emitExpr(self, b.rhs);
@@ -808,22 +838,26 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     // frame's scratch buffer; the callee copies its result there and
     // returns the pointer in `acu`.
     const returns_struct = self.fn_ret_struct.contains(callee_name);
-    if (returns_struct) {
-        // Invariant: a struct-returning callee implies the program has a
-        // struct return type, so every frame reserved a scratch slot.
+    const returns_tuple = self.fn_ret_tuple.contains(callee_name);
+    if (returns_struct or returns_tuple) {
+        // Invariant: an aggregate-returning callee implies the program
+        // reserved an sret scratch slot in every frame (struct + tuple
+        // returns share it).
         const sofs = self.sret_scratch_ofs.?;
         try isa.movRegToReg(self, Reg.fp, Reg.acu);
         if (sofs < 0) try isa.subImmFromReg(self, @intCast(-sofs), Reg.acu);
         try isa.pushReg(self, Reg.acu);
     }
 
-    // Push args right-to-left (caller-cleans-up). A struct arg is
-    // passed by value — its (2-aligned) width copied onto the stack.
+    // Push args right-to-left (caller-cleans-up). A struct or tuple arg
+    // is passed by value — its (2-aligned) width copied onto the stack.
     var i: usize = c.args.len;
     while (i > 0) {
         i -= 1;
         if (self.argStructName(c.args[i])) |sname| {
             try value_struct.pushArg(self, c.args[i], sname);
+        } else if (self.tupleElemsOf(c.args[i])) |elems| {
+            try value_struct.pushTupleArg(self, c.args[i], elems);
         } else {
             try emitExpr(self, c.args[i]);
             try isa.pushReg(self, Reg.acu);
@@ -876,10 +910,12 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     // never returns to use that space.
     const skip_cleanup = self.noreturn_defs.contains(callee_name);
     if (!skip_cleanup) {
-        var drop_bytes: u16 = if (returns_struct) 2 else 0; // hidden sret pointer
+        var drop_bytes: u16 = if (returns_struct or returns_tuple) 2 else 0; // hidden sret pointer
         for (c.args) |a| {
             if (self.argStructName(a)) |sname| {
                 drop_bytes += self.structSlotWidth(sname);
+            } else if (self.tupleElemsOf(a)) |elems| {
+                drop_bytes += self.tupleSlotWidth(elems);
             } else {
                 drop_bytes += 2; // one 16-bit word per scalar arg
             }

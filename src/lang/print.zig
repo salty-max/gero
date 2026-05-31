@@ -832,6 +832,10 @@ const Printer = struct {
                 try self.writer.writeByte('.');
                 try self.writer.writeAll(self.lexeme(f.field));
             },
+            .tuple_index => |ti| {
+                try self.writeExpr(ti.receiver, .call);
+                try self.writer.print(".{d}", .{ti.index});
+            },
             .index => |ix| {
                 try self.writeExpr(ix.receiver, .call);
                 try self.writer.writeByte('[');

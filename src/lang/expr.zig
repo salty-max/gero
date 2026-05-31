@@ -286,6 +286,27 @@ fn parseIndexAccess(p: *Parser, receiver: *ast.Expr) ParserError!*ast.Expr {
 
 fn parseFieldOrMethod(p: *Parser, receiver: *ast.Expr) ParserError!*ast.Expr {
     p.pos += 1;
+    // `tuple.N` — a positional element access. The selector is an int
+    // literal (`t.0`); a char literal (`t.'a'`) also lexes as `int_lit`,
+    // so exclude it. The index's range vs the tuple's arity is checked
+    // in typecheck.
+    if (p.check(.int_lit)) {
+        const idx_tok = p.peek();
+        const is_char = idx_tok.start < p.source.len and p.source[idx_tok.start] == '\'';
+        if (is_char or idx_tok.value < 0 or idx_tok.value > 255) {
+            try p.recordError("expected a tuple element index (`.0`, `.1`, …)", "E_SYNTAX_MISSING_TOKEN");
+            return error.ParseFailed;
+        }
+        p.pos += 1;
+        return try p.allocExpr(.{
+            .tuple_index = .{
+                .receiver = receiver,
+                // safety: bounded to 0..255 just above.
+                .index = @intCast(idx_tok.value),
+                .span = .{ .start = receiver.span().start, .end = idx_tok.end },
+            },
+        });
+    }
     const name_tok = try p.expect(.ident, "field or method name");
     if (p.check(.lparen)) {
         p.pos += 1;

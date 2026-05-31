@@ -233,6 +233,9 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_UNDEFINED_METHOD` | Method name doesn't exist on the receiver's class (or any parent). |
 | `E_TYPE_MISSING_FIELD` | Struct literal omits a field declared by the type. |
 | `E_TYPE_RECURSIVE_STRUCT` | A struct contains itself by value (directly or transitively, through a struct / array / tuple field) — infinite size, no layout. Use `Vec(T)` or `&T` for a recursive shape. |
+| `E_TYPE_NOT_A_TUPLE` | `.N` element access on a non-tuple value. |
+| `E_TYPE_TUPLE_INDEX_OOR` | Tuple element index `.N` is past the tuple's arity. |
+| `E_TYPE_TUPLE_TOO_MANY` | A tuple has more than 4 elements (§3.4) — use a struct instead. |
 | `E_TYPE_TUPLE_ARITY` | Tuple-destructuring pattern's element count doesn't match the init's tuple arity. |
 | `E_TYPE_REDEFINED` | A name is declared twice in the same scope. |
 | `E_TYPE_ARG_COUNT` | Wrong number of args at a call site. |
@@ -759,6 +762,9 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_UNDEFINED_METHOD` | Typechecker | v0.3 |
 | `E_TYPE_MISSING_FIELD` | Typechecker | v0.3 |
 | `E_TYPE_RECURSIVE_STRUCT` | Typechecker | v0.3 |
+| `E_TYPE_NOT_A_TUPLE` | Typechecker | v0.3 |
+| `E_TYPE_TUPLE_INDEX_OOR` | Typechecker | v0.3 |
+| `E_TYPE_TUPLE_TOO_MANY` | Typechecker | v0.3 |
 | `E_TYPE_TUPLE_ARITY` | Typechecker | v0.3 |
 | `E_TYPE_REDEFINED` | Typechecker | v0.3 |
 | `E_TYPE_ARG_COUNT` | Typechecker | v0.3 |

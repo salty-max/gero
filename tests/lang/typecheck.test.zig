@@ -1485,6 +1485,64 @@ test "typecheck: class with extends — inherited field resolves" {
     );
 }
 
+// ---------- tuple `.N` element access (§3.4) ----------
+
+test "typecheck: `.N` element access infers the element type" {
+    try expectClean(
+        \\def main()
+        \\  let t = (1, "x")
+        \\  let a: i16 = t.0
+        \\  let b: str = t.1
+        \\  print a, b
+        \\end
+    );
+}
+
+test "typecheck: `.N` element-type mismatch is caught" {
+    try expectCode(
+        \\def main()
+        \\  let t = (1, "x")
+        \\  let bad: str = t.0
+        \\  print bad
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: a tuple index past the arity errors" {
+    try expectCode(
+        \\def main()
+        \\  let t = (1, 2)
+        \\  print t.5
+        \\end
+    , "E_TYPE_TUPLE_INDEX_OOR");
+}
+
+test "typecheck: `.N` on a non-tuple errors" {
+    try expectCode(
+        \\def main()
+        \\  let x = 5
+        \\  print x.0
+        \\end
+    , "E_TYPE_NOT_A_TUPLE");
+}
+
+test "typecheck: a tuple literal with more than 4 elements is rejected (§3.4)" {
+    try expectCode(
+        \\def main()
+        \\  let t = (1, 2, 3, 4, 5)
+        \\  print t.0
+        \\end
+    , "E_TYPE_TUPLE_TOO_MANY");
+}
+
+test "typecheck: an oversize tuple type annotation is rejected" {
+    try expectCode(
+        \\def five() -> (i16, i16, i16, i16, i16)
+        \\  return (1, 2, 3, 4, 5)
+        \\end
+    , "E_TYPE_TUPLE_TOO_MANY");
+}
+
 // ---------- slice 6: multi-return tuple destructuring + flow ----------
 
 test "typecheck: tuple destructure types each binding from init slots" {
