@@ -549,6 +549,43 @@ test "codegen: globals in data region land at data_base upward" {
     try std.testing.expectEqual(@as(u16, 200), vm.mmap.readWord(0x2002));
 }
 
+test "codegen: a module-level `const` / `let` initializer is stored at startup" {
+    // The slot is otherwise zero-filled; the entry prologue seeds it.
+    try runAndExpect(
+        \\const MAX_HP = 100
+        \\const NAME = "hero"
+        \\let counter = 7
+        \\def main()
+        \\  print MAX_HP
+        \\  print NAME
+        \\  print counter + 1
+        \\end
+    , "100\nhero\n8\n");
+}
+
+test "codegen: a module-level `const` can read an earlier `const` (declaration order)" {
+    try runAndExpect(
+        \\const A = 3
+        \\const B = A + 4
+        \\def main()
+        \\  print A, B
+        \\end
+    , "3 7\n");
+}
+
+test "codegen: a module-level `const` enum value initializes its slot" {
+    try runAndExpect(
+        \\enum E
+        \\  case Nil
+        \\  case V(n: i16)
+        \\end
+        \\const C = E.V(9)
+        \\def main()
+        \\  print C
+        \\end
+    , "E.V(9)\n");
+}
+
 test "codegen: @align(16) pads global placement to a 16-byte boundary" {
     var compiled = try compileSource(
         \\let pad: i16 = 0
@@ -1321,7 +1358,7 @@ test "codegen: zero-page overflow emits E_CODEGEN_ZP_OVERFLOW" {
 
 // ---------- enum codegen (nullary variants) ----------
 
-test "codegen: nullary enum constructor loads tag byte into acu" {
+test "codegen: a nullary enum value renders as `Enum.Variant`" {
     try runAndExpect(
         \\enum Color
         \\  case Red
@@ -1332,9 +1369,7 @@ test "codegen: nullary enum constructor loads tag byte into acu" {
         \\  let c: Color = Color.Green
         \\  print c
         \\end
-    ,
-        // Green is the second declared variant → tag = 1.
-        "1\n");
+    , "Color.Green\n");
 }
 
 test "codegen: `is` test on enum returns true on the right variant" {
@@ -4243,6 +4278,63 @@ test "codegen/struct: ordering comparison on structs is rejected" {
     , "E_CODEGEN_UNSUPPORTED");
 }
 
+test "codegen/str: `+` concatenates into a fresh buffer (§3.2.1)" {
+    // Pointer-adding the two string addresses (the old miscompile) would
+    // print garbage; concat allocates and copies both operands' bytes.
+    try runAndExpect(
+        \\def main()
+        \\  let c = "foo" + "bar"
+        \\  print c
+        \\  print c == "foobar"
+        \\  print "a" + "b" + "c"
+        \\  print "" + "hi"
+        \\end
+    , "foobar\n1\nabc\nhi\n");
+}
+
+test "codegen/str: `+` concatenates runtime-built (distinct-buffer) operands" {
+    try runAndExpect(
+        \\def main()
+        \\  let n = 1
+        \\  let c = "x$(n)" + "y$(n)"
+        \\  print c
+        \\  print c == "x1y1"
+        \\end
+    , "x1y1\n1\n");
+}
+
+test "codegen/str: `<` `<=` `>` `>=` are lexicographic, not pointer compares (§3.2.1)" {
+    // A prefix sorts before its extension; results must be deterministic
+    // (a pointer compare was layout-dependent garbage).
+    try runAndExpect(
+        \\def main()
+        \\  print "a" < "b"
+        \\  print "b" > "a"
+        \\  print "abc" < "abd"
+        \\  print "ab" < "abc"
+        \\  print "abc" <= "abc"
+        \\  print "abc" > "abc"
+        \\  print "abd" >= "abc"
+        \\  if "apple" < "banana"
+        \\    print 1
+        \\  else
+        \\    print 2
+        \\  end
+        \\end
+    , "1\n1\n1\n1\n1\n0\n1\n1\n");
+}
+
+test "codegen/str: ordering of runtime-built operands compares by content" {
+    try runAndExpect(
+        \\def main()
+        \\  let n = 1
+        \\  print "a$(n)" < "a$(n)9"
+        \\  print "a$(n)9" < "a$(n)"
+        \\  print "a$(n)" >= "a$(n)"
+        \\end
+    , "1\n0\n1\n");
+}
+
 test "codegen/str: `==` compares content, not pointer identity" {
     // Both strings are built at runtime in distinct interpolation
     // buffers, so a pointer compare would (wrongly) say not-equal.
@@ -4337,8 +4429,8 @@ test "codegen/struct: a `str`-field struct `==` works in a condition" {
     , "1\n0\n");
 }
 
-test "codegen/struct: `==` on a struct with a payload-carrying enum field is rejected" {
-    try expectCodegenError(
+test "codegen/struct: `==` on a struct with a payload-carrying enum field compares slots" {
+    try runAndExpect(
         \\enum Item
         \\  case Sword
         \\  case Potion(amount: i16)
@@ -4350,9 +4442,31 @@ test "codegen/struct: `==` on a struct with a payload-carrying enum field is rej
         \\def main()
         \\  let a = Slot { qty: 1, it: Item.Potion(20) }
         \\  let b = Slot { qty: 1, it: Item.Potion(20) }
+        \\  let c = Slot { qty: 1, it: Item.Potion(99) }
+        \\  let d = Slot { qty: 2, it: Item.Potion(20) }
         \\  print a == b
+        \\  print a == c
+        \\  print a == d
         \\end
-    , "E_CODEGEN_UNSUPPORTED");
+    , "1\n0\n0\n");
+}
+
+test "codegen/struct: a payload enum field with a `str` payload compares by content" {
+    // The enum field's `str` payload must compare by content through the
+    // struct's per-field path, not by the slot's stored pointer.
+    try runAndExpect(
+        \\enum K
+        \\  case Key(name: str)
+        \\end
+        \\struct Box
+        \\  k: K
+        \\end
+        \\def main()
+        \\  let n = 1
+        \\  print Box { k: K.Key("x$(n)") } == Box { k: K.Key("x$(n)") }
+        \\  print Box { k: K.Key("x$(n)") } == Box { k: K.Key("y$(n)") }
+        \\end
+    , "1\n0\n");
 }
 
 test "codegen/struct: payload-free enum field compares by tag" {
@@ -4373,6 +4487,325 @@ test "codegen/struct: payload-free enum field compares by tag" {
         \\  print a == c
         \\end
     , "1\n0\n");
+}
+
+test "codegen/enum: payload-carrying `==` compares slot value, not pointer identity" {
+    // Distinct constructor calls allocate distinct slots, so a
+    // pointer compare would (wrongly) say not-equal.
+    try runAndExpect(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\def main()
+        \\  let a = Item.Potion(20)
+        \\  let b = Item.Potion(20)
+        \\  let c = Item.Potion(30)
+        \\  let d = Item.Sword
+        \\  print a == b
+        \\  print a != b
+        \\  print a == c
+        \\  print a == d
+        \\end
+    , "1\n0\n0\n0\n");
+}
+
+test "codegen/enum: payload-carrying `==` resolves in a control-flow condition" {
+    try runAndExpect(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\def main()
+        \\  let a = Item.Potion(5)
+        \\  if a == Item.Potion(5)
+        \\    print 1
+        \\  end
+        \\  if a != Item.Potion(9)
+        \\    print 2
+        \\  end
+        \\end
+    , "1\n2\n");
+}
+
+test "codegen/enum: a `str` payload compares by content, not pointer (§3.2.1)" {
+    // The names are built in distinct interpolation buffers, so a slot
+    // byte compare (pointer) would wrongly say not-equal.
+    try runAndExpect(
+        \\enum K
+        \\  case Key(name: str, count: u8)
+        \\end
+        \\def main()
+        \\  let n = 1
+        \\  print K.Key("brass$(n)", 1) == K.Key("brass$(n)", 1)
+        \\  print K.Key("brass$(n)", 1) == K.Key("brass$(n)", 2)
+        \\  print K.Key("gold$(n)", 1) == K.Key("brass$(n)", 1)
+        \\end
+    , "1\n0\n0\n");
+}
+
+test "codegen/enum: a nested payload enum compares recursively" {
+    try runAndExpect(
+        \\enum Inner
+        \\  case A
+        \\  case Num(v: i16)
+        \\end
+        \\enum Outer
+        \\  case None
+        \\  case Wrap(i: Inner)
+        \\end
+        \\def main()
+        \\  print Outer.Wrap(Inner.Num(7)) == Outer.Wrap(Inner.Num(7))
+        \\  print Outer.Wrap(Inner.Num(7)) == Outer.Wrap(Inner.Num(8))
+        \\  print Outer.Wrap(Inner.A) == Outer.Wrap(Inner.Num(7))
+        \\  print Outer.None == Outer.Wrap(Inner.A)
+        \\end
+    , "1\n0\n0\n0\n");
+}
+
+test "codegen/enum: `==` on a recursive enum is a clean error" {
+    // Structural equality of a self-referential enum would unroll the
+    // comparison without bound; reject rather than hang the compiler.
+    try expectCodegenError(
+        \\enum List
+        \\  case Nil
+        \\  case Cons(head: i16, tail: List)
+        \\end
+        \\def main()
+        \\  print List.Cons(1, List.Nil) == List.Cons(1, List.Nil)
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/enum: `print` of a recursive enum is a clean error (not a stack overflow)" {
+    // A self-referential payload has no finite rendering; the support
+    // walk must terminate on the cycle and reject, not recurse forever.
+    try expectCodegenError(
+        \\enum Tree
+        \\  case Leaf
+        \\  case Node(child: Tree)
+        \\end
+        \\def main()
+        \\  print Tree.Leaf
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/struct: `print` of a diamond (a type reused by sibling fields) is not a false cycle" {
+    try runAndExpect(
+        \\struct Pt
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\struct Line
+        \\  a: Pt
+        \\  b: Pt
+        \\end
+        \\def main()
+        \\  print Line { a: Pt { x: 1, y: 2 }, b: Pt { x: 3, y: 4 } }
+        \\end
+    , "Line { a: Pt { x: 1, y: 2 }, b: Pt { x: 3, y: 4 } }\n");
+}
+
+test "codegen/enum: a signed `i8` payload keeps its sign on match-bind" {
+    // Byte-loading a narrow payload zero-extends; an `i8` must be
+    // sign-extended so a negative value survives the binder.
+    try runAndExpect(
+        \\enum E
+        \\  case V(n: i8)
+        \\end
+        \\def main()
+        \\  match E.V(-5)
+        \\    case E.V(v) =>
+        \\      print v
+        \\      if v < 0
+        \\        print 1
+        \\      end
+        \\    case _ => print 0
+        \\  end
+        \\end
+    , "-5\n1\n");
+}
+
+test "codegen: a `u16` prints as unsigned (bare, field, payload, interpolation)" {
+    // The signed `print_int` would show a high-bit `u16` as negative;
+    // unsigned values route to `print_uint` / `format_uint_to_buf`.
+    try runAndExpect(
+        \\struct S
+        \\  a: u16
+        \\end
+        \\enum E
+        \\  case V(n: u16)
+        \\end
+        \\def main()
+        \\  let x: u16 = 50000
+        \\  print x
+        \\  print S { a: 65535 }
+        \\  print E.V(40000)
+        \\  print "v=$(x)"
+        \\end
+    , "50000\nS { a: 65535 }\nE.V(40000)\nv=50000\n");
+}
+
+test "codegen: an `i16` still prints signed" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = -1
+        \\  print x
+        \\end
+    , "-1\n");
+}
+
+test "codegen: a signed `i8` field / payload prints with its sign" {
+    try runAndExpect(
+        \\enum E
+        \\  case V(n: i8)
+        \\end
+        \\struct S
+        \\  a: i8
+        \\  b: u8
+        \\end
+        \\def main()
+        \\  print E.V(-5)
+        \\  print S { a: -5, b: 200 }
+        \\end
+    , "E.V(-5)\nS { a: -5, b: 200 }\n");
+}
+
+test "codegen: a signed `i8` struct-field read sign-extends in expression context" {
+    // `s.d` byte-loads the field; an `i8` must sign-extend (not just in
+    // the auto-render path) so a negative field reads as negative.
+    try runAndExpect(
+        \\struct S
+        \\  d: i8
+        \\end
+        \\def main()
+        \\  let s = S { d: -100 }
+        \\  print s.d
+        \\  let x: i16 = s.d
+        \\  print x
+        \\  if s.d < 0
+        \\    print 1
+        \\  end
+        \\end
+    , "-100\n-100\n1\n");
+}
+
+test "codegen: a signed `i8` global read sign-extends" {
+    try runAndExpect(
+        \\let g: i8 = -100
+        \\def main()
+        \\  print g
+        \\  if g < 0
+        \\    print 1
+        \\  end
+        \\end
+    , "-100\n1\n");
+}
+
+test "codegen: the heap starts above the code + interned string pool" {
+    // A large string literal grows the code buffer past the data base.
+    // The heap must still begin at/after the whole image — otherwise
+    // `alloc` (e.g. a `str` concat) would hand out addresses inside the
+    // live string pool and corrupt it.
+    const big = "z" ** 4000;
+    var compiled = try compileSource("let s = \"" ++ big ++ "\"\ndef main()\n  print s\nend");
+    defer compiled.deinit();
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try std.testing.expect(loaded.header.heap_base >= loaded.header.image_size);
+}
+
+test "codegen/enum: payload-free `==` compares the bare tag" {
+    try runAndExpect(
+        \\enum Dir
+        \\  case N
+        \\  case S
+        \\end
+        \\def main()
+        \\  let a = Dir.N
+        \\  print a == Dir.N
+        \\  print a == Dir.S
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/enum: `print` renders a payload-carrying value as `Enum.Variant(...)`" {
+    try runAndExpect(
+        \\enum Tok
+        \\  case Eof
+        \\  case Num(v: i16)
+        \\  case Pair(a: i16, b: i16)
+        \\end
+        \\def main()
+        \\  print Tok.Eof
+        \\  print Tok.Num(42)
+        \\  print Tok.Pair(3, 7)
+        \\end
+    , "Tok.Eof\nTok.Num(42)\nTok.Pair(3, 7)\n");
+}
+
+test "codegen/enum: `print` renders char / fixed / str payloads" {
+    try runAndExpect(
+        \\enum V
+        \\  case C(c: char)
+        \\  case F(f: fixed)
+        \\  case S(s: str)
+        \\end
+        \\def main()
+        \\  print V.C('A')
+        \\  print V.F(1.5)
+        \\  print V.S("hi")
+        \\end
+    , "V.C(A)\nV.F(1.500)\nV.S(hi)\n");
+}
+
+test "codegen/enum: `print` recurses into a nested enum payload" {
+    try runAndExpect(
+        \\enum Inner
+        \\  case A
+        \\  case Num(v: i16)
+        \\end
+        \\enum Outer
+        \\  case None
+        \\  case Wrap(i: Inner)
+        \\end
+        \\def main()
+        \\  print Outer.Wrap(Inner.Num(7))
+        \\  print Outer.Wrap(Inner.A)
+        \\  print Outer.None
+        \\end
+    , "Outer.Wrap(Inner.Num(7))\nOuter.Wrap(Inner.A)\nOuter.None\n");
+}
+
+test "codegen/struct: `print` renders an enum field as `Enum.Variant(...)`" {
+    try runAndExpect(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\struct Slot
+        \\  qty: i16
+        \\  it: Item
+        \\end
+        \\def main()
+        \\  print Slot { qty: 2, it: Item.Potion(5) }
+        \\  print Slot { qty: 1, it: Item.Sword }
+        \\end
+    , "Slot { qty: 2, it: Item.Potion(5) }\nSlot { qty: 1, it: Item.Sword }\n");
+}
+
+test "codegen/enum: `print` of a struct-payload variant is a clean error" {
+    try expectCodegenError(
+        \\struct Pt
+        \\  x: i16
+        \\end
+        \\enum Shape
+        \\  case At(p: Pt)
+        \\end
+        \\def main()
+        \\  print Shape.At(Pt { x: 1 })
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
 }
 
 test "codegen: a frame past the 127-byte fp-offset limit is a clean error (not a panic)" {

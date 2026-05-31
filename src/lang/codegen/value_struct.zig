@@ -129,6 +129,9 @@ pub fn emitFieldLoad(self: *Emitter, sname: []const u8, field_name: []const u8) 
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
     if (info.width == 1) {
         try class.emitByteLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+        // A signed byte field (`i8`) sign-extends; `u8` / `bool` / `char`
+        // stay zero-extended.
+        if (info.signed_byte) try isa.signExtendByte(self, Reg.acu);
     } else {
         try class.emitWordLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
     }
@@ -174,64 +177,213 @@ pub fn emitEquality(self: *Emitter, lhs: *const ast.Expr, rhs: *const ast.Expr, 
     // The copies stay put (sp stable) so field addresses are `sp + ofs`.
     const wslot = self.structSlotWidth(sname);
     try pushArg(self, rhs, sname); // rhs copy at [sp + wslot ..] after the next push
-    try pushArg(self, lhs, sname); // lhs copy at [sp ..]
+    try pushArg(self, lhs, sname); // lhs copy at [sp ..]; sp stays put
 
-    // The first field that differs jumps to the not-equal arm; falling
-    // through means every field matched.
-    var mismatch_patches: std.ArrayList(usize) = .empty;
-    defer mismatch_patches.deinit(self.allocator);
-
-    if (structHasContentField(self, sname)) {
+    if (needsFieldwise(self, sname)) {
+        // Per-field dispatch — `str` by content, payload-enum by its
+        // dereferenced slot, nested structs recursively. The first
+        // mismatch jumps to the not-equal arm; falling through is equal.
+        var mismatch_patches: std.ArrayList(usize) = .empty;
+        defer mismatch_patches.deinit(self.allocator);
         try emitFieldwiseEq(self, sname, 0, wslot, &mismatch_patches);
+        try isa.movImmToReg(self, if (negate) 0 else 1, Reg.acu);
+        const end_patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+        const mismatch_target = try self.currentOffset();
+        for (mismatch_patches.items) |p| try isa.patchJumpTo(self, p, mismatch_target);
+        try isa.movImmToReg(self, if (negate) 1 else 0, Reg.acu);
+        try isa.patchJumpTo(self, end_patch, try self.currentOffset());
     } else {
-        try emitByteEq(self, wslot, self.structWidth(sname), &mismatch_patches);
+        // Every field is value/pointer-comparable — one byte compare
+        // over the packed width.
+        try isa.movRegToReg(self, Reg.sp, Reg.r1); // lhs copy base
+        try isa.movRegToReg(self, Reg.sp, Reg.r2);
+        try isa.addImmToReg(self, wslot, Reg.r2); // rhs copy base
+        try emitBytesEqual(self, Reg.r1, Reg.r2, self.structWidth(sname), negate);
     }
-
-    // All fields equal → `==` yields 1, `!=` yields 0.
-    try isa.movImmToReg(self, if (negate) 0 else 1, Reg.acu);
-    const end_patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
-
-    // Not-equal arm: the opposite result.
-    const mismatch_target = try self.currentOffset();
-    for (mismatch_patches.items) |p| try isa.patchJumpTo(self, p, mismatch_target);
-    try isa.movImmToReg(self, if (negate) 1 else 0, Reg.acu);
-
-    try isa.patchJumpTo(self, end_patch, try self.currentOffset());
 
     // Drop both stack copies. `acu` (the result) survives the sp bump.
     try isa.addImmToReg(self, 2 * wslot, Reg.sp);
 }
 
-/// Fast path for structs with no content-typed (`str`) field: compare
-/// the two stack copies word-by-word (advancing offset-0 pointers — no
-/// scratch-reg collision), with a trailing byte for an odd width. lhs
-/// copy is at `[sp ..]`, rhs at `[sp + wslot ..]`.
-fn emitByteEq(self: *Emitter, wslot: u16, width: u16, patches: *std.ArrayList(usize)) error{OutOfMemory}!void {
-    try isa.movRegToReg(self, Reg.sp, Reg.r1); // r1 = lhs copy base
-    try isa.movRegToReg(self, Reg.sp, Reg.r2);
-    try isa.addImmToReg(self, wslot, Reg.r2); // r2 = rhs copy base
+/// Compare `width` bytes at `[p1]` vs `[p2]` (both pointers, advanced as
+/// it walks), leaving `1`/`0` in `acu` (`negate` selects `!=`). Word
+/// strides + a trailing byte; `acu` and `r3` are scratch — neither may
+/// be passed as `p1`/`p2`. Used for the all-scalar struct byte path.
+pub fn emitBytesEqual(self: *Emitter, p1: u8, p2: u8, width: u16, negate: bool) error{OutOfMemory}!void {
+    var mismatch_patches: std.ArrayList(usize) = .empty;
+    defer mismatch_patches.deinit(self.allocator);
     var remaining = width;
     while (remaining >= 2) : (remaining -= 2) {
-        try isa.movRegOffsetToReg(self, Reg.r1, 0, Reg.acu);
-        try isa.movRegOffsetToReg(self, Reg.r2, 0, Reg.r3);
+        try isa.movRegOffsetToReg(self, p1, 0, Reg.acu);
+        try isa.movRegOffsetToReg(self, p2, 0, Reg.r3);
         try isa.cmpRegReg(self, Reg.acu, Reg.r3);
-        try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
-        try isa.addImmToReg(self, 2, Reg.r1);
-        try isa.addImmToReg(self, 2, Reg.r2);
+        try mismatch_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+        try isa.addImmToReg(self, 2, p1);
+        try isa.addImmToReg(self, 2, p2);
     }
     if (remaining == 1) {
-        try class.emitByteLoadAtOffset(self, Reg.r1, 0, Reg.acu);
-        try class.emitByteLoadAtOffset(self, Reg.r2, 0, Reg.r3);
+        try class.emitByteLoadAtOffset(self, p1, 0, Reg.acu);
+        try class.emitByteLoadAtOffset(self, p2, 0, Reg.r3);
         try isa.cmpRegReg(self, Reg.acu, Reg.r3);
-        try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+        try mismatch_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+    }
+    try isa.movImmToReg(self, if (negate) 0 else 1, Reg.acu);
+    const end_patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    const mismatch_target = try self.currentOffset();
+    for (mismatch_patches.items) |p| try isa.patchJumpTo(self, p, mismatch_target);
+    try isa.movImmToReg(self, if (negate) 1 else 0, Reg.acu);
+    try isa.patchJumpTo(self, end_patch, try self.currentOffset());
+}
+
+// ---- payload-carrying enum equality ----
+
+/// Lower equality of two payload-carrying enum values (`p1` / `p2` hold
+/// the `[tag | payload]` slot pointers), leaving `1`/`0` in `acu`
+/// (`negate` selects `!=`). Compares the tag, then — for the matching
+/// variant — each payload field by its own semantics: `str` by content
+/// (§3.2.1), a nested payload enum recursively, every other field by its
+/// stored word/byte (value, or pointer identity for `&T` / class). The
+/// slot pointers are parked on the stack and reloaded per field, since
+/// content compare + recursion churn registers. Caller must have checked
+/// `enumEqSupported` (which rejects recursive enums, so this terminates).
+pub fn emitEnumEqual(self: *Emitter, ed: *const ast.EnumDecl, p1: u8, p2: u8, negate: bool) error{OutOfMemory}!void {
+    try isa.pushReg(self, p1); // lhs slot ptr at [sp + 2]
+    try isa.pushReg(self, p2); // rhs slot ptr at [sp + 0]
+    const lhs_at: i8 = 2;
+    const rhs_at: i8 = 0;
+
+    var ne_patches: std.ArrayList(usize) = .empty; // → not-equal arm
+    defer ne_patches.deinit(self.allocator);
+    var eq_patches: std.ArrayList(usize) = .empty; // → equal arm
+    defer eq_patches.deinit(self.allocator);
+
+    // A differing tag is unequal outright.
+    try loadSlotTag(self, lhs_at, Reg.acu);
+    try loadSlotTag(self, rhs_at, Reg.r3);
+    try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+    try ne_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+
+    // Tags match: dispatch on the tag and compare that variant's payload.
+    // A nullary variant carries no payload, so a tag match already
+    // settles it — those fall through to the equal arm.
+    for (ed.variants, 0..) |v, ti| {
+        if (v.payload.len == 0) continue;
+        // @as: variant index fits the u8 tag (§3.6).
+        const tag: u16 = @intCast(ti);
+        try loadSlotTag(self, lhs_at, Reg.acu);
+        try isa.cmpRegImm(self, Reg.acu, tag);
+        const skip = try isa.emitJumpPlaceholder(self, Op.jne_addr);
+        for (v.payload, 0..) |pf, j| {
+            try emitEnumFieldEq(self, pf.type_ann.*, lhs_at, rhs_at, self.variantFieldOffset(v, j), &ne_patches);
+        }
+        try eq_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
+        try isa.patchJumpTo(self, skip, try self.currentOffset());
+    }
+
+    const eq_target = try self.currentOffset();
+    for (eq_patches.items) |p| try isa.patchJumpTo(self, p, eq_target);
+    try isa.movImmToReg(self, if (negate) 0 else 1, Reg.acu);
+    const end_patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    const ne_target = try self.currentOffset();
+    for (ne_patches.items) |p| try isa.patchJumpTo(self, p, ne_target);
+    try isa.movImmToReg(self, if (negate) 1 else 0, Reg.acu);
+    try isa.patchJumpTo(self, end_patch, try self.currentOffset());
+
+    try isa.addImmToReg(self, 4, Reg.sp); // drop both parked pointers
+}
+
+/// Reload the slot pointer parked at `[sp + sp_off]` and load its tag
+/// byte (offset 0) into `dst`.
+fn loadSlotTag(self: *Emitter, sp_off: i8, dst: u8) error{OutOfMemory}!void {
+    try isa.movRegOffsetToReg(self, Reg.sp, sp_off, dst);
+    try class.emitByteLoadAtOffset(self, dst, 0, dst);
+}
+
+/// Compare one payload field (at `field_off` within the slot) of the two
+/// enum values whose slot pointers are parked at `[sp + lhs_at]` /
+/// `[sp + rhs_at]`. A mismatch jumps to the not-equal arm via `patches`.
+fn emitEnumFieldEq(self: *Emitter, t: ast.TypeAnn, lhs_at: i8, rhs_at: i8, field_off: u16, patches: *std.ArrayList(usize)) error{OutOfMemory}!void {
+    if (isStrTypeAnn(self, t)) {
+        try loadSlotField(self, lhs_at, field_off, Reg.r1); // lhs str ptr
+        try loadSlotField(self, rhs_at, field_off, Reg.r2); // rhs str ptr
+        try strings.emitContentEq(self, Reg.r1, Reg.r2, false);
+        try isa.cmpRegImm(self, Reg.acu, 0); // acu == 0 → strings differ
+        try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
+        return;
+    }
+    if (payloadEnumDecl(self, t)) |inner| {
+        try loadSlotField(self, lhs_at, field_off, Reg.r1); // lhs inner slot ptr
+        try loadSlotField(self, rhs_at, field_off, Reg.r2); // rhs inner slot ptr
+        try emitEnumEqual(self, inner, Reg.r1, Reg.r2, false);
+        try isa.cmpRegImm(self, Reg.acu, 0); // acu == 0 → slots differ
+        try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
+        return;
+    }
+    // Scalar / `char` / `fixed` / `bool` / payload-free enum tag / `&T` /
+    // class — compare the stored word or byte (value or pointer identity).
+    const fw = self.widthOfTypeAnn(t);
+    try isa.movRegOffsetToReg(self, Reg.sp, lhs_at, Reg.r1);
+    if (fw == 1) try class.emitByteLoadAtOffset(self, Reg.r1, field_off, Reg.acu) else try class.emitWordLoadAtOffset(self, Reg.r1, field_off, Reg.acu);
+    try isa.movRegOffsetToReg(self, Reg.sp, rhs_at, Reg.r1);
+    if (fw == 1) try class.emitByteLoadAtOffset(self, Reg.r1, field_off, Reg.r3) else try class.emitWordLoadAtOffset(self, Reg.r1, field_off, Reg.r3);
+    try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+    try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+}
+
+/// Reload the slot pointer parked at `[sp + sp_off]` and load the word at
+/// `field_off` within it into `dst`.
+fn loadSlotField(self: *Emitter, sp_off: i8, field_off: u16, dst: u8) error{OutOfMemory}!void {
+    try isa.movRegOffsetToReg(self, Reg.sp, sp_off, dst);
+    try class.emitWordLoadAtOffset(self, dst, field_off, dst);
+}
+
+/// Whether `==` can be lowered for payload-carrying enum `ed`. Every
+/// payload field must be comparable — a scalar / `char` / `fixed` /
+/// `bool` / `str` / `&T` / class, or a nested payload enum. Rejected:
+/// a struct payload (not a valid slot value) and a recursive enum
+/// (`visited` breaks the cycle — structural compare would unroll without
+/// bound), plus array / tuple / `Vec` / nullable payloads.
+pub fn enumEqSupported(self: *const Emitter, ed: *const ast.EnumDecl) bool {
+    var visited: std.ArrayList([]const u8) = .empty;
+    defer visited.deinit(self.allocator);
+    return enumEqSupportedRec(self, ed, &visited) catch false;
+}
+
+fn enumEqSupportedRec(self: *const Emitter, ed: *const ast.EnumDecl, visited: *std.ArrayList([]const u8)) error{OutOfMemory}!bool {
+    const name = self.source[ed.name.start..ed.name.end];
+    for (visited.items) |seen| if (std.mem.eql(u8, seen, name)) return false; // cycle
+    try visited.append(self.allocator, name);
+    defer _ = visited.pop();
+    for (ed.variants) |v| {
+        for (v.payload) |pf| {
+            if (!try enumFieldEqSupported(self, pf.type_ann.*, visited)) return false;
+        }
+    }
+    return true;
+}
+
+fn enumFieldEqSupported(self: *const Emitter, t: ast.TypeAnn, visited: *std.ArrayList([]const u8)) error{OutOfMemory}!bool {
+    switch (t) {
+        .named => |n| {
+            const name = self.source[n.name.start..n.name.end];
+            if (self.struct_decls.contains(name)) return false; // not a valid enum-payload slot value
+            if (self.enum_decls.get(name)) |inner| {
+                if (!self.enumHasPayload(inner)) return true; // bare tag byte
+                return enumEqSupportedRec(self, inner, visited);
+            }
+            return true; // primitive (incl. `str`) or class — value / content / identity
+        },
+        .reference, .fn_type => return true, // pointer identity
+        .nullable, .array, .vec, .tuple => return false,
     }
 }
 
-/// Per-field comparison for structs that contain a `str` field. The lhs
-/// copy is at `[sp + lhs_off ..]` and the rhs at `[sp + rhs_off ..]`;
-/// `sp` is stable, so each field reads at `sp + base_off + field_off`.
-/// `str` fields compare by content; nested structs recurse; every other
-/// field compares its stored word/byte (value or pointer identity).
+/// Per-field comparison for structs that need it (a `str` or payload-
+/// enum field). The lhs copy is at `[sp + lhs_off ..]` and the rhs at
+/// `[sp + rhs_off ..]`; `sp` is stable, so each field reads at
+/// `sp + base_off + field_off`. `str` compares by content, a payload
+/// enum by its dereferenced slot, nested structs recurse, and every
+/// other field by its stored word/byte (value or pointer identity).
 fn emitFieldwiseEq(self: *Emitter, sname: []const u8, lhs_off: u16, rhs_off: u16, patches: *std.ArrayList(usize)) error{OutOfMemory}!void {
     const sd = self.struct_decls.get(sname).?;
     var fo: u16 = 0;
@@ -242,11 +394,19 @@ fn emitFieldwiseEq(self: *Emitter, sname: []const u8, lhs_off: u16, rhs_off: u16
             // `sp` survives streq's register churn, so the next field
             // re-addresses from it cleanly. (Checked before the nested-
             // struct case so the `str` classification matches `eqSupported`
-            // / `structHasContentField`.)
+            // / `needsFieldwise`.)
             try class.emitWordLoadAtOffset(self, Reg.sp, lhs_off + fo, Reg.r1);
             try class.emitWordLoadAtOffset(self, Reg.sp, rhs_off + fo, Reg.r2);
             try strings.emitContentEq(self, Reg.r1, Reg.r2, false);
             try isa.cmpRegImm(self, Reg.acu, 0); // acu == 0 → strings differ
+            try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
+        } else if (payloadEnumDecl(self, f.type_ann.*)) |ed| {
+            // Payload-carrying enum field stores a slot pointer; compare
+            // the two slots by value (tag, then per-variant payload).
+            try class.emitWordLoadAtOffset(self, Reg.sp, lhs_off + fo, Reg.r1);
+            try class.emitWordLoadAtOffset(self, Reg.sp, rhs_off + fo, Reg.r2);
+            try emitEnumEqual(self, ed, Reg.r1, Reg.r2, false);
+            try isa.cmpRegImm(self, Reg.acu, 0); // acu == 0 → slots differ
             try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
         } else if (self.structNameOfTypeAnn(f.type_ann.*)) |sub| {
             try emitFieldwiseEq(self, sub, lhs_off + fo, rhs_off + fo, patches);
@@ -265,14 +425,17 @@ fn emitFieldwiseEq(self: *Emitter, sname: []const u8, lhs_off: u16, rhs_off: u16
     }
 }
 
-/// `true` when `sname` has a `str` field (directly or via a nested
-/// struct) — those must compare by content, forcing the per-field path.
-fn structHasContentField(self: *const Emitter, sname: []const u8) bool {
+/// `true` when `sname` has a field that can't be compared by a flat
+/// byte sweep — a `str` (content) or a payload-carrying enum (deref the
+/// slot pointer), directly or via a nested struct — forcing the
+/// per-field path.
+fn needsFieldwise(self: *const Emitter, sname: []const u8) bool {
     const sd = self.struct_decls.get(sname) orelse return false;
     for (sd.fields) |f| {
         if (isStrTypeAnn(self, f.type_ann.*)) return true;
+        if (payloadEnumDecl(self, f.type_ann.*) != null) return true;
         if (self.structNameOfTypeAnn(f.type_ann.*)) |sub| {
-            if (structHasContentField(self, sub)) return true;
+            if (needsFieldwise(self, sub)) return true;
         }
     }
     return false;
@@ -282,14 +445,21 @@ fn isStrTypeAnn(self: *const Emitter, t: ast.TypeAnn) bool {
     return t == .named and std.mem.eql(u8, self.source[t.named.name.start..t.named.name.end], "str");
 }
 
+/// The enum declaration for a payload-carrying enum type annotation,
+/// else `null`. Payload-free enums (a bare tag) compare like any scalar.
+fn payloadEnumDecl(self: *const Emitter, t: ast.TypeAnn) ?*const ast.EnumDecl {
+    if (t != .named) return null;
+    const ed = self.enum_decls.get(self.source[t.named.name.start..t.named.name.end]) orelse return null;
+    return if (self.enumHasPayload(ed)) ed else null;
+}
+
 /// Whether `==` can be lowered for struct `sname`. Supported field
 /// types compare by value (scalars / bool / char / fixed), pointer
 /// identity (class / `&T` / fn-ptr — correct per §3.4.2 / §3.4.4),
-/// content (`str`, §3.2.1), or recursively (nested struct). Rejected:
-/// array / tuple / `Vec` (element-wise equality not lowered) and
-/// payload-carrying enums (distinct heap slots — no defined content
-/// equality), so those surface a clean diagnostic rather than a
-/// silently-wrong pointer compare.
+/// content (`str`, §3.2.1), enum (tag, or `[tag|payload]` slot), or
+/// recursively (nested struct). Rejected: array / tuple / `Vec`
+/// (element-wise equality not lowered yet) and nullable — those surface
+/// a clean diagnostic rather than a silently-wrong compare.
 pub fn eqSupported(self: *const Emitter, sname: []const u8) bool {
     const sd = self.struct_decls.get(sname) orelse return false;
     for (sd.fields) |f| {
@@ -303,9 +473,14 @@ fn fieldEqSupported(self: *const Emitter, t: ast.TypeAnn) bool {
         .named => |n| {
             const name = self.source[n.name.start..n.name.end];
             if (self.struct_decls.contains(name)) return eqSupported(self, name);
-            if (self.enum_decls.get(name)) |ed| return !self.enumHasPayload(ed);
-            // Primitive (incl. `str`) or class name — value / content /
-            // identity compare, all handled.
+            if (self.enum_decls.get(name)) |ed| {
+                // Payload-free enums compare by tag; payload-carrying ones
+                // by slot value — which `enumEqSupported` gates (rejecting
+                // recursive / struct-payload enums).
+                return !self.enumHasPayload(ed) or enumEqSupported(self, ed);
+            }
+            // Primitive (incl. `str`) or class — value / content /
+            // pointer-identity compare, all handled.
             return true;
         },
         .reference, .fn_type => return true, // pointer identity

@@ -304,6 +304,24 @@ fn isStrComparison(self: *Emitter, b: ast.BinaryExpr) bool {
     return self.isPrimitiveType(b.lhs, .str) or self.isPrimitiveType(b.rhs, .str);
 }
 
+/// `true` for a `str` ordering comparison (`< <= > >=`) — lexicographic
+/// per §3.2.1, distinct from the `==` / `!=` content path.
+fn isStrOrdering(self: *Emitter, b: ast.BinaryExpr) bool {
+    return switch (b.op) {
+        .lt, .lte, .gt, .gte => isStrComparison(self, b),
+        else => false,
+    };
+}
+
+/// The enum decl when a comparison's operands are a payload-carrying
+/// enum, else `null`. Such a value is a `[tag|payload]` slot pointer, so
+/// `==` must compare the slots, not the pointers. Payload-free enums are
+/// bare tags and compare correctly via the plain register `cmp`.
+fn payloadEnumComparison(self: *Emitter, b: ast.BinaryExpr) ?*const ast.EnumDecl {
+    const ed = self.enumDeclForExpr(b.lhs) orelse self.enumDeclForExpr(b.rhs) orelse return null;
+    return if (self.enumHasPayload(ed)) ed else null;
+}
+
 /// Lower a binary infix expression. Short-circuit operators
 /// (`and`, `or`) take a separate path so the RHS isn't always
 /// evaluated. Comparison ops materialize a `0` / `1` in `acu`.
@@ -361,6 +379,13 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
     try isa.popReg(self, Reg.r1);
     switch (b.op) {
         .add => {
+            // `str + str` allocates a fresh buffer and concatenates
+            // (§3.2.1) — acu / r1 hold the lhs / rhs pointers. (Typecheck
+            // guarantees both sides are `str` when either is.)
+            if (self.isPrimitiveType(b.lhs, .str)) {
+                try strings.emitStrConcat(self, Reg.acu, Reg.r1);
+                return;
+            }
             try isa.addRegToAcu(self, Reg.r1);
             if (integer_arith) try overflow.emitOverflowTrap(self, signedness);
         },
@@ -446,6 +471,28 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
                 try strings.emitContentEq(self, Reg.r1, Reg.r2, b.op == .neq);
                 return;
             }
+            // `str` ordering is lexicographic (§3.2.1): strcmp the bytes,
+            // then map the sign to the relation. acu / r1 = lhs / rhs ptrs.
+            if (isStrOrdering(self, b)) {
+                try isa.movRegToReg(self, Reg.acu, Reg.r2);
+                try strings.emitStrCmp(self, Reg.r2, Reg.r1);
+                try isa.cmpRegImm(self, Reg.acu, 0);
+                try materializeBoolFromFlags(self, b.op);
+                return;
+            }
+            // Payload-carrying enum: compare the two slots by value (tag,
+            // then per-variant payload), not the pointers — acu / r1 hold
+            // the lhs / rhs slot addresses.
+            if (b.op == .eq or b.op == .neq) {
+                if (payloadEnumComparison(self, b)) |ed| {
+                    if (!value_struct.enumEqSupported(self, ed)) {
+                        try self.unsupported(b.span, "`==` on an enum with a recursive or non-comparable payload");
+                        return;
+                    }
+                    try value_struct.emitEnumEqual(self, ed, Reg.acu, Reg.r1, b.op == .neq);
+                    return;
+                }
+            }
             try isa.cmpRegReg(self, Reg.acu, Reg.r1);
             try materializeBoolFromFlags(self, b.op);
         },
@@ -496,6 +543,29 @@ pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
                     try strings.emitContentEq(self, Reg.r1, Reg.r2, b.op == .neq);
                     try isa.cmpRegImm(self, Reg.acu, 0);
                     return;
+                }
+                // `str` ordering (§3.2.1): strcmp, then the 0/1 it
+                // materializes is tested against 0 like any cond.
+                if (isStrOrdering(self, b)) {
+                    try isa.movRegToReg(self, Reg.acu, Reg.r2);
+                    try strings.emitStrCmp(self, Reg.r2, Reg.r1);
+                    try isa.cmpRegImm(self, Reg.acu, 0);
+                    try materializeBoolFromFlags(self, b.op);
+                    try isa.cmpRegImm(self, Reg.acu, 0);
+                    return;
+                }
+                // Payload-carrying enum: slot compare by value, then test
+                // the 0/1 against 0 so the branch consumes its flags.
+                if (b.op == .eq or b.op == .neq) {
+                    if (payloadEnumComparison(self, b)) |ed| {
+                        if (!value_struct.enumEqSupported(self, ed)) {
+                            try self.unsupported(b.span, "`==` on an enum with a recursive or non-comparable payload");
+                            return;
+                        }
+                        try value_struct.emitEnumEqual(self, ed, Reg.acu, Reg.r1, b.op == .neq);
+                        try isa.cmpRegImm(self, Reg.acu, 0);
+                        return;
+                    }
                 }
                 try isa.cmpRegReg(self, Reg.acu, Reg.r1);
                 try materializeBoolFromFlags(self, b.op);

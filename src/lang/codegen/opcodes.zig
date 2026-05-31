@@ -162,7 +162,7 @@ pub const Reg = struct {
 pub const Sys = struct {
     /// `print_str` — write a null-terminated string from `[acu]`.
     pub const print_str: u8 = 0x01;
-    /// `print_int` — write `acu` as decimal.
+    /// `print_int` — write `acu` as signed decimal.
     pub const print_int: u8 = 0x02;
     /// `print_char` — write `acu.lo` as a single byte.
     pub const print_char: u8 = 0x03;
@@ -170,6 +170,8 @@ pub const Sys = struct {
     pub const print_newline: u8 = 0x04;
     /// `print_fixed` — write `acu` as Q-format fixed-point.
     pub const print_fixed: u8 = 0x05;
+    /// `print_uint` — write `acu` as unsigned decimal.
+    pub const print_uint: u8 = 0x06;
 
     /// `format_str_to_buf` — append `[acu]` (null-terminated str)
     /// to the buffer pointed to by `r1`.
@@ -186,6 +188,9 @@ pub const Sys = struct {
     /// `format_terminate_buf` — write a trailing null byte at the
     /// current cursor of the buffer pointed to by `r1`.
     pub const format_terminate_buf: u8 = 0x14;
+    /// `format_uint_to_buf` — append `acu` as unsigned decimal to the
+    /// buffer pointed to by `r1`.
+    pub const format_uint_to_buf: u8 = 0x15;
 
     /// `alloc` — bump-allocate `acu` bytes on the heap. Returns
     /// the freshly-allocated address in `acu`; faults

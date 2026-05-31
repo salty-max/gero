@@ -300,8 +300,8 @@ test "typecheck: match payload binder carries the variant's field type" {
 }
 
 test "typecheck: payload binder typed for an inline-constructor scrutinee" {
-    // The scrutinee `E.A(1)` surfaces no inferred type, so the enum is
-    // recovered from the arm path — `n` is still typed `i16`.
+    // The scrutinee `E.A(1)` infers as `E`, so the match resolves the
+    // enum and `n` binds the variant's `i16` payload.
     try expectCode(
         \\enum E
         \\  case A(x: i16)
@@ -313,6 +313,142 @@ test "typecheck: payload binder typed for an inline-constructor scrutinee" {
         \\      let bad: str = n
         \\      print bad
         \\    case E.B => print 0
+        \\  end
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: payload-variant constructor infers the enum type" {
+    try expectClean(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\def main()
+        \\  let x: Item = Item.Potion(20)
+        \\  print x
+        \\end
+    );
+}
+
+test "typecheck: payload-variant binding is typed, not left untyped" {
+    // A wrong-type annotation must clash — an untyped binding would
+    // have silently accepted the `i16` slot.
+    try expectCode(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\def main()
+        \\  let x: i16 = Item.Potion(20)
+        \\  print x
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: payload-variant constructor checks payload arg type" {
+    try expectCode(
+        \\enum Item
+        \\  case Potion(amount: i16)
+        \\end
+        \\def main()
+        \\  let x = Item.Potion("nope")
+        \\  print 0
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: payload-variant constructor checks arity" {
+    try expectCode(
+        \\enum Item
+        \\  case Potion(amount: i16)
+        \\end
+        \\def main()
+        \\  let x = Item.Potion(1, 2)
+        \\  print 0
+        \\end
+    , "E_TYPE_ARG_COUNT");
+}
+
+test "typecheck: constructor for an unknown variant is rejected" {
+    try expectCode(
+        \\enum Item
+        \\  case Potion(amount: i16)
+        \\end
+        \\def main()
+        \\  let x = Item.Nope(1)
+        \\  print 0
+        \\end
+    , "E_TYPE_UNDEFINED_VARIANT");
+}
+
+test "typecheck: a self-referential struct is rejected (infinite size)" {
+    try expectCode(
+        \\struct N
+        \\  v: i16
+        \\  next: N
+        \\end
+        \\def main()
+        \\  print 0
+        \\end
+    , "E_TYPE_RECURSIVE_STRUCT");
+}
+
+test "typecheck: mutually-recursive structs are rejected" {
+    try expectCode(
+        \\struct A
+        \\  b: B
+        \\end
+        \\struct B
+        \\  a: A
+        \\end
+        \\def main()
+        \\  print 0
+        \\end
+    , "E_TYPE_RECURSIVE_STRUCT");
+}
+
+test "typecheck: a `Vec`/reference of the same struct is finite (not rejected)" {
+    try expectClean(
+        \\struct Node
+        \\  v: i16
+        \\  kids: Vec(Node)
+        \\end
+        \\def main()
+        \\  print 0
+        \\end
+    );
+}
+
+test "typecheck: an `if` condition must be `bool`" {
+    try expectCode(
+        \\def main()
+        \\  let x: i16 = 5
+        \\  if x
+        \\    print 1
+        \\  end
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: a `while` condition must be `bool`" {
+    try expectCode(
+        \\def main()
+        \\  let x: i16 = 3
+        \\  while x
+        \\    print 1
+        \\  end
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: a `match` `when` guard must be `bool`" {
+    try expectCode(
+        \\def main()
+        \\  let n: i16 = 5
+        \\  match n
+        \\    case _ when "x" => print 1
+        \\    case _ => print 0
         \\  end
         \\end
     , "E_TYPE_MISMATCH");
@@ -931,6 +1067,39 @@ test "typecheck: non-exhaustive match errors with E_MATCH_NON_EXHAUSTIVE" {
         \\let it: Item = Item.Sword
         \\match it
         \\  case Item.Sword => let x = 0
+        \\end
+    , "E_MATCH_NON_EXHAUSTIVE");
+}
+
+test "typecheck: a guarded arm doesn't make a later unguarded same-variant arm unreachable" {
+    // `case X(n) when g => / case X(n) =>` — the guarded arm only
+    // conditionally matches, so the unguarded fallback is reachable.
+    try expectClean(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\
+        \\let it: Item = Item.Potion(5)
+        \\match it
+        \\  case Item.Potion(n) when n > 0 => let a = 1
+        \\  case Item.Potion(n) => let a = 2
+        \\  case Item.Sword => let a = 0
+        \\end
+    );
+}
+
+test "typecheck: a guarded arm does not discharge its variant for exhaustiveness" {
+    try expectCode(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(amount: i16)
+        \\end
+        \\
+        \\let it: Item = Item.Potion(5)
+        \\match it
+        \\  case Item.Potion(n) when n > 0 => let a = 1
+        \\  case Item.Sword => let a = 0
         \\end
     , "E_MATCH_NON_EXHAUSTIVE");
 }

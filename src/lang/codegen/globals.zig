@@ -31,7 +31,11 @@ pub fn registerGlobals(self: *Emitter, program: *const ast.Program) !void {
 fn registerGlobalLet(self: *Emitter, d: *const ast.LetDecl) !void {
     if (d.pattern.* != .ident) return; // destructuring at top-level — slice later
     const name = self.source[d.pattern.ident.name.start..d.pattern.ident.name.end];
-    try placeGlobal(self, name, widthOfLetDecl(self, d), d.annotations, d.pattern.ident.name);
+    try placeGlobal(self, name, widthOfLetDecl(self, d), isI8Decl(self, d.type_ann), d.annotations, d.pattern.ident.name);
+    // A top-level `let` with an initializer needs a runtime store at
+    // startup — the slot is otherwise zero-filled. (`let name: T` with no
+    // init stays zero, the declared-but-unset default.)
+    if (d.init) |init| try self.global_inits.append(self.allocator, .{ .name = name, .init = init });
 }
 
 fn registerGlobalConst(self: *Emitter, d: *const ast.ConstDecl) !void {
@@ -40,13 +44,39 @@ fn registerGlobalConst(self: *Emitter, d: *const ast.ConstDecl) !void {
     // bytes to seed; other initializers fall back to the annotated width.
     const baked: ?bake_mod.BakeValue = try evalConstIfBake(self, d);
     const width: u16 = if (baked) |v| @intCast(bake_mod.widthOf(v)) else widthOfConstDecl(self, d);
-    try placeGlobal(self, name, width, d.annotations, d.name);
+    try placeGlobal(self, name, width, isI8Decl(self, d.type_ann), d.annotations, d.name);
 
     if (baked) |v| {
         const g = self.globals.get(name) orelse return;
         const bytes = try self.arena.alloc(u8, bake_mod.widthOf(v));
         _ = bake_mod.serialize(v, bytes);
         try self.bake_inits.put(self.allocator, g.address, bytes);
+        return;
+    }
+    // A non-`bake` initializer is evaluated + stored at startup, like a
+    // top-level `let` — without this the slot reads back zero.
+    try self.global_inits.append(self.allocator, .{ .name = name, .init = d.init });
+}
+
+/// Whether a binding's declared type is `i8` — the one signed byte type,
+/// so a byte load must sign-extend. `null` (unannotated) widens to a word
+/// slot, which carries the sign already.
+fn isI8Decl(self: *const Emitter, type_ann: ?*ast.TypeAnn) bool {
+    const t = type_ann orelse return false;
+    return self.isPrimitiveTypeAnn(t.*, "i8");
+}
+
+/// Emit the entry-startup stores that seed every non-`bake` top-level
+/// `let` / `const` slot with its initializer's value (declaration order,
+/// so a later init can read an earlier one). An `@addr`-pinned global is
+/// skipped — it names a fixed location (typically MMIO) that already
+/// holds the live value, so its initializer must not stomp it at boot.
+pub fn emitGlobalInits(self: *Emitter) !void {
+    for (self.global_inits.items) |gi| {
+        const g = self.globals.get(gi.name) orelse continue;
+        if (g.placement == .addr) continue;
+        try self.emitExpr(gi.init);
+        try emitGlobalStore(self, Reg.acu, g);
     }
 }
 
@@ -137,6 +167,7 @@ fn placeGlobal(
     self: *Emitter,
     name: []const u8,
     width: u16,
+    signed_byte: bool,
     annotations: []const ast.Annotation,
     decl_span: ast.Span,
 ) !void {
@@ -158,7 +189,7 @@ fn placeGlobal(
     const dup = try self.arena.dupe(u8, name);
 
     if (pinned_addr) |addr| {
-        try self.globals.put(self.arena, dup, .{ .address = addr, .width = width, .placement = .addr });
+        try self.globals.put(self.arena, dup, .{ .address = addr, .width = width, .placement = .addr, .signed_byte = signed_byte });
         return;
     }
     if (zero_page) {
@@ -167,12 +198,12 @@ fn placeGlobal(
             try self.diagFatal(decl_span, "E_CODEGEN_ZP_OVERFLOW", "zero-page region exhausted — too many `@zero_page` globals");
             return;
         }
-        try self.globals.put(self.arena, dup, .{ .address = self.zp_cursor, .width = width, .placement = .zero_page });
+        try self.globals.put(self.arena, dup, .{ .address = self.zp_cursor, .width = width, .placement = .zero_page, .signed_byte = signed_byte });
         self.zp_cursor += width;
         return;
     }
     if (align_n) |n| self.data_cursor = alignUpU16(self.data_cursor, n);
-    try self.globals.put(self.arena, dup, .{ .address = self.data_cursor, .width = width, .placement = .data });
+    try self.globals.put(self.arena, dup, .{ .address = self.data_cursor, .width = width, .placement = .data, .signed_byte = signed_byte });
     self.data_cursor += width;
 }
 
@@ -207,6 +238,9 @@ pub fn emitGlobalLoad(self: *Emitter, g: Global) !void {
             }
         },
     }
+    // A byte-wide `i8` global loads zero-extended; sign-extend so a
+    // negative value keeps its sign in expression context.
+    if (g.width == 1 and g.signed_byte) try isa.signExtendByte(self, Reg.acu);
 }
 
 /// Store `src`'s value into `g`'s slot. Byte-width globals use `movl`

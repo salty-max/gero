@@ -264,7 +264,7 @@ fn emitPrintArg(self: *Emitter, arg: *const ast.Expr) !void {
     // address is in `acu` after evaluation.
     if (self.structNameOf(arg)) |sname| {
         if (!printSupported(self, sname)) {
-            try self.unsupported(arg.span(), "printing a struct with a field type that has no default rendering (array / tuple / Vec / payload-carrying enum / class / reference)");
+            try self.unsupported(arg.span(), "printing a struct with a field type that has no default rendering (array / tuple / Vec / class / reference)");
             return;
         }
         // A struct literal has no standalone address — materialize it as
@@ -281,8 +281,67 @@ fn emitPrintArg(self: *Emitter, arg: *const ast.Expr) !void {
         }
         return;
     }
+    // An enum renders as `Enum.Variant` (`Enum.Variant(a, b)` with a
+    // payload) — `acu` holds the tag (payload-free) or slot pointer.
+    if (self.enumDeclForExpr(arg)) |ed| {
+        if (!enumPrintSupported(self, ed)) {
+            try self.unsupported(arg.span(), "printing an enum with a payload field type that has no default rendering (array / tuple / Vec / class / reference)");
+            return;
+        }
+        try self.emitExpr(arg);
+        try emitPrintEnum(self, ed);
+        return;
+    }
     try self.emitExpr(arg);
-    try isa.sys(self, Sys.print_int);
+    try isa.sys(self, if (self.isUnsignedInt(arg)) Sys.print_uint else Sys.print_int);
+}
+
+/// Render an enum value (tag or slot pointer in `acu`) as
+/// `Enum.Variant` / `Enum.Variant(a, b)`. The value is parked at `[sp]`
+/// across the tag dispatch, then dropped.
+fn emitPrintEnum(self: *Emitter, ed: *const ast.EnumDecl) error{OutOfMemory}!void {
+    try isa.pushReg(self, Reg.acu);
+    try emitEnumDispatchAtSp(self, ed);
+    try isa.addImmToReg(self, 2, Reg.sp);
+}
+
+/// Tag-dispatch + render the enum value parked at `[sp]` (a tag word for
+/// payload-free enums, a `[tag|payload]` slot pointer otherwise). Each
+/// arm compares the tag, prints `Enum.Variant`, then walks the variant's
+/// payload fields off the slot base; a final jump skips the other arms.
+fn emitEnumDispatchAtSp(self: *Emitter, ed: *const ast.EnumDecl) error{OutOfMemory}!void {
+    const enum_name = self.source[ed.name.start..ed.name.end];
+    const payload = self.enumHasPayload(ed);
+    var end_patches: std.ArrayList(usize) = .empty;
+    defer end_patches.deinit(self.allocator);
+    for (ed.variants, 0..) |v, ti| {
+        // @as: variant count is bounded by the u8 tag (§3.6).
+        const tag: u16 = @intCast(ti);
+        if (payload) {
+            try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r2); // r2 = slot ptr
+            try class.emitByteLoadAtOffset(self, Reg.r2, 0, Reg.r1); // r1 = tag
+        } else {
+            try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // r1 = tag word
+        }
+        try isa.cmpRegImm(self, Reg.r1, tag);
+        const next = try isa.emitJumpPlaceholder(self, Op.jne_addr);
+        const variant_name = self.source[v.name.start..v.name.end];
+        try printLiteral(self, try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ enum_name, variant_name }));
+        if (v.payload.len > 0) {
+            try printLiteral(self, "(");
+            for (v.payload, 0..) |pf, j| {
+                if (j > 0) try printLiteral(self, ", ");
+                // Payload fields read off the slot base parked at `[sp]`,
+                // at the variant's per-field offset (past the tag byte).
+                try emitPrintField(self, pf.type_ann.*, self.variantFieldOffset(v, j));
+            }
+            try printLiteral(self, ")");
+        }
+        try end_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
+        try isa.patchJumpTo(self, next, try self.currentOffset());
+    }
+    const end = try self.currentOffset();
+    for (end_patches.items) |p| try isa.patchJumpTo(self, p, end);
 }
 
 /// Render struct `sname` (base address in `acu`) as
@@ -319,6 +378,20 @@ fn emitPrintField(self: *Emitter, t: ast.TypeAnn, fo: u16) error{OutOfMemory}!vo
         try emitPrintStruct(self, sub);
         return;
     }
+    if (enumDeclOfTypeAnn(self, t)) |ed| {
+        // Load the field's stored value — a slot pointer (payload-
+        // carrying) or the bare tag byte — then dispatch off a fresh
+        // park so payload fields re-address from the slot base.
+        if (self.enumHasPayload(ed)) {
+            try class.emitWordLoadAtOffset(self, Reg.r1, fo, Reg.acu);
+        } else {
+            try class.emitByteLoadAtOffset(self, Reg.r1, fo, Reg.acu);
+        }
+        try isa.pushReg(self, Reg.acu);
+        try emitEnumDispatchAtSp(self, ed);
+        try isa.addImmToReg(self, 2, Reg.sp);
+        return;
+    }
     if (isPrimNamed(self, t, "char")) {
         try class.emitByteLoadAtOffset(self, Reg.r1, fo, Reg.acu);
         try isa.sys(self, Sys.print_char);
@@ -330,10 +403,14 @@ fn emitPrintField(self: *Emitter, t: ast.TypeAnn, fo: u16) error{OutOfMemory}!vo
         try isa.sys(self, Sys.print_str);
     } else if (self.widthOfTypeAnn(t) == 1) {
         try class.emitByteLoadAtOffset(self, Reg.r1, fo, Reg.acu);
-        try isa.sys(self, Sys.print_int);
+        // `i8` is the only signed byte type — sign-extend so `print_int`
+        // (which formats a signed word) shows a negative value. `u8`
+        // routes to the unsigned printer like any unsigned int.
+        if (self.isPrimitiveTypeAnn(t, "i8")) try isa.signExtendByte(self, Reg.acu);
+        try isa.sys(self, if (self.isPrimitiveTypeAnn(t, "u8")) Sys.print_uint else Sys.print_int);
     } else {
         try class.emitWordLoadAtOffset(self, Reg.r1, fo, Reg.acu);
-        try isa.sys(self, Sys.print_int);
+        try isa.sys(self, if (self.isPrimitiveTypeAnn(t, "u16")) Sys.print_uint else Sys.print_int);
     }
 }
 
@@ -346,25 +423,69 @@ fn printLiteral(self: *Emitter, text: []const u8) error{OutOfMemory}!void {
 }
 
 /// Whether `print` can render every field of `sname`. Supported:
-/// scalars / bool / char / fixed (decimal/char/fixed), `str`,
-/// payload-free enum (tag as int), and nested supported structs.
-/// Rejected: array / tuple / `Vec` / payload-carrying enum / class /
-/// reference / fn-ptr / nullable — no default rendering yet.
+/// scalars / bool / char / fixed (decimal/char/fixed), `str`, enums
+/// (`Enum.Variant` + printable payload), and nested supported structs.
+/// Rejected: array / tuple / `Vec` / class / reference / fn-ptr /
+/// nullable — no default rendering yet. A type cycle (a struct / enum
+/// reachable from itself) is rejected too — it has no finite rendering.
 fn printSupported(self: *const Emitter, sname: []const u8) bool {
+    var visited: std.ArrayList([]const u8) = .empty;
+    defer visited.deinit(self.allocator);
+    return printSupportedRec(self, sname, &visited) catch false;
+}
+
+/// Whether `print` can render every variant of `ed` (entry point — see
+/// `enumPrintSupportedRec`).
+fn enumPrintSupported(self: *const Emitter, ed: *const ast.EnumDecl) bool {
+    var visited: std.ArrayList([]const u8) = .empty;
+    defer visited.deinit(self.allocator);
+    return enumPrintSupportedRec(self, ed, &visited) catch false;
+}
+
+// `visited` is the current type path (push on descent, pop on return), so
+// a name reappearing on the path is a cycle — distinct from a diamond
+// (the same type used by two sibling fields), which is fine.
+fn printSupportedRec(self: *const Emitter, sname: []const u8, visited: *std.ArrayList([]const u8)) error{OutOfMemory}!bool {
     const sd = self.struct_decls.get(sname) orelse return false;
+    for (visited.items) |seen| if (std.mem.eql(u8, seen, sname)) return false;
+    try visited.append(self.allocator, sname);
+    defer _ = visited.pop();
     for (sd.fields) |f| {
-        if (!fieldPrintSupported(self, f.type_ann.*)) return false;
+        if (!try fieldPrintSupportedRec(self, f.type_ann.*, visited)) return false;
     }
     return true;
 }
 
-fn fieldPrintSupported(self: *const Emitter, t: ast.TypeAnn) bool {
+/// A payload field is stored as a single register-width slot value (a
+/// scalar, or a `str` / enum pointer), so a struct payload — which has
+/// no inline slot representation — is rejected here, matching what
+/// construction emits.
+fn enumPrintSupportedRec(self: *const Emitter, ed: *const ast.EnumDecl, visited: *std.ArrayList([]const u8)) error{OutOfMemory}!bool {
+    const name = self.source[ed.name.start..ed.name.end];
+    for (visited.items) |seen| if (std.mem.eql(u8, seen, name)) return false;
+    try visited.append(self.allocator, name);
+    defer _ = visited.pop();
+    for (ed.variants) |v| {
+        for (v.payload) |pf| {
+            if (self.structNameOfTypeAnn(pf.type_ann.*) != null) return false;
+            if (!try fieldPrintSupportedRec(self, pf.type_ann.*, visited)) return false;
+        }
+    }
+    return true;
+}
+
+fn fieldPrintSupportedRec(self: *const Emitter, t: ast.TypeAnn, visited: *std.ArrayList([]const u8)) error{OutOfMemory}!bool {
     if (t != .named) return false; // array / tuple / vec / reference / fn / nullable
     const name = self.source[t.named.name.start..t.named.name.end];
-    if (self.struct_decls.contains(name)) return printSupported(self, name);
-    if (self.enum_decls.get(name)) |ed| return !self.enumHasPayload(ed);
+    if (self.struct_decls.contains(name)) return printSupportedRec(self, name, visited);
+    if (self.enum_decls.get(name)) |ed| return enumPrintSupportedRec(self, ed, visited);
     if (self.class_decls.contains(name)) return false;
     return true; // a primitive (i8/u8/i16/u16/bool/char/fixed/str)
+}
+
+fn enumDeclOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) ?*const ast.EnumDecl {
+    if (t != .named) return null;
+    return self.enum_decls.get(self.source[t.named.name.start..t.named.name.end]);
 }
 
 fn isPrimNamed(self: *const Emitter, t: ast.TypeAnn, name: []const u8) bool {

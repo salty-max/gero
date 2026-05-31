@@ -10,6 +10,7 @@ const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const archive = @import("archive.zig");
 const lambda = @import("lambda.zig");
+const globals = @import("globals.zig");
 
 const Emitter = codegen.Emitter;
 const DefKind = Emitter.DefKind;
@@ -130,6 +131,10 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     // its IVT slot before the body runs — boot leaves `flg.I = 0`, so an
     // interrupt could otherwise fire against an uninitialized vector.
     if (self.is_entry) try emitIvtInit(self);
+
+    // Entry-def prologue: seed every non-`bake` top-level `let` / `const`
+    // slot with its initializer before the body can read it.
+    if (self.is_entry) try globals.emitGlobalInits(self);
 
     // The body opens the outermost block — top-level `defer`s run before
     // the implicit epilogue.

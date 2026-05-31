@@ -235,6 +235,7 @@ def battle(hero: Hero, monster: Monster) -> bool
         let dmg = damage(hero.stats, monster.stats, power)
         monster.take_damage(dmg)
         print "$(hero.name) hits for $(dmg:3d)" -- format spec
+      case Action.Attack(_, _) => print "$(hero.name)'s attack fizzles" -- guard fall-through
       case Action.Defend => print "$(hero.name) defends"
       case Action.Heal(amount) => hero.stats.hp = clamp(hero.stats.hp + amount, 0, MAX_HP)
       case Action.Flee =>
