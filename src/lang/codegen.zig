@@ -179,11 +179,13 @@ pub fn compile(
         .diagnostics = &diagnostics,
         .optimize = opts.optimize,
         .bake_inits = .{},
+        .global_inits = .empty,
         .bake_defs = .{},
     };
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
     defer emitter.bake_inits.deinit(allocator);
+    defer emitter.global_inits.deinit(allocator);
     defer emitter.bake_defs.deinit(allocator);
     defer emitter.vtable_patches.deinit(allocator);
     defer emitter.lambda_patches.deinit(allocator);
@@ -229,7 +231,14 @@ pub fn compile(
     else
         null;
     defer if (debug_blob) |s| allocator.free(s);
-    const image = try buildArchive(allocator, base_image, code_base, emitter.data_cursor, &emitter.banks, debug_blob);
+    // Heap starts above the whole image — past the code + interned
+    // string pool (which grows the code buffer, so `code_end` can exceed
+    // `data_cursor`) AND past the data-global region. Pinning it at
+    // `data_cursor` alone let `alloc` hand out addresses inside the live
+    // string literals, so a concat's copy aliased its own source.
+    // @as: code_end / data_cursor are both ≤ 64 KiB by ISA; the max fits u16.
+    const heap_base: u16 = @intCast(@max(code_end, @as(usize, emitter.data_cursor)));
+    const image = try buildArchive(allocator, base_image, code_base, heap_base, &emitter.banks, debug_blob);
     allocator.free(base_image);
 
     return .{
@@ -373,6 +382,18 @@ pub const Global = struct {
     /// Placement family. Drives the addressing mode used for
     /// loads / stores against this global.
     placement: enum { addr, zero_page, data },
+    /// `true` for an `i8` global — a byte load sign-extends rather than
+    /// zero-extends, so a negative value keeps its sign.
+    signed_byte: bool = false,
+};
+
+/// A top-level `let` / `const` whose initializer isn't `bake`-seeded —
+/// its value is evaluated and stored into the global's slot at entry-def
+/// startup. Recorded in declaration order so a later init can read an
+/// earlier one.
+pub const GlobalInit = struct {
+    name: []const u8,
+    init: *const ast.Expr,
 };
 
 /// Unresolved vtable-address site. Patched by `patchVtableSlots`
@@ -554,6 +575,9 @@ pub const Emitter = struct {
     /// data-region address. Written into the base image at
     /// `compile()` so the runtime sees baked values at boot.
     bake_inits: std.AutoHashMapUnmanaged(u16, []const u8),
+    /// Non-`bake` top-level initializers, emitted as stores at entry
+    /// startup (declaration order). See `GlobalInit`.
+    global_inits: std.ArrayListUnmanaged(GlobalInit),
     /// `bake def`s by name. Populated pre-emission so
     /// `const X = bake_def_name()` initializers can find the
     /// callee.
@@ -855,6 +879,21 @@ pub const Emitter = struct {
     pub fn isPrimitiveType(self: *const Emitter, e: *const ast.Expr, p: types_mod.Primitive) bool {
         const t = self.typeOf(e) orelse return false;
         return t.* == .primitive and t.primitive == p;
+    }
+
+    /// `true` when the type annotation is the named primitive `name`
+    /// (e.g. `"i8"`). Used to pick signed vs unsigned narrow-load
+    /// handling where only the declared type — not an inferred type —
+    /// is in hand.
+    pub fn isPrimitiveTypeAnn(self: *const Emitter, t: ast.TypeAnn, name: []const u8) bool {
+        return t == .named and std.mem.eql(u8, self.source[t.named.name.start..t.named.name.end], name);
+    }
+
+    /// `true` when the expression's inferred type is an unsigned integer
+    /// (`u8` / `u16`) — picks `print_uint` over the signed `print_int`
+    /// so a high-bit value renders as its unsigned magnitude.
+    pub fn isUnsignedInt(self: *const Emitter, e: *const ast.Expr) bool {
+        return self.isPrimitiveType(e, .u8) or self.isPrimitiveType(e, .u16);
     }
 
     /// Pre-pass: index every top-level `enum` decl by name so the
@@ -1287,7 +1326,7 @@ pub const Emitter = struct {
     /// Layout of one struct field: byte offset, byte width, and — when
     /// the field is itself a struct — that struct's name (so codegen
     /// recurses into nested aggregates rather than storing a scalar).
-    pub const FieldInfo = struct { offset: u16, width: u16, struct_name: ?[]const u8 };
+    pub const FieldInfo = struct { offset: u16, width: u16, struct_name: ?[]const u8, signed_byte: bool = false };
 
     /// `FieldInfo` for `field_name` within `struct_name`, or `null` if
     /// unknown. Fields are laid out contiguously in declaration order
@@ -1298,7 +1337,12 @@ pub const Emitter = struct {
         for (sd.fields) |f| {
             const w = self.widthOfTypeAnn(f.type_ann.*);
             if (std.mem.eql(u8, self.source[f.name.start..f.name.end], field_name)) {
-                return .{ .offset = ofs, .width = w, .struct_name = self.structNameOfTypeAnn(f.type_ann.*) };
+                return .{
+                    .offset = ofs,
+                    .width = w,
+                    .struct_name = self.structNameOfTypeAnn(f.type_ann.*),
+                    .signed_byte = self.isPrimitiveTypeAnn(f.type_ann.*, "i8"),
+                };
             }
             ofs +%= w;
         }

@@ -402,7 +402,10 @@ pub const Checker = struct {
             },
             .def_decl => |d| try self.checkDefDecl(d),
             .class_decl => |c| try self.checkClassDecl(c),
-            .struct_decl => |sd| try annotations.validateAnnotations(self, sd.annotations, T.STRUCT),
+            .struct_decl => |sd| {
+                try annotations.validateAnnotations(self, sd.annotations, T.STRUCT);
+                try self.checkStructFinite(sd);
+            },
             .enum_decl => |ed| try annotations.validateAnnotations(self, ed.annotations, T.ENUM),
             .use_decl, .local_decl => {},
             .asm_stmt => |as_| if (self.in_bake) {
@@ -663,7 +666,7 @@ pub const Checker = struct {
             null;
 
         for (arms, 0..) |arm, i| {
-            if (arm.cond) |c| _ = try self.inferExpr(c, null);
+            if (arm.cond) |c| try self.requireBool(c);
             if (arm.let_expr) |e| _ = try self.inferExpr(e, null);
 
             const arm_gain: ?[]const u8 = if (i == 0 and nil_flow != null and nil_flow.?.is_neq)
@@ -687,7 +690,7 @@ pub const Checker = struct {
             self.current_scope = &child;
             defer self.current_scope = saved;
             if (arm.let_pattern) |pat| try self.registerPatternBindings(pat);
-            if (arm.let_guard) |g| _ = try self.inferExpr(g, null);
+            if (arm.let_guard) |g| try self.requireBool(g);
             try self.walkArmBodyWithIsBinding(arm.body, is_binding);
             if (added) self.popNonNil(arm_gain.?);
         }
@@ -734,7 +737,7 @@ pub const Checker = struct {
     }
 
     fn checkWhile(self: *Checker, ws: ast.WhileStmt) WalkError!void {
-        if (ws.cond) |c| _ = try self.inferExpr(c, null);
+        if (ws.cond) |c| try self.requireBool(c);
         if (ws.let_expr) |e| _ = try self.inferExpr(e, null);
         // `while let PAT = expr [when guard]` binds PAT for the guard
         // and loop body — same scoping as `if let` / match arms.
@@ -743,7 +746,7 @@ pub const Checker = struct {
         self.current_scope = &child;
         defer self.current_scope = saved;
         if (ws.let_pattern) |pat| try self.registerPatternBindings(pat);
-        if (ws.let_guard) |g| _ = try self.inferExpr(g, null);
+        if (ws.let_guard) |g| try self.requireBool(g);
         try self.walkStatementSequence(ws.body);
     }
 
@@ -764,7 +767,66 @@ pub const Checker = struct {
 
     fn checkRepeat(self: *Checker, rs: ast.RepeatStmt) WalkError!void {
         try self.walkInScope(rs.body);
-        _ = try self.inferExpr(rs.cond, null);
+        try self.requireBool(rs.cond);
+    }
+
+    /// Reject a struct that contains itself by value (directly or
+    /// transitively, through a struct / array / tuple field) — such a
+    /// type has infinite size and no layout. `Vec` / `&T` / nullable /
+    /// fn fields are pointer-width, so they break the cycle legally
+    /// (the linked-list / tree idiom).
+    fn checkStructFinite(self: *Checker, sd: ast.StructDecl) WalkError!void {
+        var visited: std.ArrayList([]const u8) = .empty;
+        defer visited.deinit(self.arena);
+        const name = self.lexeme(sd.name);
+        if (try self.structSizeFinite(name, &visited)) return;
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "struct `{s}` is infinitely recursive — it contains itself by value (use `Vec({s})` or `&{s}` for a recursive shape)",
+            .{ name, name, name },
+        );
+        try self.emitSpan("E_TYPE_RECURSIVE_STRUCT", sd.name, msg);
+    }
+
+    // `visited` is the current containment path (push on descent, pop on
+    // return), so a name reappearing is a by-value cycle — a diamond
+    // (the same struct in two sibling fields) is finite and allowed.
+    fn structSizeFinite(self: *Checker, sname: []const u8, visited: *std.ArrayList([]const u8)) WalkError!bool {
+        for (visited.items) |seen| if (std.mem.eql(u8, seen, sname)) return false;
+        const sd = self.struct_registry.get(sname) orelse return true;
+        try visited.append(self.arena, sname);
+        defer _ = visited.pop();
+        for (sd.fields) |f| {
+            if (!try self.typeAnnSizeFinite(f.type_ann.*, visited)) return false;
+        }
+        return true;
+    }
+
+    fn typeAnnSizeFinite(self: *Checker, t: ast.TypeAnn, visited: *std.ArrayList([]const u8)) WalkError!bool {
+        return switch (t) {
+            .named => |n| if (self.struct_registry.contains(self.lexeme(n.name)))
+                try self.structSizeFinite(self.lexeme(n.name), visited)
+            else
+                true, // primitive / enum / class — value or pointer, finite
+            .array => |a| try self.typeAnnSizeFinite(a.elem.*, visited),
+            .tuple => |xs| blk: {
+                for (xs.elems) |e| if (!try self.typeAnnSizeFinite(e.*, visited)) break :blk false;
+                break :blk true;
+            },
+            else => true, // vec / reference / nullable / fn — pointer-width
+        };
+    }
+
+    /// Type-check an expression in boolean-condition position (an `if` /
+    /// `elif` / `while` / `repeat`-`until` condition, or a `when` guard).
+    /// The spec has no implicit truthiness (§3) — a non-`bool` condition
+    /// is `E_TYPE_MISMATCH`, mirroring how `assert` checks its arg.
+    pub fn requireBool(self: *Checker, cond: *const ast.Expr) WalkError!void {
+        const bool_ty = try self.primitive(.bool_);
+        const ty = try self.inferExpr(cond, bool_ty);
+        if (ty != null and !relations.assignable(ty.?.*, bool_ty.*)) {
+            try self.emitMismatch(cond.span(), bool_ty, ty.?);
+        }
     }
 
     /// Delegated to `typecheck/match.zig`.
@@ -1025,6 +1087,12 @@ pub const Checker = struct {
                     const recv_name = self.lexeme(m.receiver.ident.span);
                     if (std.mem.eql(u8, recv_name, "mem")) {
                         return try fields.checkMemMethodCall(self, m);
+                    }
+                    // `Enum.Variant(args)` is indistinguishable from a
+                    // method call at parse time — resolve it as a
+                    // payload-variant constructor.
+                    if (self.enum_registry.get(recv_name)) |ed| {
+                        return try fields.checkEnumVariantConstruct(self, m, ed, recv_name);
                     }
                 }
                 const recv_ty = try self.inferExpr(m.receiver, null);

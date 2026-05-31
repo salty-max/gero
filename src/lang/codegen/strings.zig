@@ -137,6 +137,94 @@ pub fn emitContentEq(self: *Emitter, p1: u8, p2: u8, negate: bool) !void {
     try isa.patchJumpTo(self, end_patch, try self.currentOffset());
 }
 
+/// Lexicographic byte compare of two `str` values (§3.2.1): walks `p1` /
+/// `p2` in lockstep and leaves a strcmp-style result in `acu` — negative
+/// when `p1 < p2`, `0` when equal, positive when `p1 > p2`. The caller
+/// turns that into the `< / <= / > / >=` boolean via `cmp acu, 0` +
+/// `materializeBoolFromFlags`. Bytes are zero-extended (always `0..255`,
+/// non-negative), so the signed subtraction orders them as unsigned and
+/// the shared null terminator (`0`) sorts before any byte — a prefix is
+/// less than its extension. `p1` / `p2` / `r3` are scratch.
+pub fn emitStrCmp(self: *Emitter, p1: u8, p2: u8) error{OutOfMemory}!void {
+    const loop = try self.currentOffset();
+    try class.emitByteLoadAtOffset(self, p1, 0, Reg.acu); // a
+    try class.emitByteLoadAtOffset(self, p2, 0, Reg.r3); // b
+    try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+    const differ = try isa.emitJumpPlaceholder(self, Op.jne_addr);
+    try isa.cmpRegImm(self, Reg.acu, 0); // equal bytes — at the shared null?
+    const end = try isa.emitJumpPlaceholder(self, Op.jeq_addr); // → acu already 0
+    try isa.addImmToReg(self, 1, p1);
+    try isa.addImmToReg(self, 1, p2);
+    try isa.emitJumpBack(self, loop);
+    // First differing byte: acu = a - b carries the ordering.
+    try isa.patchJumpTo(self, differ, try self.currentOffset());
+    try isa.subRegFromAcu(self, Reg.r3);
+    try isa.patchJumpTo(self, end, try self.currentOffset());
+}
+
+/// Concatenate two `str` values into a fresh heap buffer (§3.2.1): `a` /
+/// `b` hold the operand pointers. Computes `len(a) + len(b) + 1`,
+/// `alloc`s it, copies `a` then `b`, null-terminates, and leaves the new
+/// buffer's address in `acu`. The pointers are parked on the stack and
+/// reloaded, since the strlen / copy loops + `alloc` churn the scratch
+/// registers. (Needs a heap — `alloc` faults `heap_exhausted` otherwise,
+/// like every allocating construct.)
+pub fn emitStrConcat(self: *Emitter, a: u8, b: u8) error{OutOfMemory}!void {
+    try isa.pushReg(self, a); // lhs ptr at [sp + 2]
+    try isa.pushReg(self, b); // rhs ptr at [sp + 0]
+
+    // total = len(lhs) + len(rhs) + 1 (terminator), accumulated in r2.
+    try isa.movImmToReg(self, 0, Reg.r2);
+    try emitStrlenAdd(self, 2, Reg.r2);
+    try emitStrlenAdd(self, 0, Reg.r2);
+    try isa.addImmToReg(self, 1, Reg.r2);
+
+    // alloc(total) → acu = dst; park it above the two operand pointers.
+    try isa.movRegToReg(self, Reg.r2, Reg.acu);
+    try isa.sys(self, Sys.alloc);
+    try isa.pushReg(self, Reg.acu); // dst [sp+0]; rhs [sp+2]; lhs [sp+4]
+
+    // Copy lhs then rhs into the buffer; r1 is the running dst cursor.
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1);
+    try emitStrCopy(self, 4, Reg.r1); // lhs
+    try emitStrCopy(self, 2, Reg.r1); // rhs
+    try isa.movImmToReg(self, 0, Reg.acu); // null-terminate at the cursor
+    try class.emitByteStoreAtOffset(self, Reg.r1, 0, Reg.acu);
+
+    // Result = the buffer base; drop the three parked pointers.
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.acu);
+    try isa.addImmToReg(self, 6, Reg.sp);
+}
+
+/// Walk the null-terminated string parked at `[sp + ofs]`, adding its
+/// length (excluding the terminator) to `counter`. `acu` + `r3` scratch.
+fn emitStrlenAdd(self: *Emitter, ofs: i8, counter: u8) error{OutOfMemory}!void {
+    try isa.movRegOffsetToReg(self, Reg.sp, ofs, Reg.r3);
+    const loop = try self.currentOffset();
+    try class.emitByteLoadAtOffset(self, Reg.r3, 0, Reg.acu);
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const done = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    try isa.addImmToReg(self, 1, counter);
+    try isa.addImmToReg(self, 1, Reg.r3);
+    try isa.emitJumpBack(self, loop);
+    try isa.patchJumpTo(self, done, try self.currentOffset());
+}
+
+/// Copy the null-terminated string parked at `[sp + ofs]` to `[dst]`
+/// (excluding the terminator), advancing `dst`. `acu` + `r3` scratch.
+fn emitStrCopy(self: *Emitter, ofs: i8, dst: u8) error{OutOfMemory}!void {
+    try isa.movRegOffsetToReg(self, Reg.sp, ofs, Reg.r3);
+    const loop = try self.currentOffset();
+    try class.emitByteLoadAtOffset(self, Reg.r3, 0, Reg.acu);
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const done = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    try class.emitByteStoreAtOffset(self, dst, 0, Reg.acu);
+    try isa.addImmToReg(self, 1, dst);
+    try isa.addImmToReg(self, 1, Reg.r3);
+    try isa.emitJumpBack(self, loop);
+    try isa.patchJumpTo(self, done, try self.currentOffset());
+}
+
 /// Lower a `str_lit` at expression position. Single-literal
 /// strings load the pooled address directly into `acu`.
 /// Interpolated strings allocate a fixed-size buffer in the
@@ -218,7 +306,7 @@ pub fn emitInterpFill(self: *Emitter, sl: ast.StrLitExpr) !void {
             } else if (self.isPrimitiveType(ip.expr, .str)) {
                 try isa.sys(self, Sys.format_str_to_buf);
             } else {
-                try isa.sys(self, Sys.format_int_to_buf);
+                try isa.sys(self, if (self.isUnsignedInt(ip.expr)) Sys.format_uint_to_buf else Sys.format_int_to_buf);
             }
         },
     };
@@ -255,7 +343,7 @@ pub fn emitPrintStrLit(self: *Emitter, sl: ast.StrLitExpr) !void {
                 try isa.sys(self, Sys.print_str);
             } else {
                 try self.emitExpr(ip.expr);
-                try isa.sys(self, Sys.print_int);
+                try isa.sys(self, if (self.isUnsignedInt(ip.expr)) Sys.print_uint else Sys.print_int);
             }
         },
     };

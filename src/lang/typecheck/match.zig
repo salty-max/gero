@@ -44,7 +44,7 @@ pub fn checkMatch(self: *Checker, ms: ast.MatchStmt) WalkError!void {
         self.current_scope = &child;
         defer self.current_scope = saved;
         try registerArmBindings(self, arm.pattern, enum_decl);
-        if (arm.guard) |g| _ = try self.inferExpr(g, null);
+        if (arm.guard) |g| try self.requireBool(g);
         try self.walkStatementSequence(arm.body);
     }
 
@@ -89,7 +89,11 @@ fn recordArmCoverage(
     if (has_wildcard.*) {
         try self.emitSpan("E_MATCH_UNREACHABLE_ARM", arm.span, "this arm cannot be reached — a wildcard `_` arm above already handles every remaining variant");
     }
-    try walkArmPattern(self, arm.pattern, ed, covered, has_wildcard);
+    // A `when`-guarded arm only conditionally matches, so it doesn't
+    // cover its variant — a later unguarded same-variant arm is the
+    // legitimate fallback. The arm is still flagged unreachable if a
+    // prior *unguarded* arm already fully covered it.
+    try walkArmPattern(self, arm.pattern, ed, covered, has_wildcard, arm.guard == null);
 }
 
 fn walkArmPattern(
@@ -98,12 +102,13 @@ fn walkArmPattern(
     ed: *const ast.EnumDecl,
     covered: *std.StringHashMapUnmanaged(void),
     has_wildcard: *bool,
+    adds_coverage: bool,
 ) WalkError!void {
     switch (pat.*) {
         .wildcard, .ident => {
             // Bare ident in match-arm position binds the value
             // — equivalent to `_` from the exhaustiveness POV.
-            has_wildcard.* = true;
+            if (adds_coverage) has_wildcard.* = true;
         },
         .variant_pattern => |vp| {
             const split = splitPath(self.lexeme(vp.path));
@@ -112,18 +117,19 @@ fn walkArmPattern(
             if (split.head.len > 0 and !std.mem.eql(u8, split.head, self.lexeme(ed.name))) return;
             // Verify variant exists on this enum.
             if (!variantExists(self, ed, split.tail)) return;
-            const gop = try covered.getOrPut(self.arena, split.tail);
-            if (gop.found_existing) {
+            if (covered.contains(split.tail)) {
                 const msg = try std.fmt.allocPrint(
                     self.arena,
                     "variant `{s}.{s}` is already handled by an earlier arm",
                     .{ self.lexeme(ed.name), split.tail },
                 );
                 try self.emitSpan("E_MATCH_UNREACHABLE_ARM", pat.span(), msg);
+            } else if (adds_coverage) {
+                try covered.put(self.arena, split.tail, {});
             }
         },
         .or_pattern => |op| {
-            for (op.alts) |alt| try walkArmPattern(self, alt, ed, covered, has_wildcard);
+            for (op.alts) |alt| try walkArmPattern(self, alt, ed, covered, has_wildcard, adds_coverage);
         },
         else => {
             // Literal / range / tuple / struct patterns don't
@@ -150,7 +156,10 @@ fn recordBoolArmCoverage(
     } else if (has_true.* and has_false.*) {
         try self.emitSpan("E_MATCH_UNREACHABLE_ARM", arm.span, "this arm cannot be reached — both `true` and `false` are already handled");
     }
-    try walkBoolArmPattern(self, arm.pattern, has_true, has_false, has_wildcard);
+    // A guarded arm only conditionally matches — it doesn't cover its
+    // value (a later unguarded arm is the fallback), but is still flagged
+    // unreachable if an earlier unguarded arm already covered it.
+    try walkBoolArmPattern(self, arm.pattern, has_true, has_false, has_wildcard, arm.guard == null);
 }
 
 fn walkBoolArmPattern(
@@ -159,24 +168,25 @@ fn walkBoolArmPattern(
     has_true: *bool,
     has_false: *bool,
     has_wildcard: *bool,
+    adds_coverage: bool,
 ) WalkError!void {
     switch (pat.*) {
         .wildcard, .ident => {
             // Bare ident in match-arm position binds the value —
             // equivalent to `_` from the exhaustiveness POV.
-            has_wildcard.* = true;
+            if (adds_coverage) has_wildcard.* = true;
         },
         .bool_lit => |bl| {
             const slot = if (bl.value) has_true else has_false;
             if (slot.*) {
                 const msg = if (bl.value) "`true` is already handled by an earlier arm" else "`false` is already handled by an earlier arm";
                 try self.emitSpan("E_MATCH_UNREACHABLE_ARM", pat.span(), msg);
-            } else {
+            } else if (adds_coverage) {
                 slot.* = true;
             }
         },
         .or_pattern => |op| {
-            for (op.alts) |alt| try walkBoolArmPattern(self, alt, has_true, has_false, has_wildcard);
+            for (op.alts) |alt| try walkBoolArmPattern(self, alt, has_true, has_false, has_wildcard, adds_coverage);
         },
         else => {
             // Non-bool patterns (literal int, range, variant, …)

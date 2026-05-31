@@ -47,8 +47,13 @@ fn emitPayloadBinders(
         for (vp.args, 0..) |arg, i| {
             if (arg.* != .ident or i >= v.payload.len) continue;
             const ofs = self.variantFieldOffset(v, i);
-            if (self.widthOfTypeAnn(v.payload[i].type_ann.*) == 1) {
+            const fty = v.payload[i].type_ann.*;
+            if (self.widthOfTypeAnn(fty) == 1) {
                 try class.emitByteLoadAtOffset(self, Reg.r1, ofs, Reg.acu);
+                // `i8` is the only signed byte type — sign-extend so a
+                // negative payload keeps its sign through the binder
+                // (`u8` / `bool` / `char` stay zero-extended).
+                if (self.isPrimitiveTypeAnn(fty, "i8")) try isa.signExtendByte(self, Reg.acu);
             } else {
                 try class.emitWordLoadAtOffset(self, Reg.r1, ofs, Reg.acu);
             }

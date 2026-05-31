@@ -1183,26 +1183,31 @@ codegen and have no meaning for compile-time evaluation.
 ```
 let name = expr               -- mutable, inferred type
 let name: T = expr            -- mutable, explicit type
-const name = expr             -- immutable binding (compile-time inlined when possible)
+const name = expr             -- immutable binding (read-only; reassignment is an error)
 ```
 
 **`let`** is a mutable binding. Reassign freely.
 
 **`const`** is an **immutable binding**. Reassignment is a compile
-error. Two flavors handled by the compiler:
-
-- If the RHS is **comptime-evaluable** (literals + `const`-only
-  arithmetic), the value is inlined at use sites with no runtime
-  storage. This is the canonical case (`const MAX_HP = 100`).
-- If the RHS depends on runtime values (`const player_name =
-  read_input()`), the binding gets a stack/static slot but is
-  read-only — you can't `player_name = "x"` later.
+error; otherwise it stores like a `let`. A `bake`-backed `const`
+(`const X = bake do … end`) is evaluated at compile time and its bytes
+seed the slot directly; every other initializer is evaluated at run
+time into the binding's slot.
 
 Same model as JavaScript / TypeScript `const`.
 
+**Module-level initialization order.** A top-level `const` / `let`
+initializer runs at program start, in **declaration order**, before
+`main`'s body — so an initializer may reference bindings declared above
+it (`const A = 3` then `const B = A + 4`). A reference to a binding
+declared *below* reads its not-yet-initialized slot. An `@addr`-pinned
+binding is the exception: its initializer is **not** written at boot —
+the pinned location (typically MMIO, §3.7.1) already holds the live
+value, and a read picks that up.
+
 ```
-const PI_FIXED = $0324       -- comptime, inlined
-const player_name = read_input()  -- runtime, but read-only
+const PI_FIXED = $0324       -- seeded at startup, read-only
+const player_name = read_input()  -- runtime value, read-only
 player_name = "x"             -- compile error: cannot reassign const
 ```
 
@@ -2071,6 +2076,28 @@ Compiles to a host-provided syscall (`int $10`). The host's printer
 implementation defines the output channel (gtx-16 prints to a debug
 console; CLI tools print to stdout).
 
+**Default rendering.** Each argument renders by its type:
+
+| Type | Rendering | Example |
+|---|---|---|
+| integer (`i8`/`u8`/`i16`/`u16`), `bool` | decimal | `42`, `1` |
+| `char` | the glyph | `'A'` → `A` |
+| `fixed` | fixed-point decimal | `1.5` → `1.500` |
+| `str` | the bytes | `"hi"` → `hi` |
+| `struct` | `Name { field: value, … }` (each field by its type, recursively) | `P { x: 1, y: 2 }` |
+| `enum` | `Enum.Variant`, or `Enum.Variant(a, b)` with a payload (each payload field by its type, recursively) | `Item.Potion(5)`, `Dir.N` |
+
+Struct fields and enum payloads render recursively, so a struct that
+holds an enum prints the variant in place (`Slot { qty: 2, it:
+Item.Potion(5) }`). Enum payload fields are stored as single
+register-width slot values, so a payload may be a scalar / `char` /
+`fixed` / `str` / enum — **not** a struct.
+
+Types with no default rendering — array, tuple, `Vec`, `class`,
+reference, function pointer, nullable, and (as an enum payload) struct
+— are a compile error (`E_CODEGEN_UNSUPPORTED`) rather than a
+silently-meaningless address.
+
 ### 4.10 Defer
 
 `defer <stmt>` schedules a statement to run when the enclosing block
@@ -2475,8 +2502,8 @@ Old-school enough — same model NES games used for actor systems.
 
 | Source construct | Bytecode shape |
 |------------------|----------------|
-| `let x: i16 = 0` | Stack slot or register allocation |
-| `const X = 5` | Inlined at use sites |
+| `let x: i16 = 0` | Stack slot (local) or static slot (module-level) |
+| `const X = 5` | Static slot, seeded at startup (or compile-time bytes for a `bake` const) |
 | Function | `addr_of_label`; calls become `call addr` |
 | Lambda | Synthesized hidden function + closure-capture struct |
 | Class | Vtable in static data + per-instance memory layout |

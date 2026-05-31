@@ -126,6 +126,9 @@ pub const SyscallId = enum(u8) {
     /// (1.5 in Q8.8) prints `1.500`. Negative values get a
     /// leading `-`.
     print_fixed = 0x05,
+    /// `acu` = unsigned 16-bit value, formatted as decimal into
+    /// `host.out`. (`print_int` is the signed counterpart.)
+    print_uint = 0x06,
 
     // ---------- format-to-buffer family ----------
     //
@@ -153,6 +156,10 @@ pub const SyscallId = enum(u8) {
     /// and advances `r1` by 1 (so chained terminators don't
     /// stomp the same slot).
     format_terminate_buf = 0x14,
+    /// `acu` = u16 value. `r1` = dst cursor. Appends the unsigned
+    /// decimal representation of `acu` at `[r1]`, advances `r1`.
+    /// (`format_int_to_buf` is the signed counterpart.)
+    format_uint_to_buf = 0x15,
 
     /// `acu` = requested size in bytes. On success: `acu` ← the
     /// address of the freshly-allocated block, and the VM's bump
@@ -182,12 +189,13 @@ pub fn sys(vm: *VM) StepResult {
     // unrecognized ones via the `else` arm below.
     const id: SyscallId = @enumFromInt(id_byte);
     switch (id) {
-        .print_str, .print_int, .print_char, .print_newline, .print_fixed => {
+        .print_str, .print_int, .print_uint, .print_char, .print_newline, .print_fixed => {
             const writer = vm.host.out orelse return ok;
             return dispatchPrint(vm, id, writer);
         },
         .format_str_to_buf => formatStrToBuf(vm),
         .format_int_to_buf => formatIntToBuf(vm) catch return fault(vm, .invalid_opcode),
+        .format_uint_to_buf => formatUintToBuf(vm) catch return fault(vm, .invalid_opcode),
         .format_char_to_buf => formatCharToBuf(vm),
         .format_fixed_to_buf => formatFixedToBuf(vm) catch return fault(vm, .invalid_opcode),
         .format_terminate_buf => formatTerminateBuf(vm),
@@ -224,6 +232,10 @@ fn dispatchPrint(vm: *VM, id: SyscallId, writer: *@import("std").Io.Writer) Step
         .print_int => {
             // safety: acu is u16; bit-cast to i16 for signed-decimal output.
             const v: i16 = @bitCast(vm.regs.read(.acu));
+            writer.print("{d}", .{v}) catch return fault(vm, .invalid_opcode);
+        },
+        .print_uint => {
+            const v: u16 = vm.regs.read(.acu);
             writer.print("{d}", .{v}) catch return fault(vm, .invalid_opcode);
         },
         .print_char => {
@@ -273,6 +285,14 @@ fn formatStrToBuf(vm: *VM) void {
 fn formatIntToBuf(vm: *VM) !void {
     // safety: acu is u16; bit-cast to i16 for signed-decimal output.
     const v: i16 = @bitCast(vm.regs.read(.acu));
+    var stack_buf: [8]u8 = undefined;
+    var local: @import("std").Io.Writer = .fixed(&stack_buf);
+    try local.print("{d}", .{v});
+    for (local.buffered()) |b| writeBufByte(vm, b);
+}
+
+fn formatUintToBuf(vm: *VM) !void {
+    const v: u16 = vm.regs.read(.acu);
     var stack_buf: [8]u8 = undefined;
     var local: @import("std").Io.Writer = .fixed(&stack_buf);
     try local.print("{d}", .{v});

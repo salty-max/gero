@@ -60,6 +60,52 @@ pub fn resolveEnumVariant(
     return fn_ty;
 }
 
+/// Type-check a payload-variant constructor written as a method
+/// call — `Item.Potion(20)` parses as `Item`.`Potion`(20), since the
+/// surface syntax is indistinguishable from a method call. Resolves
+/// the variant, checks the payload args against its field types, and
+/// infers the enum's `Named` type (so `let x = Item.Potion(20)` binds
+/// `x: Item` rather than leaving it untyped).
+pub fn checkEnumVariantConstruct(
+    self: *Checker,
+    m: ast.MethodCallExpr,
+    ed: *const ast.EnumDecl,
+    enum_name: []const u8,
+) WalkError!?*const types.Type {
+    const variant_name = self.lexeme(m.method);
+    const variant: *const ast.EnumVariant = blk: {
+        for (ed.variants) |*v| {
+            if (std.mem.eql(u8, self.lexeme(v.name), variant_name)) break :blk v;
+        }
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "enum `{s}` has no variant `{s}`",
+            .{ enum_name, variant_name },
+        );
+        try self.emitSpan("E_TYPE_UNDEFINED_VARIANT", m.method, msg);
+        for (m.args) |a| _ = try self.inferExpr(a, null);
+        return null;
+    };
+    const enum_ty = try types.mkNamed(self.arena, enum_name, m.receiver.span());
+    if (m.args.len != variant.payload.len) {
+        const suffix: []const u8 = if (variant.payload.len == 1) "" else "s";
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "variant `{s}.{s}` takes {d} argument{s}, called with {d}",
+            .{ enum_name, variant_name, variant.payload.len, suffix, m.args.len },
+        );
+        try self.emitSpan("E_TYPE_ARG_COUNT", m.span, msg);
+        for (m.args) |a| _ = try self.inferExpr(a, null);
+        return enum_ty;
+    }
+    for (m.args, variant.payload) |arg, pf| {
+        const field_ty = try type_resolve.resolveType(self, pf.type_ann);
+        const arg_ty = try self.inferExpr(arg, field_ty);
+        if (arg_ty) |at| try self.checkStoreCompat(arg.span(), field_ty, at);
+    }
+    return enum_ty;
+}
+
 /// Type-check `mem.X(args)` as a method-call expression
 /// (delegates to `typecheck/mem_builtin.zig`).
 pub fn checkMemMethodCall(self: *Checker, m: ast.MethodCallExpr) WalkError!?*const types.Type {

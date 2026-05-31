@@ -243,6 +243,14 @@ pub fn asrRegImm(self: *Emitter, reg: u8, imm: u8) !void {
     try self.emitByte(imm);
 }
 
+/// Sign-extend the low byte of `reg` into its high byte: `shl 8 ; asr 8`.
+/// The byte sits in `reg.lo`; shifting it into the top half and back via
+/// an arithmetic shift propagates the sign bit through the high byte.
+pub fn signExtendByte(self: *Emitter, reg: u8) !void {
+    try shlRegImm(self, reg, 8);
+    try asrRegImm(self, reg, 8);
+}
+
 /// Emit a forward jump with a placeholder address slot. Returns
 /// the offset of the 2-byte slot inside the current code buffer —
 /// pass it to `patchJumpTo` once the target offset is known.

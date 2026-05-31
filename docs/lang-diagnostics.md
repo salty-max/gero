@@ -232,6 +232,7 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_UNDEFINED_FIELD` | Field name doesn't exist on the receiver's type. |
 | `E_TYPE_UNDEFINED_METHOD` | Method name doesn't exist on the receiver's class (or any parent). |
 | `E_TYPE_MISSING_FIELD` | Struct literal omits a field declared by the type. |
+| `E_TYPE_RECURSIVE_STRUCT` | A struct contains itself by value (directly or transitively, through a struct / array / tuple field) — infinite size, no layout. Use `Vec(T)` or `&T` for a recursive shape. |
 | `E_TYPE_TUPLE_ARITY` | Tuple-destructuring pattern's element count doesn't match the init's tuple arity. |
 | `E_TYPE_REDEFINED` | A name is declared twice in the same scope. |
 | `E_TYPE_ARG_COUNT` | Wrong number of args at a call site. |
@@ -720,7 +721,7 @@ should have already enforced.
 
 | Code | Meaning |
 |------|---------|
-| `E_CODEGEN_UNSUPPORTED` | A syntactically + type-valid construct the codegen doesn't lower yet (the catch-all — e.g. printing a whole struct, an ordering comparison on structs, a struct `==` with an array / tuple / `Vec` / payload-enum / nullable field). |
+| `E_CODEGEN_UNSUPPORTED` | A syntactically + type-valid construct the codegen doesn't lower yet (the catch-all — e.g. an ordering comparison on structs, a `==` over an array / tuple / `Vec` / nullable field or a recursive enum, printing a value with no default rendering (array / tuple / `Vec` / class / reference) or a recursive type). |
 | `E_CODEGEN_FRAME_TOO_LARGE` | A function's locals or parameters exceed the 127-byte limit on `[fp + imm8]` fp-relative addressing (the ISA's only frame-offset mode). Reduce locals/params. |
 | `E_CODEGEN_UNDEFINED_FN` | A call's target isn't a known top-level `def` (an unresolved forward reference at patch time). |
 | `E_CODEGEN_UNKNOWN_CLASS` | A constructor / field / method targets a class with no computed layout. |
@@ -757,6 +758,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_UNDEFINED_FIELD` | Typechecker | v0.3 |
 | `E_TYPE_UNDEFINED_METHOD` | Typechecker | v0.3 |
 | `E_TYPE_MISSING_FIELD` | Typechecker | v0.3 |
+| `E_TYPE_RECURSIVE_STRUCT` | Typechecker | v0.3 |
 | `E_TYPE_TUPLE_ARITY` | Typechecker | v0.3 |
 | `E_TYPE_REDEFINED` | Typechecker | v0.3 |
 | `E_TYPE_ARG_COUNT` | Typechecker | v0.3 |

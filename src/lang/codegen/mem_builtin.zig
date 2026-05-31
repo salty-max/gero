@@ -67,12 +67,7 @@ fn emitMemRead1Arg(self: *Emitter, c: ast.CallExpr, kind: MemReadKind) !void {
             try self.emitByte(Op.mov8_ptr_to_reg);
             try self.emitByte(Reg.r1);
             try self.emitByte(Reg.acu);
-            // Sign-extend 8 → 16: `shl 8 ; asr 8`. The byte sits
-            // in `acu.lo`; shifting it into the top byte and back
-            // arithmetic-shift-right preserves the sign bit
-            // through the high half.
-            try isa.shlRegImm(self, Reg.acu, 8);
-            try isa.asrRegImm(self, Reg.acu, 8);
+            try isa.signExtendByte(self, Reg.acu);
         },
     }
 }
