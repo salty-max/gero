@@ -1504,11 +1504,11 @@ fn structLitMentions(c: *const Checker, lit_fields: []const ast.StructLitField, 
 // ---------- place expression check ----------
 
 /// `true` when `e` is a valid assignment target — `ident`, `field`,
-/// `index`, or any of those wrapped in `paren`. Function-call results,
-/// arithmetic, literals, etc. are not place expressions.
+/// `tuple_index`, `index`, or any of those wrapped in `paren`. Function-
+/// call results, arithmetic, literals, etc. are not place expressions.
 fn isPlaceExpr(e: *const ast.Expr) bool {
     return switch (e.*) {
-        .ident, .field, .index => true,
+        .ident, .field, .tuple_index, .index => true,
         .paren => |p| isPlaceExpr(p.inner),
         else => false,
     };

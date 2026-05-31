@@ -101,9 +101,9 @@ fn emitIntoDest(self: *Emitter, src: *const ast.Expr, sname: []const u8, dest: D
 
 // ---- tuple values (§3.4) ----
 // A tuple is an anonymous positional aggregate stored inline like a
-// struct (contiguous, byte-packed slots). #305 lowers register-width
-// elements (scalar / `str` / enum / class / reference); nested inline
-// aggregates are rejected at the dispatch sites (deferred).
+// struct (contiguous, byte-packed slots). Register-width elements
+// (scalar / `str` / enum / class / reference) store their word; a nested
+// struct / tuple element lays out inline at its offset (recursing).
 
 /// Materialize a tuple value into the frame slot based at `dest_ofs`
 /// (fp-relative).
@@ -124,18 +124,24 @@ pub fn emitTupleIntoSret(self: *Emitter, src: *const ast.Expr, elems: []const *c
 }
 
 fn emitTupleIntoDest(self: *Emitter, src: *const ast.Expr, elems: []const *const types.Type, dest: Dest) error{OutOfMemory}!void {
-    if (self.tupleHasAggregateElem(elems)) {
-        try self.unsupported(src.span(), "a tuple with a nested struct/tuple element");
-        return;
-    }
     if (src.* == .tuple_lit) {
         for (src.tuple_lit.elems, 0..) |elem, i| {
             // safety: tuple arity ≤ 4 (§3.4) fits u8.
             const info = self.tupleElemInfo(elems, @intCast(i));
-            try self.emitExpr(elem);
-            try isa.movRegToReg(self, Reg.acu, Reg.r2);
-            try destAddrToReg(self, dest.at(@intCast(info.offset)), Reg.r1);
-            try storeWidth(self, Reg.r1, info.width, Reg.r2);
+            const elem_dest = dest.at(@intCast(info.offset));
+            // An aggregate element is laid out inline at its offset
+            // (recursing like a nested struct field); a scalar element
+            // stores its value/pointer word.
+            switch (self.tupleElemAggregate(elems, @intCast(i))) {
+                .structure => |sub| try emitIntoDest(self, elem, sub, elem_dest),
+                .tuple => |nested| try emitTupleIntoDest(self, elem, nested, elem_dest),
+                .scalar => {
+                    try self.emitExpr(elem);
+                    try isa.movRegToReg(self, Reg.acu, Reg.r2);
+                    try destAddrToReg(self, elem_dest, Reg.r1);
+                    try storeWidth(self, Reg.r1, info.width, Reg.r2);
+                },
+            }
         }
         return;
     }
@@ -150,6 +156,12 @@ fn emitTupleIntoDest(self: *Emitter, src: *const ast.Expr, elems: []const *const
 /// leaving the element value in `acu` (`i8` sign-extends).
 pub fn emitTupleElemLoad(self: *Emitter, elems: []const *const types.Type, index: u8) error{OutOfMemory}!void {
     const info = self.tupleElemInfo(elems, index);
+    // An aggregate element sits inline — leave its base address in `acu`
+    // (a struct / tuple value *is* an address), no deref.
+    if (self.tupleElemAggregate(elems, index) != .scalar) {
+        if (info.offset != 0) try isa.addImmToReg(self, info.offset, Reg.acu);
+        return;
+    }
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
     if (info.width == 1) {
         try class.emitByteLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
@@ -169,6 +181,14 @@ fn emitLitInto(self: *Emitter, sl: ast.StructLit, sname: []const u8, dest: Dest)
         const field_dest = dest.at(@intCast(info.offset));
         if (info.struct_name) |sub| {
             try emitIntoDest(self, value, sub, field_dest);
+        } else if (info.is_tuple) {
+            // A tuple field lays out inline; its element types come from
+            // the value expression's inferred type.
+            const elems = self.tupleElemsOf(value) orelse {
+                try self.unsupported(value.span(), "tuple struct field initialized from a non-tuple value");
+                continue;
+            };
+            try emitTupleIntoDest(self, value, elems, field_dest);
         } else {
             try self.emitExpr(value);
             try isa.movRegToReg(self, Reg.acu, Reg.r2);
@@ -184,7 +204,8 @@ fn emitLitInto(self: *Emitter, sl: ast.StructLit, sname: []const u8, dest: Dest)
 /// address).
 pub fn emitFieldLoad(self: *Emitter, sname: []const u8, field_name: []const u8) !void {
     const info = self.structFieldInfo(sname, field_name).?;
-    if (info.struct_name != null) {
+    // An aggregate field (nested struct or tuple) is addressed inline.
+    if (info.struct_name != null or info.is_tuple) {
         if (info.offset != 0) try isa.addImmToReg(self, info.offset, Reg.acu);
         return;
     }
@@ -223,14 +244,10 @@ pub fn emitFieldStore(self: *Emitter, recv: *const ast.Expr, sname: []const u8, 
     try class_storeAt(self, Reg.r1, info.offset, info.width, Reg.r2);
 }
 
-/// Lower `a == b` / `a != b` on struct operands (`negate` selects
-/// `!=`), leaving a 0/1 boolean in `acu` per §3.4 "structurally equal
-/// if fields equal". Each field compares with the same semantics its
-/// own `==` would use: scalars / `&T` / class / payload-free enum by
-/// value/pointer, `str` by content (§3.2.1), nested structs recursively.
-/// A struct whose fields are all value/pointer-comparable reduces to a
-/// fast byte compare over the packed width (no padding); a struct with
-/// any `str` field uses per-field dispatch so those compare by content.
+/// Compare two struct operands of type `sname` for structural equality,
+/// leaving `1` / `0` in `acu` (`negate` selects `!=`). Field-wise when a
+/// field needs it (`str` by content, payload-enum by slot, nested struct
+/// recursively), else a flat byte compare.
 pub fn emitEquality(self: *Emitter, lhs: *const ast.Expr, rhs: *const ast.Expr, sname: []const u8, negate: bool) error{OutOfMemory}!void {
     // Materialize BOTH operands as distinct by-value copies on the
     // stack. Pushing addresses would alias when both operands share a
@@ -548,6 +565,128 @@ fn fieldEqSupported(self: *const Emitter, t: ast.TypeAnn) bool {
         .reference, .fn_type => return true, // pointer identity
         .nullable, .array, .vec, .tuple => return false,
     }
+}
+
+// ---- tuple equality — mirrors the struct path over the element type
+// list; a struct element reuses `emitFieldwiseEq` / `needsFieldwise`. ----
+
+/// Lower `a == b` / `a != b` on tuple operands, leaving `0`/`1` in `acu`
+/// (`negate` selects `!=`). Materializes both operands as distinct stack
+/// copies (literals + value-aliasing safe), then an all-scalar tuple
+/// byte-compares; one with a `str` / payload-enum / aggregate element
+/// dispatches per element so those compare by content / value.
+pub fn emitTupleEquality(self: *Emitter, lhs: *const ast.Expr, rhs: *const ast.Expr, elems: []const *const types.Type, negate: bool) error{OutOfMemory}!void {
+    const wslot = self.tupleSlotWidth(elems);
+    try pushTupleArg(self, rhs, elems); // rhs copy at [sp + wslot ..] after the next push
+    try pushTupleArg(self, lhs, elems); // lhs copy at [sp ..]
+
+    if (needsFieldwiseTuple(self, elems)) {
+        var mismatch_patches: std.ArrayList(usize) = .empty;
+        defer mismatch_patches.deinit(self.allocator);
+        try emitTupleFieldwiseEq(self, elems, 0, wslot, &mismatch_patches);
+        try isa.movImmToReg(self, if (negate) 0 else 1, Reg.acu);
+        const end_patch = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+        const mismatch_target = try self.currentOffset();
+        for (mismatch_patches.items) |p| try isa.patchJumpTo(self, p, mismatch_target);
+        try isa.movImmToReg(self, if (negate) 1 else 0, Reg.acu);
+        try isa.patchJumpTo(self, end_patch, try self.currentOffset());
+    } else {
+        try isa.movRegToReg(self, Reg.sp, Reg.r1); // lhs copy base
+        try isa.movRegToReg(self, Reg.sp, Reg.r2);
+        try isa.addImmToReg(self, wslot, Reg.r2); // rhs copy base
+        try emitBytesEqual(self, Reg.r1, Reg.r2, self.tupleWidth(elems), negate);
+    }
+
+    try isa.addImmToReg(self, 2 * wslot, Reg.sp); // drop both copies
+}
+
+/// Per-element compare for a tuple that needs it. The lhs copy is at
+/// `[sp + lhs_off ..]`, rhs at `[sp + rhs_off ..]`; `sp` is stable. A
+/// struct element reuses the struct field-wise path at the element's
+/// offset; a nested tuple recurses; `str` / payload-enum compare by
+/// content / value; every other element by its stored word/byte.
+fn emitTupleFieldwiseEq(self: *Emitter, elems: []const *const types.Type, lhs_off: u16, rhs_off: u16, patches: *std.ArrayList(usize)) error{OutOfMemory}!void {
+    for (elems, 0..) |et, i| {
+        // safety: tuple arity ≤ 4 (§3.4) fits u8.
+        const eo = self.tupleElemInfo(elems, @intCast(i)).offset;
+        switch (self.tupleElemAggregate(elems, @intCast(i))) {
+            .structure => |sub| try emitFieldwiseEq(self, sub, lhs_off + eo, rhs_off + eo, patches),
+            .tuple => |nested| try emitTupleFieldwiseEq(self, nested, lhs_off + eo, rhs_off + eo, patches),
+            .scalar => {
+                if (et.* == .primitive and et.primitive == .str) {
+                    try class.emitWordLoadAtOffset(self, Reg.sp, lhs_off + eo, Reg.r1);
+                    try class.emitWordLoadAtOffset(self, Reg.sp, rhs_off + eo, Reg.r2);
+                    try strings.emitContentEq(self, Reg.r1, Reg.r2, false);
+                    try isa.cmpRegImm(self, Reg.acu, 0); // acu == 0 → strings differ
+                    try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
+                } else if (payloadEnumDeclOfType(self, et)) |ed| {
+                    try class.emitWordLoadAtOffset(self, Reg.sp, lhs_off + eo, Reg.r1);
+                    try class.emitWordLoadAtOffset(self, Reg.sp, rhs_off + eo, Reg.r2);
+                    try emitEnumEqual(self, ed, Reg.r1, Reg.r2, false);
+                    try isa.cmpRegImm(self, Reg.acu, 0); // acu == 0 → slots differ
+                    try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
+                } else if (self.widthOfType(et) == 1) {
+                    try class.emitByteLoadAtOffset(self, Reg.sp, lhs_off + eo, Reg.acu);
+                    try class.emitByteLoadAtOffset(self, Reg.sp, rhs_off + eo, Reg.r3);
+                    try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+                    try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+                } else {
+                    try class.emitWordLoadAtOffset(self, Reg.sp, lhs_off + eo, Reg.acu);
+                    try class.emitWordLoadAtOffset(self, Reg.sp, rhs_off + eo, Reg.r3);
+                    try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+                    try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+                }
+            },
+        }
+    }
+}
+
+fn needsFieldwiseTuple(self: *const Emitter, elems: []const *const types.Type) bool {
+    for (elems, 0..) |et, i| {
+        switch (self.tupleElemAggregate(elems, @intCast(i))) {
+            .structure => |sub| if (needsFieldwise(self, sub)) return true,
+            .tuple => |nested| if (needsFieldwiseTuple(self, nested)) return true,
+            .scalar => {
+                if (et.* == .primitive and et.primitive == .str) return true;
+                if (payloadEnumDeclOfType(self, et) != null) return true;
+            },
+        }
+    }
+    return false;
+}
+
+/// Whether `==` can be lowered for a tuple — every element comparable
+/// (mirrors `eqSupported`): scalar / `str` / `char` / `fixed` by value or
+/// content, class / `&T` by identity, enum by tag/slot, nested struct /
+/// tuple recursively. Rejected: nullable / array / `Vec` elements.
+pub fn tupleEqSupported(self: *const Emitter, elems: []const *const types.Type) bool {
+    for (elems, 0..) |et, i| {
+        switch (self.tupleElemAggregate(elems, @intCast(i))) {
+            .structure => |sub| if (!eqSupported(self, sub)) return false,
+            .tuple => |nested| if (!tupleEqSupported(self, nested)) return false,
+            .scalar => switch (et.*) {
+                .primitive, .reference, .function => {}, // value / content / pointer identity
+                .named => |n| {
+                    if (self.enum_decls.get(n.name)) |ed| {
+                        if (self.enumHasPayload(ed) and !enumEqSupported(self, ed)) return false;
+                    }
+                    // primitive-by-name or class → handled (value / identity)
+                },
+                .optional, .array, .vec => return false,
+                // allow-strict: a `.tuple` element is classified `.tuple`
+                // by `tupleElemAggregate`, never reaching this scalar arm.
+                .tuple => unreachable,
+            },
+        }
+    }
+    return true;
+}
+
+/// The enum decl for a payload-carrying enum *type*, else `null`.
+fn payloadEnumDeclOfType(self: *const Emitter, et: *const types.Type) ?*const ast.EnumDecl {
+    if (et.* != .named) return null;
+    const ed = self.enum_decls.get(et.named.name) orelse return null;
+    return if (self.enumHasPayload(ed)) ed else null;
 }
 
 /// Copy `width` bytes from `[src]` to `[dest]` — word strides with a

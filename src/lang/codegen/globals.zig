@@ -203,6 +203,11 @@ fn placeGlobal(
         return;
     }
     if (align_n) |n| self.data_cursor = alignUpU16(self.data_cursor, n);
+    // @as: widen to u32 so a wide global (e.g. a large baked array) can't wrap the bound check itself.
+    if (@as(u32, self.data_cursor) + width > codegen.data_region_end) {
+        try self.diagFatal(decl_span, "E_CODEGEN_DATA_OVERFLOW", "static-data region exhausted — too many data globals");
+        return;
+    }
     try self.globals.put(self.arena, dup, .{ .address = self.data_cursor, .width = width, .placement = .data, .signed_byte = signed_byte });
     self.data_cursor += width;
 }

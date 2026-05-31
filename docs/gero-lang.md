@@ -243,8 +243,10 @@ let p = "$(percent:>3d)% complete"        -- right-aligned in 3 chars
 ```
 
 **Substitution syntax:**
-- `$(expr)` — embed `expr`'s value, formatted with the type's default
-- `$(expr:fmt)` — embed with explicit format spec
+- `$(expr)` — embed `expr`'s value, formatted with the type's default. A
+  scalar uses its formatter; a struct / tuple / enum embeds its §4.9
+  default rendering (the same one `print` produces).
+- `$(expr:fmt)` — embed with explicit format spec (scalar types only)
 - `$$` — literal `$` (escape)
 
 **Format spec grammar** (subset of Python's spec):
@@ -274,8 +276,11 @@ Common idioms for old-school output:
 **Compilation:**
 - The compiler parses interpolation strings at compile time.
 - Static parts compile to literal byte runs.
-- `$(expr)` calls a stdlib formatter for the type, writing into an
-  output buffer.
+- `$(expr)` formats into an output buffer: a scalar via its
+  `format_*_to_buf` syscall, an aggregate by rendering its §4.9 default
+  form into the buffer (the same renderer `print` uses). A value whose
+  type has no rendering (array / `Vec` / class / reference) is a compile
+  error.
 - The whole interpolated string allocates **once** in
   `state.allocator` (vs the chain of allocs `+` would produce).
 - For `print "$(x) is $(y)"` — no string allocation; the runtime
@@ -321,7 +326,7 @@ PICO-8, Sonic, early Doom used.
 |------|---------|-------|
 | Array (fixed-size) | `[u8; 64]` | N is comptime. Stack-allocated if local. Literals: `[a, b, c]` for explicit elements or `[value; count]` to repeat a single value. |
 | Dynamic array | `Vec(i16)` | Growable buffer with `push` / `pop` / `len` / `at`. See §3.4.3. |
-| Tuple | `(i16, str)` | Anonymous heterogeneous pair / triple / etc. Max 4 elements (5+ → use a struct). Destructurable in `let` and `match`. Field access via `.0`, `.1`, …. |
+| Tuple | `(i16, str)` | Anonymous heterogeneous pair / triple / etc. Max 4 elements (5+ → use a struct). Destructurable in `let` and `match`. Element access `.0` / `.1` / …, element store `t.N = x`, value-copy + pass / return by value, structural `==` / `!=`, and `(v0, v1, …)` print. |
 | Optional | `T?` | Nullable pointer type — see §3.4.1. |
 | Reference | `&T` | Borrowed reference, no arithmetic. See §3.4.4. |
 | Function | `fn(i16, i16) -> i16` | First-class — assignable, passable. |
@@ -2086,16 +2091,18 @@ console; CLI tools print to stdout).
 | `str` | the bytes | `"hi"` → `hi` |
 | `struct` | `Name { field: value, … }` (each field by its type, recursively) | `P { x: 1, y: 2 }` |
 | `enum` | `Enum.Variant`, or `Enum.Variant(a, b)` with a payload (each payload field by its type, recursively) | `Item.Potion(5)`, `Dir.N` |
+| `tuple` | `(v0, v1, …)` (each element by its type, recursively) | `(1, hi, -3)` |
 
-Struct fields and enum payloads render recursively, so a struct that
-holds an enum prints the variant in place (`Slot { qty: 2, it:
-Item.Potion(5) }`). Enum payload fields are stored as single
+Struct fields, enum payloads, and tuple elements render recursively, so
+a struct that holds an enum prints the variant in place (`Slot { qty: 2,
+it: Item.Potion(5) }`) and a tuple of a struct prints it nested
+(`(P { x: 1 }, 5)`). Enum payload fields are stored as single
 register-width slot values, so a payload may be a scalar / `char` /
 `fixed` / `str` / enum — **not** a struct.
 
-Types with no default rendering — array, tuple, `Vec`, `class`,
-reference, function pointer, nullable, and (as an enum payload) struct
-— are a compile error (`E_CODEGEN_UNSUPPORTED`) rather than a
+Types with no default rendering — array, `Vec`, `class`, reference,
+function pointer, nullable, and (as an enum payload) struct — are a
+compile error (`E_CODEGEN_UNSUPPORTED`) rather than a
 silently-meaningless address.
 
 ### 4.10 Defer

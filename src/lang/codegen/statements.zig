@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const ast = @import("../ast.zig");
+const types = @import("../types.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
@@ -17,6 +18,48 @@ const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
 const Reg = opcodes.Reg;
 const Sys = opcodes.Sys;
+
+/// Where a default value rendering goes. `host` writes each piece to the
+/// host output (`print_*`, §4.9). `buffer` appends to the heap string
+/// being built for an interpolation (§3.2.2) via `format_*_to_buf`; the
+/// running write cursor lives in the fp-relative slot `cursor_ofs` (the
+/// renderers need `r1` for the value base, so the cursor is parked there
+/// and reloaded around each append). The same renderers drive both.
+pub const Sink = union(enum) {
+    host,
+    buffer: i8,
+};
+
+/// The scalar shapes a leaf value takes — picks `print_*` vs the matching
+/// `format_*_to_buf` syscall.
+const Leaf = enum { str, int, uint, char, fixed };
+
+/// Emit the value in `acu` (a string address for `.str`) to `sink`. For
+/// the buffer sink the cursor is reloaded into `r1`, advanced by the
+/// `format_*_to_buf` syscall, and stored back — the renderer's base in
+/// `r1` is already consumed by the time a leaf is emitted.
+fn sinkEmit(self: *Emitter, sink: Sink, leaf: Leaf) error{OutOfMemory}!void {
+    switch (sink) {
+        .host => try isa.sys(self, switch (leaf) {
+            .str => Sys.print_str,
+            .int => Sys.print_int,
+            .uint => Sys.print_uint,
+            .char => Sys.print_char,
+            .fixed => Sys.print_fixed,
+        }),
+        .buffer => |ofs| {
+            try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.r1); // r1 = cursor
+            try isa.sys(self, switch (leaf) {
+                .str => Sys.format_str_to_buf,
+                .int => Sys.format_int_to_buf,
+                .uint => Sys.format_uint_to_buf,
+                .char => Sys.format_char_to_buf,
+                .fixed => Sys.format_fixed_to_buf,
+            });
+            try isa.movRegToRegOffset(self, Reg.r1, Reg.fp, ofs); // store advanced cursor
+        },
+    }
+}
 
 /// The binary operator a compound assignment desugars to — `+=` → `+`,
 /// `<<=` → `<<`, and so on. `.set` has no binary form.
@@ -66,6 +109,30 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
             try value_struct.emitFieldStore(self, a.target.field.receiver, sname, fname, a.value);
             return;
         }
+    }
+    // `t.N = value` — store into a tuple element at its inline offset.
+    if (a.target.* == .tuple_index) {
+        const ti = a.target.tuple_index;
+        const elems = self.tupleElemsOf(ti.receiver) orelse {
+            try self.unsupported(a.span, "tuple element store on a non-tuple value");
+            return;
+        };
+        if (self.tupleElemAggregate(elems, ti.index) != .scalar) {
+            try self.unsupported(a.span, "storing into a tuple's nested struct/tuple element");
+            return;
+        }
+        const info = self.tupleElemInfo(elems, ti.index);
+        try self.emitExpr(a.value); // value → stash on stack
+        try isa.pushReg(self, Reg.acu);
+        try self.emitExpr(ti.receiver); // acu = tuple base address
+        try isa.movRegToReg(self, Reg.acu, Reg.r1);
+        try isa.popReg(self, Reg.r2);
+        if (info.width == 1) {
+            try class.emitByteStoreAtOffset(self, Reg.r1, info.offset, Reg.r2);
+        } else {
+            try class.emitWordStoreAtOffset(self, Reg.r1, info.offset, Reg.r2);
+        }
+        return;
     }
     if (a.target.* != .ident) {
         try self.unsupported(a.span, "non-ident assignment targets (field / index)");
@@ -202,7 +269,19 @@ pub fn emitConstDecl(self: *Emitter, d: ast.ConstDecl) !void {
 /// (or a forward jmp inside an `@inline` body).
 pub fn emitReturnStmt(self: *Emitter, r: ast.ReturnStmt) !void {
     if (r.value) |v| {
-        if (self.inline_ret_struct) |sname| {
+        if (self.inline_ret_is_tuple) {
+            // Inlined tuple return: materialize into the caller-frame
+            // result slot, then leave its address in `acu`.
+            const elems = self.tupleElemsOf(v) orelse {
+                try self.unsupported(r.span, "tuple return from a non-tuple value");
+                return;
+            };
+            try value_struct.emitTupleInto(self, v, elems, self.inline_ret_tuple_slot);
+            try isa.movRegToReg(self, Reg.fp, Reg.acu);
+            const slot = self.inline_ret_tuple_slot; // negative — a caller-frame local
+            // @as: widen i8 → i16 so negating the min value is safe.
+            if (slot < 0) try isa.subImmFromReg(self, @intCast(-@as(i16, slot)), Reg.acu);
+        } else if (self.inline_ret_struct) |sname| {
             // Inlined struct return: materialize into the caller-frame
             // result slot, then leave its address in `acu`.
             try value_struct.emitInto(self, v, sname, self.inline_ret_slot);
@@ -272,73 +351,179 @@ pub fn emitPrintStmt(self: *Emitter, p: ast.PrintStmt) !void {
 /// `str` → `print_str` (string literals emit per-part for
 /// interpolation), everything else → `print_int`.
 fn emitPrintArg(self: *Emitter, arg: *const ast.Expr) !void {
+    // A string literal emits its parts (interpolation, §3.2.2) straight
+    // to the host; everything else renders its value (§4.9).
     if (arg.* == .str_lit) {
         try strings.emitPrintStrLit(self, arg.str_lit);
         return;
     }
-    if (self.isPrimitiveType(arg, .char)) {
-        try self.emitExpr(arg);
-        try isa.sys(self, Sys.print_char);
+    try emitRenderValue(self, arg, .host);
+}
+
+/// Emit `expr`'s default value rendering to `sink` (§4.9): a scalar by
+/// its formatter, a struct as `Name { f: v, … }`, an enum as
+/// `Enum.Variant`, a tuple as `(v0, v1, …)`. Drives both `print` (the
+/// host sink) and `$(…)` interpolation (the buffer sink). A value whose
+/// type — or a reachable field / element — has no rendering is rejected.
+pub fn emitRenderValue(self: *Emitter, expr: *const ast.Expr, sink: Sink) error{OutOfMemory}!void {
+    if (self.isPrimitiveType(expr, .char)) {
+        try self.emitExpr(expr);
+        try sinkEmit(self, sink, .char);
         return;
     }
-    if (self.isPrimitiveType(arg, .fixed)) {
-        try self.emitExpr(arg);
-        try isa.sys(self, Sys.print_fixed);
+    if (self.isPrimitiveType(expr, .fixed)) {
+        try self.emitExpr(expr);
+        try sinkEmit(self, sink, .fixed);
         return;
     }
-    if (self.isPrimitiveType(arg, .str)) {
-        try self.emitExpr(arg);
-        try isa.sys(self, Sys.print_str);
+    if (self.isPrimitiveType(expr, .str)) {
+        try self.emitExpr(expr);
+        try sinkEmit(self, sink, .str);
         return;
     }
-    // A struct renders as `Name { field: value, ... }` — its base
-    // address is in `acu` after evaluation.
-    if (self.structNameOf(arg)) |sname| {
+    // A struct's base address is in `acu` after evaluation; a literal has
+    // no standalone address, so materialize it as a stack copy first.
+    if (self.structNameOf(expr)) |sname| {
         if (!printSupported(self, sname)) {
-            try self.unsupported(arg.span(), "printing a struct with a field type that has no default rendering (array / tuple / Vec / class / reference)");
+            try self.unsupported(expr.span(), "a struct with a field type that has no default rendering (array / Vec / class / reference)");
             return;
         }
-        // A struct literal has no standalone address — materialize it as
-        // a by-value stack copy first; struct *values* already evaluate
-        // to a base address.
-        if (arg.* == .struct_lit) {
-            try value_struct.pushArg(self, arg, sname);
+        if (expr.* == .struct_lit) {
+            try value_struct.pushArg(self, expr, sname);
             try isa.movRegToReg(self, Reg.sp, Reg.acu);
-            try emitPrintStruct(self, sname);
+            try emitPrintStruct(self, sname, sink);
             try isa.addImmToReg(self, self.structSlotWidth(sname), Reg.sp);
         } else {
-            try self.emitExpr(arg);
-            try emitPrintStruct(self, sname);
+            try self.emitExpr(expr);
+            try emitPrintStruct(self, sname, sink);
         }
         return;
     }
-    // An enum renders as `Enum.Variant` (`Enum.Variant(a, b)` with a
-    // payload) — `acu` holds the tag (payload-free) or slot pointer.
-    if (self.enumDeclForExpr(arg)) |ed| {
+    // An enum value in `acu` is the tag (payload-free) or slot pointer.
+    if (self.enumDeclForExpr(expr)) |ed| {
         if (!enumPrintSupported(self, ed)) {
-            try self.unsupported(arg.span(), "printing an enum with a payload field type that has no default rendering (array / tuple / Vec / class / reference)");
+            try self.unsupported(expr.span(), "an enum with a payload field type that has no default rendering (array / tuple / Vec / class / reference)");
             return;
         }
-        try self.emitExpr(arg);
-        try emitPrintEnum(self, ed);
+        try self.emitExpr(expr);
+        try emitPrintEnum(self, ed, sink);
         return;
     }
-    // A whole-tuple default rendering isn't lowered yet (deferred from
-    // #305) — reject rather than print the base address as an int.
-    if (self.tupleElemsOf(arg) != null) {
-        try self.unsupported(arg.span(), "printing a whole tuple — print its elements (`t.0`, `t.1`, …)");
+    if (self.tupleElemsOf(expr)) |elems| {
+        if (!tuplePrintSupported(self, elems)) {
+            try self.unsupported(expr.span(), "a tuple with an element that has no default rendering (array / Vec / class / reference)");
+            return;
+        }
+        if (expr.* == .tuple_lit) {
+            try value_struct.pushTupleArg(self, expr, elems);
+            try isa.movRegToReg(self, Reg.sp, Reg.acu);
+            try emitPrintTuple(self, elems, sink);
+            try isa.addImmToReg(self, self.tupleSlotWidth(elems), Reg.sp);
+        } else {
+            try self.emitExpr(expr);
+            try emitPrintTuple(self, elems, sink);
+        }
         return;
     }
-    try self.emitExpr(arg);
-    try isa.sys(self, if (self.isUnsignedInt(arg)) Sys.print_uint else Sys.print_int);
+    try self.emitExpr(expr);
+    try sinkEmit(self, sink, if (self.isUnsignedInt(expr)) .uint else .int);
+}
+
+/// Render a tuple (base address in `acu`) as `(v0, v1, …)`. Parks the
+/// base across the per-element prints (the `print_*` syscalls + recursion
+/// churn registers but leave `sp` alone), reloaded per element.
+fn emitPrintTuple(self: *Emitter, elems: []const *const types.Type, sink: Sink) error{OutOfMemory}!void {
+    try isa.pushReg(self, Reg.acu); // park base at [sp]
+    try printLiteral(self, "(", sink);
+    for (elems, 0..) |_, i| {
+        if (i > 0) try printLiteral(self, ", ", sink);
+        // safety: tuple arity ≤ 4 (§3.4) fits u8.
+        try emitPrintTupleElem(self, elems, @intCast(i), sink);
+    }
+    try printLiteral(self, ")", sink);
+    try isa.addImmToReg(self, 2, Reg.sp); // drop the parked base
+}
+
+/// Print element `index` of the tuple whose base is parked at `[sp]`.
+fn emitPrintTupleElem(self: *Emitter, elems: []const *const types.Type, index: u8, sink: Sink) error{OutOfMemory}!void {
+    const info = self.tupleElemInfo(elems, index);
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // r1 = parked base
+    switch (self.tupleElemAggregate(elems, index)) {
+        .structure => |sub| {
+            try isa.movRegToReg(self, Reg.r1, Reg.acu);
+            if (info.offset != 0) try isa.addImmToReg(self, info.offset, Reg.acu);
+            try emitPrintStruct(self, sub, sink);
+            return;
+        },
+        .tuple => |nested| {
+            try isa.movRegToReg(self, Reg.r1, Reg.acu);
+            if (info.offset != 0) try isa.addImmToReg(self, info.offset, Reg.acu);
+            try emitPrintTuple(self, nested, sink);
+            return;
+        },
+        .scalar => {},
+    }
+    const et = elems[index];
+    if (et.* == .named) {
+        if (self.enum_decls.get(et.named.name)) |ed| {
+            if (self.enumHasPayload(ed)) {
+                try class.emitWordLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+            } else {
+                try class.emitByteLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+            }
+            try isa.pushReg(self, Reg.acu);
+            try emitEnumDispatchAtSp(self, ed, sink);
+            try isa.addImmToReg(self, 2, Reg.sp);
+            return;
+        }
+    }
+    const prim: ?types.Primitive = if (et.* == .primitive) et.primitive else null;
+    if (prim == .char) {
+        try class.emitByteLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+        try sinkEmit(self, sink, .char);
+    } else if (prim == .fixed) {
+        try class.emitWordLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+        try sinkEmit(self, sink, .fixed);
+    } else if (prim == .str) {
+        try class.emitWordLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+        try sinkEmit(self, sink, .str);
+    } else if (info.width == 1) {
+        try class.emitByteLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+        if (info.signed_byte) try isa.signExtendByte(self, Reg.acu);
+        try sinkEmit(self, sink, if (prim == .u8) .uint else .int);
+    } else {
+        try class.emitWordLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+        try sinkEmit(self, sink, if (prim == .u16) .uint else .int);
+    }
+}
+
+/// Whether `print` can render every element of a tuple — scalars / `str`
+/// / enum, and nested supported structs / tuples. Rejects array / `Vec`
+/// / class / reference / nullable / fn-ptr elements.
+fn tuplePrintSupported(self: *const Emitter, elems: []const *const types.Type) bool {
+    for (elems) |e| {
+        switch (e.*) {
+            .tuple => |nested| if (!tuplePrintSupported(self, nested)) return false,
+            .primitive => {},
+            .named => |n| {
+                if (self.struct_decls.contains(n.name)) {
+                    if (!printSupported(self, n.name)) return false;
+                } else if (self.enum_decls.get(n.name)) |ed| {
+                    if (!enumPrintSupported(self, ed)) return false;
+                } else if (self.class_decls.contains(n.name)) return false;
+            },
+            else => return false, // array / vec / reference / optional / function
+        }
+    }
+    return true;
 }
 
 /// Render an enum value (tag or slot pointer in `acu`) as
 /// `Enum.Variant` / `Enum.Variant(a, b)`. The value is parked at `[sp]`
 /// across the tag dispatch, then dropped.
-fn emitPrintEnum(self: *Emitter, ed: *const ast.EnumDecl) error{OutOfMemory}!void {
+fn emitPrintEnum(self: *Emitter, ed: *const ast.EnumDecl, sink: Sink) error{OutOfMemory}!void {
     try isa.pushReg(self, Reg.acu);
-    try emitEnumDispatchAtSp(self, ed);
+    try emitEnumDispatchAtSp(self, ed, sink);
     try isa.addImmToReg(self, 2, Reg.sp);
 }
 
@@ -346,7 +531,7 @@ fn emitPrintEnum(self: *Emitter, ed: *const ast.EnumDecl) error{OutOfMemory}!voi
 /// payload-free enums, a `[tag|payload]` slot pointer otherwise). Each
 /// arm compares the tag, prints `Enum.Variant`, then walks the variant's
 /// payload fields off the slot base; a final jump skips the other arms.
-fn emitEnumDispatchAtSp(self: *Emitter, ed: *const ast.EnumDecl) error{OutOfMemory}!void {
+fn emitEnumDispatchAtSp(self: *Emitter, ed: *const ast.EnumDecl, sink: Sink) error{OutOfMemory}!void {
     const enum_name = self.source[ed.name.start..ed.name.end];
     const payload = self.enumHasPayload(ed);
     var end_patches: std.ArrayList(usize) = .empty;
@@ -363,16 +548,16 @@ fn emitEnumDispatchAtSp(self: *Emitter, ed: *const ast.EnumDecl) error{OutOfMemo
         try isa.cmpRegImm(self, Reg.r1, tag);
         const next = try isa.emitJumpPlaceholder(self, Op.jne_addr);
         const variant_name = self.source[v.name.start..v.name.end];
-        try printLiteral(self, try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ enum_name, variant_name }));
+        try printLiteral(self, try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ enum_name, variant_name }), sink);
         if (v.payload.len > 0) {
-            try printLiteral(self, "(");
+            try printLiteral(self, "(", sink);
             for (v.payload, 0..) |pf, j| {
-                if (j > 0) try printLiteral(self, ", ");
+                if (j > 0) try printLiteral(self, ", ", sink);
                 // Payload fields read off the slot base parked at `[sp]`,
                 // at the variant's per-field offset (past the tag byte).
-                try emitPrintField(self, pf.type_ann.*, self.variantFieldOffset(v, j));
+                try emitPrintField(self, pf.type_ann.*, self.variantFieldOffset(v, j), sink);
             }
-            try printLiteral(self, ")");
+            try printLiteral(self, ")", sink);
         }
         try end_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
         try isa.patchJumpTo(self, next, try self.currentOffset());
@@ -386,33 +571,39 @@ fn emitEnumDispatchAtSp(self: *Emitter, ed: *const ast.EnumDecl) error{OutOfMemo
 /// structs recurse. The base is parked on the stack across the field
 /// prints (the `print_*` syscalls + recursion churn registers but
 /// leave `sp` alone), and reloaded per field.
-fn emitPrintStruct(self: *Emitter, sname: []const u8) error{OutOfMemory}!void {
+fn emitPrintStruct(self: *Emitter, sname: []const u8, sink: Sink) error{OutOfMemory}!void {
     const sd = self.struct_decls.get(sname).?;
     try isa.pushReg(self, Reg.acu); // park base at [sp]
 
-    try printLiteral(self, try std.fmt.allocPrint(self.arena, "{s} {{ ", .{sname}));
+    try printLiteral(self, try std.fmt.allocPrint(self.arena, "{s} {{ ", .{sname}), sink);
 
     var fo: u16 = 0;
     for (sd.fields, 0..) |f, i| {
-        if (i > 0) try printLiteral(self, ", ");
+        if (i > 0) try printLiteral(self, ", ", sink);
         const fname = self.source[f.name.start..f.name.end];
-        try printLiteral(self, try std.fmt.allocPrint(self.arena, "{s}: ", .{fname}));
-        try emitPrintField(self, f.type_ann.*, fo);
+        try printLiteral(self, try std.fmt.allocPrint(self.arena, "{s}: ", .{fname}), sink);
+        try emitPrintField(self, f.type_ann.*, fo, sink);
         fo += self.widthOfTypeAnn(f.type_ann.*);
     }
 
-    try printLiteral(self, " }");
+    try printLiteral(self, " }", sink);
     try isa.addImmToReg(self, 2, Reg.sp); // drop the parked base
 }
 
 /// Print the field at `fo` of the struct whose base is parked at `[sp]`.
 /// Dispatches per type; a nested struct recurses (its base = base + fo).
-fn emitPrintField(self: *Emitter, t: ast.TypeAnn, fo: u16) error{OutOfMemory}!void {
+fn emitPrintField(self: *Emitter, t: ast.TypeAnn, fo: u16, sink: Sink) error{OutOfMemory}!void {
+    if (t == .tuple) {
+        // A tuple field lays out inline; render `(v0, v1, …)` from the
+        // struct base, each element at the field offset + its tuple offset.
+        try emitPrintTupleField(self, t.tuple.elems, fo, sink);
+        return;
+    }
     try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // r1 = parked base
     if (self.structNameOfTypeAnn(t)) |sub| {
         try isa.movRegToReg(self, Reg.r1, Reg.acu);
         if (fo != 0) try isa.addImmToReg(self, fo, Reg.acu); // acu = nested base
-        try emitPrintStruct(self, sub);
+        try emitPrintStruct(self, sub, sink);
         return;
     }
     if (enumDeclOfTypeAnn(self, t)) |ed| {
@@ -425,46 +616,62 @@ fn emitPrintField(self: *Emitter, t: ast.TypeAnn, fo: u16) error{OutOfMemory}!vo
             try class.emitByteLoadAtOffset(self, Reg.r1, fo, Reg.acu);
         }
         try isa.pushReg(self, Reg.acu);
-        try emitEnumDispatchAtSp(self, ed);
+        try emitEnumDispatchAtSp(self, ed, sink);
         try isa.addImmToReg(self, 2, Reg.sp);
         return;
     }
     if (isPrimNamed(self, t, "char")) {
         try class.emitByteLoadAtOffset(self, Reg.r1, fo, Reg.acu);
-        try isa.sys(self, Sys.print_char);
+        try sinkEmit(self, sink, .char);
     } else if (isPrimNamed(self, t, "fixed")) {
         try class.emitWordLoadAtOffset(self, Reg.r1, fo, Reg.acu);
-        try isa.sys(self, Sys.print_fixed);
+        try sinkEmit(self, sink, .fixed);
     } else if (isPrimNamed(self, t, "str")) {
         try class.emitWordLoadAtOffset(self, Reg.r1, fo, Reg.acu);
-        try isa.sys(self, Sys.print_str);
+        try sinkEmit(self, sink, .str);
     } else if (self.widthOfTypeAnn(t) == 1) {
         try class.emitByteLoadAtOffset(self, Reg.r1, fo, Reg.acu);
-        // `i8` is the only signed byte type — sign-extend so `print_int`
-        // (which formats a signed word) shows a negative value. `u8`
-        // routes to the unsigned printer like any unsigned int.
+        // `i8` is the only signed byte type — sign-extend so the decimal
+        // formatter (which formats a signed word) shows a negative value.
+        // `u8` routes to the unsigned formatter like any unsigned int.
         if (self.isPrimitiveTypeAnn(t, "i8")) try isa.signExtendByte(self, Reg.acu);
-        try isa.sys(self, if (self.isPrimitiveTypeAnn(t, "u8")) Sys.print_uint else Sys.print_int);
+        try sinkEmit(self, sink, if (self.isPrimitiveTypeAnn(t, "u8")) .uint else .int);
     } else {
         try class.emitWordLoadAtOffset(self, Reg.r1, fo, Reg.acu);
-        try isa.sys(self, if (self.isPrimitiveTypeAnn(t, "u16")) Sys.print_uint else Sys.print_int);
+        try sinkEmit(self, sink, if (self.isPrimitiveTypeAnn(t, "u16")) .uint else .int);
     }
 }
 
-/// Intern `text` and emit a `print_str` of it (the constant separators
-/// + field labels in a struct rendering).
-fn printLiteral(self: *Emitter, text: []const u8) error{OutOfMemory}!void {
+/// Render a struct's tuple field as `(v0, v1, …)`. The struct base is
+/// parked at `[sp]`; each element prints via the struct field path at the
+/// field's offset plus the element's offset within the tuple, so nested
+/// structs / tuples / enums recurse the same way a top-level field does.
+fn emitPrintTupleField(self: *Emitter, elems: []const *ast.TypeAnn, base_fo: u16, sink: Sink) error{OutOfMemory}!void {
+    try printLiteral(self, "(", sink);
+    var eo: u16 = base_fo;
+    for (elems, 0..) |et, i| {
+        if (i > 0) try printLiteral(self, ", ", sink);
+        try emitPrintField(self, et.*, eo, sink);
+        eo += self.widthOfTypeAnn(et.*);
+    }
+    try printLiteral(self, ")", sink);
+}
+
+/// Intern `text` and emit it to `sink` (the constant separators + field
+/// labels in an aggregate rendering).
+fn printLiteral(self: *Emitter, text: []const u8, sink: Sink) error{OutOfMemory}!void {
     const id = try strings.internString(self, text);
     try strings.emitMovStringAddrToReg(self, id, Reg.acu);
-    try isa.sys(self, Sys.print_str);
+    try sinkEmit(self, sink, .str);
 }
 
 /// Whether `print` can render every field of `sname`. Supported:
 /// scalars / bool / char / fixed (decimal/char/fixed), `str`, enums
-/// (`Enum.Variant` + printable payload), and nested supported structs.
-/// Rejected: array / tuple / `Vec` / class / reference / fn-ptr /
-/// nullable — no default rendering yet. A type cycle (a struct / enum
-/// reachable from itself) is rejected too — it has no finite rendering.
+/// (`Enum.Variant` + printable payload), tuples of supported elements,
+/// and nested supported structs. Rejected: array / `Vec` / class /
+/// reference / fn-ptr / nullable — no default rendering yet. A type cycle
+/// (a struct / enum reachable from itself) is rejected too — it has no
+/// finite rendering.
 fn printSupported(self: *const Emitter, sname: []const u8) bool {
     var visited: std.ArrayList([]const u8) = .empty;
     defer visited.deinit(self.allocator);
@@ -512,7 +719,13 @@ fn enumPrintSupportedRec(self: *const Emitter, ed: *const ast.EnumDecl, visited:
 }
 
 fn fieldPrintSupportedRec(self: *const Emitter, t: ast.TypeAnn, visited: *std.ArrayList([]const u8)) error{OutOfMemory}!bool {
-    if (t != .named) return false; // array / tuple / vec / reference / fn / nullable
+    if (t == .tuple) {
+        for (t.tuple.elems) |et| {
+            if (!try fieldPrintSupportedRec(self, et.*, visited)) return false;
+        }
+        return true;
+    }
+    if (t != .named) return false; // array / vec / reference / fn / nullable
     const name = self.source[t.named.name.start..t.named.name.end];
     if (self.struct_decls.contains(name)) return printSupportedRec(self, name, visited);
     if (self.enum_decls.get(name)) |ed| return enumPrintSupportedRec(self, ed, visited);

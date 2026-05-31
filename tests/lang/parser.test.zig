@@ -256,6 +256,16 @@ test "parse: tuple index access `t.0`" {
     try std.testing.expectEqual(@as(u8, 0), init.tuple_index.index);
 }
 
+test "parse: chained tuple index `t.0.1` splits the folded fixed literal" {
+    var tree = try parseClean("let r = t.0.1");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .tuple_index);
+    try std.testing.expectEqual(@as(u8, 1), init.tuple_index.index);
+    try std.testing.expect(init.tuple_index.receiver.* == .tuple_index);
+    try std.testing.expectEqual(@as(u8, 0), init.tuple_index.receiver.tuple_index.index);
+}
+
 test "parse: `2.0` still lexes as a fixed literal, not a tuple index" {
     var tree = try parseClean("let r = 2.0");
     defer tree.deinit();

@@ -233,17 +233,13 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
 }
 
 /// Lower a `tuple.N` element access — evaluate the receiver to its base
-/// address, then load element `N`. Tuples with a nested struct/tuple
-/// element aren't lowered yet (deferred from #305).
+/// address, then load element `N` (an aggregate element leaves its
+/// inline address in `acu`, a scalar its value).
 fn emitTupleIndexExpr(self: *Emitter, ti: ast.TupleIndexExpr) !void {
     const elems = self.tupleElemsOf(ti.receiver) orelse {
         try self.unsupported(ti.span, "tuple element access on a non-tuple value");
         return;
     };
-    if (self.tupleHasAggregateElem(elems)) {
-        try self.unsupported(ti.span, "a tuple with a nested struct/tuple element");
-        return;
-    }
     try emitExpr(self, ti.receiver); // acu = tuple base address
     try value_struct.emitTupleElemLoad(self, elems, ti.index);
 }
@@ -374,11 +370,22 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
         }
     }
 
-    // Tuple `==` / `!=` (element-wise) isn't lowered yet — reject rather
-    // than compare the operand addresses (deferred from #305).
-    if (self.tupleElemsOf(b.lhs) != null or self.tupleElemsOf(b.rhs) != null) {
-        try self.unsupported(b.span, "`==` / `!=` on tuples");
-        return;
+    // A tuple operand compares element-wise (§3.4); ordering is undefined.
+    if (self.tupleElemsOf(b.lhs) orelse self.tupleElemsOf(b.rhs)) |elems| {
+        switch (b.op) {
+            .eq, .neq => {
+                if (!value_struct.tupleEqSupported(self, elems)) {
+                    try self.unsupported(b.span, "tuple `==` with a nullable / array / `Vec` element");
+                    return;
+                }
+                try value_struct.emitTupleEquality(self, b.lhs, b.rhs, elems, b.op == .neq);
+                return;
+            },
+            else => {
+                try self.unsupported(b.span, "ordering comparison on tuples — only `==` and `!=` are defined");
+                return;
+            },
+        }
     }
 
     const fixed_op = self.isPrimitiveType(b.lhs, .fixed) and
@@ -556,10 +563,24 @@ pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
                         },
                     }
                 }
-                // Tuple comparison isn't lowered yet (deferred from #305).
-                if (self.tupleElemsOf(b.lhs) != null or self.tupleElemsOf(b.rhs) != null) {
-                    try self.unsupported(b.span, "`==` / `!=` on tuples");
-                    return;
+                // Tuple compare element-wise; the 0/1 it leaves in acu is
+                // tested against 0 so the branch consumes its flags.
+                if (self.tupleElemsOf(b.lhs) orelse self.tupleElemsOf(b.rhs)) |elems| {
+                    switch (b.op) {
+                        .eq, .neq => {
+                            if (!value_struct.tupleEqSupported(self, elems)) {
+                                try self.unsupported(b.span, "tuple `==` with a nullable / array / `Vec` element");
+                                return;
+                            }
+                            try value_struct.emitTupleEquality(self, b.lhs, b.rhs, elems, b.op == .neq);
+                            try isa.cmpRegImm(self, Reg.acu, 0);
+                            return;
+                        },
+                        else => {
+                            try self.unsupported(b.span, "ordering comparison on tuples — only `==` and `!=` are defined");
+                            return;
+                        },
+                    }
                 }
                 // Eval LHS into acu, eval RHS into r1, cmp acu, r1.
                 try emitExpr(self, b.rhs);

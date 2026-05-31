@@ -34,18 +34,12 @@ pub fn emitInlineCall(self: *Emitter, callee: *const ast.DefDecl, c: ast.CallExp
         return;
     }
 
-    // A tuple-returning `@inline` body would need the inline-return
-    // buffer plumbing the struct path has; not lowered yet (deferred
-    // from #305). Reject before any frame mutation.
-    if (callee.ret_type) |rt| if (rt.* == .tuple) {
-        try self.unsupported(c.span, "a tuple return from an `@inline` function");
-        return;
-    };
-
-    // Bind args → fresh caller-frame locals. Each slot extends
-    // `frame_bytes` via its own sub-imm (the prologue's bulk reservation
-    // already ran). Args materialize in the CALLER's scope — locals
-    // still live — then bind into the fresh body scope below.
+    // Bind args → fresh caller-frame locals. The slots are fp-relative
+    // and backed up front by the caller's prologue (`countFrameBytes`
+    // counts every inline expansion), so no `sub sp` here — keeping `sp`
+    // put is what lets an inline call sit mid-expression without aliasing
+    // already-pushed operands. Args materialize in the CALLER's scope —
+    // locals still live — then bind into the fresh body scope below.
     const Binding = struct { name: []const u8, ofs: i8 };
     const bindings = try self.arena.alloc(Binding, callee.params.len);
     for (callee.params, c.args, bindings) |p, arg, *b| {
@@ -53,17 +47,14 @@ pub fn emitInlineCall(self: *Emitter, callee: *const ast.DefDecl, c: ast.CallExp
         // A struct param binds to a full-width local materialized by
         // value; a scalar param to a single word.
         if (self.argStructName(arg)) |sname| {
-            try isa.subImmFromReg(self, self.structSlotWidth(sname), Reg.sp);
             const ofs = self.reserveFrameSlot(self.structSlotWidth(sname));
             try value_struct.emitInto(self, arg, sname, ofs);
             b.* = .{ .name = dup, .ofs = ofs };
         } else if (self.tupleElemsOf(arg)) |elems| {
-            try isa.subImmFromReg(self, self.tupleSlotWidth(elems), Reg.sp);
             const ofs = self.reserveFrameSlot(self.tupleSlotWidth(elems));
             try value_struct.emitTupleInto(self, arg, elems, ofs);
             b.* = .{ .name = dup, .ofs = ofs };
         } else {
-            try isa.subImmFromReg(self, 2, Reg.sp);
             try expr_emit.emitExpr(self, arg);
             const ofs = self.reserveFrameSlot(2);
             try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
@@ -91,9 +82,20 @@ pub fn emitInlineCall(self: *Emitter, callee: *const ast.DefDecl, c: ast.CallExp
         self.inline_ret_slot = saved_inline_slot;
     }
     if (callee.ret_type) |rt| if (self.structNameOfTypeAnn(rt.*)) |sname| {
-        try isa.subImmFromReg(self, self.structSlotWidth(sname), Reg.sp);
         self.inline_ret_struct = sname;
         self.inline_ret_slot = self.reserveFrameSlot(self.structWidth(sname));
+    };
+    // A tuple-returning inline mirrors the struct path; the element
+    // layout is read from each `return` expression's inferred type.
+    const saved_inline_tuple = self.inline_ret_is_tuple;
+    const saved_inline_tuple_slot = self.inline_ret_tuple_slot;
+    defer {
+        self.inline_ret_is_tuple = saved_inline_tuple;
+        self.inline_ret_tuple_slot = saved_inline_tuple_slot;
+    }
+    if (callee.ret_type) |rt| if (rt.* == .tuple) {
+        self.inline_ret_is_tuple = true;
+        self.inline_ret_tuple_slot = self.reserveFrameSlot(self.widthOfTypeAnn(rt.*));
     };
 
     // Install a fresh `inline_returns` collector so nested `return`s

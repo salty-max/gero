@@ -5,18 +5,18 @@ const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const archive = @import("archive.zig");
 const class = @import("class.zig");
+const statements = @import("statements.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
 const Reg = opcodes.Reg;
 const Sys = opcodes.Sys;
 
-/// Bytes reserved per interpolated-string buffer in the data
-/// region. Sized for the worst common case (a few interp values
-/// + surrounding literal text). Programs that need larger
-/// interpolations should compose with explicit concatenation —
-/// the codegen rejects the formatted result at runtime if it
-/// overflows (the VM doesn't bounds-check the buffer writes).
+/// Bytes allocated per interpolated-string evaluation. Sized for the
+/// worst common case (a few interp values + surrounding literal text).
+/// Programs that need larger interpolations should compose with explicit
+/// concatenation — the VM doesn't bounds-check the buffer writes, so an
+/// over-long fill silently runs past the allocation.
 pub const interp_buffer_size: u16 = 64;
 
 /// One interned string literal — emitted as a null-terminated
@@ -227,9 +227,8 @@ fn emitStrCopy(self: *Emitter, ofs: i8, dst: u8) error{OutOfMemory}!void {
 
 /// Lower a `str_lit` at expression position. Single-literal
 /// strings load the pooled address directly into `acu`.
-/// Interpolated strings allocate a fixed-size buffer in the
-/// data region and emit the `format_*_to_buf` syscall sequence
-/// that fills it.
+/// Interpolated strings allocate a fresh heap buffer per evaluation
+/// and emit the `format_*_to_buf` syscall sequence that fills it.
 pub fn emitStrLitExpr(self: *Emitter, sl: ast.StrLitExpr) !void {
     if (sl.parts.len == 1 and sl.parts[0] == .lit) {
         const span = sl.parts[0].lit.span;
@@ -240,37 +239,20 @@ pub fn emitStrLitExpr(self: *Emitter, sl: ast.StrLitExpr) !void {
         return;
     }
 
-    const buf_addr = reserveInterpBuffer(self, sl.span) orelse {
-        // Diagnostic already emitted; produce a valid placeholder
-        // so downstream codegen doesn't see a bad acu shape.
-        try isa.movImmToReg(self, 0, Reg.acu);
-        return;
-    };
-
-    // r1 holds the moving write cursor. Initialize it to the
-    // buffer's base address.
-    try isa.movImmToReg(self, buf_addr, Reg.r1);
+    // A fresh heap buffer per evaluation (§3.2.2) — distinct results,
+    // including repeated evaluations of the same literal, never alias (a
+    // static per-site buffer would let a later evaluation clobber an
+    // earlier binding). `r1` is the moving write cursor; the base is
+    // parked across the fill and becomes the result. `alloc` faults
+    // `heap_exhausted` when the heap is full, like every allocating
+    // construct; the fill itself isn't bounds-checked (`interp_buffer_size`).
+    try isa.movImmToReg(self, interp_buffer_size, Reg.acu);
+    try isa.sys(self, Sys.alloc); // acu = buffer base
+    try isa.pushReg(self, Reg.acu);
+    try isa.movRegToReg(self, Reg.acu, Reg.r1); // cursor starts at the base
     try emitInterpFill(self, sl);
     try isa.sys(self, Sys.format_terminate_buf);
-    try isa.movImmToReg(self, buf_addr, Reg.acu);
-}
-
-/// Reserve `interp_buffer_size` bytes at the top of the data
-/// region for one interpolated-string site. Returns the
-/// buffer's base address. Emits `E_CODEGEN_DATA_OVERFLOW` and
-/// `null` when the data region (capped at the MMIO line) would
-/// overflow.
-pub fn reserveInterpBuffer(self: *Emitter, site_span: ast.Span) ?u16 {
-    const base = self.data_cursor;
-    // @as: widen u16 → u32 so the overflow check doesn't itself wrap.
-    const next: u32 = @as(u32, self.data_cursor) + interp_buffer_size;
-    if (next > 0xFE40) {
-        self.diagFatal(site_span, "E_CODEGEN_DATA_OVERFLOW", "static-data region exhausted — too many interpolated string sites") catch return null;
-        return null;
-    }
-    // @as: bounded by the > 0xFE40 check above; result fits u16.
-    self.data_cursor = @intCast(next);
-    return base;
+    try isa.popReg(self, Reg.acu); // result = buffer base
 }
 
 /// Emit one `format_*_to_buf` syscall per `sl.parts` entry. `r1`
@@ -279,6 +261,12 @@ pub fn reserveInterpBuffer(self: *Emitter, site_span: ast.Span) ?u16 {
 /// interp-expression evaluation so the stack-machine pattern's
 /// scratch use of `r1` doesn't trash the cursor.
 pub fn emitInterpFill(self: *Emitter, sl: ast.StrLitExpr) !void {
+    // A scalar part keeps the cursor in `r1` (fast path). A non-scalar
+    // part renders through the shared `emitRenderValue` machinery, which
+    // needs `r1` for the value base — so its cursor lives in this
+    // fp-relative slot, reserved on first use (and counted by
+    // `countFrameBytes` for the prologue).
+    var cursor_slot: ?i8 = null;
     for (sl.parts) |part| switch (part) {
         .lit => |lp| {
             const raw = self.source[lp.span.start..lp.span.end];
@@ -293,8 +281,19 @@ pub fn emitInterpFill(self: *Emitter, sl: ast.StrLitExpr) !void {
                 try self.unsupported(ip.span, "`$(expr:fmt)` format specs");
                 return;
             }
-            // Save the cursor — the interp-expression eval may
-            // pop into r1 as scratch.
+            if (!self.interpFormattable(ip.expr)) {
+                const slot = cursor_slot orelse blk: {
+                    const s = self.reserveFrameSlot(2);
+                    cursor_slot = s;
+                    break :blk s;
+                };
+                try isa.movRegToRegOffset(self, Reg.r1, Reg.fp, slot); // park cursor
+                try statements.emitRenderValue(self, ip.expr, .{ .buffer = slot });
+                try isa.movRegOffsetToReg(self, Reg.fp, slot, Reg.r1); // reload cursor
+                continue;
+            }
+            // Scalar fast path: save the cursor — the interp-expression
+            // eval may pop into `r1` as scratch.
             try isa.pushReg(self, Reg.r1);
             try self.emitExpr(ip.expr);
             try isa.popReg(self, Reg.r1);
@@ -332,19 +331,9 @@ pub fn emitPrintStrLit(self: *Emitter, sl: ast.StrLitExpr) !void {
                 try self.unsupported(ip.span, "`$(expr:fmt)` format specs");
                 return;
             }
-            if (self.isPrimitiveType(ip.expr, .char)) {
-                try self.emitExpr(ip.expr);
-                try isa.sys(self, Sys.print_char);
-            } else if (self.isPrimitiveType(ip.expr, .fixed)) {
-                try self.emitExpr(ip.expr);
-                try isa.sys(self, Sys.print_fixed);
-            } else if (self.isPrimitiveType(ip.expr, .str)) {
-                try self.emitExpr(ip.expr);
-                try isa.sys(self, Sys.print_str);
-            } else {
-                try self.emitExpr(ip.expr);
-                try isa.sys(self, if (self.isUnsignedInt(ip.expr)) Sys.print_uint else Sys.print_int);
-            }
+            // Render the value straight to the host (no buffer) — handles
+            // scalars and aggregate default renderings (§4.9) alike.
+            try statements.emitRenderValue(self, ip.expr, .host);
         },
     };
 }
