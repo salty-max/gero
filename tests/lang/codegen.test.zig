@@ -4017,6 +4017,29 @@ test "codegen/math: sqrt_fixed (bit-by-bit isqrt) Q8.8 raw" {
     try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFF0)); // √negative = 0
 }
 
+test "codegen/math: fixed_sin range-reduces a large angle" {
+    // 30000 mod 360 = 120, so fixed_sin(30000) == fixed_sin(120) ≈ 0.865
+    // → 221 in Q8.8 (Bhaskara).
+    var compiled = try compileSource(
+        \\def main()
+        \\  let a: fixed = math.fixed_sin(30000)
+        \\  let b: fixed = math.fixed_sin(120)
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqual(@as(u16, 221), vm.mmap.readWord(0xFFFC)); // sin(30000°)
+    try std.testing.expectEqual(@as(u16, 221), vm.mmap.readWord(0xFFFA)); // sin(120°)
+}
+
 test "codegen/math: rng — deterministic Galois LFSR sequence" {
     // First call lazily seeds (0xACE1) then steps; the sequence is fixed.
     try runAndExpect(
@@ -4093,6 +4116,17 @@ test "codegen/bake: fixed_sin / sqrt_fixed match the runtime at compile time" {
     try std.testing.expect(s90 != null and sq4 != null);
     try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(s90.?)); // fixed_sin(90) = 1.0
     try std.testing.expectEqual(@as(u16, 512), vm.mmap.readWord(sq4.?)); // sqrt_fixed(4.0) = 2.0
+}
+
+test "codegen/math: nested math.* calls compose (args are full exprs)" {
+    // abs(-15)=15; min(10,20)=10; clamp(15, 0, 10)=10. Each arg is itself
+    // a math call — the push/pop arg discipline keeps them independent.
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 0 - 15
+        \\  print math.clamp(math.abs(x), 0, math.min(10, 20))
+        \\end
+    , "10\n");
 }
 
 test "codegen/bank: switch_to writes mb, current reads it" {
