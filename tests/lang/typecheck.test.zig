@@ -2409,6 +2409,49 @@ test "typecheck/suggest: unknown mem.X member surfaces the closest stdlib name" 
     , "E_TYPE_UNDEFINED_METHOD", "read_u16");
 }
 
+test "typecheck/stdlib: unknown math member errors" {
+    try expectCode(
+        \\def main()
+        \\  let x: i16 = math.bogus(1)
+        \\end
+    , "E_TYPE_UNDEFINED_METHOD");
+}
+
+test "typecheck/stdlib: math.min with one arg errors on arity" {
+    try expectCode(
+        \\def main()
+        \\  let x: i16 = math.min(1)
+        \\end
+    , "E_TYPE_ARG_COUNT");
+}
+
+test "typecheck/stdlib: math.abs on a non-numeric type errors" {
+    try expectCode(
+        \\def main()
+        \\  let x = math.abs("nope")
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck/stdlib: math.sat_add rejects fixed (integer-only)" {
+    try expectCode(
+        \\def main()
+        \\  let x: fixed = math.sat_add(1.0, 2.0)
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck/stdlib: test.assert_eq rejects a non-scalar operand" {
+    try expectCode(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def main()
+        \\  test.assert_eq(P { x: 1 }, P { x: 1 })
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
 test "typecheck/is: class form on matching subclass — clean" {
     try expectClean(
         \\class Animal

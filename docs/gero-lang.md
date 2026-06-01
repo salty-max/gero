@@ -2397,6 +2397,46 @@ asm bridge, manual MMIO layout). Calling `addr_of` on a `let` local
 returns its stack-slot address, valid until the enclosing scope ends;
 calling on a `const` returns its static-data address (always valid).
 
+#### 5.3.2 `math` stdlib
+
+Numeric helpers, polymorphic over `i16` / `u16` / `fixed` where it makes
+sense — the operand type picks signed vs unsigned comparison and the
+fixed-point multiply scaling.
+
+| Signature | Notes |
+|---|---|
+| `math.abs(x: T) -> T` | `T ∈ {i16, u16, fixed}`. Unsigned `abs` is the identity. |
+| `math.min(a: T, b: T) -> T` / `math.max(a: T, b: T) -> T` | `T ∈ {i16, u16, fixed}`. |
+| `math.clamp(x: T, lo: T, hi: T) -> T` | `min(max(x, lo), hi)`. |
+| `math.wrap_add` / `wrap_sub` / `wrap_mul`, all `(a: T, b: T) -> T` | Wrap on overflow (skip the debug trap). `T ∈ {i16, u16, fixed}`; `fixed` mul is Q8.8. |
+| `math.sat_add` / `sat_sub` / `sat_mul`, all `(a: T, b: T) -> T` | Clamp to `T`'s bounds on overflow. `T ∈ {i16, u16}` (saturation targets a type's range, which `fixed` doesn't share). |
+| `math.sqrt_fixed(x: fixed) -> fixed` | Q8.8 square root; `x ≤ 0` returns `0`. |
+| `math.fixed_sin(deg: i16) -> fixed` | Sine of an angle in degrees, Q8.8 in `[-1.0, 1.0]`. Bhaskara I approximation (~1% error); range-reduces any `i16` angle. |
+| `math.rng() -> u16` | Next value of a deterministic 16-bit Galois LFSR (maximal period; lazily seeded). |
+
+All `math.*` functions are usable inside `bake` bodies (§3.8) — the
+canonical way to precompute tables (e.g. `fixed_sin` sine LUTs). The
+compile-time result matches the runtime bit-for-bit.
+
+#### 5.3.3 `bank` stdlib
+
+| Signature | Notes |
+|---|---|
+| `bank.switch_to(n: u8)` | Set the active bank (`mb`). The program owns the `0xC000..0xFEFF` window afterward — distinct from the automatic `@bank` cross-bank-call trampoline (§7.3). Canonical use: selecting an SRAM bank for saves. |
+| `bank.current() -> u8` | The active bank id. |
+
+`bank.*` is runtime-only — calling it inside a `bake` body is an error.
+
+#### 5.3.4 `test` stdlib
+
+Used in `@test` functions (§3.7.5).
+
+| Signature | Notes |
+|---|---|
+| `test.assert_eq(a: T, b: T)` / `test.assert_ne(a: T, b: T)` | `T` a register scalar (int / `bool` / `char` / `fixed`). On failure, prints a diagnostic and halts the VM. |
+
+`test.*` is runtime-only — calling it inside a `bake` body is an error.
+
 Host-specific modules (`input`, `display`, `audio` for gtx-16) live
 outside the gero stdlib — gtx-16 ships its own header modules.
 
