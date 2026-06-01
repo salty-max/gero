@@ -16,6 +16,15 @@ const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
 const Reg = opcodes.Reg;
 
+// `rng()` state — a Galois LFSR (taps 0xB400, polynomial x^16+x^15+x^13+
+// x^4+1, maximal 65535-period). The 16-bit state lives in a reserved
+// zero-page cell at the top of the page, away from `@zero_page` globals
+// (which grow from 0x0000). It is zero at boot (RAM zero-inits), so the
+// first call lazily seeds it — no entry-prologue setup needed.
+const rng_state_addr: u16 = 0x00FE;
+const rng_seed: u16 = 0xACE1;
+const rng_taps: u16 = 0xB400;
+
 /// How an operand's type drives the lowering: `u16`/`u8` need unsigned
 /// comparison; `fixed` needs Q8.8 multiply scaling; everything else is
 /// treated as signed (`i16`/`i8`/`fixed` all compare as signed i16).
@@ -46,7 +55,32 @@ pub fn emitMathCall(self: *Emitter, name: []const u8, c: ast.CallExpr) !void {
     if (std.mem.eql(u8, name, "sat_mul")) return emitSat(self, c, .mul);
     if (std.mem.eql(u8, name, "fixed_sin")) return emitFixedSin(self, c);
     if (std.mem.eql(u8, name, "sqrt_fixed")) return emitSqrtFixed(self, c);
+    if (std.mem.eql(u8, name, "rng")) return emitRng(self, c);
     try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: unknown `math` builtin");
+}
+
+/// `rng() -> u16` — advance the Galois LFSR and return the new state.
+/// Lazily seeds on the first call (state is 0 at boot). Deterministic:
+/// identical programs produce identical sequences.
+fn emitRng(self: *Emitter, c: ast.CallExpr) !void {
+    _ = c; // no arguments
+    try isa.movAddrToReg(self, rng_state_addr, Reg.acu); // acu = state
+    // Lazy seed: state 0 → seed (also keeps a 0 cell from sticking at 0).
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const seeded = try isa.emitJumpPlaceholder(self, Op.jne_addr);
+    try isa.movImmToReg(self, rng_seed, Reg.acu);
+    try isa.patchJumpTo(self, seeded, try self.currentOffset());
+    // Galois step: lsb = state & 1; state >>= 1; if lsb: state ^= taps.
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try isa.movImmToReg(self, 1, Reg.r2);
+    try isa.andRegReg(self, Reg.r1, Reg.r2); // r1 = lsb
+    try isa.shrRegImm(self, Reg.acu, 1); // logical >> 1
+    try isa.cmpRegImm(self, Reg.r1, 0);
+    const no_xor = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    try isa.movImmToReg(self, rng_taps, Reg.r2);
+    try isa.xorRegReg(self, Reg.acu, Reg.r2); // state ^= taps
+    try isa.patchJumpTo(self, no_xor, try self.currentOffset());
+    try isa.movRegToAddr(self, Reg.acu, rng_state_addr); // persist; acu is the result
 }
 
 /// `sqrt_fixed(x: fixed) -> fixed` — Q8.8 square root. For x > 0 the

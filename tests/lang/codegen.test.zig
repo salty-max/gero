@@ -4017,6 +4017,17 @@ test "codegen/math: sqrt_fixed (bit-by-bit isqrt) Q8.8 raw" {
     try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFF0)); // √negative = 0
 }
 
+test "codegen/math: rng — deterministic Galois LFSR sequence" {
+    // First call lazily seeds (0xACE1) then steps; the sequence is fixed.
+    try runAndExpect(
+        \\def main()
+        \\  print math.rng()
+        \\  print math.rng()
+        \\  print math.rng()
+        \\end
+    , "57968\n28984\n14492\n");
+}
+
 test "codegen/bank: switch_to writes mb, current reads it" {
     try runAndExpect(
         \\def main()
