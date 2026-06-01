@@ -608,6 +608,11 @@ When an interrupt fires (and is not masked — see §6.4):
 3. Set `ip ← mem[0x1000 + 2 * vector]`.
 4. Continue dispatch.
 
+Only `ip`, `fp`, and `flg` are saved. General-purpose registers
+(`acu`, `r1`–`r6`) are **not** preserved — a handler must save and
+restore any it clobbers (6502 `pha`/`pla` discipline). The gero-lang
+compiler does this automatically for `@interrupt` handlers.
+
 ### 6.3 Exit sequence (`rti`)
 
 1. Pop `flg`, `fp`, `ip` (reverse order).

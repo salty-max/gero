@@ -795,8 +795,12 @@ test "codegen: banked program relocates the stack out of the bank window" {
     defer vm.deinit();
     const loaded = try gero.vm.parseGx(compiled.image);
     try vm.boot(alloc, loaded);
-    _ = gero.vm.step(&vm); // execute the stack-relocation instruction
+    // Both sp and fp move into low RAM — the entry's own locals are
+    // fp-relative, so fp must move too or they'd stay in the IO page.
+    _ = gero.vm.step(&vm); // mov #bank_stack_top, sp
+    _ = gero.vm.step(&vm); // mov sp, fp
     try std.testing.expectEqual(@as(u16, 0x0FFE), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, 0x0FFE), vm.regs.read(.fp));
 }
 
 test "codegen: cross-bank call in a loop keeps the save-stack balanced" {
@@ -3736,6 +3740,151 @@ test "codegen/overflow: custom `@interrupt $05` handler fires on overflow" {
     }
     try std.testing.expect(trap_addr != null);
     try std.testing.expectEqual(@as(u16, 1), vm.mmap.readWord(trap_addr.?));
+}
+
+test "codegen/@interrupt: handler preserves acu across the interrupted computation" {
+    // The overflow trap fires mid-expression (`a + b` overflows) with the
+    // wrapped sum live in acu; the handler clobbers acu (writes a global).
+    // Interrupt entry saves only ip/fp/flg, so without the handler saving
+    // acu the resumed `let c = a + b` would store the handler's value.
+    // 30000 + 5000 wraps to -30536 (i16).
+    try runAndExpect(
+        \\let trap_fired: i16 = 0
+        \\@interrupt $05
+        \\def on_overflow()
+        \\  trap_fired = 1
+        \\end
+        \\def main()
+        \\  let a: i16 = 30000
+        \\  let b: i16 = 5000
+        \\  let c: i16 = a + b
+        \\  print c
+        \\end
+    , "-30536\n");
+}
+
+test "codegen/@interrupt: handler with locals gets its own frame + clean rti" {
+    // An ISR with locals needs its own frame (fp=sp) and a frame release
+    // before rti; otherwise its locals alias the interrupted frame and
+    // rti pops a misaligned stack. Fire it via the overflow trap: main
+    // must resume + print the wrapped sum, and the handler's local-based
+    // computation (20 + 22) must land in its global.
+    var compiled = try compileSource(
+        \\let trapped: i16 = 0
+        \\@interrupt $05
+        \\def on_overflow()
+        \\  let x: i16 = 20
+        \\  let y: i16 = 22
+        \\  trapped = x + y
+        \\end
+        \\def main()
+        \\  let a: i16 = 30000
+        \\  let b: i16 = 5000
+        \\  let c: i16 = a + b
+        \\  print c
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // main resumed cleanly (rti landed correctly) and printed the sum.
+    try std.testing.expectEqualStrings("-30536\n", writer.written());
+    // the handler computed x + y = 42 in its own frame.
+    const header = try gero.disasm.parseHeader(compiled.image);
+    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
+    defer symbols.deinit(alloc);
+    var trapped_addr: ?u16 = null;
+    for (symbols.entries) |sym| {
+        if (std.mem.eql(u8, sym.name, "trapped")) trapped_addr = sym.address;
+    }
+    try std.testing.expect(trapped_addr != null);
+    try std.testing.expectEqual(@as(u16, 42), vm.mmap.readWord(trapped_addr.?));
+}
+
+test "codegen/@interrupt: handler can cross-bank-call (preserves acu across it)" {
+    // A handler that cross-bank-calls exercises the trampoline (which
+    // uses r1..r6) from inside the ISR. The ISR prologue saves the GP
+    // registers, so main's interrupted computation (live in acu) survives
+    // both the handler and its cross-bank call. 30000 + 30000 wraps to
+    // -5536; helper(21) = 42 lands in the global.
+    var compiled = try compileSource(
+        \\let result: i16 = 0
+        \\@bank 2
+        \\def helper(x: i16) -> i16
+        \\  return x * 2
+        \\end
+        \\@interrupt $05
+        \\def on_overflow()
+        \\  result = helper(21)
+        \\end
+        \\def main()
+        \\  let a: i16 = 30000
+        \\  let c: i16 = a + a
+        \\  print c
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("-5536\n", writer.written());
+    const header = try gero.disasm.parseHeader(compiled.image);
+    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
+    defer symbols.deinit(alloc);
+    var result_addr: ?u16 = null;
+    for (symbols.entries) |sym| {
+        if (std.mem.eql(u8, sym.name, "result")) result_addr = sym.address;
+    }
+    try std.testing.expect(result_addr != null);
+    try std.testing.expectEqual(@as(u16, 42), vm.mmap.readWord(result_addr.?));
+}
+
+test "codegen/@interrupt: empty handler's prologue/epilogue stay balanced" {
+    // A body-less handler still runs the register save/restore + frame
+    // open/release; the pushes and pops must balance so `rti` finds the
+    // VM-pushed flg/fp/ip. main resumes + prints the wrapped sum.
+    try runAndExpect(
+        \\@interrupt $05
+        \\def noop()
+        \\end
+        \\def main()
+        \\  let c: i16 = 30000 + 5000
+        \\  print c
+        \\end
+    , "-30536\n");
+}
+
+test "codegen/@interrupt: handler can call a regular function (enter/ret frame composes)" {
+    // The handler opens its own frame (fp=sp), then calls a regular fn
+    // whose enter/ret push + restore a nested frame on top. The handler
+    // prints during the trap, then main resumes — exercising both the
+    // frame composition and acu preservation across the call.
+    try runAndExpect(
+        \\def dbl(n: i16) -> i16
+        \\  return n * 2
+        \\end
+        \\@interrupt $05
+        \\def handler()
+        \\  print dbl(21)
+        \\end
+        \\def main()
+        \\  let c: i16 = 30000 + 5000
+        \\  print c
+        \\end
+    , "42\n-30536\n");
 }
 
 test "codegen/overflow: fixed-point `*` wraps in both modes per ISA §5.4.1" {

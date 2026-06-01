@@ -81,6 +81,13 @@ const bank_save_top: u16 = bank_save_base + bank_save_slot_bytes * bank_save_lev
 // growing down toward the save-stack at `bank_save_ptr`.
 const bank_stack_top: u16 = 0x0FFE;
 
+// GP registers an `@interrupt` handler saves on entry + restores before
+// `rti`, so it's transparent to the interrupted code (the VM saves only
+// `ip`/`fp`/`flg`). All of them: regular codegen uses `acu`/`r1`–`r3`
+// and the cross-bank trampoline `r4`–`r6`, and a handler may exercise
+// either — saving the full set keeps it correct regardless of which.
+const isr_saved_regs = [_]u8{ Reg.acu, Reg.r1, Reg.r2, Reg.r3, Reg.r4, Reg.r5, Reg.r6 };
+
 // ---------- .gx file constants (re-exported from archive) ----------
 
 const bank_window_base = archive.bank_window_base;
@@ -1368,11 +1375,39 @@ pub const Emitter = struct {
     }
 
     /// Move the runtime stack into low RAM for banked programs so call
-    /// frames stay out of the bank-switched window. No-op (keeps the
-    /// boot `sp`) for unbanked programs. Emit before the frame reserve.
+    /// frames stay out of the bank-switched window. Sets both `sp` and
+    /// `fp` (the entry's own locals are `fp`-relative, so `fp` must move
+    /// too). No-op (keeps the boot `sp`/`fp`) for unbanked programs.
+    /// Emit before the frame reserve.
     pub fn relocateBankStack(self: *Emitter) !void {
         if (!self.hasBankedDefs()) return;
         try isa.movImmToReg(self, bank_stack_top, Reg.sp);
+        try isa.movRegToReg(self, Reg.sp, Reg.fp);
+    }
+
+    /// `@interrupt` prologue: interrupt entry saves only `ip`/`fp`/`flg`,
+    /// so a handler must preserve every GP register it might clobber for
+    /// the interrupted code to resume intact. Push them, then give the
+    /// handler its own frame (`fp = sp`) so its locals don't alias the
+    /// interrupted frame. `mb` is left alone — a handler never changes it
+    /// except via the cross-bank trampoline, which restores it. Emit
+    /// before the frame reserve.
+    pub fn emitIsrPrologue(self: *Emitter) !void {
+        for (isr_saved_regs) |r| try isa.pushReg(self, r);
+        try isa.movRegToReg(self, Reg.sp, Reg.fp);
+    }
+
+    /// `@interrupt` epilogue: release the frame, restore the saved GP
+    /// registers (reverse push order), then `rti`. Replaces the bare
+    /// `rti` at every handler exit (fall-off + explicit `return`).
+    pub fn emitIsrEpilogue(self: *Emitter) !void {
+        try isa.movRegToReg(self, Reg.fp, Reg.sp); // release the frame
+        var i: usize = isr_saved_regs.len;
+        while (i > 0) {
+            i -= 1;
+            try isa.popReg(self, isr_saved_regs[i]);
+        }
+        try self.emitByte(Op.rti_op);
     }
 
     /// Emit the cross-bank call trampoline in the base image (always
