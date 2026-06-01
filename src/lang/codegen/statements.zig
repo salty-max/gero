@@ -326,7 +326,7 @@ pub fn emitReturnStmt(self: *Emitter, r: ast.ReturnStmt) !void {
     if (self.is_entry) {
         try isa.hlt(self);
     } else if (self.is_isr) {
-        try self.emitByte(Op.rti_op);
+        try self.emitIsrEpilogue();
     } else {
         try self.emitByte(Op.ret_op);
     }

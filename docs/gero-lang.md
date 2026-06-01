@@ -982,7 +982,7 @@ Module-level visibility is controlled by the `local` keyword
 
 | Annotation | Applies to | Effect |
 |------------|------------|--------|
-| `@interrupt N` | `def` | Bind this function as the handler for vector `N` (gero ISA §6.1). The compiler emits the `rti` epilogue automatically and writes the function address into `mem[$1000 + 2 * N]` at boot. The function body must take no parameters and return nothing. |
+| `@interrupt N` | `def` | Bind this function as the handler for vector `N` (gero ISA §6.1). The compiler makes the handler transparent to the interrupted code: interrupt entry preserves only `ip`/`fp`/`flg` (ISA §6.2), so the compiler saves + restores the general-purpose registers around the body and gives the handler its own stack frame. It emits the `rti` epilogue automatically and writes the function address into `mem[$1000 + 2 * N]` at boot. The function body must take no parameters and return nothing. |
 
 ```
 @interrupt $06              -- vblank

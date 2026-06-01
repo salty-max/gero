@@ -120,6 +120,11 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     // non-banked programs keep the boot `sp` (no-op).
     if (self.is_entry) try self.relocateBankStack();
 
+    // `@interrupt` handlers save the GP registers + open their own frame
+    // before reserving locals, so they're transparent to the interrupted
+    // code (interrupt entry preserves only ip/fp/flg).
+    if (is_isr) try self.emitIsrPrologue();
+
     // Reserve the frame up front (fixed reservation — a real allocator
     // would compute live ranges). The sret scratch buffer (holds a
     // returned struct until its consumer copies it out) is carved first
@@ -163,7 +168,7 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     if (self.is_entry) {
         try isa.hlt(self);
     } else if (is_isr) {
-        try self.emitByte(Op.rti_op);
+        try self.emitIsrEpilogue();
     } else {
         try self.emitByte(Op.ret_op);
     }

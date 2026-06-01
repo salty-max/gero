@@ -22,5 +22,13 @@ calls can neither corrupt the shared save-stack nor an in-flight call.
 Banked programs now run their stack in low RAM instead of leaving it at
 the boot `sp` (`0xFFFE`). The boot stack grows down through the IO page
 and the bank window (`0xC000..0xFEFF`), which is bank-switched for a
-banked program — so call frames would corrupt across a bank hop.
-Unbanked programs keep the boot `sp` and are unchanged.
+banked program — so call frames would corrupt across a bank hop. Both
+`sp` and `fp` move (the entry's own locals are `fp`-relative). Unbanked
+programs keep the boot `sp` and are unchanged.
+
+`@interrupt` handlers are now transparent to the interrupted code.
+Interrupt entry preserves only `ip`/`fp`/`flg`, so the compiler saves +
+restores the general-purpose registers around the handler body and
+gives the handler its own stack frame. Previously a handler clobbered
+the interrupted code's live registers, and a handler with locals
+aliased the interrupted frame and misaligned its `rti`.
