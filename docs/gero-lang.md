@@ -324,7 +324,7 @@ PICO-8, Sonic, early Doom used.
 
 | Form | Example | Notes |
 |------|---------|-------|
-| Array (fixed-size) | `[u8; 64]` | N is comptime. Stack-allocated if local. Literals: `[a, b, c]` for explicit elements or `[value; count]` to repeat a single value. |
+| Array (fixed-size) | `[u8; 64]` | N is comptime. Stack-allocated if local; value-copy on assignment / pass / return. Element `T` is any type — scalar or aggregate (`struct` / tuple / nested `[T; N]`). Literals: `[a, b, c]` (explicit) or `[value; count]` (repeat). Index read/write `arr[i]` / `arr[i] = x`; an aggregate literal stores in place (`arr[i] = Pos { x: 1, y: 2 }`). A constant out-of-range index is a compile error (`E_TYPE_INDEX_OOR`); a runtime out-of-range index faults to vector `$02` in debug builds (unchecked in release / size, like the arithmetic-overflow trap). |
 | Dynamic array | `Vec(i16)` | Growable buffer with `push` / `pop` / `len` / `at`. See §3.4.3. |
 | Tuple | `(i16, str)` | Anonymous heterogeneous pair / triple / etc. Max 4 elements (5+ → use a struct). Destructurable in `let` and `match`. Element access `.0` / `.1` / …, element store `t.N = x`, value-copy + pass / return by value, structural `==` / `!=`, and `(v0, v1, …)` print. |
 | Optional | `T?` | Nullable pointer type — see §3.4.1. |

@@ -134,6 +134,53 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
         }
         return;
     }
+    // `arr[i] = value` — store into element `i` at base + i*elem_width.
+    if (a.target.* == .index) {
+        const ix = a.target.index;
+        const info = self.arrayInfoOf(ix.receiver) orelse {
+            try self.unsupported(a.span, "indexed store on a non-array value");
+            return;
+        };
+        switch (self.arrayElemKindOf(info.elem)) {
+            .scalar => {
+                if (ix.index.* == .int_lit) {
+                    // Constant index — fixed offset (typechecker bounds-checked).
+                    try self.emitExpr(a.value);
+                    try isa.pushReg(self, Reg.acu);
+                    try self.emitExpr(ix.receiver); // acu = array base
+                    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+                    try isa.popReg(self, Reg.r2); // r2 = value
+                    // @as: const index × elem_width within the (≤127-byte) array.
+                    const offset: u16 = @intCast(@as(i32, ix.index.int_lit.value) * info.elem_width);
+                    try storeArrayElem(self, Reg.r1, offset, info, Reg.r2);
+                } else {
+                    // Runtime index — eval the value first, then the
+                    // bounds-trapped element address (which parks the array
+                    // base, leaving the value safely below it on the stack).
+                    try self.emitExpr(a.value);
+                    try isa.pushReg(self, Reg.acu); // [parked] value
+                    try value_struct.emitIndexAddr(self, ix, info); // acu = element address
+                    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+                    try isa.popReg(self, Reg.r2); // r2 = value
+                    try storeArrayElem(self, Reg.r1, 0, info, Reg.r2);
+                }
+            },
+            // Aggregate element — materialize the value straight into the
+            // slot (a literal lands in place; any other value is copied).
+            else => {
+                if (ix.index.* == .int_lit) {
+                    try self.emitExpr(ix.receiver); // acu = array base
+                    // @as: const index × elem_width within the (≤127-byte) array.
+                    const offset: u16 = @intCast(@as(i32, ix.index.int_lit.value) * info.elem_width);
+                    if (offset != 0) try isa.addImmToReg(self, offset, Reg.acu);
+                } else {
+                    try value_struct.emitIndexAddr(self, ix, info); // acu = element address
+                }
+                try value_struct.emitAggregateStoreInto(self, a.value, info.elem, Reg.acu);
+            },
+        }
+        return;
+    }
     if (a.target.* != .ident) {
         try self.unsupported(a.span, "non-ident assignment targets (field / index)");
         return;
@@ -151,6 +198,13 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
     if (self.tupleElemsOf(a.target)) |elems| {
         if (self.locals.get(name)) |ofs| {
             try value_struct.emitTupleInto(self, a.value, elems, ofs);
+            return;
+        }
+    }
+    // Array-typed reassignment — same inline value copy (full width).
+    if (self.arrayInfoOf(a.target)) |info| {
+        if (self.locals.get(name)) |ofs| {
+            try value_struct.emitArrayInto(self, a.value, info.elem, info.count, ofs);
             return;
         }
     }
@@ -183,6 +237,15 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
         return;
     }
     try self.unsupported(a.target.span(), "assignment target not in scope");
+}
+
+/// Store scalar `src` into array element `[base + offset]` as a word/byte.
+fn storeArrayElem(self: *Emitter, base: u8, offset: u16, info: codegen.Emitter.ArrayInfo, src: u8) !void {
+    if (info.elem_width == 1) {
+        try class.emitByteStoreAtOffset(self, base, offset, src);
+    } else {
+        try class.emitWordStoreAtOffset(self, base, offset, src);
+    }
 }
 
 /// `target++` / `target--` — desugars to `target = target ± 1` and
@@ -236,6 +299,27 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
             if (tuple_elems) |elems| {
                 try value_struct.emitTupleInto(self, init_expr, elems, slot);
             } else try self.unsupported(d.span, "tuple binding initialized from a non-tuple value");
+        }
+        return;
+    }
+
+    // Array-typed binding — inline value semantics (§3.4), sized by the
+    // element width × count. Element access lives in expr/statements.
+    const arr_info: ?Emitter.ArrayInfo = if (d.init) |e| self.arrayInfoOf(e) else null;
+    const ann_array = if (d.type_ann) |t| t.* == .array else false;
+    if (arr_info != null or ann_array) {
+        const width: u16 = if (d.type_ann) |t|
+            self.widthOfTypeAnn(t.*)
+        else blk: {
+            const info = arr_info.?;
+            // @as: array width capped by the i8 frame-offset limit.
+            break :blk @intCast(@as(u32, info.elem_width) * info.count);
+        };
+        const slot = try self.allocLocalSized(dup_name, width);
+        if (d.init) |init_expr| {
+            if (arr_info) |info| {
+                try value_struct.emitArrayInto(self, init_expr, info.elem, info.count, slot);
+            } else try self.unsupported(d.span, "array binding initialized from a non-array value");
         }
         return;
     }

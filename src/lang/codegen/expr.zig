@@ -50,10 +50,10 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .char_lit => |c| try isa.movImmToReg(self, c.value, Reg.acu),
         .paren => |p| try emitExpr(self, p.inner),
         .ident => |i| {
-            // A struct- or tuple-typed binding evaluates to its base
-            // address — aggregate values are addressed inline, not
+            // A struct- / tuple- / array-typed binding evaluates to its
+            // base address — aggregate values are addressed inline, not
             // loaded as a word.
-            if (self.structNameOf(e) != null or self.tupleElemsOf(e) != null) {
+            if (self.structNameOf(e) != null or self.tupleElemsOf(e) != null or self.arrayInfoOf(e) != null) {
                 try self.emitAddrOf(e);
                 return;
             }
@@ -91,6 +91,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .method_call => |m| try emitMethodCall(self, m, e),
         .field => |f| try emitFieldExpr(self, f, e),
         .tuple_index => |ti| try emitTupleIndexExpr(self, ti),
+        .index => |ix| try emitIndexExpr(self, ix),
         .self_expr => |se| {
             // `self` inside a method body lives at fp+4 (the first
             // implicit param). Outside a method it's a typecheck
@@ -243,6 +244,50 @@ fn emitTupleIndexExpr(self: *Emitter, ti: ast.TupleIndexExpr) !void {
     };
     try emitExpr(self, ti.receiver); // acu = tuple base address
     try value_struct.emitTupleElemLoad(self, elems, ti.index);
+}
+
+/// Lower an array index read `arr[i]` — resolve the element at
+/// `base + i*elem_width`. A constant index folds to a fixed offset
+/// (the typechecker already bounds-checked it); a runtime index is
+/// bounds-trapped (debug) then scaled. A scalar element loads its
+/// word/byte; an aggregate element leaves its address (see `emitArrayElem`).
+fn emitIndexExpr(self: *Emitter, ix: ast.IndexExpr) !void {
+    const info = self.arrayInfoOf(ix.receiver) orelse {
+        try self.unsupported(ix.span, "indexing a non-array value");
+        return;
+    };
+    if (ix.index.* == .int_lit) {
+        try emitExpr(self, ix.receiver); // acu = base address
+        try isa.movRegToReg(self, Reg.acu, Reg.r1);
+        // @as: const index × elem_width within the (≤127-byte) array.
+        const offset: u16 = @intCast(ix.index.int_lit.value * info.elem_width);
+        try emitArrayElem(self, Reg.r1, offset, info);
+        return;
+    }
+    try value_struct.emitIndexAddr(self, ix, info); // acu = element address
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try emitArrayElem(self, Reg.r1, 0, info);
+}
+
+/// Resolve array element `[base + offset]`: load a scalar element into
+/// `acu` (sign-extending an `i8`); for an aggregate element leave its base
+/// address in `acu` — an aggregate value *is* an address, so `.field` /
+/// `.N` / further indexing resolve against it without a deref.
+fn emitArrayElem(self: *Emitter, base: u8, offset: u16, info: codegen.Emitter.ArrayInfo) !void {
+    switch (self.arrayElemKindOf(info.elem)) {
+        .scalar => {
+            if (info.elem_width == 1) {
+                try class.emitByteLoadAtOffset(self, base, offset, Reg.acu);
+                if (info.signed_byte) try isa.signExtendByte(self, Reg.acu);
+            } else {
+                try class.emitWordLoadAtOffset(self, base, offset, Reg.acu);
+            }
+        },
+        else => {
+            try isa.movRegToReg(self, base, Reg.acu);
+            if (offset != 0) try isa.addImmToReg(self, offset, Reg.acu);
+        },
+    }
 }
 
 /// Lower an `is` test. Two shapes:
