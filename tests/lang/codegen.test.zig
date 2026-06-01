@@ -4028,6 +4028,73 @@ test "codegen/math: rng — deterministic Galois LFSR sequence" {
     , "57968\n28984\n14492\n");
 }
 
+test "codegen/bake: math.* evaluated at compile time (int + unsigned threading)" {
+    // `G` proves the typechecker's types thread into the bake evaluator:
+    // min(60000, 5) over u16 is 5; a signed compare would pick 60000.
+    try runAndExpect(
+        \\const A: i16 = bake do
+        \\  math.min(5, 3)
+        \\end
+        \\const B: i16 = bake do
+        \\  math.clamp(15, 0, 10)
+        \\end
+        \\const C: i16 = bake do
+        \\  math.abs(0 - 7)
+        \\end
+        \\const D: i16 = bake do
+        \\  math.wrap_add(30000, 5000)
+        \\end
+        \\const G: u16 = bake do
+        \\  let a: u16 = 60000
+        \\  math.min(a, 5)
+        \\end
+        \\def main()
+        \\  print A
+        \\  print B
+        \\  print C
+        \\  print D
+        \\  print G
+        \\end
+    , "3\n10\n7\n-30536\n5\n");
+}
+
+test "codegen/bake: fixed_sin / sqrt_fixed match the runtime at compile time" {
+    // The bake evaluator's fixed routines mirror the runtime exactly:
+    // fixed_sin(90) = 1.0 = 256, sqrt_fixed(4.0) = 2.0 = 512.
+    var compiled = try compileSource(
+        \\const S90: fixed = bake do
+        \\  math.fixed_sin(90)
+        \\end
+        \\const SQ4: fixed = bake do
+        \\  math.sqrt_fixed(4.0)
+        \\end
+        \\def main()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    const header = try gero.disasm.parseHeader(compiled.image);
+    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
+    defer symbols.deinit(alloc);
+    var s90: ?u16 = null;
+    var sq4: ?u16 = null;
+    for (symbols.entries) |sym| {
+        if (std.mem.eql(u8, sym.name, "S90")) s90 = sym.address;
+        if (std.mem.eql(u8, sym.name, "SQ4")) sq4 = sym.address;
+    }
+    try std.testing.expect(s90 != null and sq4 != null);
+    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(s90.?)); // fixed_sin(90) = 1.0
+    try std.testing.expectEqual(@as(u16, 512), vm.mmap.readWord(sq4.?)); // sqrt_fixed(4.0) = 2.0
+}
+
 test "codegen/bank: switch_to writes mb, current reads it" {
     try runAndExpect(
         \\def main()
