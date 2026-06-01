@@ -114,6 +114,12 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     // @as: clamp `param_ofs` into i16 before the narrowing cast.
     self.sret_param_ofs = @intCast(@min(param_ofs, @as(i32, std.math.maxInt(i16))));
 
+    // Banked programs relocate the stack into low RAM (the ISA's flat
+    // stack home) before reserving any frame, so call frames never land
+    // in the bank-switched window. Must precede the frame reserve below;
+    // non-banked programs keep the boot `sp` (no-op).
+    if (self.is_entry) try self.relocateBankStack();
+
     // Reserve the frame up front (fixed reservation — a real allocator
     // would compute live ranges). The sret scratch buffer (holds a
     // returned struct until its consumer copies it out) is carved first
@@ -137,6 +143,10 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     // its IVT slot before the body runs — boot leaves `flg.I = 0`, so an
     // interrupt could otherwise fire against an uninitialized vector.
     if (self.is_entry) try emitIvtInit(self);
+
+    // Entry-def prologue: seed the cross-bank save-stack pointer before
+    // any cross-bank call (no-op when the program has no banked defs).
+    if (self.is_entry) try self.seedBankSaveStack();
 
     // Entry-def prologue: seed every non-`bake` top-level `let` / `const`
     // slot with its initializer before the body can read it.

@@ -51,6 +51,18 @@ pub fn movRegToAddr(self: *Emitter, src: u8, addr: u16) !void {
     try self.emitU16Le(addr);
 }
 
+/// `mov imm16, [addr]` (0x14) — store a 16-bit immediate to addr.
+pub fn movImmToAddr(self: *Emitter, imm: u16, addr: u16) !void {
+    try self.emitByte(Op.mov_imm16_addr);
+    try self.emitU16Le(imm);
+    try self.emitU16Le(addr);
+}
+
+/// `sei` (0xB3) — set the interrupt-disable flag (block IRQs).
+pub fn sei(self: *Emitter) !void {
+    try self.emitByte(Op.sei_op);
+}
+
 /// `mov [zp], reg` (0x1A) — load 16-bit word from zp slot.
 pub fn movZpToReg(self: *Emitter, zp: u8, dst: u8) !void {
     try self.emitByte(Op.mov_zp_to_reg);
@@ -94,6 +106,12 @@ pub fn movlRegToZp(self: *Emitter, src: u8, zp: u8) !void {
     try self.emitByte(Op.movl_reg_to_zp);
     try self.emitByte(src);
     try self.emitByte(zp);
+}
+
+/// `push imm16` (0x30) — push a 16-bit immediate.
+pub fn pushImm16(self: *Emitter, imm: u16) !void {
+    try self.emitByte(Op.push_imm16);
+    try self.emitU16Le(imm);
 }
 
 /// `push reg` (0x31).
