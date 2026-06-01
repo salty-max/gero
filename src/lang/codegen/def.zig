@@ -80,9 +80,8 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     }
 
     const dup_name = try self.arena.dupe(u8, label);
-    // @as: per-buffer code offset stays ≤ 64 KiB.
-    const code_offset: u16 = @intCast(try self.currentOffset());
-    const addr: u16 = if (bank_target) |_| bank_window_base + code_offset else codegen.code_base + code_offset;
+    const base = if (bank_target) |_| bank_window_base else codegen.code_base;
+    const addr = codegen.offsetToAddr(base, try self.currentOffset());
     try self.fn_addresses.put(self.arena, dup_name, addr);
 
     // Bind params to positive fp-relative offsets. `call` leaves the
@@ -109,16 +108,22 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     // `return` copies the result there instead of into `acu`.
     self.current_ret_struct = if (def.ret_type) |rt| self.structNameOfTypeAnn(rt.*) else null;
     self.current_ret_is_tuple = if (def.ret_type) |rt| rt.* == .tuple else false;
-    // @as: sits past the params; the frame-size cap keeps it small.
-    self.sret_param_ofs = @intCast(param_ofs);
+    // A param list overrunning the fp range already set `frame_overflow`
+    // above, so this clamped value is unused; the clamp only keeps the
+    // narrowing from panicking on a pathologically long param list.
+    // @as: clamp `param_ofs` into i16 before the narrowing cast.
+    self.sret_param_ofs = @intCast(@min(param_ofs, @as(i32, std.math.maxInt(i16))));
 
     // Reserve the frame up front (fixed reservation — a real allocator
     // would compute live ranges). The sret scratch buffer (holds a
     // returned struct until its consumer copies it out) is carved first
     // so its offset stays stable across the body.
     const scratch_bytes: u16 = self.global_sret_scratch;
-    // @as: frame size capped well below u16 by the i8 offset cap.
-    const reserve_bytes: u16 = @intCast(self.countFrameBytes(def.body) + scratch_bytes);
+    // A frame past the 127-byte fp range is caught by `reserveFrameSlot`
+    // as the body emits (→ `E_CODEGEN_FRAME_TOO_LARGE`); this clamp only
+    // keeps the static estimate's narrowing from panicking on a huge frame.
+    // @as: clamp the frame estimate into u16 before the narrowing cast.
+    const reserve_bytes: u16 = @intCast(@min(self.countFrameBytes(def.body) + scratch_bytes, @as(usize, std.math.maxInt(u16))));
     if (reserve_bytes > 0) try isa.subImmFromReg(self, reserve_bytes, Reg.sp);
     if (scratch_bytes > 0) self.sret_scratch_ofs = try self.allocLocalSized("\x00sret", scratch_bytes);
 

@@ -38,11 +38,22 @@ pub const ivt_base: u16 = 0x1000;
 pub const code_base: u16 = 0x1100;
 /// First byte of static-data emission.
 pub const data_base: u16 = 0x2000;
-/// Upper bound (exclusive) of the static-data region. Data globals grow
-/// up from `data_base` and must stay below the host IO / command surface
-/// just above (gtx-16 maps its command surface at `0xFE50`); past this a
-/// global can't be addressed safely.
+/// Upper bound (exclusive) of the static-data region — and of the whole
+/// program image. Code, the interned string pool, and data globals all
+/// grow toward this and must stay below the host IO / command surface
+/// just above (gtx-16 maps its command surface at `0xFE50`); past it an
+/// address can't be reached (data → `E_CODEGEN_DATA_OVERFLOW`, the whole
+/// image → `E_CODEGEN_IMAGE_OVERFLOW`).
 pub const data_region_end: u16 = 0xFE40;
+
+/// Convert a buffer-local `offset` under code base `base` to a u16
+/// address, clamping at the u16 ceiling. An over-large image yields a
+/// meaningless (clamped) address but never panics on the narrowing cast —
+/// the post-emit `E_CODEGEN_IMAGE_OVERFLOW` check rejects it cleanly.
+pub fn offsetToAddr(base: u16, offset: usize) u16 {
+    // @as: clamped to ≤ 0xFFFF before the narrow, so it can't truncate.
+    return @intCast(@min(@as(usize, base) + offset, 0xFFFF));
+}
 
 // ---------- .gx file constants (re-exported from archive) ----------
 
@@ -210,6 +221,36 @@ pub fn compile(
     }
 
     try emitter.emitProgram(checked.program, opts.entry_name);
+
+    // Reject an image that overruns the addressable ceiling before
+    // assembling it — the address narrowing during emission clamped
+    // (never panicked), so the size is meaningful here. The code buffer
+    // (code + interned string pool) and the data globals both grow toward
+    // `data_region_end`; past it nothing downstream (heap, IO page) has
+    // room.
+    // @as: widen the u16 bases to usize for the byte-length math.
+    const image_top: usize = @max(@as(usize, code_base) + emitter.code.items.len, @as(usize, emitter.data_cursor));
+    // A `@bank` def's code lives in a separate 16 KiB window buffer; the
+    // archive would silently truncate one that overran it (and the
+    // address clamp above hides the spilled jump targets), so reject it.
+    var bank_overflow = false;
+    var bank_it = emitter.banks.valueIterator();
+    while (bank_it.next()) |b| {
+        if (b.items.len > archive.bank_disk_size) bank_overflow = true;
+    }
+    if (image_top > data_region_end or bank_overflow) {
+        if (bank_overflow) {
+            try emitter.diagFatal(.{ .start = 0, .end = 0 }, "E_CODEGEN_BANK_OVERFLOW", "a `@bank` def's code exceeds the 16 KiB bank window — split it across banks or reduce its size");
+        } else {
+            try emitter.diagFatal(.{ .start = 0, .end = 0 }, "E_CODEGEN_IMAGE_OVERFLOW", "program image (code + interned strings + data) exceeds the addressable ceiling — reduce program size");
+        }
+        return .{
+            .image = try allocator.alloc(u8, 0),
+            .diagnostics = try diagnostics.toOwnedSlice(allocator),
+            .diag_arena = diag_arena,
+            .allocator = allocator,
+        };
+    }
 
     // Build base image: zeros from 0x0000 up to `code_base`, then
     // the emitted code. The static-data region gets folded in only
@@ -1303,9 +1344,7 @@ pub const Emitter = struct {
         self.current_bank = null;
         defer self.current_bank = saved_bank;
 
-        // @as: narrow usize → u16; base image fits in 64 KiB.
-        const tramp_offset: u16 = @intCast(self.code.items.len);
-        self.trampoline_addr = code_base + tramp_offset;
+        self.trampoline_addr = offsetToAddr(code_base, self.code.items.len);
 
         // Save the caller's bank, switch via r2, call the target in r1,
         // restore. The byte sequence is the listing in the doc above.
@@ -1788,9 +1827,7 @@ pub const Emitter = struct {
     /// Resolve a code-buffer offset to its run-time address.
     /// Picks `bank_window_base` or `code_base` from `current_bank`.
     pub fn codeOffsetToAddress(self: *const Emitter, offset: usize) u16 {
-        // @as: per-buffer offsets stay ≤ 64 KiB by ISA constraint.
-        const ofs: u16 = @intCast(offset);
-        return if (self.current_bank != null) bank_window_base + ofs else code_base + ofs;
+        return offsetToAddr(if (self.current_bank != null) bank_window_base else code_base, offset);
     }
 
     /// Mutable view into the active code buffer. Used for emit-

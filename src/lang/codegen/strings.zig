@@ -54,9 +54,7 @@ pub fn emitStringPool(self: *Emitter) !void {
     defer self.current_bank = saved_bank;
 
     for (self.strings.items) |*s| {
-        // @as: usize → u16; base image fits in 16-bit address space.
-        const offset: u16 = @intCast(try self.currentOffset());
-        s.address = codegen.code_base +% offset;
+        s.address = codegen.offsetToAddr(codegen.code_base, try self.currentOffset());
         for (s.bytes) |b| try self.emitByte(b);
         try self.emitByte(0);
     }

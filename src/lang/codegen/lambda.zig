@@ -374,9 +374,7 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
     }
 
     const dup_label = try self.arena.dupe(u8, li.label);
-    // @as: narrow usize code offset to u16; per-buffer offset stays ≤ 64 KiB.
-    const code_offset: u16 = @intCast(try self.currentOffset());
-    const addr: u16 = codegen_mod.code_base + code_offset;
+    const addr = codegen_mod.offsetToAddr(codegen_mod.code_base, try self.currentOffset());
     try self.fn_addresses.put(self.arena, dup_label, addr);
 
     // env_ptr is the hidden first param at fp+4. Register it
@@ -421,8 +419,11 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
     // any other fn).
     const frame_bytes = self.countFrameBytes(lambda.body);
     if (frame_bytes > 0) {
-        // @as: frame size caps well below u16 by the i8 offset cap.
-        const reserve_bytes: u16 = @intCast(frame_bytes);
+        // An over-127 frame is caught by `reserveFrameSlot` as the body
+        // emits (→ frame-too-large); this clamp only keeps the narrowing
+        // from panicking on a huge frame.
+        // @as: clamp the frame estimate into u16 before the narrowing cast.
+        const reserve_bytes: u16 = @intCast(@min(frame_bytes, @as(usize, std.math.maxInt(u16))));
         try isa.subImmFromReg(self, reserve_bytes, Reg.sp);
     }
 

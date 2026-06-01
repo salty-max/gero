@@ -211,9 +211,7 @@ pub fn emitVtables(self: *Emitter) !void {
         const class_name = entry.key_ptr.*;
         const layout = self.class_layouts.getPtr(class_name) orelse continue;
 
-        // @as: currentOffset returns usize, narrow to u16 — base image is ≤ 64 KiB.
-        const offset: u16 = @intCast(try self.currentOffset());
-        layout.vtable_addr = codegen_mod.code_base +% offset;
+        layout.vtable_addr = codegen_mod.offsetToAddr(codegen_mod.code_base, try self.currentOffset());
 
         // Iterate in slot order — each slot's address comes from
         // the class that actually owns the method (inherited
