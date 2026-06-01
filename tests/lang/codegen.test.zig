@@ -3925,6 +3925,33 @@ test "codegen/math: wrap_add/wrap_mul wrap without trapping" {
     , "-30536\n-25536\n");
 }
 
+test "codegen/math: sat_* clamp to i16 bounds (signed)" {
+    try runAndExpect(
+        \\def main()
+        \\  let big: i16 = 30000
+        \\  let nbig: i16 = 0 - 30000
+        \\  print math.sat_add(big, 5000)
+        \\  print math.sat_add(nbig, 0 - 5000)
+        \\  print math.sat_sub(nbig, 5000)
+        \\  print math.sat_mul(1000, 1000)
+        \\  print math.sat_mul(0 - 1000, 1000)
+        \\  print math.sat_add(100, 200)
+        \\end
+    , "32767\n-32768\n-32768\n32767\n-32768\n300\n");
+}
+
+test "codegen/math: sat_* clamp to u16 bounds (unsigned)" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: u16 = 60000
+        \\  let small: u16 = 5
+        \\  print math.sat_add(a, 10000)
+        \\  print math.sat_sub(small, 10)
+        \\  print math.sat_mul(a, 1000)
+        \\end
+    , "65535\n0\n65535\n");
+}
+
 test "codegen/bank: switch_to writes mb, current reads it" {
     try runAndExpect(
         \\def main()
