@@ -736,6 +736,8 @@ should have already enforced.
 | `E_CODEGEN_NO_SELF` | `super.method` / `self` used outside a method body. |
 | `E_CODEGEN_ZP_OVERFLOW` | The zero-page region is exhausted — too many `@zero_page` globals. |
 | `E_CODEGEN_DATA_OVERFLOW` | The static data region is exhausted — too many data globals. |
+| `E_CODEGEN_IMAGE_OVERFLOW` | The program image (code + interned strings + data) exceeds the addressable ceiling (`0xFE40`) — too much code. |
+| `E_CODEGEN_BANK_OVERFLOW` | A `@bank` def's code exceeds the 16 KiB bank window. |
 | `E_CODEGEN_DEFER_NO_BLOCK` | A `defer` was emitted with no enclosing block frame (internal invariant). |
 | `E_CODEGEN_LOOP_JUMP_NO_LOOP` | `break` / `continue` reached codegen outside any loop (internal — the typechecker normally catches this). |
 | `E_CODEGEN_LAMBDA_NOT_ANALYZED` | Internal: a lambda body was missing from the closure-analysis pass. |
@@ -830,6 +832,8 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_CODEGEN_NO_SELF` | Codegen | v0.3 |
 | `E_CODEGEN_ZP_OVERFLOW` | Codegen | v0.3 |
 | `E_CODEGEN_DATA_OVERFLOW` | Codegen | v0.3 |
+| `E_CODEGEN_IMAGE_OVERFLOW` | Codegen | v0.3 |
+| `E_CODEGEN_BANK_OVERFLOW` | Codegen | v0.3 |
 | `E_CODEGEN_DEFER_NO_BLOCK` | Codegen | v0.3 |
 | `E_CODEGEN_LOOP_JUMP_NO_LOOP` | Codegen | v0.3 |
 | `E_CODEGEN_LAMBDA_NOT_ANALYZED` | Codegen | v0.3 |

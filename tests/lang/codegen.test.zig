@@ -1421,6 +1421,136 @@ test "codegen: zero-page overflow emits E_CODEGEN_ZP_OVERFLOW" {
     try std.testing.expect(found);
 }
 
+test "codegen: an over-large image emits E_CODEGEN_IMAGE_OVERFLOW (no panic)" {
+    // ~5000 `print`s of distinct strings push the code buffer + string
+    // pool past the addressable ceiling (0xFE40); the address narrowing
+    // must clamp and surface a clean diagnostic, not panic on the cast.
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(alloc);
+    try source.appendSlice(alloc, "def main()\n");
+    var i: usize = 0;
+    while (i < 5000) : (i += 1) {
+        const line = try std.fmt.allocPrint(alloc, "  print \"message string number {d}\"\n", .{i});
+        defer alloc.free(line);
+        try source.appendSlice(alloc, line);
+    }
+    try source.appendSlice(alloc, "end");
+
+    var stream = try gero.lang.tokenize(alloc, source.items);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source.items, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source.items, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source.items, &checked, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_IMAGE_OVERFLOW")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen: a `@bank` def overrunning its 16 KiB window fails cleanly" {
+    // A banked def whose code exceeds the bank window would be silently
+    // truncated by the archive (and the address clamp hides the spill);
+    // reject it with `E_CODEGEN_BANK_OVERFLOW` instead.
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(alloc);
+    try source.appendSlice(alloc, "@bank 1\ndef huge(x: i16) -> i16\n  let s: i16 = x\n");
+    var i: usize = 0;
+    while (i < 260) : (i += 1) {
+        const line = try std.fmt.allocPrint(alloc, "  if s < {d}\n    s = s + 1\n  else\n    s = s - 1\n  end\n", .{i});
+        defer alloc.free(line);
+        try source.appendSlice(alloc, line);
+    }
+    try source.appendSlice(alloc, "  return s\nend\ndef main()\n  print huge(0)\nend");
+
+    var stream = try gero.lang.tokenize(alloc, source.items);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source.items, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source.items, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source.items, &checked, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_BANK_OVERFLOW")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen: a frame whose static size overflows u16 fails cleanly (no panic)" {
+    // ~33000 uninitialized locals make `countFrameBytes` exceed `0xFFFF`;
+    // the prologue's frame-size narrowing must clamp (the over-127 frame
+    // is reported as `E_CODEGEN_FRAME_TOO_LARGE`), not panic.
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(alloc);
+    try source.appendSlice(alloc, "def main()\n");
+    var i: usize = 0;
+    while (i < 33000) : (i += 1) {
+        const line = try std.fmt.allocPrint(alloc, "  let v{d}: u16\n", .{i});
+        defer alloc.free(line);
+        try source.appendSlice(alloc, line);
+    }
+    try source.appendSlice(alloc, "end");
+
+    var stream = try gero.lang.tokenize(alloc, source.items);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source.items, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source.items, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source.items, &checked, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_FRAME_TOO_LARGE")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen: a param list whose offset overflows i16 fails cleanly (no panic)" {
+    // ~17000 params push the running param offset past `i16` range; the
+    // post-loop `sret_param_ofs` narrowing must clamp rather than panic
+    // (the params overrun the fp range → `E_CODEGEN_FRAME_TOO_LARGE`).
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(alloc);
+    try source.appendSlice(alloc, "def big(");
+    var i: usize = 0;
+    while (i < 17000) : (i += 1) {
+        if (i > 0) try source.appendSlice(alloc, ", ");
+        const p = try std.fmt.allocPrint(alloc, "p{d}: i16", .{i});
+        defer alloc.free(p);
+        try source.appendSlice(alloc, p);
+    }
+    try source.appendSlice(alloc, ") -> i16\n  return p0\nend\ndef main() end");
+
+    var stream = try gero.lang.tokenize(alloc, source.items);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source.items, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source.items, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source.items, &checked, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_FRAME_TOO_LARGE")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
 // ---------- enum codegen (nullary variants) ----------
 
 test "codegen: a nullary enum value renders as `Enum.Variant`" {

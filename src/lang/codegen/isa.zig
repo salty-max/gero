@@ -267,9 +267,7 @@ pub fn emitJumpPlaceholder(self: *Emitter, op: u8) !usize {
 /// current code buffer.
 pub fn patchJumpTo(self: *Emitter, patch_offset: usize, target_offset: usize) !void {
     const buf = try self.currentCode();
-    // @as: usize → u16; per-buffer offset stays ≤ 64 KiB.
-    const target_in_buffer: u16 = @intCast(target_offset);
-    const target_addr: u16 = self.currentBufferBase() +% target_in_buffer;
+    const target_addr = codegen.offsetToAddr(self.currentBufferBase(), target_offset);
     // safety: u16 → 2 LE bytes; both casts are byte-masks.
     buf.items[patch_offset] = @intCast(target_addr & 0xFF);
     buf.items[patch_offset + 1] = @intCast(target_addr >> 8);
@@ -279,9 +277,7 @@ pub fn patchJumpTo(self: *Emitter, patch_offset: usize, target_offset: usize) !v
 /// the current buffer. Used for loop back-edges.
 pub fn emitJumpBack(self: *Emitter, target_offset: usize) !void {
     try self.emitByte(Op.jmp_addr);
-    // @as: usize → u16; per-buffer offset stays ≤ 64 KiB.
-    const target_in_buffer: u16 = @intCast(target_offset);
-    try self.emitU16Le(self.currentBufferBase() +% target_in_buffer);
+    try self.emitU16Le(codegen.offsetToAddr(self.currentBufferBase(), target_offset));
 }
 
 /// `jmp reg` (0x91) — indirect jump via the register's value.
