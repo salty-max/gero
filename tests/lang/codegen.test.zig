@@ -3952,6 +3952,38 @@ test "codegen/math: sat_* clamp to u16 bounds (unsigned)" {
     , "65535\n0\n65535\n");
 }
 
+test "codegen/math: fixed_sin (Bhaskara) over the circle, Q8.8 raw" {
+    // 1.0 = 256, 0.5 = 128, -1.0 = -256 (0xFF00). fixed_sin(45) ≈ 0.707;
+    // Bhaskara + the den halving lands it at 180 (~0.703, ~1 LSB off).
+    var compiled = try compileSource(
+        \\def main()
+        \\  let s0: fixed = math.fixed_sin(0)
+        \\  let s90: fixed = math.fixed_sin(90)
+        \\  let s30: fixed = math.fixed_sin(30)
+        \\  let s270: fixed = math.fixed_sin(270)
+        \\  let s180: fixed = math.fixed_sin(180)
+        \\  let s45: fixed = math.fixed_sin(45)
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // Locals sit at descending fp-relative slots from fp = 0xFFFE.
+    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFFC)); // sin(0) = 0
+    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(0xFFFA)); // sin(90) = 1.0
+    try std.testing.expectEqual(@as(u16, 128), vm.mmap.readWord(0xFFF8)); // sin(30) = 0.5
+    try std.testing.expectEqual(@as(u16, 0xFF00), vm.mmap.readWord(0xFFF6)); // sin(270) = -1.0
+    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFF4)); // sin(180) = 0
+    try std.testing.expectEqual(@as(u16, 180), vm.mmap.readWord(0xFFF2)); // sin(45) ≈ 0.707
+}
+
 test "codegen/bank: switch_to writes mb, current reads it" {
     try runAndExpect(
         \\def main()
