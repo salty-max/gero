@@ -34,6 +34,8 @@ pub const Op = struct {
     /// store: [zp] ← reg.lo (byte store).
     pub const movl_reg_to_zp: u8 = 0x2B;
 
+    /// `push imm16` — push a 16-bit immediate onto the stack.
+    pub const push_imm16: u8 = 0x30;
     /// `push reg` — push register onto the stack.
     pub const push_reg: u8 = 0x31;
     /// `pop reg` — pop top of stack into register.
@@ -125,6 +127,10 @@ pub const Op = struct {
     pub const call_reg: u8 = 0xA1;
     /// `ret` — return from call.
     pub const ret_op: u8 = 0xA2;
+    /// `sei` — set interrupt-disable (`flg.I ← 1`, block IRQs). The
+    /// matching clear is done by restoring a saved `flg`, not `cli`,
+    /// so the prior interrupt-enable state is preserved.
+    pub const sei_op: u8 = 0xB3;
     /// `rti` — return from interrupt (pop flg/fp/ip).
     pub const rti_op: u8 = 0xFD;
 
@@ -148,12 +154,21 @@ pub const Reg = struct {
     pub const r2: u8 = 0x03;
     /// General-purpose register 3.
     pub const r3: u8 = 0x04;
+    /// General-purpose register 4.
+    pub const r4: u8 = 0x05;
+    /// General-purpose register 5.
+    pub const r5: u8 = 0x06;
+    /// General-purpose register 6.
+    pub const r6: u8 = 0x07;
     /// Stack pointer.
     pub const sp: u8 = 0x0A;
     /// Frame pointer.
     pub const fp: u8 = 0x0B;
     /// Memory-bank selector — selects the active SRAM bank window.
     pub const mb: u8 = 0x0C;
+    /// Status flags (Z/N/C/V/I). Read/written as a whole register to
+    /// save + restore the interrupt-disable bit across a critical section.
+    pub const flg: u8 = 0x0E;
 };
 
 /// `sys` syscall ids per `src/vm/handlers/system.zig::SyscallId`.

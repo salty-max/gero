@@ -55,6 +55,32 @@ pub fn offsetToAddr(base: u16, offset: usize) u16 {
     return @intCast(@min(@as(usize, base) + offset, 0xFFFF));
 }
 
+// ---------- cross-bank save-stack (codegen-internal) ----------
+
+// A software save-stack for the `__call_bank` trampoline: each cross-bank
+// call parks (saved `mb`, caller return-ip) here so nested cross-bank
+// calls — including one re-entered from an `@interrupt` handler — unwind
+// correctly. It sits at the bottom of low RAM, below `code_base` /
+// `data_base` and always mapped regardless of `mb`. Banked programs run
+// their runtime stack from the top of low RAM (`bank_stack_top`) growing
+// down toward this area, so the two share low RAM — roughly 3.5 KB of
+// runtime stack before they meet (untrapped, as with any stack overflow).
+const bank_save_ptr: u16 = 0x0100; // 2-byte cell holding the live save-sp
+const bank_save_slot_bytes: u16 = 4; // one (mb, return-ip) pair per level
+const bank_save_mb_ofs: i8 = 0; // saved `mb` within a slot
+const bank_save_ret_ofs: i8 = 2; // saved caller return-ip within a slot
+const bank_save_levels: u16 = 64; // max cross-bank nesting depth
+const bank_save_base: u16 = bank_save_ptr + 2; // first save-area byte
+const bank_save_top: u16 = bank_save_base + bank_save_slot_bytes * bank_save_levels; // initial save-sp (grows down)
+
+// Initial `sp` for banked programs. The boot default (`0xFFFE`) puts
+// the runtime stack in the IO page + bank window (`0xC000..0xFEFF`,
+// bank-switched) — so call frames would land in bank-mapped memory and
+// corrupt across a bank hop. Banked programs instead start the stack at
+// the top of low RAM (the ISA's canonical stack home, always flat),
+// growing down toward the save-stack at `bank_save_ptr`.
+const bank_stack_top: u16 = 0x0FFE;
+
 // ---------- .gx file constants (re-exported from archive) ----------
 
 const bank_window_base = archive.bank_window_base;
@@ -1324,38 +1350,118 @@ pub const Emitter = struct {
         return false;
     }
 
-    /// Emit the `__call_bank` cross-bank trampoline (10 bytes) in
-    /// the base image. Caller sets `r1 = target_addr`,
-    /// `r2 = target_bank`, then `call __call_bank`.
+    /// `true` when any top-level def carries `@bank N`. Cross-bank
+    /// calls are then possible, so the entry prologue seeds the
+    /// save-stack pointer.
+    fn hasBankedDefs(self: *const Emitter) bool {
+        var it = self.fn_banks.valueIterator();
+        while (it.next()) |b| if (b.* != null) return true;
+        return false;
+    }
+
+    /// Seed the cross-bank save-stack pointer to the top of its area.
+    /// Emitted once in the entry prologue, only when the program has
+    /// banked defs — the first `__call_bank` then finds a valid slot.
+    pub fn seedBankSaveStack(self: *Emitter) !void {
+        if (!self.hasBankedDefs()) return;
+        try isa.movImmToAddr(self, bank_save_top, bank_save_ptr);
+    }
+
+    /// Move the runtime stack into low RAM for banked programs so call
+    /// frames stay out of the bank-switched window. No-op (keeps the
+    /// boot `sp`) for unbanked programs. Emit before the frame reserve.
+    pub fn relocateBankStack(self: *Emitter) !void {
+        if (!self.hasBankedDefs()) return;
+        try isa.movImmToReg(self, bank_stack_top, Reg.sp);
+    }
+
+    /// Emit the cross-bank call trampoline in the base image (always
+    /// reachable regardless of `mb`). A caller pushes `target_bank`
+    /// then `target_addr`, then `call __call_bank`.
     ///
-    /// ```
-    /// push mb         ; 31 0C
-    /// mov r2, mb      ; 11 03 0C
-    /// call r1         ; A1 02
-    /// pop mb          ; 32 0C
-    /// ret             ; A2
-    /// ```
+    /// The trampoline is frame-transparent: it pops its own return
+    /// frame + the stack-passed target, parks (caller `mb`, caller
+    /// return-ip) on the save-stack, then rebuilds the callee's frame
+    /// below `arg0` and enters via `rti` so the callee reads `arg0` at
+    /// `[fp+4]` exactly as a direct call would. The `__bank_return`
+    /// continuation (entered when the callee returns) restores `mb` +
+    /// the caller return-ip. Both the save-stack push / pop and the
+    /// bank-switched entry / exit run with interrupts masked: `sei`
+    /// guards the critical section, and `rti` restores the saved `flg`
+    /// (and jumps) atomically — so no register stays live across an
+    /// unmask, and an `@interrupt` handler that itself cross-bank-calls
+    /// can neither corrupt the shared save-stack nor the target.
     fn emitCallBankTrampoline(self: *Emitter) !void {
-        // The trampoline must live in the base image (always
-        // reachable regardless of `mb`). Save / restore the
-        // bank-routing state explicitly even though we expect the
-        // caller to be in the base buffer already.
         const saved_bank = self.current_bank;
         self.current_bank = null;
         defer self.current_bank = saved_bank;
+        // `__bank_return` emits first so its address is a known immediate
+        // for the `__call_bank` continuation push.
+        const bank_return_addr = try self.emitBankReturn();
+        try self.emitCallBankEntry(bank_return_addr);
+    }
 
+    /// Emit `__bank_return` — the continuation the callee returns to.
+    /// On entry sp is at arg0, fp = caller fp, `acu` holds the result.
+    /// Pops the save-stack under a mask, restores the caller's bank, and
+    /// returns via `rti` (atomic flg-restore + jump). Returns its own
+    /// address for the entry half to push as the callee's return-ip.
+    fn emitBankReturn(self: *Emitter) !u16 {
+        const bank_return_addr = offsetToAddr(code_base, self.code.items.len);
+        try isa.movRegToReg(self, Reg.flg, Reg.r6); // save flg (incl. I bit)
+        try isa.sei(self);
+        try isa.movAddrToReg(self, bank_save_ptr, Reg.r4);
+        try isa.movRegOffsetToReg(self, Reg.r4, bank_save_mb_ofs, Reg.r5); // saved mb
+        try isa.movRegOffsetToReg(self, Reg.r4, bank_save_ret_ofs, Reg.r3); // caller return-ip
+        try isa.addImmToReg(self, bank_save_slot_bytes, Reg.r4);
+        try isa.movRegToAddr(self, Reg.r4, bank_save_ptr);
+        try isa.movRegToReg(self, Reg.r5, Reg.mb); // restore caller bank
+        // `rti` pops flg, then fp, then return-ip — push them reversed
+        // (return-ip deepest, saved flg on top); `rti` restores the
+        // interrupt state and jumps to the caller in one step.
+        try isa.pushReg(self, Reg.r3); // caller return-ip
+        try isa.pushReg(self, Reg.fp); // caller fp (rti re-sets it; unchanged)
+        try isa.pushReg(self, Reg.r6); // saved flg
+        try self.emitByte(Op.rti_op);
+        return bank_return_addr;
+    }
+
+    /// Emit `__call_bank` — the entry callers target (records
+    /// `trampoline_addr`). Pops its own return frame + the stack-passed
+    /// target, parks (caller mb, caller return-ip) on the save-stack,
+    /// then rebuilds the callee's frame below arg0 and enters via `rti`.
+    /// `bank_return_addr` becomes the callee's return-ip.
+    fn emitCallBankEntry(self: *Emitter, bank_return_addr: u16) !void {
         self.trampoline_addr = offsetToAddr(code_base, self.code.items.len);
-
-        // Save the caller's bank, switch via r2, call the target in r1,
-        // restore. The byte sequence is the listing in the doc above.
-        try self.emitByte(Op.push_reg);
-        try self.emitByte(Reg.mb);
-        try isa.movRegToReg(self, Reg.r2, Reg.mb);
-        try self.emitByte(Op.call_reg);
-        try self.emitByte(Reg.r1);
-        try self.emitByte(Op.pop_reg);
-        try self.emitByte(Reg.mb);
-        try self.emitByte(Op.ret_op);
+        // Mask before touching the save-stack: r3 (caller return-ip) +
+        // r4 (save-sp) must survive the read-modify-write, and an
+        // interrupt clobbers all general registers.
+        try isa.movRegToReg(self, Reg.flg, Reg.r6); // save flg
+        try isa.sei(self);
+        try isa.popReg(self, Reg.r3); // caller return-ip
+        try isa.popReg(self, Reg.fp); // caller old fp
+        try isa.popReg(self, Reg.r1); // target address
+        try isa.popReg(self, Reg.r2); // target bank; sp now at arg0
+        // Park (caller mb, caller return-ip) on the save-stack.
+        try isa.movAddrToReg(self, bank_save_ptr, Reg.r4);
+        try isa.subImmFromReg(self, bank_save_slot_bytes, Reg.r4);
+        try isa.movRegToReg(self, Reg.mb, Reg.r5);
+        try isa.movRegToRegOffset(self, Reg.r5, Reg.r4, bank_save_mb_ofs);
+        try isa.movRegToRegOffset(self, Reg.r3, Reg.r4, bank_save_ret_ofs);
+        try isa.movRegToAddr(self, Reg.r4, bank_save_ptr);
+        try isa.movRegToReg(self, Reg.r2, Reg.mb); // switch to target bank
+        // Rebuild the callee's frame directly below arg0: (caller fp,
+        // __bank_return) become its (old_fp, return-ip), so its `ret`
+        // lands in __bank_return and it reads arg0 at [fp+4].
+        try isa.pushReg(self, Reg.fp); // callee [fp+2] = old fp
+        try isa.pushImm16(self, bank_return_addr); // callee [fp+0] = return-ip
+        try isa.movRegToReg(self, Reg.sp, Reg.fp); // callee fp = sp
+        // Enter via `rti`: target address rides the stack (not a
+        // register) across the atomic flg-restore + jump.
+        try isa.pushReg(self, Reg.r1); // rti return-ip = target address
+        try isa.pushReg(self, Reg.fp); // rti fp = callee fp
+        try isa.pushReg(self, Reg.r6); // rti flg = saved flg
+        try self.emitByte(Op.rti_op);
     }
 
     /// Register every top-level `let` / `const` as a `Global` —

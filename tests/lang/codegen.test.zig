@@ -696,6 +696,129 @@ test "codegen: cross-bank call goes through __call_bank trampoline + executes co
     try std.testing.expectEqualStrings("42\n", writer.written());
 }
 
+test "codegen: cross-bank call reads its parameters at the right frame offset" {
+    // The trampoline is frame-transparent: the callee must read arg0 at
+    // [fp+4] exactly as a direct call would, despite the bank hop.
+    var compiled = try compileSource(
+        \\@bank 2
+        \\def add(a: i16, b: i16) -> i16
+        \\  return a + b
+        \\end
+        \\
+        \\def main()
+        \\  print add(10, 32)
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("42\n", writer.written());
+}
+
+test "codegen: nested cross-bank calls restore mb + unwind through the save-stack" {
+    // main → outer (bank 2) → inner (bank 1): the save-stack must
+    // restore mb to bank 2 when inner returns so outer finishes its
+    // arithmetic in its own bank, then to the base image for main.
+    var compiled = try compileSource(
+        \\@bank 1
+        \\def inner(x: i16) -> i16
+        \\  return x * 2
+        \\end
+        \\
+        \\@bank 2
+        \\def outer(x: i16) -> i16
+        \\  return inner(x) + 1
+        \\end
+        \\
+        \\def main()
+        \\  print outer(20)
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("41\n", writer.written());
+}
+
+test "codegen: cross-bank call returning a struct preserves the sret ABI" {
+    // The hidden sret pointer is pushed above the args; the frame-
+    // transparent trampoline must leave it (and the args) in place so
+    // the callee copies its result back to the caller's scratch slot.
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\@bank 2
+        \\def mk(a: i16, b: i16) -> Pos
+        \\  return Pos { x: a, y: b }
+        \\end
+        \\def main()
+        \\  let p: Pos = mk(10, 32)
+        \\  print p.x
+        \\  print p.y
+        \\end
+    , "10\n32\n");
+}
+
+test "codegen: banked program relocates the stack out of the bank window" {
+    // The boot sp (0xFFFE) would place call frames in the IO page +
+    // bank window (0xC000..0xFEFF, bank-switched); a banked program's
+    // entry must move the stack into low RAM as its first instruction.
+    var compiled = try compileSource(
+        \\@bank 2
+        \\def town() -> i16
+        \\  return 42
+        \\end
+        \\def main()
+        \\  print town()
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var vm = gero.vm.VM.init(alloc);
+    defer vm.deinit();
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try vm.boot(alloc, loaded);
+    _ = gero.vm.step(&vm); // execute the stack-relocation instruction
+    try std.testing.expectEqual(@as(u16, 0x0FFE), vm.regs.read(.sp));
+}
+
+test "codegen: cross-bank call in a loop keeps the save-stack balanced" {
+    // Each call pushes then pops one save-stack level; an imbalance
+    // would drift the save-sp and corrupt a later iteration's return.
+    try runAndExpect(
+        \\@bank 2
+        \\def dbl(x: i16) -> i16
+        \\  return x * 2
+        \\end
+        \\def main()
+        \\  let i: i16 = 0
+        \\  let acc: i16 = 0
+        \\  while i < 4
+        \\    acc = acc + dbl(i)
+        \\    i = i + 1
+        \\  end
+        \\  print acc
+        \\end
+    , "12\n");
+}
+
 test "codegen: byte-store to @addr global uses movl (does not clobber adjacent byte)" {
     var compiled = try compileSource(
         \\@addr $FE40

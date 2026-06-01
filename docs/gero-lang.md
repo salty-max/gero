@@ -2560,14 +2560,19 @@ const INTRO = "Welcome to Mistwood..."
 ```
 
 The compiler places this module's compiled output in bank 5. Cross-
-bank calls compile to:
+bank calls are **transparent**: parameters, return values, and struct
+/ tuple passing follow the same ABI as a direct call. The compiler
+routes each cross-bank call through a shared `__call_bank` trampoline
+that saves the caller's bank, switches to the target, runs the callee,
+and restores the bank on return. The trampoline parks each level's
+(bank, return-address) on a small save-stack in low RAM, so nested
+cross-bank calls — including one re-entered from an `@interrupt`
+handler — unwind correctly; its bank-switch critical sections run with
+interrupts masked.
 
-```asm
-push mb                     ; save current bank
-mov #5, mb                  ; switch
-call town__intro_addr
-pop mb                      ; restore
-```
+Because the bank window (`$C000..$FEFF`) is bank-switched, a banked
+program runs its stack in low RAM (the conventional stack range,
+above) so call frames never land in switched memory.
 
 Per-declaration banking is also supported — useful when only some
 items in a module need to live in a specific bank:
@@ -2583,8 +2588,7 @@ def boss_battle_data() -> [u8; 256]
 end
 ```
 
-Cross-bank calls go through the trampoline pattern above; intra-bank
-calls compile to plain `call addr` with no overhead.
+Intra-bank calls compile to plain `call addr` with no overhead.
 
 ---
 

@@ -887,15 +887,18 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
 
     if (cross_bank) {
         // Trampoline path:
-        //   mov <target_addr>, r1   ; patched at end
-        //   mov <target_bank>,  r2  ; literal at emit time
-        //   call __call_bank        ; patched at end
-        try self.emitByte(Op.mov_imm16_reg);
-        const addr_patch_offset = try self.currentOffset();
-        try self.emitU16Le(0); // placeholder
-        try self.emitByte(Reg.r1);
+        //   push <target_bank>   ; literal at emit time
+        //   push <target_addr>   ; patched at end
+        //   call __call_bank     ; patched at end
+        // The target rides the stack (atomic immediate pushes), not a
+        // register, so no value is live across an interruptible
+        // boundary; `__call_bank` pops both. Bank is pushed first so
+        // the address lands on top and is popped first.
         const target_bank_byte: u8 = target_bank orelse 0;
-        try isa.movImmToReg(self, target_bank_byte, Reg.r2);
+        try isa.pushImm16(self, target_bank_byte);
+        try self.emitByte(Op.push_imm16);
+        const addr_patch_offset = try self.currentOffset();
+        try self.emitU16Le(0); // target-address placeholder
         try self.emitByte(Op.call_addr);
         const tramp_patch_offset = try self.currentOffset();
         try self.emitU16Le(0);
