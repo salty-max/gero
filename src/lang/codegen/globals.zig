@@ -113,7 +113,7 @@ const BakeEntry = union(enum) {
 };
 
 fn runBake(self: *Emitter, span: ast.Span, entry: BakeEntry) !?bake_mod.BakeValue {
-    const opts: bake_mod.Options = .{ .bake_defs = &bakeDefsAdapter(self) };
+    const opts: bake_mod.Options = .{ .bake_defs = &bakeDefsAdapter(self), .expr_types = &self.checked.expr_types };
     var result = switch (entry) {
         .do_expr => |de| try bake_mod.evaluateDo(self.allocator, self.source, de, opts),
     };
@@ -128,7 +128,7 @@ fn runBake(self: *Emitter, span: ast.Span, entry: BakeEntry) !?bake_mod.BakeValu
 
 fn runBakeDef(self: *Emitter, span: ast.Span, decl: *const ast.DefDecl, args: []const bake_mod.BakeValue) !?bake_mod.BakeValue {
     const adapter = bakeDefsAdapter(self);
-    const opts: bake_mod.Options = .{ .bake_defs = &adapter };
+    const opts: bake_mod.Options = .{ .bake_defs = &adapter, .expr_types = &self.checked.expr_types };
     var result = try bake_mod.evaluateDef(self.allocator, self.source, decl, args, opts);
     defer result.deinit(self.allocator);
     try forwardBakeDiagnostics(self, result.diagnostics);

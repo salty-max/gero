@@ -73,6 +73,11 @@ pub const Options = struct {
     /// `E_BAKE_FORBIDDEN_CALL`. The codegen wires the program's
     /// `bake def` registry through this slot.
     bake_defs: ?*const std.StringHashMap(*const ast.DefDecl) = null,
+    /// The typechecker's inferred expression types, threaded so
+    /// compile-time `math.*` picks signed vs unsigned exactly like the
+    /// runtime lowering (the bake evaluator is otherwise typeless).
+    /// `null` disables `math.*` dispatch (calls then fault).
+    expr_types: ?*const std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type) = null,
 };
 
 /// Evaluate a `bake do … end` block against an empty initial
@@ -140,6 +145,11 @@ const Evaluator = struct {
     /// callee ident; `null` means no calls allowed (every call
     /// site faults with `E_BAKE_FORBIDDEN_CALL`).
     bake_defs: ?*const std.StringHashMap(*const ast.DefDecl),
+    /// Typechecker expression types — drives `math.*` signedness.
+    expr_types: ?*const std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type),
+    /// `rng()` LFSR state, lazily seeded on first use (mirrors the
+    /// runtime's zero-page cell) so a bake sequence is deterministic.
+    rng_state: u16,
     /// Set when a `return` statement fires inside the running
     /// body. `runBlock` propagates the value upward; the
     /// outermost block transparently surfaces it.
@@ -163,6 +173,8 @@ const Evaluator = struct {
             .diag_arena = std.heap.ArenaAllocator.init(allocator),
             .budget_remaining = opts.budget,
             .bake_defs = opts.bake_defs,
+            .expr_types = opts.expr_types,
+            .rng_state = 0,
             .return_value = null,
             .loop_signal = .none,
         };
@@ -605,6 +617,7 @@ const Evaluator = struct {
             .index => |ix| try self.evalIndex(ix),
             .field => |f| try self.evalField(f),
             .call => |c| try self.evalCall(c),
+            .method_call => |m| try self.evalMethodBake(m),
             else => {
                 try self.diagFmt(e.span(), "E_BAKE_UNSUPPORTED", "bake interpreter does not yet support `{s}` expressions", .{@tagName(e.*)});
                 return error.Fault;
@@ -947,6 +960,12 @@ const Evaluator = struct {
     /// Stdlib allowlist is empty in this PR — `math.*` joins via
     /// the follow-up issue #284.
     fn evalCall(self: *Evaluator, c: ast.CallExpr) StepError!BakeValue {
+        // `math.fn(args)` in field-callee form — compile-time math.
+        if (c.callee.* == .field and c.callee.field.receiver.* == .ident and
+            std.mem.eql(u8, self.lexeme(c.callee.field.receiver.ident.span), "math"))
+        {
+            return self.evalMathBuiltin(c.callee.field.field, c.args, c.span);
+        }
         if (c.callee.* != .ident) {
             try self.diagFatal(c.span, "E_BAKE_UNSUPPORTED", "bake: only ident callees are supported (no method dispatch / closures)");
             return error.Fault;
@@ -991,7 +1010,178 @@ const Evaluator = struct {
         const tail = try self.runBlock(decl.body);
         return self.return_value orelse tail;
     }
+
+    /// `recv.fn(args)` in method form. Only `math` is evaluable at bake
+    /// time; `mem` / `bank` / `test` are runtime-only and fault.
+    fn evalMethodBake(self: *Evaluator, m: ast.MethodCallExpr) StepError!BakeValue {
+        if (m.receiver.* == .ident and std.mem.eql(u8, self.lexeme(m.receiver.ident.span), "math")) {
+            return self.evalMathBuiltin(m.method, m.args, m.span);
+        }
+        try self.diagFatal(m.span, "E_BAKE_UNSUPPORTED", "bake: only `math.*` calls are evaluable at compile time");
+        return error.Fault;
+    }
+
+    /// Operand signedness for the polymorphic helpers, from the
+    /// threaded expression types (mirrors `math_builtin.argKind`).
+    fn argKindBake(self: *Evaluator, e: *const ast.Expr) BakeKind {
+        const t = if (self.expr_types) |m| m.get(e) else null;
+        if (t == null or t.?.* != .primitive) return .signed;
+        return switch (t.?.primitive) {
+            .u16, .u8 => .unsigned,
+            .fixed => .fixed,
+            else => .signed,
+        };
+    }
+
+    /// Compile-time `math.*`. Mirrors the runtime lowering's integer
+    /// arithmetic exactly, so a bake-generated table matches the runtime.
+    fn evalMathBuiltin(self: *Evaluator, name_span: ast.Span, args: []const *ast.Expr, span: ast.Span) StepError!BakeValue {
+        const name = self.lexeme(name_span);
+        if (std.mem.eql(u8, name, "rng")) {
+            if (self.rng_state == 0) self.rng_state = 0xACE1;
+            const lsb = self.rng_state & 1;
+            self.rng_state >>= 1;
+            if (lsb == 1) self.rng_state ^= 0xB400;
+            return .{ .int_ = self.rng_state };
+        }
+        var raw: [3]u16 = .{ 0, 0, 0 };
+        var arg0_fixed = false;
+        for (args, 0..) |a, i| {
+            const v = try self.evalExpr(a);
+            const x: u16 = switch (v) {
+                .int_ => |n| n,
+                .fixed_ => |n| n,
+                .byte => |n| n,
+                else => 0,
+            };
+            if (i < 3) raw[i] = x;
+            if (i == 0) arg0_fixed = v == .fixed_;
+        }
+        const kind: BakeKind = if (args.len > 0) self.argKindBake(args[0]) else .signed;
+        var is_fixed = arg0_fixed;
+        const result: u16 = b: {
+            if (std.mem.eql(u8, name, "abs")) break :b bakeAbs(raw[0], kind);
+            if (std.mem.eql(u8, name, "min")) break :b bakeMinMax(raw[0], raw[1], kind, true);
+            if (std.mem.eql(u8, name, "max")) break :b bakeMinMax(raw[0], raw[1], kind, false);
+            if (std.mem.eql(u8, name, "clamp")) break :b bakeMinMax(bakeMinMax(raw[0], raw[2], kind, true), raw[1], kind, false);
+            if (std.mem.eql(u8, name, "wrap_add")) break :b raw[0] +% raw[1];
+            if (std.mem.eql(u8, name, "wrap_sub")) break :b raw[0] -% raw[1];
+            if (std.mem.eql(u8, name, "wrap_mul")) break :b bakeWrapMul(raw[0], raw[1], kind);
+            if (std.mem.eql(u8, name, "sat_add")) break :b bakeSat(raw[0], raw[1], kind, .add);
+            if (std.mem.eql(u8, name, "sat_sub")) break :b bakeSat(raw[0], raw[1], kind, .sub);
+            if (std.mem.eql(u8, name, "sat_mul")) break :b bakeSat(raw[0], raw[1], kind, .mul);
+            if (std.mem.eql(u8, name, "fixed_sin")) {
+                is_fixed = true;
+                break :b bakeFixedSin(raw[0]);
+            }
+            if (std.mem.eql(u8, name, "sqrt_fixed")) {
+                is_fixed = true;
+                break :b bakeSqrtFixed(raw[0]);
+            }
+            try self.diagFmt(span, "E_BAKE_UNSUPPORTED", "bake: `math.{s}` is not evaluable at compile time", .{name});
+            return error.Fault;
+        };
+        return if (is_fixed) .{ .fixed_ = result } else .{ .int_ = result };
+    }
 };
+
+/// Operand signedness for compile-time `math.*` (mirrors the runtime).
+const BakeKind = enum { signed, unsigned, fixed };
+const BakeSatOp = enum { add, sub, mul };
+
+/// Reinterpret a u16 storage slot as its signed value.
+fn sI16(raw: u16) i16 {
+    // safety: u16 → i16 bit reinterpret; storage layout is shared.
+    return @bitCast(raw);
+}
+
+/// Reinterpret a signed value back into u16 storage.
+fn uBits(v: i16) u16 {
+    // safety: i16 → u16 bit reinterpret back into storage.
+    return @bitCast(v);
+}
+
+fn bakeAbs(raw: u16, kind: BakeKind) u16 {
+    if (kind == .unsigned) return raw;
+    return if (sI16(raw) < 0) 0 -% raw else raw; // wrapping negate (matches `neg`)
+}
+
+fn bakeMinMax(a: u16, b: u16, kind: BakeKind, want_min: bool) u16 {
+    const a_lt_b = if (kind == .unsigned) a < b else sI16(a) < sI16(b);
+    if (want_min) return if (a_lt_b) a else b;
+    return if (a_lt_b) b else a;
+}
+
+fn bakeWrapMul(a: u16, b: u16, kind: BakeKind) u16 {
+    if (kind != .fixed) return a *% b; // low 16 bits (signed + unsigned share them)
+    const ai: i32 = sI16(a);
+    const bi: i32 = sI16(b);
+    const shifted: i32 = (ai * bi) >> 8; // Q8.8: drop the fractional byte
+    // @as: keep the low 16 bits (product bits 8..23) as the wrapped result.
+    const lo: i16 = @truncate(shifted);
+    return uBits(lo);
+}
+
+fn bakeSat(a: u16, b: u16, kind: BakeKind, op: BakeSatOp) u16 {
+    if (kind == .unsigned) {
+        const av: i64 = a;
+        const bv: i64 = b;
+        const r: i64 = switch (op) {
+            .add => av + bv,
+            .sub => av - bv,
+            .mul => av * bv,
+        };
+        if (r > 0xFFFF) return 0xFFFF;
+        if (r < 0) return 0;
+        // @as: clamped to [0, 0xFFFF] above.
+        return @intCast(r);
+    }
+    const av: i64 = sI16(a);
+    const bv: i64 = sI16(b);
+    const r: i64 = switch (op) {
+        .add => av + bv,
+        .sub => av - bv,
+        .mul => av * bv,
+    };
+    if (r > 32767) return 0x7FFF;
+    if (r < -32768) return 0x8000;
+    // @as: clamped to the i16 range above.
+    const r16: i16 = @intCast(r);
+    return uBits(r16);
+}
+
+/// Bhaskara I sine, identical to the runtime lowering (§5.3).
+fn bakeFixedSin(deg_raw: u16) u16 {
+    const deg: i32 = sI16(deg_raw);
+    var x: i32 = @mod(deg, 360);
+    var negate = false;
+    if (x >= 180) {
+        negate = true;
+        x -= 180;
+    }
+    const prod: i32 = x * (180 - x);
+    const den: i32 = @divFloor(40500 - prod, 2);
+    var result: i32 = @divTrunc(512 * prod, den);
+    if (negate) result = -result;
+    // @as: |result| ≤ 256, fits i16.
+    const r16: i16 = @intCast(result);
+    return uBits(r16);
+}
+
+/// Bit-by-bit Q8.8 square root, identical to the runtime lowering.
+fn bakeSqrtFixed(x_raw: u16) u16 {
+    if (sI16(x_raw) <= 0) return 0;
+    const xw: u32 = x_raw;
+    const n: u32 = xw << 8;
+    var r: u32 = 0;
+    var bit: u32 = 2048;
+    while (bit != 0) : (bit >>= 1) {
+        const cand = r | bit;
+        if (cand * cand <= n) r = cand;
+    }
+    // @as: result < 4096, fits u16.
+    return @intCast(r);
+}
 
 /// Byte width of a serialized `BakeValue`. Mirrors the runtime
 /// layout (`widthOfTypeAnn`) with aggregate sizes summed.
