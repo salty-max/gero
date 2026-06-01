@@ -1143,8 +1143,35 @@ pub const Checker = struct {
                 return elems[ti.index];
             },
             .index => |ix| {
-                _ = try self.inferExpr(ix.receiver, null);
-                _ = try self.inferExpr(ix.index, null);
+                const recv_ty = try self.inferExpr(ix.receiver, null);
+                const idx_ty = try self.inferExpr(ix.index, null);
+                if (idx_ty) |it| {
+                    const is_int = it.* == .primitive and switch (it.primitive) {
+                        .i8, .u8, .i16, .u16 => true,
+                        else => false,
+                    };
+                    if (!is_int) {
+                        const ty_s = try types.render(self.arena, it.*);
+                        const msg = try std.fmt.allocPrint(self.arena, "array index must be an integer, found `{s}`", .{ty_s});
+                        try self.emitSpan("E_TYPE_MISMATCH", ix.index.span(), msg);
+                    }
+                }
+                if (peelReference(recv_ty)) |peeled| {
+                    if (peeled.* == .array) {
+                        // A literal index outside the fixed length is a
+                        // compile-time error (runtime indices trap in debug).
+                        if (ix.index.* == .int_lit) {
+                            const v: i64 = ix.index.int_lit.value;
+                            const len: i64 = peeled.array.len;
+                            if (v < 0 or v >= len) {
+                                const suffix: []const u8 = if (peeled.array.len == 1) "" else "s";
+                                const msg = try std.fmt.allocPrint(self.arena, "array index {d} out of range — array has {d} element{s}", .{ v, peeled.array.len, suffix });
+                                try self.emitSpan("E_TYPE_INDEX_OOR", ix.index.span(), msg);
+                            }
+                        }
+                        return peeled.array.elem;
+                    }
+                }
                 return null;
             },
             .do_expr => |d| {
