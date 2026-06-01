@@ -45,7 +45,61 @@ pub fn emitMathCall(self: *Emitter, name: []const u8, c: ast.CallExpr) !void {
     if (std.mem.eql(u8, name, "sat_sub")) return emitSat(self, c, .sub);
     if (std.mem.eql(u8, name, "sat_mul")) return emitSat(self, c, .mul);
     if (std.mem.eql(u8, name, "fixed_sin")) return emitFixedSin(self, c);
+    if (std.mem.eql(u8, name, "sqrt_fixed")) return emitSqrtFixed(self, c);
     try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: unknown `math` builtin");
+}
+
+/// `sqrt_fixed(x: fixed) -> fixed` — Q8.8 square root. For x > 0 the
+/// result raw = isqrt(x_raw << 8) (since √(x_raw/256)·256 = √(x_raw·256)).
+/// `x_raw << 8` is a 32-bit radicand; computed bit-by-bit by testing each
+/// result bit high→low, squaring the candidate (16×16→32 `mul`), and
+/// keeping the bit when candidate² ≤ radicand (a 32-bit unsigned compare).
+/// x ≤ 0 returns 0. The result is < 4096, so 12 bits suffice.
+fn emitSqrtFixed(self: *Emitter, c: ast.CallExpr) !void {
+    try self.emitExpr(c.args[0]); // acu = x_raw
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const positive = try isa.emitJumpPlaceholder(self, Op.jgt_addr);
+    try isa.movImmToReg(self, 0, Reg.acu); // x ≤ 0 → 0
+    const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, positive, try self.currentOffset());
+    // Radicand N = x_raw << 8 across (r2 = high, r1 = low).
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try isa.shlRegImm(self, Reg.r1, 8); // N_lo = x_raw << 8
+    try isa.shrRegImm(self, Reg.acu, 8); // N_hi = x_raw >> 8 (x > 0 → logical ok)
+    try isa.movRegToReg(self, Reg.acu, Reg.r2);
+    try isa.movImmToReg(self, 0, Reg.r3); // result accumulator
+    try isa.movImmToReg(self, 2048, Reg.r4); // bit = 2^11 (result < 4096)
+    const loop_start = try self.currentOffset();
+    // candidate = result | bit → r5.
+    try isa.movRegToReg(self, Reg.r3, Reg.r5);
+    try isa.orRegReg(self, Reg.r5, Reg.r4);
+    // sq = candidate² → acu:r6 (high:low).
+    try isa.movRegToReg(self, Reg.r5, Reg.r6);
+    try isa.mulRegReg(self, Reg.r5, Reg.r6);
+    // Compare (acu:r6) ≤ (r2:r1) unsigned.
+    try isa.cmpRegReg(self, Reg.acu, Reg.r2); // sq_hi - N_hi
+    const hi_ge = try isa.emitJumpPlaceholder(self, Op.jcc_addr); // sq_hi ≥ N_hi (C=0)
+    const acc_lo = try isa.emitJumpPlaceholder(self, Op.jmp_addr); // sq_hi < N_hi → accept
+    try isa.patchJumpTo(self, hi_ge, try self.currentOffset());
+    const rej_hi = try isa.emitJumpPlaceholder(self, Op.jne_addr); // sq_hi > N_hi → reject
+    try isa.cmpRegReg(self, Reg.r1, Reg.r6); // N_lo - sq_lo
+    const acc_eq = try isa.emitJumpPlaceholder(self, Op.jcc_addr); // N_lo ≥ sq_lo → sq_lo ≤ N_lo → accept
+    const rej_lo = try isa.emitJumpPlaceholder(self, Op.jmp_addr); // sq_lo > N_lo → reject
+    // accept: result = candidate.
+    const accept = try self.currentOffset();
+    try isa.patchJumpTo(self, acc_lo, accept);
+    try isa.patchJumpTo(self, acc_eq, accept);
+    try isa.movRegToReg(self, Reg.r5, Reg.r3);
+    // continue: shift to the next bit, loop while non-zero.
+    const cont = try self.currentOffset();
+    try isa.patchJumpTo(self, rej_hi, cont);
+    try isa.patchJumpTo(self, rej_lo, cont);
+    try isa.shrRegImm(self, Reg.r4, 1);
+    try isa.cmpRegImm(self, Reg.r4, 0);
+    const back = try isa.emitJumpPlaceholder(self, Op.jne_addr);
+    try isa.patchJumpTo(self, back, loop_start);
+    try isa.movRegToReg(self, Reg.r3, Reg.acu); // result → acu
+    try isa.patchJumpTo(self, done, try self.currentOffset());
 }
 
 /// `fixed_sin(deg: i16) -> fixed` — sine of an angle in degrees, Q8.8.

@@ -44,6 +44,7 @@ const math_sigs = [_]Sig{
     .{ .name = "sat_sub", .shape = .{ .numeric_int = 2 } },
     .{ .name = "sat_mul", .shape = .{ .numeric_int = 2 } },
     .{ .name = "fixed_sin", .shape = .{ .mono = .{ .params = &.{.i16}, .ret = .fixed } } },
+    .{ .name = "sqrt_fixed", .shape = .{ .mono = .{ .params = &.{.fixed}, .ret = .fixed } } },
 };
 
 const bank_sigs = [_]Sig{
