@@ -3984,6 +3984,39 @@ test "codegen/math: fixed_sin (Bhaskara) over the circle, Q8.8 raw" {
     try std.testing.expectEqual(@as(u16, 180), vm.mmap.readWord(0xFFF2)); // sin(45) ≈ 0.707
 }
 
+test "codegen/math: sqrt_fixed (bit-by-bit isqrt) Q8.8 raw" {
+    // result raw = isqrt(x_raw << 8). 1.0→1.0, 4.0→2.0, 9.0→3.0 exact;
+    // 2.0→~1.414 (362); 0.25→0.5 (128); negative → 0.
+    var compiled = try compileSource(
+        \\def main()
+        \\  let s0: fixed = math.sqrt_fixed(0.0)
+        \\  let s1: fixed = math.sqrt_fixed(1.0)
+        \\  let s4: fixed = math.sqrt_fixed(4.0)
+        \\  let s9: fixed = math.sqrt_fixed(9.0)
+        \\  let s2: fixed = math.sqrt_fixed(2.0)
+        \\  let sq: fixed = math.sqrt_fixed(0.25)
+        \\  let sn: fixed = math.sqrt_fixed(0.0 - 1.0)
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFFC)); // √0 = 0
+    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(0xFFFA)); // √1 = 1.0
+    try std.testing.expectEqual(@as(u16, 512), vm.mmap.readWord(0xFFF8)); // √4 = 2.0
+    try std.testing.expectEqual(@as(u16, 768), vm.mmap.readWord(0xFFF6)); // √9 = 3.0
+    try std.testing.expectEqual(@as(u16, 362), vm.mmap.readWord(0xFFF4)); // √2 ≈ 1.414
+    try std.testing.expectEqual(@as(u16, 128), vm.mmap.readWord(0xFFF2)); // √0.25 = 0.5
+    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFF0)); // √negative = 0
+}
+
 test "codegen/bank: switch_to writes mb, current reads it" {
     try runAndExpect(
         \\def main()
