@@ -12,6 +12,7 @@ const codegen_mod = @import("lang/codegen.zig");
 const include_mod = @import("lang/include.zig");
 
 const tc_mem_builtin = @import("lang/typecheck/mem_builtin.zig");
+const tc_stdlib = @import("lang/typecheck/stdlib.zig");
 const tc_match = @import("lang/typecheck/match.zig");
 const tc_predicates = @import("lang/typecheck/predicates.zig");
 const tc_annotations = @import("lang/typecheck/annotations.zig");
@@ -29,6 +30,10 @@ const bake_mod = @import("lang/bake.zig");
 const cg_opcodes = @import("lang/codegen/opcodes.zig");
 const cg_archive = @import("lang/codegen/archive.zig");
 const cg_mem_builtin = @import("lang/codegen/mem_builtin.zig");
+const cg_stdlib = @import("lang/codegen/stdlib.zig");
+const cg_math_builtin = @import("lang/codegen/math_builtin.zig");
+const cg_bank_builtin = @import("lang/codegen/bank_builtin.zig");
+const cg_test_builtin = @import("lang/codegen/test_builtin.zig");
 const cg_strings = @import("lang/codegen/strings.zig");
 const cg_pattern = @import("lang/codegen/pattern.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
@@ -158,6 +163,8 @@ pub const internal = struct {
         pub const match = tc_match;
         /// `mem.*` stdlib typecheck dispatch.
         pub const mem_builtin = tc_mem_builtin;
+        /// `math.*` / `bank.*` / `test.*` stdlib typecheck dispatch.
+        pub const stdlib = tc_stdlib;
         /// "Did you mean…?" Levenshtein-based name suggestions.
         pub const suggestions = tc_suggestions;
         /// `ast.TypeAnn` → `types.Type` resolution.
@@ -192,6 +199,14 @@ pub const internal = struct {
         pub const archive = cg_archive;
         /// `mem.*` stdlib codegen lowering.
         pub const mem_builtin = cg_mem_builtin;
+        /// `math.*` / `bank.*` / `test.*` stdlib call router.
+        pub const stdlib = cg_stdlib;
+        /// `math.*` stdlib codegen lowering.
+        pub const math_builtin = cg_math_builtin;
+        /// `bank.*` stdlib codegen lowering.
+        pub const bank_builtin = cg_bank_builtin;
+        /// `test.*` stdlib codegen lowering.
+        pub const test_builtin = cg_test_builtin;
         /// String literal pool + interpolation lowering.
         pub const strings = cg_strings;
         /// `match` pattern-arm test emission.

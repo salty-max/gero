@@ -6,6 +6,7 @@ const isa = @import("isa.zig");
 const archive = @import("archive.zig");
 const assert_builtin = @import("assert.zig");
 const diverge_builtin = @import("diverge.zig");
+const stdlib = @import("stdlib.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
 const strings = @import("strings.zig");
@@ -766,6 +767,20 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
             try self.emitMemCall(synth_field, synth_call);
             return;
         }
+        if (stdlib.isModule(recv)) {
+            const synth_field: ast.FieldExpr = .{
+                .receiver = m.receiver,
+                .field = m.method,
+                .span = m.span,
+            };
+            const synth_call: ast.CallExpr = .{
+                .callee = m.receiver,
+                .args = m.args,
+                .span = m.span,
+            };
+            try stdlib.emitCall(self, recv, synth_field, synth_call);
+            return;
+        }
     }
     try self.unsupported(e.span(), "method calls on non-stdlib receivers");
 }
@@ -826,6 +841,10 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
             const recv = self.source[fe.receiver.ident.span.start..fe.receiver.ident.span.end];
             if (std.mem.eql(u8, recv, "mem")) {
                 try self.emitMemCall(fe, c);
+                return;
+            }
+            if (stdlib.isModule(recv)) {
+                try stdlib.emitCall(self, recv, fe, c);
                 return;
             }
             // Payload-variant constructor — `Enum.Variant(args)`.

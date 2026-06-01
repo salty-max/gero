@@ -6,6 +6,7 @@ const predicates = @import("predicates.zig");
 const relations = @import("relations.zig");
 const annotations = @import("annotations.zig");
 const flow = @import("flow.zig");
+const stdlib = @import("stdlib.zig");
 
 const Checker = typecheck.Checker;
 const WalkError = error{OutOfMemory};
@@ -27,6 +28,19 @@ pub fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) Walk
         }
         if (isDivergeBuiltinName(callee_name)) {
             return try checkDivergeBuiltin(self, c, callee_name);
+        }
+    }
+    // Stdlib module call in field-callee form (`math.min(a, b)` where
+    // the callee parses as a `FieldExpr`). Route to the stdlib checker
+    // so numeric-polymorphic args resolve from the call site rather than
+    // synthesizing a fn type without them.
+    if (c.callee.* == .field) {
+        const fe = c.callee.field;
+        if (fe.receiver.* == .ident) {
+            const recv = self.lexeme(fe.receiver.ident.span);
+            if (stdlib.isModule(recv)) {
+                return try stdlib.checkCall(self, recv, fe.field, c.args, c.span);
+            }
         }
     }
     // Abstract-class instantiation: `ClassName(args)` where

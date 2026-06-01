@@ -3887,6 +3887,74 @@ test "codegen/@interrupt: handler can call a regular function (enter/ret frame c
     , "42\n-30536\n");
 }
 
+// ---------- stdlib modules: math / bank / test ----------
+
+test "codegen/math: min/max/abs/clamp over i16 (signed)" {
+    try runAndExpect(
+        \\def main()
+        \\  let lo: i16 = 0 - 5
+        \\  print math.min(5, 3)
+        \\  print math.max(5, 3)
+        \\  print math.abs(lo)
+        \\  print math.clamp(15, 0, 10)
+        \\  print math.clamp(lo, 0, 10)
+        \\  print math.clamp(7, 0, 10)
+        \\end
+    , "3\n5\n5\n10\n0\n7\n");
+}
+
+test "codegen/math: min/max pick unsigned comparison for u16" {
+    // 60000 as i16 is negative; a signed compare would invert these.
+    try runAndExpect(
+        \\def main()
+        \\  let a: u16 = 60000
+        \\  let b: u16 = 5
+        \\  print math.min(a, b)
+        \\  print math.max(a, b)
+        \\end
+    , "5\n60000\n");
+}
+
+test "codegen/math: wrap_add/wrap_mul wrap without trapping" {
+    try runAndExpect(
+        \\def main()
+        \\  let big: i16 = 30000
+        \\  print math.wrap_add(big, 5000)
+        \\  print math.wrap_mul(200, 200)
+        \\end
+    , "-30536\n-25536\n");
+}
+
+test "codegen/bank: switch_to writes mb, current reads it" {
+    try runAndExpect(
+        \\def main()
+        \\  print bank.current()
+        \\  bank.switch_to(3)
+        \\  print bank.current()
+        \\end
+    , "0\n3\n");
+}
+
+test "codegen/test: assert_eq / assert_ne pass through on success" {
+    try runAndExpect(
+        \\def main()
+        \\  test.assert_eq(2 + 2, 4)
+        \\  test.assert_ne(2, 3)
+        \\  print 1
+        \\end
+    , "1\n");
+}
+
+test "codegen/test: assert_eq halts with a message on failure" {
+    // The failing assert prints + halts, so `print 99` never runs.
+    try runAndExpect(
+        \\def main()
+        \\  test.assert_eq(2, 3)
+        \\  print 99
+        \\end
+    , "test assertion failed\n");
+}
+
 test "codegen/overflow: fixed-point `*` wraps in both modes per ISA §5.4.1" {
     // Fixed `*` is explicitly wrap-only — the codegen skips the
     // overflow trap regardless of build mode. Picking values that
