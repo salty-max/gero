@@ -41,6 +41,9 @@ pub fn emitMathCall(self: *Emitter, name: []const u8, c: ast.CallExpr) !void {
     if (std.mem.eql(u8, name, "wrap_add")) return emitWrapAddSub(self, c, .add);
     if (std.mem.eql(u8, name, "wrap_sub")) return emitWrapAddSub(self, c, .sub);
     if (std.mem.eql(u8, name, "wrap_mul")) return emitWrapMul(self, c);
+    if (std.mem.eql(u8, name, "sat_add")) return emitSat(self, c, .add);
+    if (std.mem.eql(u8, name, "sat_sub")) return emitSat(self, c, .sub);
+    if (std.mem.eql(u8, name, "sat_mul")) return emitSat(self, c, .mul);
     try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: unknown `math` builtin");
 }
 
@@ -154,5 +157,94 @@ fn emitWrapMul(self: *Emitter, c: ast.CallExpr) !void {
     } else {
         try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low(a*b)
         try isa.movRegToReg(self, Reg.r2, Reg.acu);
+    }
+}
+
+const SatOp = enum { add, sub, mul };
+
+/// `sat_*` — clamp to the operand type's bounds on overflow. The
+/// typechecker restricts these to i16 / u16, so `argKind` is never
+/// `.fixed` here.
+fn emitSat(self: *Emitter, c: ast.CallExpr, op: SatOp) !void {
+    const unsigned = argKind(self, c.args[0]) == .unsigned;
+    switch (op) {
+        .add => try emitSatAdd(self, c, unsigned),
+        .sub => try emitSatSub(self, c, unsigned),
+        .mul => try emitSatMul(self, c, unsigned),
+    }
+}
+
+/// Clamp `acu` to the i16 bounds picked by `sign_reg`: `>= 0` saturates
+/// to `0x7FFF` (max), `< 0` to `0x8000` (min). For add/sub the sign of
+/// an operand gives the overflow direction; for mul it's the product's
+/// high half.
+fn emitSignedClamp(self: *Emitter, sign_reg: u8) !void {
+    try isa.cmpRegImm(self, sign_reg, 0);
+    const pos = try isa.emitJumpPlaceholder(self, Op.jge_addr);
+    try isa.movImmToReg(self, 0x8000, Reg.acu); // negative → i16 min
+    const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, pos, try self.currentOffset());
+    try isa.movImmToReg(self, 0x7FFF, Reg.acu); // positive → i16 max
+    try isa.patchJumpTo(self, done, try self.currentOffset());
+}
+
+fn emitSatAdd(self: *Emitter, c: ast.CallExpr, unsigned: bool) !void {
+    try self.emitExpr(c.args[0]); // a
+    try isa.pushReg(self, Reg.acu);
+    try self.emitExpr(c.args[1]); // acu = b
+    try isa.popReg(self, Reg.r1); // r1 = a
+    try isa.addRegToAcu(self, Reg.r1); // acu = a + b (C on carry, V on signed overflow)
+    if (unsigned) {
+        const ok = try isa.emitJumpPlaceholder(self, Op.jcc_addr); // no carry → fits
+        try isa.movImmToReg(self, 0xFFFF, Reg.acu);
+        try isa.patchJumpTo(self, ok, try self.currentOffset());
+    } else {
+        const ok = try isa.emitJumpPlaceholder(self, Op.jvc_addr); // no overflow → fits
+        try emitSignedClamp(self, Reg.r1); // direction = sign of a (operands agree on overflow)
+        try isa.patchJumpTo(self, ok, try self.currentOffset());
+    }
+}
+
+fn emitSatSub(self: *Emitter, c: ast.CallExpr, unsigned: bool) !void {
+    try self.emitExpr(c.args[1]); // b
+    try isa.pushReg(self, Reg.acu);
+    try self.emitExpr(c.args[0]); // acu = a
+    if (!unsigned) try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = a (sign for clamp)
+    try isa.popReg(self, Reg.r1); // r1 = b
+    try isa.subRegFromAcu(self, Reg.r1); // acu = a - b (C on borrow, V on signed overflow)
+    if (unsigned) {
+        const ok = try isa.emitJumpPlaceholder(self, Op.jcc_addr); // no borrow → fits
+        try isa.movImmToReg(self, 0, Reg.acu); // borrow → underflow → 0
+        try isa.patchJumpTo(self, ok, try self.currentOffset());
+    } else {
+        const ok = try isa.emitJumpPlaceholder(self, Op.jvc_addr);
+        try emitSignedClamp(self, Reg.r2); // direction = sign of a (the minuend)
+        try isa.patchJumpTo(self, ok, try self.currentOffset());
+    }
+}
+
+fn emitSatMul(self: *Emitter, c: ast.CallExpr, unsigned: bool) !void {
+    try self.emitExpr(c.args[0]); // a
+    try isa.pushReg(self, Reg.acu);
+    try self.emitExpr(c.args[1]); // acu = b
+    try isa.popReg(self, Reg.r1); // r1 = a
+    try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = b
+    if (unsigned) {
+        try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low(a*b), acu = high
+        try isa.cmpRegImm(self, Reg.acu, 0);
+        const fits = try isa.emitJumpPlaceholder(self, Op.jeq_addr); // high == 0 → fits u16
+        try isa.movImmToReg(self, 0xFFFF, Reg.acu);
+        const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+        try isa.patchJumpTo(self, fits, try self.currentOffset());
+        try isa.movRegToReg(self, Reg.r2, Reg.acu); // result = low half
+        try isa.patchJumpTo(self, done, try self.currentOffset());
+    } else {
+        try isa.mulsRegReg(self, Reg.r1, Reg.r2); // r2 = low, acu = high, V if ∉ i16
+        const fits = try isa.emitJumpPlaceholder(self, Op.jvc_addr);
+        try emitSignedClamp(self, Reg.acu); // direction = product sign (high-half sign bit)
+        const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+        try isa.patchJumpTo(self, fits, try self.currentOffset());
+        try isa.movRegToReg(self, Reg.r2, Reg.acu); // result = low half
+        try isa.patchJumpTo(self, done, try self.currentOffset());
     }
 }

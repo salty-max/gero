@@ -22,6 +22,10 @@ const Shape = union(enum) {
     /// `arity` args sharing one numeric type `T ∈ {i16,u16,fixed}`;
     /// the call returns `T`. Backs abs/min/max/clamp/wrap_*.
     numeric: u8,
+    /// `arity` args sharing one integer type `T ∈ {i16,u16}`; returns
+    /// `T`. Backs sat_* — saturation clamps to a type's bounds, which
+    /// `fixed` (its own range) doesn't share.
+    numeric_int: u8,
     /// `assert_eq`/`assert_ne`: two args of one comparable type → nil.
     equatable_pair,
 };
@@ -36,6 +40,9 @@ const math_sigs = [_]Sig{
     .{ .name = "wrap_add", .shape = .{ .numeric = 2 } },
     .{ .name = "wrap_sub", .shape = .{ .numeric = 2 } },
     .{ .name = "wrap_mul", .shape = .{ .numeric = 2 } },
+    .{ .name = "sat_add", .shape = .{ .numeric_int = 2 } },
+    .{ .name = "sat_sub", .shape = .{ .numeric_int = 2 } },
+    .{ .name = "sat_mul", .shape = .{ .numeric_int = 2 } },
 };
 
 const bank_sigs = [_]Sig{
@@ -77,6 +84,13 @@ fn suggest(recv: []const u8, name: []const u8) ?[]const u8 {
 fn isNumeric(t: *const types.Type) bool {
     return t.* == .primitive and switch (t.primitive) {
         .i16, .u16, .fixed => true,
+        else => false,
+    };
+}
+
+fn isIntScalar(t: *const types.Type) bool {
+    return t.* == .primitive and switch (t.primitive) {
+        .i16, .u16 => true,
         else => false,
     };
 }
@@ -130,6 +144,23 @@ pub fn checkCall(
                 if (first != null) {
                     const ty_s = try types.render(self.arena, first.?.*);
                     const msg = try std.fmt.allocPrint(self.arena, "`math.{s}` expects a numeric type (i16, u16, or fixed), got `{s}`", .{ name, ty_s });
+                    try self.emitSpan("E_TYPE_MISMATCH", args[0].span(), msg);
+                }
+                break :blk try self.primitive(.i16);
+            };
+            for (args[1..]) |a| _ = try self.inferExpr(a, result);
+            return result;
+        },
+        .numeric_int => |arity| {
+            try checkArity(self, recv, name, call_span, args.len, arity);
+            if (args.len == 0) return try self.primitive(.i16);
+            const first = try self.inferExpr(args[0], null);
+            const result: *const types.Type = if (first != null and isIntScalar(first.?))
+                first.?
+            else blk: {
+                if (first != null) {
+                    const ty_s = try types.render(self.arena, first.?.*);
+                    const msg = try std.fmt.allocPrint(self.arena, "`math.{s}` expects an integer type (i16 or u16), got `{s}`", .{ name, ty_s });
                     try self.emitSpan("E_TYPE_MISMATCH", args[0].span(), msg);
                 }
                 break :blk try self.primitive(.i16);
