@@ -44,7 +44,60 @@ pub fn emitMathCall(self: *Emitter, name: []const u8, c: ast.CallExpr) !void {
     if (std.mem.eql(u8, name, "sat_add")) return emitSat(self, c, .add);
     if (std.mem.eql(u8, name, "sat_sub")) return emitSat(self, c, .sub);
     if (std.mem.eql(u8, name, "sat_mul")) return emitSat(self, c, .mul);
+    if (std.mem.eql(u8, name, "fixed_sin")) return emitFixedSin(self, c);
     try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: unknown `math` builtin");
+}
+
+/// `fixed_sin(deg: i16) -> fixed` — sine of an angle in degrees, Q8.8.
+/// Reduces `deg` mod 360 into `[0, 360)`, folds `[180, 360)` to a
+/// negated `[0, 180)`, then Bhaskara I on `[0, 180]`:
+///   sin(x°) ≈ 4x(180-x) / (40500 - x(180-x))
+/// In Q8.8 that is `(512·prod) / ((40500-prod) >> 1)` with
+/// `prod = x(180-x)` — the denominator exceeds i16 before the `>>1`, and
+/// the halving keeps signed `divs` (a positive 32-bit / positive i16)
+/// valid. Accurate to ~1% (a few Q8.8 LSB).
+fn emitFixedSin(self: *Emitter, c: ast.CallExpr) !void {
+    try self.emitExpr(c.args[0]); // acu = deg
+    // deg mod 360 → remainder in acu (sign of deg). Sign-extend deg into
+    // the high half for the 32/16 signed divide.
+    try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = deg (low / quotient dst)
+    try isa.asrRegImm(self, Reg.acu, 15); // acu = sign extension
+    try isa.movImmToReg(self, 360, Reg.r2);
+    try isa.divsRegReg(self, Reg.r2, Reg.r1); // r1 = deg/360, acu = deg mod 360
+    // Fold the remainder into [0, 360).
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const nonneg = try isa.emitJumpPlaceholder(self, Op.jge_addr);
+    try isa.addImmToReg(self, 360, Reg.acu);
+    try isa.patchJumpTo(self, nonneg, try self.currentOffset());
+    // Fold [180, 360) to a negated [0, 180): r6 = negate flag.
+    try isa.movImmToReg(self, 0, Reg.r6);
+    try isa.cmpRegImm(self, Reg.acu, 180);
+    const lo_half = try isa.emitJumpPlaceholder(self, Op.jlt_addr);
+    try isa.movImmToReg(self, 1, Reg.r6);
+    try isa.subImmFromReg(self, 180, Reg.acu);
+    try isa.patchJumpTo(self, lo_half, try self.currentOffset());
+    // prod = x(180-x). acu = x ∈ [0, 180).
+    try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = x
+    try isa.movImmToReg(self, 180, Reg.acu);
+    try isa.subRegFromAcu(self, Reg.r1); // acu = 180 - x
+    try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = 180 - x
+    try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = prod (≤ 8100, high half 0)
+    try isa.movRegToReg(self, Reg.r2, Reg.r1); // r1 = prod
+    // den_half = (40500 - prod) >> 1 → r4 (uses acu, so before building num).
+    try isa.movImmToReg(self, 40500, Reg.acu);
+    try isa.subRegFromAcu(self, Reg.r1); // acu = 40500 - prod
+    try isa.shrRegImm(self, Reg.acu, 1); // (40500 - prod) / 2 ≤ 20250
+    try isa.movRegToReg(self, Reg.acu, Reg.r4); // r4 = den_half
+    // num32 = 512 * prod → acu:r2 (32-bit dividend).
+    try isa.movImmToReg(self, 512, Reg.r2);
+    try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low(512·prod), acu = high
+    try isa.divsRegReg(self, Reg.r4, Reg.r2); // r2 = num32 / den_half = result
+    try isa.movRegToReg(self, Reg.r2, Reg.acu);
+    // Negate for the [180, 360) half.
+    try isa.cmpRegImm(self, Reg.r6, 0);
+    const positive = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    try isa.negReg(self, Reg.acu);
+    try isa.patchJumpTo(self, positive, try self.currentOffset());
 }
 
 /// Emit `jge` (signed) / `jcc` (unsigned ≥, i.e. no borrow) after a
