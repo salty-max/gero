@@ -747,6 +747,21 @@ pub const Emitter = struct {
         return ofs;
     }
 
+    /// Element type / width / count of an `[T; N]` array — peeling a
+    /// reference. `null` when the expression isn't array-typed.
+    pub const ArrayInfo = struct { elem: *const Type, elem_width: u16, count: u32, signed_byte: bool };
+
+    /// Resolve the `ArrayInfo` of an array-typed expression (peeling a
+    /// reference); `null` when `e` isn't array-typed.
+    pub fn arrayInfoOf(self: *const Emitter, e: *const ast.Expr) ?ArrayInfo {
+        const t = self.typeOf(e) orelse return null;
+        const peeled = if (t.* == .reference) t.reference else t;
+        if (peeled.* != .array) return null;
+        const elem = peeled.array.elem;
+        const signed_byte = elem.* == .primitive and elem.primitive == .i8;
+        return .{ .elem = elem, .elem_width = self.widthOfType(elem), .count = peeled.array.len, .signed_byte = signed_byte };
+    }
+
     /// Reserve `bytes` (2-aligned) of frame space and return the base
     /// offset, without registering a name. For anonymous slots (inline
     /// arg bindings) whose names bind into a scope set up afterward.
@@ -791,6 +806,10 @@ pub const Emitter = struct {
                 var total: u16 = 0;
                 for (elems) |elem| total +%= self.widthOfType(elem);
                 return total;
+            },
+            .array => |a| {
+                // @as: nested-array width stays ≤ the i8 frame cap.
+                return @intCast(@as(u32, self.widthOfType(a.elem)) * a.len);
             },
             else => return 2,
         }
@@ -1833,6 +1852,28 @@ pub const Emitter = struct {
         if (et.* == .tuple) return .{ .tuple = et.tuple };
         if (et.* == .named and self.struct_decls.contains(et.named.name)) return .{ .structure = et.named.name };
         return .scalar;
+    }
+
+    /// Classifies an array element type — a register-width scalar, an
+    /// inline named struct, a nested tuple, or a nested array — so array
+    /// construction / indexing can recurse into aggregate elements (each
+    /// laid out inline at `i * elem_width`).
+    pub const ArrayElemKind = union(enum) {
+        scalar,
+        structure: []const u8,
+        tuple: []const *const Type,
+        array: struct { elem: *const Type, len: u32 },
+    };
+
+    /// Classify an array's element type. A class / enum / reference is a
+    /// register-width scalar (stored as its pointer / value word).
+    pub fn arrayElemKindOf(self: *const Emitter, elem: *const Type) ArrayElemKind {
+        return switch (elem.*) {
+            .array => |a| .{ .array = .{ .elem = a.elem, .len = a.len } },
+            .tuple => |t| .{ .tuple = t },
+            .named => |n| if (self.struct_decls.contains(n.name)) .{ .structure = n.name } else .scalar,
+            else => .scalar,
+        };
     }
 
     /// `target = value` (and compound / inc-dec desugarings) — see

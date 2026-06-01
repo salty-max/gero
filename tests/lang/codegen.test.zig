@@ -5940,3 +5940,340 @@ test "codegen/struct: `print` of a struct with an array field is rejected" {
         \\end
     , "E_CODEGEN_UNSUPPORTED");
 }
+
+// ---------- arrays: literal / repeat / indexing (#306) ----------
+
+test "codegen/array: repeat-zero init + constant index (the issue example)" {
+    try runAndExpect(
+        \\def main()
+        \\  let xs: [i16; 4] = [0; 4]
+        \\  print xs[0]
+        \\  print xs[3]
+        \\end
+    , "0\n0\n");
+}
+
+test "codegen/array: literal elements load at their offsets" {
+    try runAndExpect(
+        \\def main()
+        \\  let xs: [i16; 3] = [10, 20, 30]
+        \\  print xs[0]
+        \\  print xs[1]
+        \\  print xs[2]
+        \\end
+    , "10\n20\n30\n");
+}
+
+test "codegen/array: repeat with a non-zero value" {
+    try runAndExpect(
+        \\def main()
+        \\  let xs: [i16; 3] = [7; 3]
+        \\  print xs[2]
+        \\end
+    , "7\n");
+}
+
+test "codegen/array: runtime index (read)" {
+    try runAndExpect(
+        \\def main()
+        \\  let xs: [i16; 3] = [10, 20, 30]
+        \\  let i: i16 = 2
+        \\  print xs[i]
+        \\end
+    , "30\n");
+}
+
+test "codegen/array: indexed store (constant + runtime)" {
+    try runAndExpect(
+        \\def main()
+        \\  let xs: [i16; 4] = [0; 4]
+        \\  xs[1] = 99
+        \\  let j: i16 = 3
+        \\  xs[j] = 77
+        \\  print xs[1]
+        \\  print xs[3]
+        \\end
+    , "99\n77\n");
+}
+
+test "codegen/array: byte elements (u8) load + store" {
+    try runAndExpect(
+        \\def main()
+        \\  let bs: [u8; 4] = [0; 4]
+        \\  bs[2] = 200
+        \\  print bs[2]
+        \\end
+    , "200\n");
+}
+
+test "codegen/array: value semantics — copy on bind, no aliasing" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: [i16; 3] = [1, 2, 3]
+        \\  let b: [i16; 3] = a
+        \\  b[0] = 9
+        \\  print a[0]
+        \\  print b[0]
+        \\end
+    , "1\n9\n");
+}
+
+test "codegen/array: runtime out-of-bounds index traps (debug halts)" {
+    // The bounds check faults to vector $02 (unhandled → VM halts), so
+    // the post-index `print` never runs — output stops at the pre-print.
+    try runAndExpect(
+        \\def main()
+        \\  let xs: [i16; 3] = [0; 3]
+        \\  let i: i16 = 5
+        \\  print 1
+        \\  let v: i16 = xs[i]
+        \\  print v
+        \\end
+    , "1\n");
+}
+
+// ---------- arrays of aggregate elements (struct / tuple / nested) ----------
+
+test "codegen/array: struct elements — literal, const + runtime field access" {
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let ps: [Pos; 2] = [Pos { x: 1, y: 2 }, Pos { x: 3, y: 4 }]
+        \\  print ps[0].x
+        \\  print ps[1].y
+        \\  let i: i16 = 1
+        \\  print ps[i].x
+        \\end
+    , "1\n4\n3\n");
+}
+
+test "codegen/array: struct elements — repeat constructs once per slot" {
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let ps: [Pos; 3] = [Pos { x: 7, y: 8 }; 3]
+        \\  print ps[2].x
+        \\  print ps[0].y
+        \\end
+    , "7\n8\n");
+}
+
+test "codegen/array: struct elements — indexed store (const + runtime)" {
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let ps: [Pos; 3] = [Pos { x: 0, y: 0 }; 3]
+        \\  ps[0] = Pos { x: 9, y: 9 }
+        \\  let i: i16 = 2
+        \\  ps[i] = Pos { x: 5, y: 6 }
+        \\  print ps[0].x
+        \\  print ps[2].y
+        \\  print ps[1].x
+        \\end
+    , "9\n6\n0\n");
+}
+
+test "codegen/array: struct elements — value semantics on bind" {
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let a: [Pos; 2] = [Pos { x: 1, y: 1 }, Pos { x: 2, y: 2 }]
+        \\  let b: [Pos; 2] = a
+        \\  b[0] = Pos { x: 9, y: 9 }
+        \\  print a[0].x
+        \\  print b[0].x
+        \\end
+    , "1\n9\n");
+}
+
+test "codegen/array: tuple elements — literal + element access" {
+    try runAndExpect(
+        \\def main()
+        \\  let ts: [(i16, i16); 2] = [(1, 2), (3, 4)]
+        \\  print ts[0].0
+        \\  print ts[1].1
+        \\end
+    , "1\n4\n");
+}
+
+test "codegen/array: nested arrays — index into the inner array" {
+    try runAndExpect(
+        \\def main()
+        \\  let grid: [[i16; 2]; 2] = [[1, 2], [3, 4]]
+        \\  print grid[0][1]
+        \\  print grid[1][0]
+        \\end
+    , "2\n3\n");
+}
+
+test "codegen/array: tuple elements — store a tuple literal in place" {
+    try runAndExpect(
+        \\def main()
+        \\  let ts: [(i16, i16); 2] = [(0, 0); 2]
+        \\  ts[0] = (1, 2)
+        \\  let i: i16 = 1
+        \\  ts[i] = (3, 4)
+        \\  print ts[0].0
+        \\  print ts[1].1
+        \\end
+    , "1\n4\n");
+}
+
+test "codegen/array: nested arrays — store an array literal in place" {
+    try runAndExpect(
+        \\def main()
+        \\  let grid: [[i16; 2]; 2] = [[0, 0]; 2]
+        \\  grid[0] = [1, 2]
+        \\  let i: i16 = 1
+        \\  grid[i] = [3, 4]
+        \\  print grid[0][1]
+        \\  print grid[1][0]
+        \\end
+    , "2\n3\n");
+}
+
+test "codegen/array: aggregate store survives calls in the value's fields" {
+    // The destination pointer is parked on the stack while the value's
+    // fields evaluate; a call in a field (which pushes args, then restores
+    // sp) must leave that parked pointer reachable.
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def five() -> i16
+        \\  return 5
+        \\end
+        \\def main()
+        \\  let ps: [Pos; 2] = [Pos { x: 0, y: 0 }; 2]
+        \\  let i: i16 = 1
+        \\  ps[i] = Pos { x: five() + 1, y: five() * 2 }
+        \\  print ps[1].x
+        \\  print ps[1].y
+        \\end
+    , "6\n10\n");
+}
+
+test "codegen/struct: assign a struct literal into a nested struct field" {
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\struct Line
+        \\  a: Pos
+        \\  b: Pos
+        \\end
+        \\def main()
+        \\  let ln: Line = Line { a: Pos { x: 1, y: 2 }, b: Pos { x: 3, y: 4 } }
+        \\  ln.a = Pos { x: 9, y: 8 }
+        \\  print ln.a.x
+        \\  print ln.a.y
+        \\  print ln.b.x
+        \\end
+    , "9\n8\n3\n");
+}
+
+test "codegen/struct: assign a tuple literal into a tuple field" {
+    try runAndExpect(
+        \\struct Holder
+        \\  pair: (i16, i16)
+        \\  tag: i16
+        \\end
+        \\def main()
+        \\  let h: Holder = Holder { pair: (1, 2), tag: 7 }
+        \\  h.pair = (8, 9)
+        \\  print h.pair.0
+        \\  print h.pair.1
+        \\  print h.tag
+        \\end
+    , "8\n9\n7\n");
+}
+
+test "codegen/array: runtime index scales a non-power-of-2 element width (word fields)" {
+    // A 6-byte element (three i16) needs `index * 6` via a multiply, not a
+    // shift — exercises the mul-scale path for both read and write.
+    try runAndExpect(
+        \\struct Tri
+        \\  a: i16
+        \\  b: i16
+        \\  c: i16
+        \\end
+        \\def main()
+        \\  let arr: [Tri; 3] = [Tri { a: 1, b: 2, c: 3 }; 3]
+        \\  let i: i16 = 2
+        \\  arr[i] = Tri { a: 10, b: 20, c: 30 }
+        \\  print arr[0].a
+        \\  print arr[2].a
+        \\  print arr[2].c
+        \\  let j: i16 = 1
+        \\  print arr[j].b
+        \\end
+    , "1\n10\n30\n2\n");
+}
+
+test "codegen/array: runtime index scales an odd element width (byte fields)" {
+    // A 3-byte element (three u8) — an odd, non-power-of-2 width.
+    try runAndExpect(
+        \\struct Bytes3
+        \\  a: u8
+        \\  b: u8
+        \\  c: u8
+        \\end
+        \\def main()
+        \\  let arr: [Bytes3; 4] = [Bytes3 { a: 0, b: 0, c: 0 }; 4]
+        \\  let i: i16 = 3
+        \\  arr[i] = Bytes3 { a: 7, b: 8, c: 9 }
+        \\  print arr[3].a
+        \\  print arr[3].c
+        \\  print arr[0].a
+        \\  let j: i16 = 3
+        \\  print arr[j].b
+        \\end
+    , "7\n9\n0\n8\n");
+}
+
+test "codegen/array: reassignment copies the full width (value semantics)" {
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let ps1: [Pos; 2] = [Pos { x: 10, y: 20 }, Pos { x: 30, y: 40 }]
+        \\  let ps2: [Pos; 2] = [Pos { x: 50, y: 60 }, Pos { x: 70, y: 80 }]
+        \\  ps2 = ps1
+        \\  print ps2[0].x
+        \\  print ps2[1].x
+        \\  ps2[0].x = 999
+        \\  print ps1[0].x
+        \\  print ps2[0].x
+        \\end
+    , "10\n30\n10\n999\n");
+}
+
+test "codegen/array: scalar-array reassignment stays independent" {
+    try runAndExpect(
+        \\def main()
+        \\  let xs1: [i16; 3] = [1, 2, 3]
+        \\  let xs2: [i16; 3] = [0, 0, 0]
+        \\  xs2 = xs1
+        \\  xs2[0] = 99
+        \\  print xs1[0]
+        \\  print xs2[0]
+        \\  print xs2[2]
+        \\end
+    , "1\n99\n3\n");
+}

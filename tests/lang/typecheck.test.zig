@@ -2441,6 +2441,24 @@ test "typecheck/stdlib: math.sat_add rejects fixed (integer-only)" {
     , "E_TYPE_MISMATCH");
 }
 
+test "typecheck/array: out-of-range constant index is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let xs: [i16; 3] = [0; 3]
+        \\  print xs[5]
+        \\end
+    , "E_TYPE_INDEX_OOR");
+}
+
+test "typecheck/array: non-integer index is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let xs: [i16; 3] = [0; 3]
+        \\  print xs["x"]
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
 test "typecheck/stdlib: test.assert_eq rejects a non-scalar operand" {
     try expectCode(
         \\struct P

@@ -16,6 +16,7 @@ const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const class = @import("class.zig");
 const strings = @import("strings.zig");
+const overflow = @import("overflow.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -27,11 +28,15 @@ const Reg = opcodes.Reg;
 /// outgoing argument — `ofs` ≥ 0 from the current `sp`). `indirect` is
 /// the buffer pointed to by a frame slot holding an address (`ptr_ofs`)
 /// plus a field `delta` — used to write a returned struct into the
-/// caller's sret destination.
+/// caller's sret destination. `indirect_sp` is the buffer pointed to by
+/// a pointer parked on the stack (`sp_ofs`) plus `delta` — used to
+/// materialize an aggregate value straight into a runtime-computed lvalue
+/// (an array element / struct field) without a temporary binding.
 const Dest = union(enum) {
     frame: i16,
     sp: i16,
     indirect: struct { ptr_ofs: i16, delta: i16 },
+    indirect_sp: struct { sp_ofs: i16, delta: i16 },
 
     /// Shift the destination deeper by `delta` bytes (a nested field).
     fn at(self: Dest, delta: i16) Dest {
@@ -39,14 +44,16 @@ const Dest = union(enum) {
             .frame => |o| .{ .frame = o + delta },
             .sp => |o| .{ .sp = o + delta },
             .indirect => |ind| .{ .indirect = .{ .ptr_ofs = ind.ptr_ofs, .delta = ind.delta + delta } },
+            .indirect_sp => |ind| .{ .indirect_sp = .{ .sp_ofs = ind.sp_ofs, .delta = ind.delta + delta } },
         };
     }
 };
 
-/// `reg = base + ofs` for a destination. The `sp` form re-reads `sp`
-/// and `indirect` re-loads its pointer slot — both valid because every
-/// field-value expression restores `sp` and leaves the frame slot
-/// untouched, so the destination base stays stable across fields.
+/// `reg = base + ofs` for a destination. The `sp` form re-reads `sp`,
+/// `indirect` re-loads its frame pointer slot, and `indirect_sp` re-loads
+/// the parked stack pointer — all valid because every field-value
+/// expression restores `sp` and leaves the frame slot untouched, so the
+/// destination base stays stable across fields.
 fn destAddrToReg(self: *Emitter, dest: Dest, reg: u8) !void {
     switch (dest) {
         .frame => |ofs| try frameAddrToReg(self, ofs, reg),
@@ -58,6 +65,11 @@ fn destAddrToReg(self: *Emitter, dest: Dest, reg: u8) !void {
             try isa.movRegToReg(self, Reg.fp, reg);
             if (ind.ptr_ofs > 0) try isa.addImmToReg(self, @intCast(ind.ptr_ofs), reg);
             try isa.movRegOffsetToReg(self, reg, 0, reg); // reg = stored pointer
+            if (ind.delta > 0) try isa.addImmToReg(self, @intCast(ind.delta), reg);
+        },
+        .indirect_sp => |ind| {
+            // safety: the parked pointer sits at a small, in-range sp offset.
+            try isa.movRegOffsetToReg(self, Reg.sp, @intCast(ind.sp_ofs), reg); // reg = parked pointer
             if (ind.delta > 0) try isa.addImmToReg(self, @intCast(ind.delta), reg);
         },
     }
@@ -171,6 +183,159 @@ pub fn emitTupleElemLoad(self: *Emitter, elems: []const *const types.Type, index
     }
 }
 
+// ---- array values (§3.4) ----
+// `[T; N]` is a homogeneous positional aggregate, inline + contiguous;
+// element `i` sits at offset `i * elem_width`. A scalar element stores
+// its word/byte; an aggregate element (struct / tuple / nested array)
+// lays out inline at its offset, recursing like a nested struct field.
+// Element access is in `expr.zig` (load) / `statements.zig` (store).
+
+/// Materialize an array value into the frame slot at `dest_ofs`: a list
+/// literal `[a, b, c]` (materialize each element), a repeat `[v; N]`
+/// (fill), or another array value (byte-copied for value semantics).
+pub fn emitArrayInto(self: *Emitter, src: *const ast.Expr, elem: *const types.Type, count: u32, dest_ofs: i16) error{OutOfMemory}!void {
+    try emitArrayIntoDest(self, src, elem, count, .{ .frame = dest_ofs });
+}
+
+fn emitArrayIntoDest(self: *Emitter, src: *const ast.Expr, elem: *const types.Type, count: u32, dest: Dest) error{OutOfMemory}!void {
+    const ew = self.widthOfType(elem);
+    if (src.* == .list_lit) {
+        for (src.list_lit.elems, 0..) |e, i| {
+            // @as: i*elem_width stays within the 127-byte frame slot.
+            try emitElemInto(self, e, elem, dest.at(@intCast(i * ew)));
+        }
+        return;
+    }
+    if (src.* == .list_repeat) {
+        try emitArrayRepeat(self, src.list_repeat, elem, count, dest);
+        return;
+    }
+    // Another array value — byte-copy its contiguous slots in.
+    try self.emitExpr(src); // acu = source base
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try destAddrToReg(self, dest, Reg.r2);
+    // @as: total array width ≤ the frame cap.
+    try copyBytes(self, Reg.r1, Reg.r2, @intCast(@as(u32, ew) * count));
+}
+
+/// Materialize one array element (of element type `elem`) into `dest`.
+/// A scalar stores its word/byte; an aggregate recurses into the matching
+/// struct / tuple / nested-array layout at the destination.
+fn emitElemInto(self: *Emitter, e: *const ast.Expr, elem: *const types.Type, dest: Dest) error{OutOfMemory}!void {
+    switch (self.arrayElemKindOf(elem)) {
+        .structure => |sname| try emitIntoDest(self, e, sname, dest),
+        .tuple => |elems| try emitTupleIntoDest(self, e, elems, dest),
+        .array => |sub| try emitArrayIntoDest(self, e, sub.elem, sub.len, dest),
+        .scalar => {
+            try self.emitExpr(e);
+            try isa.movRegToReg(self, Reg.acu, Reg.r2);
+            try destAddrToReg(self, dest, Reg.r1);
+            try storeWidth(self, Reg.r1, self.widthOfType(elem), Reg.r2);
+        },
+    }
+}
+
+fn emitArrayRepeat(self: *Emitter, lr: ast.ListRepeatLit, elem: *const types.Type, count: u32, dest: Dest) error{OutOfMemory}!void {
+    const ew = self.widthOfType(elem);
+    switch (self.arrayElemKindOf(elem)) {
+        .scalar => {
+            // @as: total array width ≤ the frame cap.
+            const total: u16 = @intCast(@as(u32, ew) * count);
+            // Zero-fill (the common buffer init) collapses to one `bfill`.
+            if (lr.value.* == .int_lit and lr.value.int_lit.value == 0) {
+                try destAddrToReg(self, dest, Reg.r1);
+                try isa.movImmToReg(self, total, Reg.r2);
+                try isa.movImmToReg(self, 0, Reg.r3);
+                try self.emitByte(Op.bfill);
+                try self.emitByte(Reg.r1); // dst
+                try self.emitByte(Reg.r2); // len
+                try self.emitByte(Reg.r3); // val
+                return;
+            }
+            // Otherwise evaluate the value once and replicate the register.
+            try self.emitExpr(lr.value);
+            try isa.movRegToReg(self, Reg.acu, Reg.r3); // r3 = value (preserved)
+            var i: u32 = 0;
+            while (i < count) : (i += 1) {
+                // @as: i*elem_width ≤ the frame cap.
+                try destAddrToReg(self, dest.at(@intCast(i * ew)), Reg.r1);
+                try storeWidth(self, Reg.r1, ew, Reg.r3);
+            }
+        },
+        // An aggregate value is constructed once into slot 0, then its
+        // bytes are copied into each remaining slot (single eval, value
+        // semantics — matches `let b = a` aggregate copy).
+        else => {
+            if (count == 0) return;
+            try emitElemInto(self, lr.value, elem, dest.at(0));
+            var i: u32 = 1;
+            while (i < count) : (i += 1) {
+                try destAddrToReg(self, dest.at(0), Reg.r1); // src = slot 0
+                // @as: i*elem_width ≤ the frame cap.
+                try destAddrToReg(self, dest.at(@intCast(i * ew)), Reg.r2); // dst = slot i
+                try copyBytes(self, Reg.r1, Reg.r2, ew);
+            }
+        },
+    }
+}
+
+/// Scale index register `reg` by `elem_width` so it becomes a byte offset
+/// into the array. Power-of-two widths shift in place; others multiply
+/// (which clobbers `r1` / `r3` and acu's high half — `reg` must be none
+/// of `r1` / `r3`; every call site passes `acu`).
+pub fn scaleIndex(self: *Emitter, reg: u8, elem_width: u16) error{OutOfMemory}!void {
+    switch (elem_width) {
+        0, 1 => {},
+        2 => try isa.shlRegImm(self, reg, 1),
+        4 => try isa.shlRegImm(self, reg, 2),
+        8 => try isa.shlRegImm(self, reg, 3),
+        else => {
+            // `mul dst, src` writes the product's low half to dst and the
+            // high half to acu — so multiply through r1 (never acu) and copy
+            // the low half back, leaving the scaled index in reg. Clobbers
+            // r1 / r3 / acu-high (all dead at every call site).
+            try isa.movRegToReg(self, reg, Reg.r1); // r1 = index
+            try isa.movImmToReg(self, elem_width, Reg.r3); // r3 = elem_width
+            try isa.mulRegReg(self, Reg.r3, Reg.r1); // r1 = index*elem_width (low half)
+            try isa.movRegToReg(self, Reg.r1, reg); // reg = scaled index
+        },
+    }
+}
+
+/// Leave the runtime element address (`base + index * elem_width`) of
+/// `ix` in `acu`. Bounds-trapped in debug. Self-balancing on the stack
+/// (parks `base` internally), so a caller may keep other values parked
+/// below. Clobbers `r1` (base) and `r3` (scale scratch).
+pub fn emitIndexAddr(self: *Emitter, ix: ast.IndexExpr, info: codegen.Emitter.ArrayInfo) error{OutOfMemory}!void {
+    try self.emitExpr(ix.receiver); // acu = base
+    try isa.pushReg(self, Reg.acu);
+    try self.emitExpr(ix.index); // acu = index
+    // @as: array length fits u16.
+    try overflow.emitBoundsTrap(self, Reg.acu, @intCast(info.count));
+    try scaleIndex(self, Reg.acu, info.elem_width);
+    try isa.popReg(self, Reg.r1); // r1 = base
+    try isa.addRegToAcu(self, Reg.r1); // acu = base + index*elem_width
+}
+
+/// Store an aggregate `rhs` into the destination whose base address is in
+/// `addr_reg` (an array element of element type `elem`). The pointer is
+/// parked on the stack so a struct / tuple / nested-array literal
+/// materializes directly into the slot — and any other aggregate value is
+/// byte-copied — without a temporary binding. `elem` must be aggregate
+/// (scalar element stores take the word/byte path).
+pub fn emitAggregateStoreInto(self: *Emitter, rhs: *const ast.Expr, elem: *const types.Type, addr_reg: u8) error{OutOfMemory}!void {
+    try isa.pushReg(self, addr_reg); // [sp + 0] = destination pointer
+    const dest = Dest{ .indirect_sp = .{ .sp_ofs = 0, .delta = 0 } };
+    switch (self.arrayElemKindOf(elem)) {
+        .structure => |sname| try emitIntoDest(self, rhs, sname, dest),
+        .tuple => |elems| try emitTupleIntoDest(self, rhs, elems, dest),
+        .array => |sub| try emitArrayIntoDest(self, rhs, sub.elem, sub.len, dest),
+        // A scalar element never reaches this aggregate store path.
+        .scalar => unreachable,
+    }
+    try isa.addImmToReg(self, 2, Reg.sp); // drop the parked pointer
+}
+
 fn emitLitInto(self: *Emitter, sl: ast.StructLit, sname: []const u8, dest: Dest) error{OutOfMemory}!void {
     const sd = self.struct_decls.get(sname).?;
     for (sd.fields) |df| {
@@ -221,21 +386,30 @@ pub fn emitFieldLoad(self: *Emitter, sname: []const u8, field_name: []const u8) 
 }
 
 /// Store `value` into field `field_name` of the struct addressed by
-/// `recv`. A nested struct field copies the value's bytes.
+/// `recv`. An aggregate field (nested struct / tuple) materializes the
+/// value directly into the field slot through a stack-parked pointer — a
+/// literal lands in place, any other aggregate value is byte-copied — so
+/// no temporary binding is needed.
 pub fn emitFieldStore(self: *Emitter, recv: *const ast.Expr, sname: []const u8, field_name: []const u8, value: *const ast.Expr) !void {
     const info = self.structFieldInfo(sname, field_name).?;
-    // Evaluate the value first and stash it on the stack — computing
-    // the receiver's address reuses acu, so the value can't stay there.
-    if (info.struct_name) |sub| {
-        try self.emitExpr(value);
-        try isa.pushReg(self, Reg.acu);
-        try self.emitExpr(recv);
+    if (info.struct_name != null or info.is_tuple) {
+        // Compute the field's address and park it, then materialize the
+        // value through it — `sp` stays put across the value's fields.
+        try self.emitExpr(recv); // acu = receiver base
         if (info.offset != 0) try isa.addImmToReg(self, info.offset, Reg.acu);
-        try isa.movRegToReg(self, Reg.acu, Reg.r2);
-        try isa.popReg(self, Reg.r1);
-        try copyBytes(self, Reg.r1, Reg.r2, self.structWidth(sub));
+        try isa.pushReg(self, Reg.acu); // [sp + 0] = field pointer
+        const dest = Dest{ .indirect_sp = .{ .sp_ofs = 0, .delta = 0 } };
+        if (info.struct_name) |sub| {
+            try emitIntoDest(self, value, sub, dest);
+        } else if (self.tupleElemsOf(value)) |elems| {
+            try emitTupleIntoDest(self, value, elems, dest);
+        } else {
+            try self.unsupported(value.span(), "tuple field assigned from a non-tuple value");
+        }
+        try isa.addImmToReg(self, 2, Reg.sp); // drop the parked pointer
         return;
     }
+    // Scalar field — evaluate the value, then store it as a word/byte.
     try self.emitExpr(value);
     try isa.pushReg(self, Reg.acu);
     try self.emitExpr(recv);

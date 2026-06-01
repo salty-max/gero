@@ -72,3 +72,22 @@ pub fn emitOverflowTrap(self: *Emitter, signedness: Signedness) !void {
     const target = try self.currentOffset();
     try isa.patchJumpTo(self, skip_patch, target);
 }
+
+/// Fault vector raised by the array-bounds trap (out-of-bounds, ISA §6).
+pub const bounds_vector: u8 = 0x02;
+
+/// Emit a debug-mode bounds check for a runtime array index in `reg`
+/// against the fixed length `len`: when `reg >= len` (unsigned), raise
+/// vector `$02`. Elided in release / size mode (matches the overflow
+/// trap). `cmp` sets `C = 0` exactly when `reg >= len`; there is no
+/// jump-on-carry-set, so the in-bounds path skips via an extra `jmp`.
+pub fn emitBoundsTrap(self: *Emitter, reg: u8, len: u16) !void {
+    if (self.optimize != .debug) return;
+    try isa.cmpRegImm(self, reg, len); // reg - len; C = 0 ⇒ reg >= len (OOB)
+    const oob = try isa.emitJumpPlaceholder(self, Op.jcc_addr); // OOB → trap
+    const in_bounds = try isa.emitJumpPlaceholder(self, Op.jmp_addr); // else skip
+    try isa.patchJumpTo(self, oob, try self.currentOffset());
+    try self.emitByte(Op.int_imm8);
+    try self.emitByte(bounds_vector);
+    try isa.patchJumpTo(self, in_bounds, try self.currentOffset());
+}
