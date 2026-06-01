@@ -135,6 +135,7 @@ pub fn typecheck(
 }
 
 const mem_builtin = @import("typecheck/mem_builtin.zig");
+const stdlib = @import("typecheck/stdlib.zig");
 const match = @import("typecheck/match.zig");
 const predicates = @import("typecheck/predicates.zig");
 const annotations = @import("typecheck/annotations.zig");
@@ -1088,6 +1089,9 @@ pub const Checker = struct {
                     const recv_name = self.lexeme(m.receiver.ident.span);
                     if (std.mem.eql(u8, recv_name, "mem")) {
                         return try fields.checkMemMethodCall(self, m);
+                    }
+                    if (stdlib.isModule(recv_name)) {
+                        return try stdlib.checkCall(self, recv_name, m.method, m.args, m.span);
                     }
                     // `Enum.Variant(args)` is indistinguishable from a
                     // method call at parse time — resolve it as a
