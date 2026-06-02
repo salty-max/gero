@@ -82,9 +82,14 @@ pub fn checkMethod(self: *Checker, m: ast.MethodCallExpr, elem: *const types.Typ
         _ = try self.inferExpr(m.args[1], u16_ty);
         return try types.mkVec(self.arena, elem);
     }
-    if (std.mem.eql(u8, method, "pop") or std.mem.eql(u8, method, "get")) {
-        try self.emitSpan("E_TYPE_UNDEFINED_METHOD", m.span, "`Vec.pop` / `Vec.get` return `T?` and await the scalar-optional model — use `len` / `at` for now");
-        return null;
+    if (std.mem.eql(u8, method, "pop")) {
+        if (try expectArity(self, m, 0)) return null;
+        return try types.mkOptional(self.arena, elem);
+    }
+    if (std.mem.eql(u8, method, "get")) {
+        if (try expectArity(self, m, 1)) return null;
+        _ = try self.inferExpr(m.args[0], u16_ty);
+        return try types.mkOptional(self.arena, elem);
     }
     const msg = try std.fmt.allocPrint(self.arena, "`Vec` has no method `{s}`", .{method});
     try self.emitSpan("E_TYPE_UNDEFINED_METHOD", m.method, msg);

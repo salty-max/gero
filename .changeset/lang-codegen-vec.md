@@ -19,11 +19,14 @@ Method binders are typed from the receiver's element type (`v.at(i)`
 yields `T`, `v.len()` yields `u16`), and `Vec.new` / `with_capacity`
 infer `T` from the binding's annotation.
 
+`pop()` and `get(i)` return `T?`. To make them work for scalar elements,
+`T?` now extends to scalars: a scalar `T?` is a tagged 4-byte
+`{present, value}` value (pointer-like `T?` stays a single nullable word).
+`if let n = opt` unwraps an optional (binds `n` to the value when present,
+runs `else` when nil), and `opt == nil` / `!= nil` test the tag.
+
 `Vec.from` parses now that a name after `.` accepts the `from` keyword
 (otherwise reserved for `use … from`).
 
-`pop` / `get` (which return `T?`) are not yet lowered — `T?` is currently
-pointer-like-only, so scalar-element `pop` / `get` await a tagged
-scalar-optional representation. The heap is a bump allocator with no free,
-so a growing `push` leaks the old buffer (the documented cost on a 16-bit
-target).
+The heap is a bump allocator with no free, so a growing `push` leaks the
+old buffer (the documented cost on a 16-bit target).

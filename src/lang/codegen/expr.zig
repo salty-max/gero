@@ -51,11 +51,13 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .char_lit => |c| try isa.movImmToReg(self, c.value, Reg.acu),
         .paren => |p| try emitExpr(self, p.inner),
         .ident => |i| {
-            // A struct- / tuple- / array- / Vec-typed binding evaluates to
-            // its base address — inline aggregates (incl. the 6-byte Vec
-            // header) are addressed in place, not loaded as a word.
+            // A struct- / tuple- / array- / Vec- / scalar-optional-typed
+            // binding evaluates to its base address — inline aggregates
+            // (incl. the 6-byte Vec header + the 4-byte `{present, value}`
+            // optional) are addressed in place, not loaded as a word.
             if (self.structNameOf(e) != null or self.tupleElemsOf(e) != null or
-                self.arrayInfoOf(e) != null or vec_builtin.elemOf(self, e) != null)
+                self.arrayInfoOf(e) != null or vec_builtin.elemOf(self, e) != null or
+                self.scalarOptionalElemOf(e) != null)
             {
                 try self.emitAddrOf(e);
                 return;
@@ -402,7 +404,41 @@ fn payloadEnumComparison(self: *Emitter, b: ast.BinaryExpr) ?*const ast.EnumDecl
 /// (`and`, `or`) take a separate path so the RHS isn't always
 /// evaluated. Comparison ops materialize a `0` / `1` in `acu`.
 /// Fixed-point `*` / `/` get a Q8.8 scaling tail per ISA §5.4.1.
+/// When `b` is `<scalar optional> == nil` / `!= nil`, the scalar-optional
+/// operand and its inner type, else `null`. The optional must be the
+/// scalar (`{present, value}`) form; pointer optionals compare as a word.
+fn scalarOptionalNilCompare(self: *Emitter, b: ast.BinaryExpr) ?*const ast.Expr {
+    if (b.op != .eq and b.op != .neq) return null;
+    if (b.rhs.* == .nil_lit and self.scalarOptionalElemOf(b.lhs) != null) return b.lhs;
+    if (b.lhs.* == .nil_lit and self.scalarOptionalElemOf(b.rhs) != null) return b.rhs;
+    return null;
+}
+
+/// Leave `1`/`0` in `acu` for `<scalar optional> == nil` (`negate` =>
+/// `!= nil`) — testing the `present` tag rather than the header address.
+fn emitScalarOptionalNilCompare(self: *Emitter, opt_expr: *const ast.Expr, negate: bool) error{OutOfMemory}!void {
+    try emitExpr(self, opt_expr); // acu = optional header address
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try class.emitWordLoadAtOffset(self, Reg.r1, codegen.Emitter.opt_present_ofs, Reg.acu); // acu = present
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const absent = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    try isa.movImmToReg(self, if (negate) 1 else 0, Reg.acu); // present → `!= nil`
+    const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, absent, try self.currentOffset());
+    try isa.movImmToReg(self, if (negate) 0 else 1, Reg.acu); // absent → `== nil`
+    try isa.patchJumpTo(self, done, try self.currentOffset());
+}
+
+/// Lower a binary expression, leaving the result in `acu`. Handles the
+/// value-aggregate comparison special cases (struct / tuple / scalar-
+/// optional `==` / `!=`) before the scalar arithmetic / comparison path.
 pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
+    // A scalar optional compared to `nil` — test the `present` tag (the
+    // header evaluates to an address, so a plain `cmp` would never be nil).
+    if (scalarOptionalNilCompare(self, b)) |opt_expr| {
+        try emitScalarOptionalNilCompare(self, opt_expr, b.op == .neq);
+        return;
+    }
     switch (b.op) {
         .log_and, .log_or => {
             try emitShortCircuitBool(self, b);
@@ -604,6 +640,13 @@ pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
         const b = e.binary;
         switch (b.op) {
             .eq, .neq, .lt, .lte, .gt, .gte => {
+                // A scalar optional vs `nil` — test the `present` tag, then
+                // compare the 0/1 to 0 so the branch consumes its flags.
+                if (scalarOptionalNilCompare(self, b)) |opt_expr| {
+                    try emitScalarOptionalNilCompare(self, opt_expr, b.op == .neq);
+                    try isa.cmpRegImm(self, Reg.acu, 0);
+                    return;
+                }
                 // A struct operand compares structurally (byte-wise);
                 // the resulting 0/1 in acu is then tested against 0 so
                 // the branch consumes its flags like any scalar cond.

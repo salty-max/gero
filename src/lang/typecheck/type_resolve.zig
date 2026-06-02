@@ -31,11 +31,11 @@ pub fn resolveType(self: *Checker, t: *const ast.TypeAnn) WalkError!*const types
         },
         .nullable => |n| {
             const inner = try resolveType(self, n.inner);
-            if (!isPointerLike(self, inner.*)) {
+            if (!isOptionalInner(self, inner.*)) {
                 const inner_s = try types.render(self.arena, inner.*);
                 const msg = try std.fmt.allocPrint(
                     self.arena,
-                    "type `{s}?` is invalid — `T?` only applies to pointer-like types (`str`, class, fn-pointer, references)",
+                    "type `{s}?` is invalid — `T?` applies to pointer-like types (`str`, class, fn-pointer, references) or scalars (`i8` / `u8` / `i16` / `u16` / `char` / `bool` / `fixed`)",
                     .{inner_s},
                 );
                 try self.emitSpan("E_NULL_NON_POINTER", n.span, msg);
@@ -92,6 +92,19 @@ pub fn resolveType(self: *Checker, t: *const ast.TypeAnn) WalkError!*const types
 /// Pointer-like types per §3.4.1 — `str`, references, function
 /// pointers, and class names. Struct / enum / numeric / bool /
 /// fixed are by-value and therefore not nullable-eligible.
+/// Whether `t` is a valid `T?` inner type — pointer-like (a single-word
+/// nullable pointer, `nil` = 0) or a scalar (a tagged `{present, value}`
+/// optional). Aggregates (array / tuple / `Vec` / struct) are rejected.
+pub fn isOptionalInner(self: *const Checker, t: types.Type) bool {
+    if (isPointerLike(self, t)) return true;
+    return t == .primitive and switch (t.primitive) {
+        .i8, .u8, .i16, .u16, .char, .bool_, .fixed => true,
+        .str, .nil_ => false, // `str` is pointer-like (handled above)
+    };
+}
+
+/// Whether `t` is a pointer-like type (`str`, class, fn-pointer, reference)
+/// — represented as a single nullable-pointer word (`nil` = 0).
 pub fn isPointerLike(self: *const Checker, t: types.Type) bool {
     return switch (t) {
         .primitive => |p| p == .str,

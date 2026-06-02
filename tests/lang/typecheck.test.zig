@@ -849,22 +849,22 @@ test "typecheck: class? accepts" {
     );
 }
 
-test "typecheck: i16? errors with E_NULL_NON_POINTER" {
-    try expectCode(
+test "typecheck: i16? is a valid scalar optional" {
+    try expectClean(
         \\let x: i16? = nil
-    , "E_NULL_NON_POINTER");
+    );
 }
 
-test "typecheck: bool? errors with E_NULL_NON_POINTER" {
-    try expectCode(
+test "typecheck: bool? is a valid scalar optional" {
+    try expectClean(
         \\let x: bool? = nil
-    , "E_NULL_NON_POINTER");
+    );
 }
 
-test "typecheck: fixed? errors with E_NULL_NON_POINTER" {
-    try expectCode(
+test "typecheck: fixed? is a valid scalar optional" {
+    try expectClean(
         \\let x: fixed? = nil
-    , "E_NULL_NON_POINTER");
+    );
 }
 
 test "typecheck: struct? errors (structs are by-value)" {
@@ -2724,13 +2724,14 @@ test "typecheck/vec: `Vec.new` without an annotation can't infer T" {
     , "E_TYPE_AMBIGUOUS_INFER");
 }
 
-test "typecheck/vec: `pop` is deferred (returns T?, awaits scalar optionals)" {
-    try expectCode(
+test "typecheck/vec: `pop` / `get` return a scalar optional" {
+    try expectClean(
         \\def main()
-        \\  let v: Vec(i16) = Vec.new()
-        \\  let x = v.pop()
+        \\  let v: Vec(i16) = Vec.from([1, 2, 3])
+        \\  let x: i16? = v.pop()
+        \\  let y: i16? = v.get(0)
         \\end
-    , "E_TYPE_UNDEFINED_METHOD");
+    );
 }
 
 test "typecheck/vec: an unknown Vec method is rejected" {

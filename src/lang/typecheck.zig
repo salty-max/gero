@@ -940,6 +940,9 @@ pub const Checker = struct {
     /// — used by `if let` / `while let` and `match` arms so no binder is
     /// left `null`-typed (the strong-typing rule).
     pub fn registerBindingsFromType(self: *Checker, pat: *const ast.Pattern, ty: ?*const types.Type) WalkError!void {
+        // `if let` / `while let` unwrap an optional (§3.4.1) — bind the
+        // pattern against the inner (non-nil) type.
+        if (ty) |t| if (t.* == .optional) return self.registerBindingsFromType(pat, t.optional);
         switch (pat.*) {
             .ident => |i| try self.registerName(self.lexeme(i.name), .{
                 .kind = .let_binding,
