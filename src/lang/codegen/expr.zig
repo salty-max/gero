@@ -137,40 +137,48 @@ pub fn emitEnumConstruct(
     tag: u8,
     args: []const *ast.Expr,
 ) !void {
-    // Evaluate the payload args onto the stack first (no frame slot —
-    // an uncounted local would overlap the prologue's reservation).
-    for (args) |arg| {
-        try emitExpr(self, arg);
-        try isa.pushReg(self, Reg.acu);
-    }
-
-    // Allocate the slot; `acu` → pointer, kept in `r1` across the
-    // stores below.
+    // Allocate the `[tag | payload]` slot first and park its pointer on
+    // the stack — argument evaluation can clobber every register, so the
+    // pointer is reloaded from `[sp]` for each field store.
     try isa.movImmToReg(self, self.enumSlotSize(ed), Reg.acu);
     try self.emitByte(Op.sys);
     try self.emitByte(opcodes.Sys.alloc);
-    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try isa.pushReg(self, Reg.acu); // [sp] = slot pointer
 
     // Tag byte at offset 0.
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1);
     try isa.movImmToReg(self, tag, Reg.r2);
     try class.emitByteStoreAtOffset(self, Reg.r1, 0, Reg.r2);
 
-    // Pop the args in reverse (stack is LIFO) and store each at its
-    // field offset.
-    var i = args.len;
-    while (i > 0) {
-        i -= 1;
-        try isa.popReg(self, Reg.r2);
+    for (args, 0..) |arg, i| {
         const ofs = self.variantFieldOffset(variant, i);
-        if (self.widthOfTypeAnn(variant.payload[i].type_ann.*) == 1) {
-            try class.emitByteStoreAtOffset(self, Reg.r1, ofs, Reg.r2);
+        const ann = variant.payload[i].type_ann.*;
+        if (self.structNameOfTypeAnn(ann) != null or ann == .tuple or ann == .array) {
+            // Aggregate payload — materialize it inline into the slot
+            // field (a literal lands in place, a value is copied) so the
+            // enum owns the bytes (value semantics; no dangling temp).
+            try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1);
+            try isa.movRegToReg(self, Reg.r1, Reg.acu);
+            if (ofs > 0) try isa.addImmToReg(self, ofs, Reg.acu);
+            const ty = (try self.typeAnnToType(ann)) orelse {
+                try self.unsupported(arg.span(), "enum payload of this type");
+                continue;
+            };
+            try value_struct.emitAggregateStoreInto(self, arg, ty, Reg.acu);
         } else {
-            try class.emitWordStoreAtOffset(self, Reg.r1, ofs, Reg.r2);
+            try emitExpr(self, arg); // acu = scalar value / pointer
+            try isa.movRegToReg(self, Reg.acu, Reg.r2);
+            try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1);
+            if (self.widthOfTypeAnn(ann) == 1) {
+                try class.emitByteStoreAtOffset(self, Reg.r1, ofs, Reg.r2);
+            } else {
+                try class.emitWordStoreAtOffset(self, Reg.r1, ofs, Reg.r2);
+            }
         }
     }
 
     // Result is the slot pointer.
-    try isa.movRegToReg(self, Reg.r1, Reg.acu);
+    try isa.popReg(self, Reg.acu);
 }
 
 /// `acu`. Field access on non-enum receivers is not yet

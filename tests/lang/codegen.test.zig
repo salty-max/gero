@@ -6442,3 +6442,44 @@ test "codegen/destructure: i8 payload binder sign-extends" {
         \\end
     , "-5\n");
 }
+
+test "codegen/destructure: aggregate enum payload — inline copy + value semantics" {
+    // The struct payload is stored inline in the enum slot (the enum owns a
+    // copy), so mutating the source after construction can't change it.
+    try runAndExpect(
+        \\struct Coord
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\enum Loc
+        \\  case At(Coord)
+        \\end
+        \\def main()
+        \\  let cv: Coord = Coord { x: 5, y: 6 }
+        \\  let l: Loc = Loc.At(cv)
+        \\  cv.x = 999
+        \\  if let Loc.At(c) = l
+        \\    print c.x
+        \\    print c.y
+        \\  end
+        \\end
+    , "5\n6\n");
+}
+
+test "codegen/destructure: aggregate enum payload destructures in place" {
+    try runAndExpect(
+        \\struct Coord
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\enum Loc
+        \\  case At(Coord)
+        \\end
+        \\def main()
+        \\  if let Loc.At(Coord { x, y }) = Loc.At(Coord { x: 1, y: 2 })
+        \\    print x
+        \\    print y
+        \\  end
+        \\end
+    , "1\n2\n");
+}

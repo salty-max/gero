@@ -934,7 +934,7 @@ pub const Emitter = struct {
                 else
                     2;
                 for (ms.arms) |a| {
-                    n += ownSlotBinderBytes(a.pattern, false);
+                    n += self.ownSlotBinderBytes(a.pattern, false);
                     n += self.countFrameBytesDepth(a.body, depth);
                 }
                 break :blk n;
@@ -1127,7 +1127,7 @@ pub const Emitter = struct {
             alignUpU16(self.widthOfType(ty.?), 2)
         else
             2;
-        return scrut + ownSlotBinderBytes(pat, false);
+        return scrut + self.ownSlotBinderBytes(pat, false);
     }
 
     /// Frame bytes an `if let` / `while let` head reserves: a 2-byte slot
@@ -1140,31 +1140,56 @@ pub const Emitter = struct {
     }
 
     /// Frame bytes for the binders that need their own slot — enum-payload
-    /// binders (loaded from behind the value's pointer) and the temp that
-    /// parks a nested enum's pointer. Inline binders (`behind == false`)
-    /// alias the scrutinee slot and cost nothing.
-    fn ownSlotBinderBytes(pat: *const ast.Pattern, behind: bool) usize {
+    /// binders (loaded from behind the value's pointer), an aggregate
+    /// payload's sized copy, and the temp that parks a nested enum's
+    /// pointer. Inline binders (`behind == false`) alias the scrutinee
+    /// slot and cost nothing.
+    fn ownSlotBinderBytes(self: *const Emitter, pat: *const ast.Pattern, behind: bool) usize {
         return switch (pat.*) {
             .ident => if (behind) 2 else 0,
             .tuple_pattern => |t| blk: {
                 var n: usize = 0;
-                for (t.elems) |e| n += ownSlotBinderBytes(e, behind);
+                for (t.elems) |e| n += self.ownSlotBinderBytes(e, behind);
                 break :blk n;
             },
             .struct_pattern => |st| blk: {
                 var n: usize = 0;
-                for (st.fields) |f| n += ownSlotBinderBytes(f.sub, behind);
+                for (st.fields) |f| n += self.ownSlotBinderBytes(f.sub, behind);
                 break :blk n;
             },
             .variant_pattern => |vp| blk: {
                 // A variant behind a pointer parks its slot pointer in a
                 // temp first; payload binders then live behind it.
                 var n: usize = if (behind) 2 else 0;
-                for (vp.args) |a| n += ownSlotBinderBytes(a, true);
+                const path = self.source[vp.path.start..vp.path.end];
+                const dot = std.mem.indexOfScalar(u8, path, '.');
+                const ed = if (dot) |d| self.enum_decls.get(path[0..d]) else null;
+                const vname = if (dot) |d| path[d + 1 ..] else path;
+                for (vp.args, 0..) |a, i| {
+                    const pann: ?ast.TypeAnn = if (ed) |e| self.variantPayloadAnn(e, vname, i) else null;
+                    // An aggregate payload is copied into a sized slot the
+                    // binder owns; its sub-binders alias that copy.
+                    if (pann) |ann| if (self.structNameOfTypeAnn(ann) != null or ann == .tuple or ann == .array) {
+                        n += alignUpU16(self.widthOfTypeAnn(ann), 2);
+                        n += self.ownSlotBinderBytes(a, false);
+                        continue;
+                    };
+                    n += self.ownSlotBinderBytes(a, true);
+                }
                 break :blk n;
             },
             else => 0,
         };
+    }
+
+    /// The `i`-th payload field's type annotation for variant `vname` of
+    /// `ed`, or `null` when the variant / index doesn't resolve.
+    fn variantPayloadAnn(self: *const Emitter, ed: *const ast.EnumDecl, vname: []const u8, i: usize) ?ast.TypeAnn {
+        for (ed.variants) |v| {
+            if (!std.mem.eql(u8, self.source[v.name.start..v.name.end], vname)) continue;
+            return if (i < v.payload.len) v.payload[i].type_ann.* else null;
+        }
+        return null;
     }
 
     // ---------- program + def emission ----------

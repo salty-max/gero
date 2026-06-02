@@ -140,12 +140,21 @@ fn matchVariant(self: *Emitter, vp: ast.VariantPattern, ofs: i8, ty: ?*const Typ
 /// The pointer is reloaded per field — prior binders / nested recursion
 /// churn registers, so `r1` can't be assumed live across calls.
 fn bindPayload(self: *Emitter, arg: *const ast.Pattern, scrut_ofs: i8, off: u16, fty_ann: ast.TypeAnn, skip: *std.ArrayList(usize)) error{OutOfMemory}!void {
-    // An aggregate payload (struct / tuple / array) isn't a register-width
-    // slot value — its inline layout isn't lowered here (matches enum `==`
-    // / `print`, which also don't handle aggregate payloads). Reject it
-    // cleanly rather than load a single word of a wider value.
+    // An aggregate payload (struct / tuple / array) lays out inline within
+    // the slot at `off` (the enum owns its bytes — §3.6). Copy it into a
+    // fresh sized slot the binder owns, then bind / recurse against that.
     if (self.structNameOfTypeAnn(fty_ann) != null or fty_ann == .tuple or fty_ann == .array) {
-        try self.unsupported(arg.span(), "binding an enum payload of struct / tuple / array type");
+        if (arg.* == .wildcard) return;
+        const w = self.widthOfTypeAnn(fty_ann);
+        const slot_name: []const u8 = if (arg.* == .ident)
+            try self.arena.dupe(u8, self.source[arg.ident.name.start..arg.ident.name.end])
+        else
+            "\x00__pl";
+        const dest = try self.allocLocalSized(slot_name, w);
+        try copyInlinePayload(self, scrut_ofs, off, w, dest);
+        // An ident binds the copied aggregate directly (the slot is its
+        // value); any other pattern destructures the copy in place.
+        if (arg.* != .ident) try emitMatchPattern(self, arg, dest, try self.typeAnnToType(fty_ann), skip);
         return;
     }
     switch (arg.*) {
@@ -169,6 +178,15 @@ fn bindPayload(self: *Emitter, arg: *const ast.Pattern, scrut_ofs: i8, off: u16,
             try pattern.emitLeafTest(self, arg.*, skip);
         },
     }
+}
+
+/// Copy a `w`-byte inline aggregate payload at `[<slot ptr at fp+scrut_ofs>
+/// + off]` into the frame slot at `dest`.
+fn copyInlinePayload(self: *Emitter, scrut_ofs: i8, off: u16, w: u16, dest: i8) error{OutOfMemory}!void {
+    try isa.movRegOffsetToReg(self, Reg.fp, scrut_ofs, Reg.r1); // r1 = slot pointer
+    if (off > 0) try isa.addImmToReg(self, off, Reg.r1); // r1 = &payload aggregate
+    try frameAddr(self, dest, Reg.r2);
+    try value_struct.copyBytes(self, Reg.r1, Reg.r2, w);
 }
 
 fn loadPayload(self: *Emitter, scrut_ofs: i8, off: u16, fty_ann: ast.TypeAnn, reg: u8) error{OutOfMemory}!void {
