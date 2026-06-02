@@ -23,6 +23,11 @@ The destructuring matcher also gives `match` tuple and struct patterns
 (`case (a, b) =>`, `case Player { hp, mp } =>`), which previously only
 lowered enum-variant and literal arms.
 
+Enum variants now carry aggregate payloads (`case At(Coord)`): the value
+is stored inline in the `[tag | payload]` slot (the enum owns a copy, so
+mutating the source can't change it), and `if let At(c) = loc` /
+`if let At(Coord { x, y }) = loc` bind or further destructure it.
+
 Payload / element / field binders are now typed from the matched value
 (the variant's payload type, the tuple's slot type, the struct's field
 type) rather than left untyped — `if let E.Hit(n) = e` gives `n` the
