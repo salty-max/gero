@@ -236,6 +236,7 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_NOT_A_TUPLE` | `.N` element access on a non-tuple value. |
 | `E_TYPE_TUPLE_INDEX_OOR` | Tuple element index `.N` is past the tuple's arity. |
 | `E_TYPE_INDEX_OOR` | A constant array index `arr[N]` is negative or past the array's length. |
+| `E_TYPE_REFUTABLE_LET` | A `let` binding uses a refutable pattern (a literal / range / or-pattern, or a multi-variant enum) that can fail to match — use `if let` / `match` instead (§4.2). |
 | `E_TYPE_TUPLE_TOO_MANY` | A tuple has more than 4 elements (§3.4) — use a struct instead. |
 | `E_TYPE_TUPLE_ARITY` | Tuple-destructuring pattern's element count doesn't match the init's tuple arity. |
 | `E_TYPE_REDEFINED` | A name is declared twice in the same scope. |
@@ -768,6 +769,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_NOT_A_TUPLE` | Typechecker | v0.3 |
 | `E_TYPE_TUPLE_INDEX_OOR` | Typechecker | v0.3 |
 | `E_TYPE_INDEX_OOR` | Typechecker | v0.3 |
+| `E_TYPE_REFUTABLE_LET` | Typechecker | v0.3 |
 | `E_TYPE_TUPLE_TOO_MANY` | Typechecker | v0.3 |
 | `E_TYPE_TUPLE_ARITY` | Typechecker | v0.3 |
 | `E_TYPE_REDEFINED` | Typechecker | v0.3 |
