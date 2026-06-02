@@ -21,6 +21,7 @@ const globals = @import("codegen/globals.zig");
 const def_emit = @import("codegen/def.zig");
 const statements = @import("codegen/statements.zig");
 const isa = @import("codegen/isa.zig");
+const vec_builtin = @import("codegen/vec_builtin.zig");
 const bake_mod = @import("bake.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
@@ -811,6 +812,9 @@ pub const Emitter = struct {
                 // @as: nested-array width stays ≤ the i8 frame cap.
                 return @intCast(@as(u32, self.widthOfType(a.elem)) * a.len);
             },
+            // A `Vec(T)` value is a 6-byte `(ptr, len, cap)` header (§3.4.3),
+            // stored inline like a struct; its backing buffer is on the heap.
+            .vec => return vec_builtin.header_size,
             else => return 2,
         }
     }
@@ -1695,6 +1699,8 @@ pub const Emitter = struct {
                 for (xs.elems) |elem| total +%= self.widthOfTypeAnn(elem.*);
                 break :blk total;
             },
+            // A `Vec(T)` value is a 6-byte inline header (§3.4.3).
+            .vec => vec_builtin.header_size,
             else => 2,
         };
     }

@@ -12,6 +12,7 @@ const codegen_mod = @import("lang/codegen.zig");
 const include_mod = @import("lang/include.zig");
 
 const tc_mem_builtin = @import("lang/typecheck/mem_builtin.zig");
+const tc_vec_builtin = @import("lang/typecheck/vec_builtin.zig");
 const tc_stdlib = @import("lang/typecheck/stdlib.zig");
 const tc_match = @import("lang/typecheck/match.zig");
 const tc_predicates = @import("lang/typecheck/predicates.zig");
@@ -37,6 +38,7 @@ const cg_test_builtin = @import("lang/codegen/test_builtin.zig");
 const cg_strings = @import("lang/codegen/strings.zig");
 const cg_pattern = @import("lang/codegen/pattern.zig");
 const cg_destructure = @import("lang/codegen/destructure.zig");
+const cg_vec_builtin = @import("lang/codegen/vec_builtin.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 const cg_class = @import("lang/codegen/class.zig");
@@ -164,6 +166,8 @@ pub const internal = struct {
         pub const match = tc_match;
         /// `mem.*` stdlib typecheck dispatch.
         pub const mem_builtin = tc_mem_builtin;
+        /// `Vec(T)` method / constructor type-checking.
+        pub const vec_builtin = tc_vec_builtin;
         /// `math.*` / `bank.*` / `test.*` stdlib typecheck dispatch.
         pub const stdlib = tc_stdlib;
         /// "Did you mean…?" Levenshtein-based name suggestions.
@@ -214,6 +218,8 @@ pub const internal = struct {
         pub const pattern = cg_pattern;
         /// Pattern destructuring (`let` / `if let` / `while let` binds).
         pub const destructure = cg_destructure;
+        /// `Vec(T)` lowering (construct / push / at / slice / …).
+        pub const vec_builtin = cg_vec_builtin;
         /// Expression lowering.
         pub const expr_emit = cg_expr_emit;
         /// Control-flow lowering (if / while / for / match / break / continue / defer).

@@ -335,7 +335,9 @@ fn parseFieldOrMethod(p: *Parser, receiver: *ast.Expr) ParserError!*ast.Expr {
             .span = .{ .start = receiver.span().start, .end = tok.end },
         } });
     }
-    const name_tok = try p.expect(.ident, "field or method name");
+    // A name after `.` is unambiguously a member — accept the `from`
+    // keyword (otherwise reserved for `use … from`) so `Vec.from(…)` parses.
+    const name_tok = if (p.accept(.kw_from)) |t| t else try p.expect(.ident, "field or method name");
     if (p.check(.lparen)) {
         p.pos += 1;
         p.skipNewlines();
