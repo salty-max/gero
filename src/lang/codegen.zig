@@ -815,6 +815,64 @@ pub const Emitter = struct {
         }
     }
 
+    /// Resolve a surface `TypeAnn` to an arena `types.Type` so the
+    /// destructuring matcher can thread one type representation (struct
+    /// field / enum payload types come from AST `TypeAnn`s, tuple slots
+    /// from inferred `types.Type`s). `Vec` / fn-types — never destructured
+    /// through a binder — return `null`.
+    pub fn typeAnnToType(self: *const Emitter, t: ast.TypeAnn) error{OutOfMemory}!?*const Type {
+        switch (t) {
+            .named => |n| {
+                const name = self.source[n.name.start..n.name.end];
+                const prim: ?types_mod.Primitive = if (std.mem.eql(u8, name, "i8"))
+                    .i8
+                else if (std.mem.eql(u8, name, "u8"))
+                    .u8
+                else if (std.mem.eql(u8, name, "i16"))
+                    .i16
+                else if (std.mem.eql(u8, name, "u16"))
+                    .u16
+                else if (std.mem.eql(u8, name, "bool"))
+                    .bool_
+                else if (std.mem.eql(u8, name, "nil"))
+                    .nil_
+                else if (std.mem.eql(u8, name, "str"))
+                    .str
+                else if (std.mem.eql(u8, name, "fixed"))
+                    .fixed
+                else if (std.mem.eql(u8, name, "char"))
+                    .char
+                else
+                    null;
+                if (prim) |p| return try types_mod.mkPrimitive(self.arena, p);
+                return try types_mod.mkNamed(self.arena, name, n.name);
+            },
+            .tuple => |tt| {
+                const elems = try self.arena.alloc(*const Type, tt.elems.len);
+                for (tt.elems, 0..) |e, i| elems[i] = (try self.typeAnnToType(e.*)) orelse return null;
+                const out = try self.arena.create(Type);
+                out.* = .{ .tuple = elems };
+                return out;
+            },
+            .array => |a| {
+                const elem = (try self.typeAnnToType(a.elem.*)) orelse return null;
+                if (a.len_expr.* != .int_lit) return null;
+                // safety: int-lit length → low 16 bits, spec §3.4 caps the count.
+                const raw: u32 = @bitCast(a.len_expr.int_lit.value);
+                return try types_mod.mkArray(self.arena, elem, raw & 0xFFFF);
+            },
+            .reference => |r| {
+                const inner = (try self.typeAnnToType(r.inner.*)) orelse return null;
+                return try types_mod.mkReference(self.arena, inner);
+            },
+            .nullable => |o| {
+                const inner = (try self.typeAnnToType(o.inner.*)) orelse return null;
+                return try types_mod.mkOptional(self.arena, inner);
+            },
+            .vec, .fn_type => return null,
+        }
+    }
+
     /// Bytes of frame space the body could need so the prologue can
     /// `sub frame_bytes, sp`. A scalar local is 2 bytes; a struct
     /// local takes its full (2-aligned) width. Reserves space for
@@ -845,7 +903,7 @@ pub const Emitter = struct {
             .if_stmt => |is_| blk: {
                 var n: usize = 0;
                 for (is_.arms) |a| {
-                    if (a.let_pattern) |p| n += countBindingBytes(p.*);
+                    if (a.let_pattern) |p| n += self.letArmFrameBytes(p, a.let_expr);
                     // `if expr is Class as h` — `h` parks the
                     // instance pointer in a fresh local slot.
                     if (a.cond) |c| if (c.* == .is_test and c.is_test.classBinding() != null) {
@@ -858,7 +916,7 @@ pub const Emitter = struct {
             },
             .while_stmt => |ws| blk: {
                 var n: usize = 0;
-                if (ws.let_pattern) |p| n += countBindingBytes(p.*);
+                if (ws.let_pattern) |p| n += self.letArmFrameBytes(p, ws.let_expr);
                 n += self.countFrameBytesDepth(ws.body, depth);
                 break :blk n;
             },
@@ -867,11 +925,16 @@ pub const Emitter = struct {
             .for_stmt => |fs| 2 + 2 + self.countFrameBytesDepth(fs.body, depth),
             .repeat_stmt => |rs| self.countFrameBytesDepth(rs.body, depth),
             .match_stmt => |ms| blk: {
-                // 1 scratch slot to bind the scrutinee when it isn't
-                // already an ident (so subsequent cmps don't re-eval).
-                var n: usize = if (ms.scrutinee.* == .ident) 0 else 2;
+                // The scrutinee is materialized into a slot once (full width
+                // for a tuple / struct, else a word); each arm's binders
+                // then alias it or load from behind its pointer.
+                const scrut_ty = self.typeOf(ms.scrutinee);
+                var n: usize = if (scrut_ty != null and self.isInlineAggregateType(scrut_ty.?))
+                    alignUpU16(self.widthOfType(scrut_ty.?), 2)
+                else
+                    2;
                 for (ms.arms) |a| {
-                    n += countBindingBytes(a.pattern.*);
+                    n += ownSlotBinderBytes(a.pattern, false);
                     n += self.countFrameBytesDepth(a.body, depth);
                 }
                 break :blk n;
@@ -1031,7 +1094,10 @@ pub const Emitter = struct {
     /// (struct fields summed), 2 for scalars. Non-ident patterns
     /// (destructuring) reserve minimally — lowering them is separate.
     fn letFrameBytes(self: *const Emitter, d: ast.LetDecl) usize {
-        if (d.pattern.* != .ident) return 2;
+        if (d.pattern.* != .ident) {
+            const ty = if (d.init) |e| self.typeOf(e) else null;
+            return self.destructureFrameBytes(d.pattern, ty);
+        }
         const w: u16 = if (d.type_ann) |t|
             self.widthOfTypeAnn(t.*)
         else if (d.init) |e|
@@ -1041,16 +1107,60 @@ pub const Emitter = struct {
         return alignUpU16(w, 2);
     }
 
-    /// Frame bytes a pattern's binders introduce. A bare ident binds
-    /// one 2-byte slot; a variant pattern binds one per payload field.
-    /// These must be reserved so a binder slot doesn't overlap the
-    /// stack-push region used by later binary ops.
-    fn countBindingBytes(pat: ast.Pattern) usize {
-        return switch (pat) {
-            .ident => 2,
-            .variant_pattern => |vp| blk: {
+    /// `true` when a value of `ty` lives inline as contiguous bytes (a
+    /// tuple / struct / array) — vs a register-width scalar / enum-pointer
+    /// / class-pointer.
+    pub fn isInlineAggregateType(self: *const Emitter, ty: *const Type) bool {
+        return switch (ty.*) {
+            .tuple, .array => true,
+            .named => |n| self.struct_decls.contains(n.name),
+            else => false,
+        };
+    }
+
+    /// Frame bytes a destructure of `pat` against `ty` reserves: the
+    /// materialized scrutinee slot (full width for an inline aggregate,
+    /// else a word) plus a slot per enum-payload binder. Inline
+    /// tuple / struct binders alias the scrutinee slot, costing nothing.
+    fn destructureFrameBytes(self: *const Emitter, pat: *const ast.Pattern, ty: ?*const Type) usize {
+        const scrut: usize = if (ty != null and self.isInlineAggregateType(ty.?))
+            alignUpU16(self.widthOfType(ty.?), 2)
+        else
+            2;
+        return scrut + ownSlotBinderBytes(pat, false);
+    }
+
+    /// Frame bytes an `if let` / `while let` head reserves: a 2-byte slot
+    /// for a bare-ident binder, else the full destructure footprint
+    /// (scrutinee slot + payload binders) against the scrutinee's type.
+    fn letArmFrameBytes(self: *const Emitter, pat: *const ast.Pattern, let_expr: ?*const ast.Expr) usize {
+        if (pat.* == .ident) return 2;
+        const ty = if (let_expr) |e| self.typeOf(e) else null;
+        return self.destructureFrameBytes(pat, ty);
+    }
+
+    /// Frame bytes for the binders that need their own slot — enum-payload
+    /// binders (loaded from behind the value's pointer) and the temp that
+    /// parks a nested enum's pointer. Inline binders (`behind == false`)
+    /// alias the scrutinee slot and cost nothing.
+    fn ownSlotBinderBytes(pat: *const ast.Pattern, behind: bool) usize {
+        return switch (pat.*) {
+            .ident => if (behind) 2 else 0,
+            .tuple_pattern => |t| blk: {
                 var n: usize = 0;
-                for (vp.args) |arg| n += countBindingBytes(arg.*);
+                for (t.elems) |e| n += ownSlotBinderBytes(e, behind);
+                break :blk n;
+            },
+            .struct_pattern => |st| blk: {
+                var n: usize = 0;
+                for (st.fields) |f| n += ownSlotBinderBytes(f.sub, behind);
+                break :blk n;
+            },
+            .variant_pattern => |vp| blk: {
+                // A variant behind a pointer parks its slot pointer in a
+                // temp first; payload binders then live behind it.
+                var n: usize = if (behind) 2 else 0;
+                for (vp.args) |a| n += ownSlotBinderBytes(a, true);
                 break :blk n;
             },
             else => 0,
@@ -1297,22 +1407,6 @@ pub const Emitter = struct {
         const ty = self.typeOf(e) orelse return null;
         if (ty.* != .named) return null;
         return self.enum_decls.get(ty.named.name);
-    }
-
-    /// Resolve the enum a `match` dispatches on. Prefers the
-    /// scrutinee's inferred type; falls back to a variant arm's path
-    /// (`EnumName.Variant`) when the scrutinee carries no recorded
-    /// type, so payload-enum lowering doesn't depend on inference
-    /// reaching every scrutinee form.
-    pub fn enumDeclForMatch(self: *const Emitter, ms: ast.MatchStmt) ?*const ast.EnumDecl {
-        if (self.enumDeclForExpr(ms.scrutinee)) |ed| return ed;
-        for (ms.arms) |arm| {
-            if (arm.pattern.* != .variant_pattern) continue;
-            const path = self.source[arm.pattern.variant_pattern.path.start..arm.pattern.variant_pattern.path.end];
-            const dot = std.mem.indexOfScalar(u8, path, '.') orelse continue;
-            if (self.enum_decls.get(path[0..dot])) |ed| return ed;
-        }
-        return null;
     }
 
     /// Scan top-level `def`s, recording each name → its `@bank N`
@@ -1691,17 +1785,6 @@ pub const Emitter = struct {
     /// Delegated to `codegen/control_flow.zig`.
     fn emitMatchStmt(self: *Emitter, ms: ast.MatchStmt) !void {
         return control_flow.emitMatchStmt(self, ms);
-    }
-
-    /// Delegated to `codegen/pattern.zig`.
-    fn emitPatternTest(
-        self: *Emitter,
-        pat: ast.Pattern,
-        scrutinee_ofs: i8,
-        scrutinee_is_ident: bool,
-        skip_patches: *std.ArrayList(usize),
-    ) !void {
-        return pattern.emitPatternTest(self, pat, scrutinee_ofs, scrutinee_is_ident, skip_patches);
     }
 
     /// Class name when `e` is a registered class (auto-derefs one
