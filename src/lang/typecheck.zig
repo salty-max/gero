@@ -137,6 +137,7 @@ pub fn typecheck(
 const mem_builtin = @import("typecheck/mem_builtin.zig");
 const stdlib = @import("typecheck/stdlib.zig");
 const match = @import("typecheck/match.zig");
+const vec_builtin = @import("typecheck/vec_builtin.zig");
 const predicates = @import("typecheck/predicates.zig");
 const annotations = @import("typecheck/annotations.zig");
 const relations = @import("typecheck/relations.zig");
@@ -1193,6 +1194,10 @@ pub const Checker = struct {
                     if (stdlib.isModule(recv_name)) {
                         return try stdlib.checkCall(self, recv_name, m.method, m.args, m.span);
                     }
+                    // `Vec.new` / `with_capacity` / `from` — Vec constructors.
+                    if (std.mem.eql(u8, recv_name, "Vec") and vec_builtin.isConstructor(self.lexeme(m.method))) {
+                        return try vec_builtin.checkConstructor(self, m, hint);
+                    }
                     // `Enum.Variant(args)` is indistinguishable from a
                     // method call at parse time — resolve it as a
                     // payload-variant constructor.
@@ -1202,6 +1207,10 @@ pub const Checker = struct {
                 }
                 const recv_ty = try self.inferExpr(m.receiver, null);
                 try self.checkNotNullableDeref(m.receiver, recv_ty, m.span);
+                // Vec instance method (`v.push` / `v.len` / `v.at` / …).
+                if (peelReference(recv_ty)) |peeled| if (peeled.* == .vec) {
+                    return try vec_builtin.checkMethod(self, m, peeled.vec);
+                };
                 return try fields.checkMethodCall(self, m, peelReference(recv_ty));
             },
             .field => |f| {
@@ -1271,6 +1280,9 @@ pub const Checker = struct {
                         }
                         return peeled.array.elem;
                     }
+                    // `v[i]` on a `Vec(T)` — element type (length is dynamic,
+                    // so no compile-time bounds check; debug-traps at runtime).
+                    if (peeled.* == .vec) return peeled.vec;
                 }
                 return null;
             },

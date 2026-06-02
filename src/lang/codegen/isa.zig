@@ -146,6 +146,15 @@ pub fn addRegToAcu(self: *Emitter, reg: u8) !void {
     try self.emitByte(reg);
 }
 
+/// `bcpy dst, src, len` (0x2C) — copy `len` (register) bytes from `[src]`
+/// to `[dst]`. All three operands are registers holding addresses / count.
+pub fn bcpy(self: *Emitter, dst: u8, src: u8, len: u8) !void {
+    try self.emitByte(Op.bcpy);
+    try self.emitByte(dst);
+    try self.emitByte(src);
+    try self.emitByte(len);
+}
+
 /// `sub reg` (0x45) — `acu ← acu - reg`.
 pub fn subRegFromAcu(self: *Emitter, reg: u8) !void {
     try self.emitByte(Op.sub_reg_acu);

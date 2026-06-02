@@ -91,3 +91,16 @@ pub fn emitBoundsTrap(self: *Emitter, reg: u8, len: u16) !void {
     try self.emitByte(bounds_vector);
     try isa.patchJumpTo(self, in_bounds, try self.currentOffset());
 }
+
+/// Like `emitBoundsTrap` but against a runtime length in `len_reg` — used
+/// for `Vec` indexing, whose length isn't known at compile time.
+pub fn emitBoundsTrapReg(self: *Emitter, reg: u8, len_reg: u8) !void {
+    if (self.optimize != .debug) return;
+    try isa.cmpRegReg(self, reg, len_reg); // reg - len; C = 0 ⇒ reg >= len (OOB)
+    const oob = try isa.emitJumpPlaceholder(self, Op.jcc_addr);
+    const in_bounds = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, oob, try self.currentOffset());
+    try self.emitByte(Op.int_imm8);
+    try self.emitByte(bounds_vector);
+    try isa.patchJumpTo(self, in_bounds, try self.currentOffset());
+}

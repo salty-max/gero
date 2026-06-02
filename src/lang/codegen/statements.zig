@@ -12,6 +12,7 @@ const isa = @import("isa.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
 const destructure = @import("destructure.zig");
+const vec_builtin = @import("vec_builtin.zig");
 const lambda = @import("lambda.zig");
 const strings = @import("strings.zig");
 
@@ -138,6 +139,11 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
     // `arr[i] = value` — store into element `i` at base + i*elem_width.
     if (a.target.* == .index) {
         const ix = a.target.index;
+        // `v[i] = x` on a Vec — sugar for `v.set(i, x)`.
+        if (vec_builtin.elemOf(self, ix.receiver)) |elem| {
+            try vec_builtin.emitIndexStore(self, ix.receiver, ix.index, a.value, elem);
+            return;
+        }
         const info = self.arrayInfoOf(ix.receiver) orelse {
             try self.unsupported(a.span, "indexed store on a non-array value");
             return;
@@ -264,6 +270,39 @@ pub fn emitIncDec(self: *Emitter, id: ast.IncDecStmt) !void {
     try emitAssign(self, .{ .target = id.target, .op = .set, .value = rhs, .span = id.span });
 }
 
+/// Element type of a Vec-typed `let` binding — from its annotation, else
+/// the initializer's type. `null` when the binding isn't a Vec.
+fn vecBindingElem(self: *Emitter, d: ast.LetDecl) ?*const types.Type {
+    if (d.type_ann) |t| if (t.* == .vec) return self.typeAnnToType(t.vec.elem.*) catch null;
+    if (d.init) |e| return vec_builtin.elemOf(self, e);
+    return null;
+}
+
+/// `true` when `mc` is a `Vec.<ctor>(...)` constructor call.
+fn isVecConstructorCall(self: *const Emitter, mc: ast.MethodCallExpr) bool {
+    if (mc.receiver.* != .ident) return false;
+    if (!std.mem.eql(u8, self.source[mc.receiver.ident.span.start..mc.receiver.ident.span.end], "Vec")) return false;
+    return vec_builtin.isConstructor(self.source[mc.method.start..mc.method.end]);
+}
+
+/// `true` when `mc` is a `v.slice(a, b)` call on a Vec receiver — handled
+/// specially in a `let` so the new header lands directly in the binding.
+fn isVecSliceCall(self: *const Emitter, mc: ast.MethodCallExpr) bool {
+    if (mc.args.len != 2) return false;
+    if (!std.mem.eql(u8, self.source[mc.method.start..mc.method.end], "slice")) return false;
+    return vec_builtin.elemOf(self, mc.receiver) != null;
+}
+
+/// `reg = fp + ofs` — the address of a frame slot.
+fn emitFrameAddr(self: *Emitter, ofs: i16, reg: u8) !void {
+    try isa.movRegToReg(self, Reg.fp, reg);
+    if (ofs < 0) {
+        try isa.subImmFromReg(self, @intCast(-ofs), reg);
+    } else if (ofs > 0) {
+        try isa.addImmToReg(self, @intCast(ofs), reg);
+    }
+}
+
 /// `let PATTERN = init` for a non-ident pattern (§4.2) — materialize the
 /// initializer into a slot and destructure it. The pattern is irrefutable
 /// (the typechecker rejects refutable `let`s), so a single-variant enum's
@@ -304,6 +343,27 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
     if (struct_name) |sname| {
         const slot = try self.allocLocalSized(dup_name, self.structWidth(sname));
         if (d.init) |init_expr| try value_struct.emitInto(self, init_expr, sname, slot);
+        return;
+    }
+
+    // Vec-typed binding — the 6-byte `(ptr, len, cap)` header (§3.4.3). A
+    // `Vec.<ctor>(...)` materializes it; any other Vec value is byte-copied.
+    if (vecBindingElem(self, d)) |elem| {
+        const slot = try self.allocLocalSized(dup_name, vec_builtin.header_size);
+        if (d.init) |init_expr| {
+            if (init_expr.* == .method_call and isVecConstructorCall(self, init_expr.method_call)) {
+                const mc = init_expr.method_call;
+                try vec_builtin.emitConstructInto(self, self.source[mc.method.start..mc.method.end], mc.args, elem, slot);
+            } else if (init_expr.* == .method_call and isVecSliceCall(self, init_expr.method_call)) {
+                const mc = init_expr.method_call;
+                try vec_builtin.emitSliceInto(self, mc.receiver, mc.args[0], mc.args[1], elem, slot);
+            } else {
+                try self.emitExpr(init_expr); // acu = source header address
+                try isa.movRegToReg(self, Reg.acu, Reg.r1);
+                try emitFrameAddr(self, slot, Reg.r2);
+                try value_struct.copyBytes(self, Reg.r1, Reg.r2, vec_builtin.header_size);
+            }
+        }
         return;
     }
 

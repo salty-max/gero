@@ -9,6 +9,7 @@ const diverge_builtin = @import("diverge.zig");
 const stdlib = @import("stdlib.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
+const vec_builtin = @import("vec_builtin.zig");
 const strings = @import("strings.zig");
 const lambda = @import("lambda.zig");
 const overflow = @import("overflow.zig");
@@ -50,10 +51,12 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .char_lit => |c| try isa.movImmToReg(self, c.value, Reg.acu),
         .paren => |p| try emitExpr(self, p.inner),
         .ident => |i| {
-            // A struct- / tuple- / array-typed binding evaluates to its
-            // base address — aggregate values are addressed inline, not
-            // loaded as a word.
-            if (self.structNameOf(e) != null or self.tupleElemsOf(e) != null or self.arrayInfoOf(e) != null) {
+            // A struct- / tuple- / array- / Vec-typed binding evaluates to
+            // its base address — inline aggregates (incl. the 6-byte Vec
+            // header) are addressed in place, not loaded as a word.
+            if (self.structNameOf(e) != null or self.tupleElemsOf(e) != null or
+                self.arrayInfoOf(e) != null or vec_builtin.elemOf(self, e) != null)
+            {
                 try self.emitAddrOf(e);
                 return;
             }
@@ -260,6 +263,11 @@ fn emitTupleIndexExpr(self: *Emitter, ti: ast.TupleIndexExpr) !void {
 /// bounds-trapped (debug) then scaled. A scalar element loads its
 /// word/byte; an aggregate element leaves its address (see `emitArrayElem`).
 fn emitIndexExpr(self: *Emitter, ix: ast.IndexExpr) !void {
+    // `v[i]` on a Vec — sugar for `v.at(i)` (bounds-trapped element load).
+    if (vec_builtin.elemOf(self, ix.receiver)) |elem| {
+        try vec_builtin.emitIndexLoad(self, ix.receiver, ix.index, elem);
+        return;
+    }
     const info = self.arrayInfoOf(ix.receiver) orelse {
         try self.unsupported(ix.span, "indexing a non-array value");
         return;
@@ -787,6 +795,12 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
     if (self.classNameOf(m.receiver)) |cname| {
         const mname = self.source[m.method.start..m.method.end];
         try class.emitMethodDispatch(self, m.receiver, cname, mname, m.args, m.span);
+        return;
+    }
+    // Vec-typed receiver — builtin method (`v.push` / `v.len` / `v.at` / …).
+    if (vec_builtin.elemOf(self, m.receiver)) |elem| {
+        const mname = self.source[m.method.start..m.method.end];
+        try vec_builtin.emitMethod(self, m.receiver, mname, m.args, elem);
         return;
     }
     if (m.receiver.* == .ident) {

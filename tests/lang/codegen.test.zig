@@ -6483,3 +6483,89 @@ test "codegen/destructure: aggregate enum payload destructures in place" {
         \\end
     , "1\n2\n");
 }
+
+// ---------- Vec(T): growable dynamic array (#314) ----------
+
+test "codegen/vec: new + push grows + len + at" {
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.new()
+        \\  v.push(10)
+        \\  v.push(20)
+        \\  v.push(30)
+        \\  print v.len()
+        \\  print v.at(0)
+        \\  print v.at(2)
+        \\end
+    , "3\n10\n30\n");
+}
+
+test "codegen/vec: from + cap + index read/write + set" {
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([5, 6, 7])
+        \\  print v.len()
+        \\  print v.cap()
+        \\  print v[1]
+        \\  v.set(1, 99)
+        \\  print v[1]
+        \\  v[2] = 88
+        \\  print v.at(2)
+        \\end
+    , "3\n3\n6\n99\n88\n");
+}
+
+test "codegen/vec: with_capacity + clear keeps capacity" {
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.with_capacity(8)
+        \\  print v.cap()
+        \\  print v.len()
+        \\  v.push(1)
+        \\  v.push(2)
+        \\  print v.len()
+        \\  v.clear()
+        \\  print v.len()
+        \\  print v.cap()
+        \\end
+    , "8\n0\n2\n0\n8\n");
+}
+
+test "codegen/vec: slice is a borrowed view aliasing the parent" {
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([10, 20, 30, 40, 50])
+        \\  let s: Vec(i16) = v.slice(1, 4)
+        \\  print s.len()
+        \\  print s[0]
+        \\  print s[2]
+        \\  s[0] = 99
+        \\  print v[1]
+        \\end
+    , "3\n20\n40\n99\n");
+}
+
+test "codegen/vec: value binding copies the header" {
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([1, 2, 3])
+        \\  let v2: Vec(i16) = v
+        \\  print v2.len()
+        \\  print v2[0]
+        \\  print v2[2]
+        \\end
+    , "3\n1\n3\n");
+}
+
+test "codegen/vec: byte element type (u8)" {
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(u8) = Vec.new()
+        \\  v.push(200)
+        \\  v.push(5)
+        \\  print v.len()
+        \\  print v.at(0)
+        \\  print v[1]
+        \\end
+    , "2\n200\n5\n");
+}

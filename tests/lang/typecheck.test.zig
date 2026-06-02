@@ -2701,3 +2701,43 @@ test "typecheck/destructure: an if-let payload binder is typed from the variant"
         \\end
     );
 }
+
+test "typecheck/vec: a fully-typed Vec program checks clean" {
+    try expectClean(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([1, 2, 3])
+        \\  v.push(4)
+        \\  print v.len()
+        \\  print v.at(0)
+        \\  v[1] = 9
+        \\  print v[1]
+        \\end
+    );
+}
+
+test "typecheck/vec: `Vec.new` without an annotation can't infer T" {
+    try expectCode(
+        \\def main()
+        \\  let v = Vec.new()
+        \\  print 1
+        \\end
+    , "E_TYPE_AMBIGUOUS_INFER");
+}
+
+test "typecheck/vec: `pop` is deferred (returns T?, awaits scalar optionals)" {
+    try expectCode(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.new()
+        \\  let x = v.pop()
+        \\end
+    , "E_TYPE_UNDEFINED_METHOD");
+}
+
+test "typecheck/vec: an unknown Vec method is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.new()
+        \\  v.frobnicate()
+        \\end
+    , "E_TYPE_UNDEFINED_METHOD");
+}
