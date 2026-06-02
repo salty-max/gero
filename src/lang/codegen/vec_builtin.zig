@@ -124,6 +124,101 @@ pub fn emitSliceInto(self: *Emitter, recv: *const ast.Expr, a: *const ast.Expr, 
     try isa.addImmToReg(self, 4, Reg.sp); // drop a, b
 }
 
+/// Materialize `recv.pop()` — a `T?` — into the frame slot at `dest_ofs`:
+/// when `len > 0`, `{present: 1, value: buf[len-1]}` and `len -= 1`; else
+/// `{present: 0, value: 0}`. Scalar element types only (the 4-byte tagged
+/// optional); pointer-element pop awaits the pointer-optional path.
+pub fn emitPopInto(self: *Emitter, recv: *const ast.Expr, elem: *const Type, dest_ofs: i16) error{OutOfMemory}!void {
+    const ew = self.widthOfType(elem);
+    try headerAddr(self, recv, Reg.acu);
+    try isa.pushReg(self, Reg.acu); // [sp] = vec header addr
+    try class.emitWordLoadAtOffset(self, Reg.acu, len_ofs, Reg.r2); // r2 = len
+    try isa.cmpRegImm(self, Reg.r2, 0);
+    const empty = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    // Present: len -= 1; value = buf[len].
+    try isa.subImmFromReg(self, 1, Reg.r2); // r2 = len - 1 (the popped index + new len)
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // r1 = vec header
+    try class.emitWordStoreAtOffset(self, Reg.r1, len_ofs, Reg.r2); // len = len - 1
+    try isa.movRegToReg(self, Reg.r2, Reg.acu); // acu = index
+    try value_struct.scaleIndex(self, Reg.acu, ew); // acu = index * ew
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // r1 = vec header
+    try class.emitWordLoadAtOffset(self, Reg.r1, ptr_ofs, Reg.r1); // r1 = buffer ptr
+    try isa.addRegToAcu(self, Reg.r1); // acu = &buf[index]
+    try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = element addr
+    try loadElem(self, Reg.r1, elem); // acu = popped value
+    try storeOptional(self, dest_ofs, 1, Reg.acu);
+    const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    // Empty: {present: 0, value: 0}.
+    try isa.patchJumpTo(self, empty, try self.currentOffset());
+    try isa.movImmToReg(self, 0, Reg.acu);
+    try storeOptional(self, dest_ofs, 0, Reg.acu);
+    try isa.patchJumpTo(self, done, try self.currentOffset());
+    try isa.addImmToReg(self, 2, Reg.sp); // drop vec header addr
+}
+
+/// Materialize `recv.get(i)` — a `T?` — into `[fp + dest_ofs]`: when
+/// `i < len`, `{1, buf[i]}`; else `{0, 0}`. Scalar element types only.
+pub fn emitGetInto(self: *Emitter, recv: *const ast.Expr, idx: *const ast.Expr, elem: *const Type, dest_ofs: i16) error{OutOfMemory}!void {
+    const ew = self.widthOfType(elem);
+    try headerAddr(self, recv, Reg.acu);
+    try isa.pushReg(self, Reg.acu); // [sp] = vec header
+    try self.emitExpr(idx); // acu = index (sp-neutral)
+    try isa.pushReg(self, Reg.acu); // [sp] = index, [sp+2] = header
+    try isa.movRegOffsetToReg(self, Reg.sp, 2, Reg.r1); // r1 = header
+    try class.emitWordLoadAtOffset(self, Reg.r1, len_ofs, Reg.r2); // r2 = len
+    try isa.cmpRegReg(self, Reg.acu, Reg.r2); // index - len; C=0 ⇒ index >= len
+    const absent = try isa.emitJumpPlaceholder(self, Op.jcc_addr); // index >= len → None
+    // Present: value = buf[index].
+    try value_struct.scaleIndex(self, Reg.acu, ew); // acu = index*ew
+    try isa.movRegOffsetToReg(self, Reg.sp, 2, Reg.r1); // r1 = header
+    try class.emitWordLoadAtOffset(self, Reg.r1, ptr_ofs, Reg.r1); // r1 = buffer ptr
+    try isa.addRegToAcu(self, Reg.r1); // acu = &buf[index]
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try loadElem(self, Reg.r1, elem); // acu = value
+    try storeOptional(self, dest_ofs, 1, Reg.acu);
+    const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, absent, try self.currentOffset());
+    try isa.movImmToReg(self, 0, Reg.acu);
+    try storeOptional(self, dest_ofs, 0, Reg.acu);
+    try isa.patchJumpTo(self, done, try self.currentOffset());
+    try isa.addImmToReg(self, 4, Reg.sp); // drop index + header
+}
+
+/// Materialize an optional-producing expression into the frame slot at
+/// `dest_ofs`: `v.pop()` / `v.get(i)` (the producers), `nil` (absent), or
+/// another optional value (byte-copied). `inner` is the element type.
+pub fn emitOptionalInto(self: *Emitter, src: *const ast.Expr, inner: *const Type, dest_ofs: i16) error{OutOfMemory}!void {
+    if (src.* == .method_call) {
+        const mc = src.method_call;
+        if (elemOf(self, mc.receiver) != null) {
+            const m = self.source[mc.method.start..mc.method.end];
+            if (std.mem.eql(u8, m, "pop")) return emitPopInto(self, mc.receiver, inner, dest_ofs);
+            if (std.mem.eql(u8, m, "get")) return emitGetInto(self, mc.receiver, mc.args[0], inner, dest_ofs);
+        }
+    }
+    if (src.* == .nil_lit) {
+        try isa.movImmToReg(self, 0, Reg.acu);
+        try storeOptional(self, dest_ofs, 0, Reg.acu);
+        return;
+    }
+    // Another optional value — byte-copy its header.
+    try self.emitExpr(src); // acu = source optional address
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try frameAddr(self, dest_ofs, Reg.r2);
+    const w: u16 = if (codegen.Emitter.isScalarOptional(inner)) codegen.Emitter.opt_scalar_size else 2;
+    try value_struct.copyBytes(self, Reg.r1, Reg.r2, w);
+}
+
+/// Store a scalar optional `{present, value}` into the 4-byte slot at
+/// `[fp + dest_ofs]` (`value` ignored when `present == 0`).
+fn storeOptional(self: *Emitter, dest_ofs: i16, present: u16, value_reg: u8) error{OutOfMemory}!void {
+    try isa.movRegToReg(self, value_reg, Reg.r2); // r2 = value (before frameAddr clobbers regs)
+    try frameAddr(self, dest_ofs, Reg.r1); // r1 = optional header addr
+    try isa.movImmToReg(self, present, Reg.acu);
+    try class.emitWordStoreAtOffset(self, Reg.r1, codegen.Emitter.opt_present_ofs, Reg.acu);
+    try class.emitWordStoreAtOffset(self, Reg.r1, codegen.Emitter.opt_value_ofs, Reg.r2);
+}
+
 // ---- instance methods — receiver evaluates to the header's base address ----
 
 /// Lower `recv.<method>(args)` for a Vec receiver of element type `elem`.

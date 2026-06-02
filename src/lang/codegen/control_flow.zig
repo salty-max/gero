@@ -185,8 +185,13 @@ fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
         try self.emitCondBranch(c);
         return try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     }
-    // `if let pat = expr [when guard]`.
+    // `if let pat = expr [when guard]`. An optional scrutinee unwraps
+    // (§3.4.1) — route it (even a bare ident) through the matcher.
     const expr = arm.let_expr.?;
+    const is_optional = if (self.typeOf(expr)) |t| t.* == .optional else false;
+    if (is_optional or arm.let_pattern.?.* != .ident) {
+        return try emitLetPatternTest(self, arm.let_pattern.?, expr, arm.let_guard);
+    }
     switch (arm.let_pattern.?.*) {
         .ident => |id| {
             try self.emitExpr(expr);
@@ -259,6 +264,12 @@ pub fn emitWhileStmt(self: *Emitter, ws: ast.WhileStmt) !void {
         try self.emitCondBranch(c);
         break :blk try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     } else blk: {
+        // An optional scrutinee unwraps (§3.4.1) — route it (even a bare
+        // ident) through the matcher.
+        const is_optional = if (self.typeOf(ws.let_expr.?)) |t| t.* == .optional else false;
+        if (is_optional or ws.let_pattern.?.* != .ident) {
+            break :blk try emitLetPatternTest(self, ws.let_pattern.?, ws.let_expr.?, ws.let_guard);
+        }
         switch (ws.let_pattern.?.*) {
             .ident => |id| {
                 try self.emitExpr(ws.let_expr.?);

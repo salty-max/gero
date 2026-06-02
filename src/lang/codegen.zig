@@ -815,8 +815,38 @@ pub const Emitter = struct {
             // A `Vec(T)` value is a 6-byte `(ptr, len, cap)` header (§3.4.3),
             // stored inline like a struct; its backing buffer is on the heap.
             .vec => return vec_builtin.header_size,
+            // A scalar `T?` is a 4-byte `{present, value}` header; a
+            // pointer-like `T?` is a single nullable-pointer word.
+            .optional => |inner| return if (isScalarOptional(inner)) opt_scalar_size else 2,
             else => return 2,
         }
+    }
+
+    /// Optional-value layout. A scalar `T?` is a tagged 4-byte
+    /// `{present, value}` header (present @0, value @2); a pointer-like `T?`
+    /// is a single nullable-pointer word (0 = nil).
+    pub const opt_present_ofs: u16 = 0;
+    /// Byte offset of the value word in a scalar `T?`.
+    pub const opt_value_ofs: u16 = 2;
+    /// Byte size of a scalar `T?` (`{present, value}`).
+    pub const opt_scalar_size: u16 = 4;
+
+    /// Whether an optional with element type `inner` uses the tagged scalar
+    /// representation (vs a nullable pointer).
+    pub fn isScalarOptional(inner: *const Type) bool {
+        return inner.* == .primitive and switch (inner.primitive) {
+            .i8, .u8, .i16, .u16, .char, .bool_, .fixed => true,
+            else => false,
+        };
+    }
+
+    /// Inner type of a scalar-optional-typed expression (peeling a
+    /// reference), or `null` — the 4-byte `{present, value}` form only.
+    pub fn scalarOptionalElemOf(self: *const Emitter, e: *const ast.Expr) ?*const Type {
+        const t = self.typeOf(e) orelse return null;
+        const inner = if (t.* == .reference) t.reference else t;
+        if (inner.* != .optional) return null;
+        return if (isScalarOptional(inner.optional)) inner.optional else null;
     }
 
     /// Resolve a surface `TypeAnn` to an arena `types.Type` so the
@@ -1701,6 +1731,11 @@ pub const Emitter = struct {
             },
             // A `Vec(T)` value is a 6-byte inline header (§3.4.3).
             .vec => vec_builtin.header_size,
+            // Scalar `T?` → 4-byte tagged header; pointer-like → word.
+            .nullable => |o| blk: {
+                const inner = (self.typeAnnToType(o.inner.*) catch null) orelse break :blk 2;
+                break :blk if (isScalarOptional(inner)) opt_scalar_size else 2;
+            },
             else => 2,
         };
     }

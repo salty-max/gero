@@ -15,6 +15,7 @@ const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
+const vec_builtin = @import("vec_builtin.zig");
 const pattern = @import("pattern.zig");
 
 const Emitter = codegen.Emitter;
@@ -28,6 +29,13 @@ const Type = types.Type;
 /// private + stable; a scalar / enum / class stores its word (value or
 /// `[tag|payload]` slot pointer).
 pub fn materializeScrutinee(self: *Emitter, expr: *const ast.Expr, ty: ?*const Type) error{OutOfMemory}!i8 {
+    // An optional scrutinee (`if let n = v.pop()`) — materialize the
+    // tagged / pointer optional into a slot, then the matcher unwraps it.
+    if (ty != null and ty.?.* == .optional) {
+        const slot = try self.allocLocalSized("\x00__scrut", self.widthOfType(ty.?));
+        try vec_builtin.emitOptionalInto(self, expr, ty.?.optional, slot);
+        return slot;
+    }
     if (ty != null and self.isInlineAggregateType(ty.?)) {
         const width = self.widthOfType(ty.?);
         const slot = try self.allocLocalSized("\x00__scrut", width);
@@ -50,6 +58,23 @@ pub fn materializeScrutinee(self: *Emitter, expr: *const ast.Expr, ty: ?*const T
 /// Binds idents and recurses into tuple / struct / variant sub-patterns;
 /// a refutable leaf or variant tag pushes a skip patch onto `skip`.
 pub fn emitMatchPattern(self: *Emitter, pat: *const ast.Pattern, ofs: i8, ty: ?*const Type, skip: *std.ArrayList(usize)) error{OutOfMemory}!void {
+    // Optional scrutinee — unwrap (§3.4.1: `if let` matches the inner
+    // value): test present (skip on absent), then match `pat` against the
+    // value. A scalar `T?` keeps present @0 + value @2; a pointer-like `T?`
+    // is the value itself (0 = nil).
+    if (ty) |t| if (t.* == .optional) {
+        const inner = t.optional;
+        const scalar = codegen.Emitter.isScalarOptional(inner);
+        // present is at offset 0 (scalar tag) or is the pointer itself.
+        const present_at: i8 = ofs;
+        // @as: the value offset (2) keeps the slot within the i8 frame cap.
+        const value_at: i8 = if (scalar) ofs + @as(i8, @intCast(codegen.Emitter.opt_value_ofs)) else ofs;
+        try isa.movRegOffsetToReg(self, Reg.fp, present_at, Reg.acu);
+        try isa.cmpRegImm(self, Reg.acu, 0);
+        try skip.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
+        try emitMatchPattern(self, pat, value_at, inner, skip);
+        return;
+    };
     switch (pat.*) {
         .wildcard => {},
         .ident => |ip| {

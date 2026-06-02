@@ -270,6 +270,20 @@ pub fn emitIncDec(self: *Emitter, id: ast.IncDecStmt) !void {
     try emitAssign(self, .{ .target = id.target, .op = .set, .value = rhs, .span = id.span });
 }
 
+/// The optional type of a `T?`-typed `let` binding — from its annotation,
+/// else the initializer's type. `null` when the binding isn't optional.
+fn optBindingType(self: *Emitter, d: ast.LetDecl) ?*const types.Type {
+    if (d.type_ann) |t| if (t.* == .nullable) {
+        const ot = self.typeAnnToType(t.*) catch null;
+        if (ot != null and ot.?.* == .optional) return ot;
+    };
+    if (d.init) |e| {
+        const it = self.typeOf(e);
+        if (it != null and it.?.* == .optional) return it;
+    }
+    return null;
+}
+
 /// Element type of a Vec-typed `let` binding — from its annotation, else
 /// the initializer's type. `null` when the binding isn't a Vec.
 fn vecBindingElem(self: *Emitter, d: ast.LetDecl) ?*const types.Type {
@@ -330,6 +344,13 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
     }
     const name = self.source[d.pattern.ident.name.start..d.pattern.ident.name.end];
     const dup_name = try self.arena.dupe(u8, name);
+
+    // Optional-typed binding — the tagged / pointer optional (§3.4.1).
+    if (optBindingType(self, d)) |opt| {
+        const slot = try self.allocLocalSized(dup_name, self.widthOfType(opt));
+        if (d.init) |init_expr| try vec_builtin.emitOptionalInto(self, init_expr, opt.optional, slot);
+        return;
+    }
 
     // Struct-typed binding: reserve the full inline slot and materialize
     // the initializer (literal fields or a value copy) straight into it

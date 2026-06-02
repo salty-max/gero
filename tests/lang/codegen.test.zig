@@ -6569,3 +6569,50 @@ test "codegen/vec: byte element type (u8)" {
         \\end
     , "2\n200\n5\n");
 }
+
+test "codegen/vec: pop returns the last element + shrinks; empty pops None" {
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([10, 20, 30])
+        \\  if let n = v.pop()
+        \\    print n
+        \\  end
+        \\  print v.len()
+        \\  v.clear()
+        \\  if let m = v.pop()
+        \\    print m
+        \\  else
+        \\    print 0
+        \\  end
+        \\end
+    , "30\n2\n0\n");
+}
+
+test "codegen/vec: get returns an in-bounds element, None past the end" {
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([7, 8, 9])
+        \\  if let a = v.get(1)
+        \\    print a
+        \\  end
+        \\  if let b = v.get(99)
+        \\    print b
+        \\  else
+        \\    print 0
+        \\  end
+        \\end
+    , "8\n0\n");
+}
+
+test "codegen/vec: scalar optional == nil / != nil tests the present tag" {
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.new()
+        \\  let x: i16? = v.pop()
+        \\  print x == nil
+        \\  v.push(5)
+        \\  let y: i16? = v.pop()
+        \\  print y != nil
+        \\end
+    , "1\n1\n");
+}
