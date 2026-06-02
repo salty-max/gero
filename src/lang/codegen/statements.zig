@@ -11,6 +11,7 @@ const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
+const destructure = @import("destructure.zig");
 const lambda = @import("lambda.zig");
 const strings = @import("strings.zig");
 
@@ -263,11 +264,29 @@ pub fn emitIncDec(self: *Emitter, id: ast.IncDecStmt) !void {
     try emitAssign(self, .{ .target = id.target, .op = .set, .value = rhs, .span = id.span });
 }
 
+/// `let PATTERN = init` for a non-ident pattern (§4.2) — materialize the
+/// initializer into a slot and destructure it. The pattern is irrefutable
+/// (the typechecker rejects refutable `let`s), so a single-variant enum's
+/// tag test is never taken; its skip resolves to fall-through.
+fn emitDestructureLet(self: *Emitter, d: ast.LetDecl) !void {
+    const init_expr = d.init orelse {
+        try self.unsupported(d.span, "destructuring `let` without an initializer");
+        return;
+    };
+    const ty = self.typeOf(init_expr);
+    const slot = try destructure.materializeScrutinee(self, init_expr, ty);
+    var skip: std.ArrayList(usize) = .empty;
+    defer skip.deinit(self.allocator);
+    try destructure.emitMatchPattern(self, d.pattern, slot, ty, &skip);
+    const after = try self.currentOffset();
+    for (skip.items) |p| try isa.patchJumpTo(self, p, after);
+}
+
 /// `let name [: T] [= init]` — reserve the binding's slot (full width
 /// for a struct, one word otherwise) and lower its initializer.
 pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
     if (d.pattern.* != .ident) {
-        try self.unsupported(d.span, "non-ident `let` patterns");
+        try emitDestructureLet(self, d);
         return;
     }
     const name = self.source[d.pattern.ident.name.start..d.pattern.ident.name.end];

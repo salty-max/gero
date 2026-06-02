@@ -4,6 +4,7 @@ const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const pattern = @import("pattern.zig");
+const destructure = @import("destructure.zig");
 const class = @import("class.zig");
 
 const Emitter = codegen.Emitter;
@@ -18,51 +19,6 @@ pub fn emitScopedBody(self: *Emitter, body: []const ast.Statement) error{OutOfMe
     try pushBlock(self);
     for (body) |s| try self.emitStatement(s);
     try popBlockWithDefers(self);
-}
-
-/// Bind a payload-enum arm's variant payload fields to fresh locals,
-/// loaded straight from `[ptr + field_offset]`. Runs after the tag
-/// test and before the guard / body so both can read the binders.
-fn emitPayloadBinders(
-    self: *Emitter,
-    arm: ast.MatchArm,
-    scrutinee_ofs: i8,
-    scrutinee_is_ident: bool,
-    scrutinee: *const ast.Expr,
-    ed: *const ast.EnumDecl,
-) error{OutOfMemory}!void {
-    if (arm.pattern.* != .variant_pattern or arm.pattern.variant_pattern.args.len == 0) return;
-    const vp = arm.pattern.variant_pattern;
-    const path = self.source[vp.path.start..vp.path.end];
-    const tail = if (std.mem.lastIndexOfScalar(u8, path, '.')) |d| path[d + 1 ..] else path;
-    for (ed.variants) |v| {
-        if (!std.mem.eql(u8, self.source[v.name.start..v.name.end], tail)) continue;
-        // Reload the slot pointer into r1, then read each binder.
-        if (scrutinee_is_ident) {
-            try self.emitExpr(scrutinee);
-        } else {
-            try isa.movRegOffsetToReg(self, Reg.fp, scrutinee_ofs, Reg.acu);
-        }
-        try isa.movRegToReg(self, Reg.acu, Reg.r1);
-        for (vp.args, 0..) |arg, i| {
-            if (arg.* != .ident or i >= v.payload.len) continue;
-            const ofs = self.variantFieldOffset(v, i);
-            const fty = v.payload[i].type_ann.*;
-            if (self.widthOfTypeAnn(fty) == 1) {
-                try class.emitByteLoadAtOffset(self, Reg.r1, ofs, Reg.acu);
-                // `i8` is the only signed byte type — sign-extend so a
-                // negative payload keeps its sign through the binder
-                // (`u8` / `bool` / `char` stay zero-extended).
-                if (self.isPrimitiveTypeAnn(fty, "i8")) try isa.signExtendByte(self, Reg.acu);
-            } else {
-                try class.emitWordLoadAtOffset(self, Reg.r1, ofs, Reg.acu);
-            }
-            const name = self.source[arg.ident.name.start..arg.ident.name.end];
-            const local_ofs = try self.allocLocal(try self.arena.dupe(u8, name));
-            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, local_ofs);
-        }
-        return;
-    }
 }
 
 /// Lower a `do…end` block at statement position — opens a
@@ -229,12 +185,11 @@ fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
         try self.emitCondBranch(c);
         return try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     }
-    // `if let pat = expr [when guard]` — ident-binder form.
-    const pat = arm.let_pattern.?.*;
+    // `if let pat = expr [when guard]`.
     const expr = arm.let_expr.?;
-    try self.emitExpr(expr);
-    switch (pat) {
+    switch (arm.let_pattern.?.*) {
         .ident => |id| {
+            try self.emitExpr(expr);
             const name = self.source[id.name.start..id.name.end];
             const dup = try self.arena.dupe(u8, name);
             const ofs = try self.allocLocal(dup);
@@ -250,11 +205,32 @@ fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
             try isa.cmpRegImm(self, Reg.r1, 0);
             return try isa.emitJumpPlaceholder(self, Op.jeq_addr);
         },
-        else => {
-            try self.unsupported(arm.span, "`if let` patterns other than a bare ident");
-            return try isa.emitJumpPlaceholder(self, Op.jeq_addr);
-        },
+        else => return try emitLetPatternTest(self, arm.let_pattern.?, expr, arm.let_guard),
     }
+}
+
+/// Lower a non-ident `if let` / `while let` head: materialize the
+/// scrutinee, run the destructuring matcher (+ optional `when` guard),
+/// and funnel every mismatch into a single "skip body" jump — returned
+/// for the caller to resolve to the else-arm / loop-exit. The matched
+/// path jumps over that skip into the body.
+fn emitLetPatternTest(self: *Emitter, pat: *const ast.Pattern, expr: *const ast.Expr, guard: ?*const ast.Expr) !usize {
+    const ty = self.typeOf(expr);
+    const slot = try destructure.materializeScrutinee(self, expr, ty);
+    var skip: std.ArrayList(usize) = .empty;
+    defer skip.deinit(self.allocator);
+    try destructure.emitMatchPattern(self, pat, slot, ty, &skip);
+    if (guard) |g| {
+        try self.emitExpr(g);
+        try isa.cmpRegImm(self, Reg.acu, 0);
+        try skip.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
+    }
+    const body_jump = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    const skip_here = try self.currentOffset();
+    for (skip.items) |p| try isa.patchJumpTo(self, p, skip_here);
+    const combined = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, body_jump, try self.currentOffset());
+    return combined;
 }
 
 // ---------- while / repeat / for ----------
@@ -283,10 +259,9 @@ pub fn emitWhileStmt(self: *Emitter, ws: ast.WhileStmt) !void {
         try self.emitCondBranch(c);
         break :blk try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     } else blk: {
-        const pat = ws.let_pattern.?.*;
-        try self.emitExpr(ws.let_expr.?);
-        switch (pat) {
+        switch (ws.let_pattern.?.*) {
             .ident => |id| {
+                try self.emitExpr(ws.let_expr.?);
                 const name = self.source[id.name.start..id.name.end];
                 const dup = try self.arena.dupe(u8, name);
                 const ofs = try self.allocLocal(dup);
@@ -300,10 +275,7 @@ pub fn emitWhileStmt(self: *Emitter, ws: ast.WhileStmt) !void {
                 try isa.cmpRegImm(self, Reg.r1, 0);
                 break :blk try isa.emitJumpPlaceholder(self, Op.jeq_addr);
             },
-            else => {
-                try self.unsupported(ws.span, "`while let` patterns other than a bare ident");
-                break :blk try isa.emitJumpPlaceholder(self, Op.jeq_addr);
-            },
+            else => break :blk try emitLetPatternTest(self, ws.let_pattern.?, ws.let_expr.?, ws.let_guard),
         }
     };
 
@@ -484,54 +456,23 @@ pub fn emitMatchStmt(self: *Emitter, ms: ast.MatchStmt) !void {
 }
 
 fn emitMatchSequential(self: *Emitter, ms: ast.MatchStmt) !void {
-    // Bind the scrutinee to a slot so subsequent arms can re-test
-    // it without re-evaluating side effects. Skip the bind if the
-    // source already wrote an ident — direct loads stay cheap.
-    const scrutinee_ofs: i8 = blk: {
-        switch (ms.scrutinee.*) {
-            .ident => break :blk 0,
-            else => {
-                try self.emitExpr(ms.scrutinee);
-                const ofs = try self.allocLocal(try self.arena.dupe(u8, "\x00__match"));
-                try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
-                break :blk ofs;
-            },
-        }
-    };
-    const scrutinee_is_ident = ms.scrutinee.* == .ident;
-
-    // Payload-carrying enums are a `[tag | payload]` slot addressed
-    // by pointer (§3.6). The scrutinee load yields that pointer, so
-    // dispatch reads the tag byte from `[ptr]` and arms extract their
-    // payload binders from the slot. Payload-free enums stay a bare
-    // register tag (the common path below).
-    const enum_decl = self.enumDeclForMatch(ms);
-    const is_payload_enum = if (enum_decl) |ed| self.enumHasPayload(ed) else false;
+    // Materialize the scrutinee into a slot once so every arm re-tests it
+    // without re-evaluating side effects. The destructuring matcher walks
+    // each arm's pattern against that slot — tag tests + payload binders
+    // for enums, element binds for tuple / struct patterns, leaf compares
+    // for literals / ranges / or-patterns.
+    const scrut_ty = self.typeOf(ms.scrutinee);
+    const slot = try destructure.materializeScrutinee(self, ms.scrutinee, scrut_ty);
 
     var end_patches: std.ArrayList(usize) = .empty;
     defer end_patches.deinit(self.allocator);
 
     for (ms.arms) |arm| {
-        if (scrutinee_is_ident) {
-            try self.emitExpr(ms.scrutinee);
-        } else {
-            try isa.movRegOffsetToReg(self, Reg.fp, scrutinee_ofs, Reg.acu);
-        }
-        if (is_payload_enum) {
-            // acu = slot pointer → load the tag byte into acu.
-            try isa.movRegToReg(self, Reg.acu, Reg.r1);
-            try class.emitByteLoadAtOffset(self, Reg.r1, 0, Reg.acu);
-        }
-
         var skip_patches: std.ArrayList(usize) = .empty;
         defer skip_patches.deinit(self.allocator);
-        try pattern.emitPatternTest(self, arm.pattern.*, scrutinee_ofs, scrutinee_is_ident, &skip_patches);
-
-        // Bind payload binders before the guard so a `when` clause can
-        // reference them (`case Hit(d) when d > 10`).
-        if (is_payload_enum) {
-            try emitPayloadBinders(self, arm, scrutinee_ofs, scrutinee_is_ident, ms.scrutinee, enum_decl.?);
-        }
+        // Binders land before the guard so a `when` clause can read them
+        // (`case Hit(d) when d > 10`).
+        try destructure.emitMatchPattern(self, arm.pattern, slot, scrut_ty, &skip_patches);
 
         if (arm.guard) |g| {
             try self.emitExpr(g);

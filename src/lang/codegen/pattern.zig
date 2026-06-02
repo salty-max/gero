@@ -16,8 +16,6 @@ const Reg = opcodes.Reg;
 pub fn emitPatternTest(
     self: *Emitter,
     pat: ast.Pattern,
-    scrutinee_ofs: i8,
-    scrutinee_is_ident: bool,
     skip_patches: *std.ArrayList(usize),
 ) !void {
     switch (pat) {
@@ -31,6 +29,36 @@ pub fn emitPatternTest(
             const ofs = try self.allocLocal(dup);
             try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
         },
+        .int_lit, .char_lit, .bool_lit, .nil_lit, .range_pattern, .or_pattern => try emitLeafTest(self, pat, skip_patches),
+        .variant_pattern => |vp| {
+            // Payload binders don't affect the tag test — they're
+            // extracted into locals by the match lowerer once the tag
+            // matches. The test is the tag comparison either way.
+            const path = self.source[vp.path.start..vp.path.end];
+            const dot = std.mem.indexOfScalar(u8, path, '.') orelse {
+                try self.diagFatal(vp.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: variant pattern must be `EnumName.Variant`");
+                return;
+            };
+            const enum_name = path[0..dot];
+            const variant_name = path[dot + 1 ..];
+            const tag = self.variantTag(enum_name, variant_name) orelse {
+                try self.diagFatal(vp.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant in match pattern");
+                return;
+            };
+            try isa.cmpRegImm(self, Reg.acu, tag);
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+        },
+        else => try self.unsupported(pat.span(), "this pattern shape"),
+    }
+}
+
+/// Test a scalar value sitting in `acu` against a leaf pattern — a
+/// literal (`42` / `'A'` / `true` / `nil`), a range, or an or-pattern of
+/// those. A mismatch pushes a forward-skip patch onto `skip_patches`;
+/// a match falls through. Shared by `emitPatternTest` (match) and the
+/// destructuring matcher (`destructure.zig`).
+pub fn emitLeafTest(self: *Emitter, pat: ast.Pattern, skip_patches: *std.ArrayList(usize)) error{OutOfMemory}!void {
+    switch (pat) {
         .int_lit => |lit| {
             // @as: parser holds int_lit.value as i32; literals fit i16 by typecheck rule.
             const trimmed: i16 = @truncate(lit.value);
@@ -55,8 +83,8 @@ pub fn emitPatternTest(
         .range_pattern => |rp| {
             // Lower `start..end` as: cmp acu, start; jlt skip;
             //                       cmp acu, end;   j(g[te]) skip.
-            // Endpoints must be compile-time integer literals so
-            // they emit as immediate operands.
+            // Endpoints must be compile-time integer literals so they
+            // emit as immediate operands.
             if (rp.start.* != .int_lit or rp.end.* != .int_lit) {
                 try self.unsupported(rp.span, "non-literal range pattern endpoints");
                 return;
@@ -76,51 +104,25 @@ pub fn emitPatternTest(
             try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, above_bound_op));
         },
         .or_pattern => |op_| {
-            // Each alt emits its own cmp + branch. A match jumps
-            // OVER the remaining alts to the body. A non-match
-            // falls through to the next alt. After the last alt,
-            // a non-match jumps to the shared skip target.
+            // Each alt emits its own cmp + branch. A match jumps OVER the
+            // remaining alts to the body; a non-match falls through to the
+            // next alt. After the last alt, a non-match jumps to the
+            // shared skip target. The scrutinee stays in `acu` throughout,
+            // so each alt re-tests the same value.
             var match_patches: std.ArrayList(usize) = .empty;
             defer match_patches.deinit(self.allocator);
-
             for (op_.alts) |alt| {
                 var alt_skip: std.ArrayList(usize) = .empty;
                 defer alt_skip.deinit(self.allocator);
-                try emitPatternTest(self, alt.*, scrutinee_ofs, scrutinee_is_ident, &alt_skip);
-                // The alt matched if we reach this point — jump
-                // to the shared "body entry" label.
+                try emitLeafTest(self, alt.*, &alt_skip);
                 try match_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
-                // Failure-skips of this alt land at the next alt
-                // (or, after the final alt, at the outer skip).
                 const after_alt = try self.currentOffset();
                 for (alt_skip.items) |p| try isa.patchJumpTo(self, p, after_alt);
             }
-            // None of the alts matched — punt to the outer skip
-            // set.
             try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
-            // All match-patches resolve to the byte after the
-            // outer skip jump — i.e. the body's first byte.
             const body_offset = try self.currentOffset();
             for (match_patches.items) |p| try isa.patchJumpTo(self, p, body_offset);
         },
-        .variant_pattern => |vp| {
-            // Payload binders don't affect the tag test — they're
-            // extracted into locals by the match lowerer once the tag
-            // matches. The test is the tag comparison either way.
-            const path = self.source[vp.path.start..vp.path.end];
-            const dot = std.mem.indexOfScalar(u8, path, '.') orelse {
-                try self.diagFatal(vp.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: variant pattern must be `EnumName.Variant`");
-                return;
-            };
-            const enum_name = path[0..dot];
-            const variant_name = path[dot + 1 ..];
-            const tag = self.variantTag(enum_name, variant_name) orelse {
-                try self.diagFatal(vp.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant in match pattern");
-                return;
-            };
-            try isa.cmpRegImm(self, Reg.acu, tag);
-            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
-        },
-        else => try self.unsupported(pat.span(), "this pattern shape"),
+        else => try self.unsupported(pat.span(), "non-leaf pattern in leaf test"),
     }
 }

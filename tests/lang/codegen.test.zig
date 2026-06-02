@@ -6277,3 +6277,168 @@ test "codegen/array: scalar-array reassignment stays independent" {
         \\end
     , "1\n99\n3\n");
 }
+
+// ---------- pattern destructuring: let / if let / while let (#308) ----------
+
+test "codegen/destructure: let tuple binds element-wise" {
+    try runAndExpect(
+        \\def main()
+        \\  let (a, b) = (10, 20)
+        \\  print a
+        \\  print b
+        \\end
+    , "10\n20\n");
+}
+
+test "codegen/destructure: let struct binds named fields" {
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let Pos { x, y } = Pos { x: 3, y: 4 }
+        \\  print x
+        \\  print y
+        \\end
+    , "3\n4\n");
+}
+
+test "codegen/destructure: let single-variant enum binds the payload" {
+    try runAndExpect(
+        \\enum Wrap
+        \\  case Of(i16, i16)
+        \\end
+        \\def main()
+        \\  let Wrap.Of(a, b) = Wrap.Of(5, 6)
+        \\  print a
+        \\  print b
+        \\end
+    , "5\n6\n");
+}
+
+test "codegen/destructure: let tuple binders are independent copies" {
+    try runAndExpect(
+        \\def main()
+        \\  let p: (i16, i16) = (1, 2)
+        \\  let (a, b) = p
+        \\  a = 99
+        \\  print a
+        \\  print b
+        \\end
+    , "99\n2\n");
+}
+
+test "codegen/destructure: if let enum payload + else on no match" {
+    try runAndExpect(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(i16)
+        \\end
+        \\def main()
+        \\  let it: Item = Item.Potion(42)
+        \\  if let Item.Potion(n) = it
+        \\    print n
+        \\  else
+        \\    print 0
+        \\  end
+        \\  if let Item.Sword = it
+        \\    print 1
+        \\  else
+        \\    print 9
+        \\  end
+        \\end
+    , "42\n9\n");
+}
+
+test "codegen/destructure: if let multi-payload + when guard" {
+    try runAndExpect(
+        \\enum Ev
+        \\  case Click(i16, i16)
+        \\end
+        \\def main()
+        \\  if let Ev.Click(x, y) = Ev.Click(40, 7) when x < 128
+        \\    print x
+        \\    print y
+        \\  end
+        \\  if let Ev.Click(x, y) = Ev.Click(200, 7) when x < 128
+        \\    print x
+        \\  else
+        \\    print 0
+        \\  end
+        \\end
+    , "40\n7\n0\n");
+}
+
+test "codegen/destructure: if let tuple destructures in conditional position" {
+    try runAndExpect(
+        \\def main()
+        \\  if let (a, b) = (100, 200)
+        \\    print a
+        \\    print b
+        \\  end
+        \\end
+    , "100\n200\n");
+}
+
+test "codegen/destructure: while let drains a producer" {
+    try runAndExpect(
+        \\enum Cmd
+        \\  case Go(i16)
+        \\  case Stop
+        \\end
+        \\def poll(i: i16) -> Cmd
+        \\  if i < 3
+        \\    return Cmd.Go(i)
+        \\  end
+        \\  return Cmd.Stop
+        \\end
+        \\def main()
+        \\  let i: i16 = 0
+        \\  while let Cmd.Go(n) = poll(i)
+        \\    print n
+        \\    i = i + 1
+        \\  end
+        \\  print 99
+        \\end
+    , "0\n1\n2\n99\n");
+}
+
+test "codegen/destructure: match on a tuple binds elements" {
+    try runAndExpect(
+        \\def main()
+        \\  match (7, 8)
+        \\    case (x, y) => print x
+        \\                   print y
+        \\  end
+        \\end
+    , "7\n8\n");
+}
+
+test "codegen/destructure: match on a struct binds fields" {
+    try runAndExpect(
+        \\struct Pos
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  match Pos { x: 1, y: 2 }
+        \\    case Pos { x, y } => print x
+        \\                         print y
+        \\  end
+        \\end
+    , "1\n2\n");
+}
+
+test "codegen/destructure: i8 payload binder sign-extends" {
+    try runAndExpect(
+        \\enum Tag
+        \\  case V(i8)
+        \\end
+        \\def main()
+        \\  if let Tag.V(n) = Tag.V(-5)
+        \\    print n
+        \\  end
+        \\end
+    , "-5\n");
+}

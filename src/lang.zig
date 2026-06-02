@@ -36,6 +36,7 @@ const cg_bank_builtin = @import("lang/codegen/bank_builtin.zig");
 const cg_test_builtin = @import("lang/codegen/test_builtin.zig");
 const cg_strings = @import("lang/codegen/strings.zig");
 const cg_pattern = @import("lang/codegen/pattern.zig");
+const cg_destructure = @import("lang/codegen/destructure.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 const cg_class = @import("lang/codegen/class.zig");
@@ -211,6 +212,8 @@ pub const internal = struct {
         pub const strings = cg_strings;
         /// `match` pattern-arm test emission.
         pub const pattern = cg_pattern;
+        /// Pattern destructuring (`let` / `if let` / `while let` binds).
+        pub const destructure = cg_destructure;
         /// Expression lowering.
         pub const expr_emit = cg_expr_emit;
         /// Control-flow lowering (if / while / for / match / break / continue / defer).
