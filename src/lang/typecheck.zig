@@ -497,6 +497,12 @@ pub const Checker = struct {
                 try self.checkStoreCompat(d.init.?.span(), ann_ty.?, init_ty.?);
             }
         }
+        // A `let` pattern must be irrefutable (§4.2) — a literal / range /
+        // multi-variant enum can't be guaranteed to match. Surface a
+        // diagnostic and still bind so the body type-checks.
+        if (d.pattern.* != .ident and self.isRefutable(d.pattern)) {
+            try self.emitSpan("E_TYPE_REFUTABLE_LET", d.pattern.span(), "refutable pattern in `let` — use `if let` or `match` for a pattern that can fail to match");
+        }
         switch (d.pattern.*) {
             .ident => |i| {
                 const ty = ann_ty orelse init_ty;
@@ -519,7 +525,7 @@ pub const Checker = struct {
                 }
             },
             .tuple_pattern => try self.checkLetTupleDestructure(d.pattern, init_ty),
-            else => try self.registerPatternBindings(d.pattern),
+            else => try self.registerBindingsFromType(d.pattern, ann_ty orelse init_ty),
         }
     }
 
@@ -668,7 +674,7 @@ pub const Checker = struct {
 
         for (arms, 0..) |arm, i| {
             if (arm.cond) |c| try self.requireBool(c);
-            if (arm.let_expr) |e| _ = try self.inferExpr(e, null);
+            const let_ty: ?*const types.Type = if (arm.let_expr) |e| try self.inferExpr(e, null) else null;
 
             const arm_gain: ?[]const u8 = if (i == 0 and nil_flow != null and nil_flow.?.is_neq)
                 nil_flow.?.name
@@ -690,7 +696,7 @@ pub const Checker = struct {
             var child: Scope = .init(self.arena, saved);
             self.current_scope = &child;
             defer self.current_scope = saved;
-            if (arm.let_pattern) |pat| try self.registerPatternBindings(pat);
+            if (arm.let_pattern) |pat| try self.registerBindingsFromType(pat, let_ty);
             if (arm.let_guard) |g| try self.requireBool(g);
             try self.walkArmBodyWithIsBinding(arm.body, is_binding);
             if (added) self.popNonNil(arm_gain.?);
@@ -739,14 +745,14 @@ pub const Checker = struct {
 
     fn checkWhile(self: *Checker, ws: ast.WhileStmt) WalkError!void {
         if (ws.cond) |c| try self.requireBool(c);
-        if (ws.let_expr) |e| _ = try self.inferExpr(e, null);
+        const let_ty: ?*const types.Type = if (ws.let_expr) |e| try self.inferExpr(e, null) else null;
         // `while let PAT = expr [when guard]` binds PAT for the guard
         // and loop body — same scoping as `if let` / match arms.
         const saved = self.current_scope;
         var child: Scope = .init(self.arena, saved);
         self.current_scope = &child;
         defer self.current_scope = saved;
-        if (ws.let_pattern) |pat| try self.registerPatternBindings(pat);
+        if (ws.let_pattern) |pat| try self.registerBindingsFromType(pat, let_ty);
         if (ws.let_guard) |g| try self.requireBool(g);
         try self.walkStatementSequence(ws.body);
     }
@@ -924,11 +930,15 @@ pub const Checker = struct {
         }
     }
 
-    /// Register one binder with a known type — the typed counterpart
-    /// to `registerPatternBindings`, used where the value's type is
-    /// known (an enum-variant payload field). A bare ident binds at
-    /// `ty`; nested destructuring falls back to the untyped walk.
-    pub fn registerTypedBinding(self: *Checker, pat: *const ast.Pattern, ty: ?*const types.Type) WalkError!void {
+    /// Register every binder a pattern introduces, typing each from the
+    /// matched value's type `ty`: tuple elements from the tuple's slot
+    /// types, struct fields from the declared field types, enum-variant
+    /// payload binders from the variant's payload types. Idents bind at
+    /// the resolved type; wildcards / literals bind nothing. The
+    /// type-propagating, recursive counterpart to `registerPatternBindings`
+    /// — used by `if let` / `while let` and `match` arms so no binder is
+    /// left `null`-typed (the strong-typing rule).
+    pub fn registerBindingsFromType(self: *Checker, pat: *const ast.Pattern, ty: ?*const types.Type) WalkError!void {
         switch (pat.*) {
             .ident => |i| try self.registerName(self.lexeme(i.name), .{
                 .kind = .let_binding,
@@ -936,8 +946,98 @@ pub const Checker = struct {
                 .ty = ty,
             }),
             .wildcard, .int_lit, .str_lit, .char_lit, .bool_lit, .nil_lit, .range_pattern => {},
-            else => try self.registerPatternBindings(pat),
+            .or_pattern => |o| for (o.alts) |alt| try self.registerBindingsFromType(alt, ty),
+            .tuple_pattern => |t| {
+                const slots: ?[]const *const types.Type = if (ty) |it|
+                    (if (it.* == .tuple and it.tuple.len == t.elems.len) it.tuple else null)
+                else
+                    null;
+                if (slots) |s| {
+                    for (t.elems, s) |elem, slot_ty| try self.registerBindingsFromType(elem, slot_ty);
+                } else for (t.elems) |elem| try self.registerPatternBindings(elem);
+            },
+            .struct_pattern => |st| try self.registerStructBindings(st, ty),
+            .variant_pattern => |vp| try self.registerVariantBindings(vp, ty),
         }
+    }
+
+    /// Type a struct pattern's field binders from the struct's declared
+    /// field types — the matched type names the struct (else the pattern's
+    /// own type name). An unresolved struct falls back to the untyped walk.
+    fn registerStructBindings(self: *Checker, st: ast.StructPattern, ty: ?*const types.Type) WalkError!void {
+        const sname: []const u8 = if (ty != null and ty.?.* == .named)
+            ty.?.named.name
+        else
+            self.lexeme(st.type_name);
+        const sd = self.struct_registry.get(sname) orelse {
+            for (st.fields) |f| try self.registerPatternBindings(f.sub);
+            return;
+        };
+        for (st.fields) |f| {
+            const fname = self.lexeme(f.name);
+            const fty: ?*const types.Type = blk: {
+                for (sd.fields) |df| {
+                    if (std.mem.eql(u8, self.lexeme(df.name), fname))
+                        break :blk try type_resolve.resolveType(self, df.type_ann);
+                }
+                break :blk null;
+            };
+            try self.registerBindingsFromType(f.sub, fty);
+        }
+    }
+
+    /// Type an enum-variant pattern's payload binders from the variant's
+    /// declared payload types — resolving the enum from the matched type,
+    /// else the variant path's head. An unresolved enum / variant falls
+    /// back to the untyped walk.
+    fn registerVariantBindings(self: *Checker, vp: ast.VariantPattern, ty: ?*const types.Type) WalkError!void {
+        const ed: ?*const ast.EnumDecl = blk: {
+            if (ty) |it| if (self.enumDeclForType(it.*)) |e| break :blk e;
+            const head = match.splitPath(self.lexeme(vp.path)).head;
+            break :blk if (head.len > 0) self.enum_registry.get(head) else null;
+        };
+        if (ed) |e| {
+            const tail = match.splitPath(self.lexeme(vp.path)).tail;
+            for (e.variants) |*v| {
+                if (!std.mem.eql(u8, self.lexeme(v.name), tail)) continue;
+                for (vp.args, 0..) |arg, i| {
+                    const aty: ?*const types.Type = if (i < v.payload.len)
+                        try type_resolve.resolveType(self, v.payload[i].type_ann)
+                    else
+                        null;
+                    try self.registerBindingsFromType(arg, aty);
+                }
+                return;
+            }
+        }
+        for (vp.args) |arg| try self.registerPatternBindings(arg);
+    }
+
+    /// `true` when `pat` can fail to match its type — a literal / range /
+    /// or-pattern, or a multi-variant enum variant, directly or within a
+    /// tuple / struct / variant sub-pattern. Drives the `let`-must-be-
+    /// irrefutable rule (§4.2).
+    fn isRefutable(self: *const Checker, pat: *const ast.Pattern) bool {
+        return switch (pat.*) {
+            .wildcard, .ident => false,
+            .int_lit, .str_lit, .char_lit, .bool_lit, .nil_lit, .range_pattern, .or_pattern => true,
+            .tuple_pattern => |t| {
+                for (t.elems) |e| if (self.isRefutable(e)) return true;
+                return false;
+            },
+            .struct_pattern => |st| {
+                for (st.fields) |f| if (self.isRefutable(f.sub)) return true;
+                return false;
+            },
+            .variant_pattern => |vp| {
+                const head = match.splitPath(self.lexeme(vp.path)).head;
+                const ed = if (head.len > 0) self.enum_registry.get(head) else null;
+                // A variant of a multi-variant (or unknown) enum is refutable.
+                if (ed == null or ed.?.variants.len != 1) return true;
+                for (vp.args) |a| if (self.isRefutable(a)) return true;
+                return false;
+            },
+        };
     }
 
     /// `true` when `name` appears anywhere in `body` — drives the

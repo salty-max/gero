@@ -2661,3 +2661,43 @@ test "typecheck/shadow: `let assert` is rejected" {
         \\end
     , "E_BUILTIN_SHADOW");
 }
+
+test "typecheck/destructure: refutable `let` pattern is rejected" {
+    try expectCode(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(i16)
+        \\end
+        \\def main()
+        \\  let Item.Potion(n) = Item.Potion(5)
+        \\  print n
+        \\end
+    , "E_TYPE_REFUTABLE_LET");
+}
+
+test "typecheck/destructure: a single-variant `let` enum pattern is irrefutable" {
+    try expectClean(
+        \\enum Wrap
+        \\  case Of(i16)
+        \\end
+        \\def main()
+        \\  let Wrap.Of(n) = Wrap.Of(5)
+        \\  print n + 1
+        \\end
+    );
+}
+
+test "typecheck/destructure: an if-let payload binder is typed from the variant" {
+    // `n` resolves to the payload's `i16`, so the typed arithmetic on it
+    // checks — a `null`-typed binder would surface as an untyped use.
+    try expectClean(
+        \\enum Item
+        \\  case Potion(i16)
+        \\end
+        \\def main()
+        \\  if let Item.Potion(n) = Item.Potion(5)
+        \\    print n + 1
+        \\  end
+        \\end
+    );
+}

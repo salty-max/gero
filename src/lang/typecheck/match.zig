@@ -3,7 +3,6 @@ const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const scope_mod = @import("../scope.zig");
 const typecheck = @import("../typecheck.zig");
-const type_resolve = @import("type_resolve.zig");
 
 const Scope = scope_mod.Scope;
 const Checker = typecheck.Checker;
@@ -43,7 +42,7 @@ pub fn checkMatch(self: *Checker, ms: ast.MatchStmt) WalkError!void {
         var child: Scope = .init(self.arena, saved);
         self.current_scope = &child;
         defer self.current_scope = saved;
-        try registerArmBindings(self, arm.pattern, enum_decl);
+        try self.registerBindingsFromType(arm.pattern, scrut_ty);
         if (arm.guard) |g| try self.requireBool(g);
         try self.walkStatementSequence(arm.body);
     }
@@ -264,29 +263,6 @@ fn resolveMatchEnum(self: *Checker, ms: ast.MatchStmt, scrut_ty: ?*const types.T
         if (head.len > 0) if (self.enum_registry.get(head)) |ed| return ed;
     }
     return null;
-}
-
-/// Register a match arm's bindings, typing enum-variant payload
-/// binders from the variant's declared field types — `case E.A(n)`
-/// gives `n` the payload's type, not unknown. Non-variant patterns
-/// (or an unresolved scrutinee enum) fall back to the untyped walk.
-fn registerArmBindings(self: *Checker, pat: *const ast.Pattern, enum_decl: ?*const ast.EnumDecl) WalkError!void {
-    if (enum_decl) |ed| if (pat.* == .variant_pattern) {
-        const vp = pat.variant_pattern;
-        const tail = splitPath(self.lexeme(vp.path)).tail;
-        for (ed.variants) |*v| {
-            if (!std.mem.eql(u8, self.lexeme(v.name), tail)) continue;
-            for (vp.args, 0..) |arg, i| {
-                const ty: ?*const types.Type = if (i < v.payload.len)
-                    try type_resolve.resolveType(self, v.payload[i].type_ann)
-                else
-                    null;
-                try self.registerTypedBinding(arg, ty);
-            }
-            return;
-        }
-    };
-    try self.registerPatternBindings(pat);
 }
 
 /// Split a variant path `EnumName.Variant` at the last `.` into its
