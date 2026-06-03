@@ -910,6 +910,11 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
             try stdlib.emitCall(self, recv, synth_field, synth_call);
             return;
         }
+        // `str.format(fmt, args)` — str module function.
+        if (std.mem.eql(u8, recv, "str") and std.mem.eql(u8, self.source[m.method.start..m.method.end], "format")) {
+            try str_builtin.emitFormat(self, m.args[0], m.args[1..]);
+            return;
+        }
     }
     try self.unsupported(e.span(), "method calls on non-stdlib receivers");
 }

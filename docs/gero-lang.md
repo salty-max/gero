@@ -288,8 +288,18 @@ Common idioms for old-school output:
   prints each piece sequentially via the host syscall.
 
 For full programmatic formatting (when the format string isn't a
-literal), use `format(fmt: str, args...)` from the `str` stdlib —
-same spec language, runtime-evaluated. Allocates the result.
+literal), use `str.format(fmt: str, args...)` from the `str` stdlib.
+The runtime format string uses **positional** placeholders `{N}` /
+`{N:spec}` referencing `args[N]` (not `$(expr)` — that's compile-time
+interpolation, which would consume the placeholder before `format`
+saw it); `{{` / `}}` are literal braces. The `:spec` after the index is
+the same spec language as above, parsed at runtime. The trailing args
+are positional and share a single type. Allocates the result.
+
+```
+let line = str.format("hp={0}/{1} ({2:3d}%)", hp, max, pct)
+let hex  = str.format("addr={0:04X}", ptr)
+```
 
 ### 3.3 Fixed-point type
 

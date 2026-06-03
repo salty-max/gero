@@ -168,8 +168,7 @@ pub const SyscallId = enum(u8) {
     format_spec_to_buf = 0x16,
     /// `str.format(fmt, args)`. `acu` = format string. `r1` = dst cursor.
     /// `r2` = base of the `args` words. `r3` = count (bits 0-7) | element
-    /// default type (bits 8-10) | element-signed (bit 11). Parses `$(N)` /
-    /// `$(N:spec)` placeholders + `$$`, formats `args[N]` at `[r1]`.
+    /// default type (bits 8-10) | element-signed (bit 11). Parses `{N}` / `{N:spec}` placeholders + `{{`, formats `args[N]` at `[r1]`.
     format_runtime = 0x17,
 
     /// `acu` = requested size in bytes. On success: `acu` ← the
@@ -416,10 +415,11 @@ fn formatValueTo(vm: *VM, w: *@import("std").Io.Writer, value: u16, r2: u16, r3:
 }
 
 /// `str.format(fmt, args)` — walk the runtime format string, copying
-/// literal bytes and replacing `$(N)` / `$(N:spec)` with `args[N]`
-/// formatted per the (runtime-parsed) spec. `$$` is a literal `$`. An
-/// out-of-range or digit-less placeholder is dropped (the format string is
-/// runtime data — leniency over a fault).
+/// literal bytes and replacing `{N}` / `{N:spec}` with `args[N]` formatted
+/// per the (runtime-parsed) spec. `{{` / `}}` are literal braces (the `$(…)`
+/// delimiter is avoided so it doesn't collide with compile-time
+/// interpolation). An out-of-range or digit-less placeholder is dropped
+/// (the format string is runtime data — leniency over a fault).
 fn formatRuntime(vm: *VM) !void {
     const std = @import("std");
     const args_base: u16 = vm.regs.read(.r2);
@@ -433,15 +433,21 @@ fn formatRuntime(vm: *VM) !void {
     while (true) {
         const c = vm.readByte(i);
         if (c == 0) break;
-        if (c == '$') {
-            const nx = vm.readByte(i +% 1);
-            if (nx == '$') { // `$$` → literal `$`
-                writeBufByte(vm, '$');
+        if (c == '}') {
+            // `}}` → literal `}`; a lone `}` is passed through.
+            if (vm.readByte(i +% 1) == '}') i +%= 1;
+            writeBufByte(vm, '}');
+            i +%= 1;
+            continue;
+        }
+        if (c == '{') {
+            if (vm.readByte(i +% 1) == '{') { // `{{` → literal `{`
+                writeBufByte(vm, '{');
                 i +%= 2;
                 continue;
             }
-            if (nx == '(') {
-                var j: u16 = i +% 2;
+            {
+                var j: u16 = i +% 1;
                 // Positional index `N`.
                 var n: u16 = 0;
                 var have_digit = false;
@@ -449,19 +455,19 @@ fn formatRuntime(vm: *VM) !void {
                     n = n *% 10 +% (vm.readByte(j) - '0');
                     have_digit = true;
                 }
-                // Optional `:spec`, captured up to `)`.
+                // Optional `:spec`, captured up to `}`.
                 var spec: [24]u8 = undefined;
                 var spec_len: usize = 0;
                 if (vm.readByte(j) == ':') {
                     j +%= 1;
-                    while (vm.readByte(j) != ')' and vm.readByte(j) != 0) : (j +%= 1) {
+                    while (vm.readByte(j) != '}' and vm.readByte(j) != 0) : (j +%= 1) {
                         if (spec_len < spec.len) {
                             spec[spec_len] = vm.readByte(j);
                             spec_len += 1;
                         }
                     }
                 }
-                if (vm.readByte(j) == ')') j +%= 1;
+                if (vm.readByte(j) == '}') j +%= 1;
                 if (have_digit and n < count) {
                     const value: u16 = vm.readWord(args_base +% n *% 2);
                     const params = packSpecRuntime(spec[0..spec_len], elem_ftype, elem_signed);
