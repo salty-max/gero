@@ -338,6 +338,40 @@ test "typecheck: an iterator loop variable carries the `next` element type" {
     );
 }
 
+test "typecheck: a zero-length array binding types from its annotation" {
+    try expectClean(
+        \\def main()
+        \\  let a: [i16; 0] = []
+        \\  for x in a
+        \\    print x
+        \\  end
+        \\end
+    );
+}
+
+test "typecheck: an empty literal whose count differs from the annotation is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let a: [i16; 2] = []
+        \\  print 0
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: for over a `&[T; N]` types the loop variable from the element" {
+    try expectCode(
+        \\def each(a: &[i16; 3])
+        \\  for x in a
+        \\    let s: str = x
+        \\  end
+        \\end
+        \\def main()
+        \\  let arr: [i16; 3] = [1, 2, 3]
+        \\  each(&arr)
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
 test "typecheck: for over a non-iterable value is rejected" {
     try expectCode(
         \\def main()

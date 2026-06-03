@@ -54,10 +54,14 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
             // A struct- / tuple- / array- / Vec- / scalar-optional-typed
             // binding evaluates to its base address — inline aggregates
             // (incl. the 6-byte Vec header + the 4-byte `{present, value}`
-            // optional) are addressed in place, not loaded as a word.
-            if (self.structNameOf(e) != null or self.tupleElemsOf(e) != null or
+            // optional) are addressed in place, not loaded as a word. But a
+            // `&T` reference to such an aggregate holds a POINTER to it: its
+            // base is the pointer VALUE in the slot, so fall through to the
+            // word-load tail (one deref, mirroring `class.emitInstancePtr`).
+            const is_reference = if (self.typeOf(e)) |t| t.* == .reference else false;
+            if (!is_reference and (self.structNameOf(e) != null or self.tupleElemsOf(e) != null or
                 self.arrayInfoOf(e) != null or vec_builtin.elemOf(self, e) != null or
-                self.scalarOptionalElemOf(e) != null)
+                self.scalarOptionalElemOf(e) != null))
             {
                 try self.emitAddrOf(e);
                 return;
@@ -1001,18 +1005,25 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     }
 
     // Push args right-to-left (caller-cleans-up). A struct or tuple arg
-    // is passed by value — its (2-aligned) width copied onto the stack.
+    // is passed by value — its (2-aligned) width copied onto the stack. A
+    // `&T` reference arg is a 2-byte pointer (the `*Of` helpers peel the
+    // reference, so it must be excluded from the by-value paths).
     var i: usize = c.args.len;
     while (i > 0) {
         i -= 1;
-        if (self.argStructName(c.args[i])) |sname| {
-            try value_struct.pushArg(self, c.args[i], sname);
-        } else if (self.tupleElemsOf(c.args[i])) |elems| {
-            try value_struct.pushTupleArg(self, c.args[i], elems);
-        } else {
-            try emitExpr(self, c.args[i]);
-            try isa.pushReg(self, Reg.acu);
+        const arg = c.args[i];
+        if (!self.isReferenceArg(arg)) {
+            if (self.argStructName(arg)) |sname| {
+                try value_struct.pushArg(self, arg, sname);
+                continue;
+            }
+            if (self.tupleElemsOf(arg)) |elems| {
+                try value_struct.pushTupleArg(self, arg, elems);
+                continue;
+            }
         }
+        try emitExpr(self, arg);
+        try isa.pushReg(self, Reg.acu);
     }
 
     if (cross_bank) {

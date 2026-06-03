@@ -12,7 +12,8 @@ ranges. The loop variable is typed from the iterable's element type
   element buffer (the array's base address, or the Vec's
   snapshotted heap pointer + length). Scalar elements load their
   value; aggregate elements (struct / array / tuple) bind by value,
-  address-valued like any inline-aggregate binding.
+  address-valued like any inline-aggregate binding. A `&[T; N]` /
+  `&Vec(T)` reference iterates the pointed-to aggregate.
 - `str` — a null-terminated byte walk; the loop variable is `char`.
 - A class with `next(self) -> T?` — the iterator protocol (§4.5.3):
   the iterable is evaluated once into a hidden slot (iteration is
@@ -35,6 +36,15 @@ accumulator. This fixes `if let x = call()` / `let x: T? = call()`
 for any optional-returning method or function (previously only
 `Vec.pop` / `Vec.get` materialized correctly), and a present inner
 value now implicitly wraps (`let x: i16? = 5`).
+
+**Zero-length arrays**
+
+An empty array literal types from its `[T; N]` annotation
+(`let a: [i16; 0] = []`), materializing a zero-byte slot — a
+degenerate but valid no-op (iterating it runs the body zero times).
+A bare `[]` with no annotation stays a type error (no inferable
+element type), and a count-mismatched `[i16; 2] = []` is
+`E_TYPE_MISMATCH`.
 
 **Diagnostics**
 
