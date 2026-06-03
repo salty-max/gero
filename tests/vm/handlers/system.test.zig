@@ -97,6 +97,77 @@ test "clv 0xB4: clears V only" {
     try std.testing.expect(vm.regs.flagSet(.carry));
 }
 
+// ---------- format_spec_to_buf (0x16) ----------
+
+/// Run `sys format_spec_to_buf` once with `acu`/`r2`/`r3` set, the cursor
+/// at 0x2000, and return the formatted bytes written.
+fn runFmtSpec(vm: *VM, out: []u8, value: u16, r2: u16, r3: u16) []const u8 {
+    const start: u16 = 0x2000;
+    vm.regs.write(.acu, value);
+    vm.regs.write(.r1, start);
+    vm.regs.write(.r2, r2);
+    vm.regs.write(.r3, r3);
+    loadProgram(vm, &.{ 0xFB, 0x16 });
+    _ = gero.vm.step(vm);
+    const len: usize = vm.regs.read(.r1) - start;
+    for (0..len) |i| out[i] = vm.mmap.readByte(start + @as(u16, @intCast(i)));
+    return out[0..len];
+}
+
+test "format_spec_to_buf 0x16: hex upper, zero-padded to width (`04X`)" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [16]u8 = undefined;
+    // type hex_upper(2) | zero_pad(1<<6); width 4.
+    const got = runFmtSpec(&vm, &out, 0x04F2, 4, 2 | (1 << 6));
+    try std.testing.expectEqualStrings("04F2", got);
+}
+
+test "format_spec_to_buf 0x16: signed decimal, zero-padded (`03d`)" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [16]u8 = undefined;
+    // type dec(0) | signed(1<<5) | zero_pad(1<<6); width 3.
+    const got = runFmtSpec(&vm, &out, 42, 3, (1 << 5) | (1 << 6));
+    try std.testing.expectEqualStrings("042", got);
+}
+
+test "format_spec_to_buf 0x16: right-aligned, space-padded (`3d`)" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [16]u8 = undefined;
+    // type dec(0) | signed(1<<5); width 3, default (space) fill + right align.
+    const got = runFmtSpec(&vm, &out, 42, 3, 1 << 5);
+    try std.testing.expectEqualStrings(" 42", got);
+}
+
+test "format_spec_to_buf 0x16: negative signed decimal keeps its sign (`04d`)" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [16]u8 = undefined;
+    // -42 as a u16 bit pattern; type dec(0) | signed(1<<5) | zero_pad(1<<6); width 4.
+    const got = runFmtSpec(&vm, &out, @as(u16, @bitCast(@as(i16, -42))), 4, (1 << 5) | (1 << 6));
+    try std.testing.expectEqualStrings("-042", got);
+}
+
+test "format_spec_to_buf 0x16: binary, zero-padded to 8 (`08b`)" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [16]u8 = undefined;
+    // type bin(3) | zero_pad(1<<6); width 8.
+    const got = runFmtSpec(&vm, &out, 0xB4, 8, 3 | (1 << 6));
+    try std.testing.expectEqualStrings("10110100", got);
+}
+
+test "format_spec_to_buf 0x16: left-aligned decimal (`<3d`)" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [16]u8 = undefined;
+    // type dec(0) | signed(1<<5) | align_left(1<<3); width 3.
+    const got = runFmtSpec(&vm, &out, 7, 3, (1 << 5) | (1 << 3));
+    try std.testing.expectEqualStrings("7  ", got);
+}
+
 // ---------- system ----------
 
 test "int 0xFC: pushes state, jumps via vector table, sets flg.I" {

@@ -160,6 +160,12 @@ pub const SyscallId = enum(u8) {
     /// decimal representation of `acu` at `[r1]`, advances `r1`.
     /// (`format_int_to_buf` is the signed counterpart.)
     format_uint_to_buf = 0x15,
+    /// `acu` = value (or str pointer for the `str` type). `r1` = dst
+    /// cursor. `r2` = width (bits 0-7) | fill (bits 8-15). `r3` = type
+    /// (bits 0-2) | align (bits 3-4) | signed (bit 5) | zero-pad (bit 6) |
+    /// has-precision (bit 7) | precision (bits 8-15). Appends `acu`
+    /// formatted per a §3.2.2 format spec at `[r1]`, advances `r1`.
+    format_spec_to_buf = 0x16,
 
     /// `acu` = requested size in bytes. On success: `acu` ← the
     /// address of the freshly-allocated block, and the VM's bump
@@ -196,6 +202,7 @@ pub fn sys(vm: *VM) StepResult {
         .format_str_to_buf => formatStrToBuf(vm),
         .format_int_to_buf => formatIntToBuf(vm) catch return fault(vm, .invalid_opcode),
         .format_uint_to_buf => formatUintToBuf(vm) catch return fault(vm, .invalid_opcode),
+        .format_spec_to_buf => formatSpecToBuf(vm) catch return fault(vm, .invalid_opcode),
         .format_char_to_buf => formatCharToBuf(vm),
         .format_fixed_to_buf => formatFixedToBuf(vm) catch return fault(vm, .invalid_opcode),
         .format_terminate_buf => formatTerminateBuf(vm),
@@ -303,6 +310,98 @@ fn formatCharToBuf(vm: *VM) void {
     // @as: acu is u16; the format_char syscall writes the low byte only.
     const byte: u8 = @intCast(vm.regs.read(.acu) & 0xFF);
     writeBufByte(vm, byte);
+}
+
+/// Append `acu` formatted per a §3.2.2 format spec (the packed `r2` / `r3`
+/// params, mirroring `opcodes.FmtSpec`) to the buffer at `r1`. Numeric
+/// types render through the host writer's radix formatter; `str` / `char`
+/// align a byte run.
+fn formatSpecToBuf(vm: *VM) !void {
+    const std = @import("std");
+    const value = vm.regs.read(.acu);
+    const r2 = vm.regs.read(.r2);
+    const r3 = vm.regs.read(.r3);
+    // safety: each field is masked into its byte/bit width before the cast.
+    const width: u8 = @truncate(r2);
+    const fill: u8 = @truncate(r2 >> 8);
+    const ftype: u16 = r3 & 0x7;
+    const align_bits: u16 = (r3 >> 3) & 0x3;
+    const signed = r3 & (1 << 5) != 0;
+    const zero_pad = r3 & (1 << 6) != 0;
+    const has_prec = r3 & (1 << 7) != 0;
+    const precision: u8 = @truncate(r3 >> 8);
+
+    const is_text = ftype == 5 or ftype == 6;
+    const alignment: std.fmt.Alignment = switch (align_bits) {
+        1 => .left,
+        2 => .right,
+        3 => .center,
+        else => if (is_text) .left else .right, // type default
+    };
+    const fill_char: u8 = if (zero_pad and !is_text) '0' else if (fill == 0) ' ' else fill;
+    const opts: std.fmt.Options = .{
+        .width = if (width != 0) width else null,
+        .fill = fill_char,
+        .alignment = alignment,
+        .precision = if (has_prec and !is_text) precision else null,
+    };
+
+    var buf: [80]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    switch (ftype) {
+        0 => {
+            // Decimal. A positive (or unsigned) value renders its magnitude
+            // with no sign. A negative value keeps its `-`; zero-padding is
+            // sign-aware (`-` then zero-padded magnitude), since the host
+            // writer would otherwise pad ahead of the sign (`0-42`).
+            // safety: acu holds the i16 bit pattern.
+            const sv: i16 = @bitCast(value);
+            if (signed and sv < 0) {
+                // @as: widen i16 → i32 so negating -32768 can't overflow; the magnitude fits u16.
+                const mag: u16 = @intCast(-@as(i32, sv));
+                if (zero_pad and width > 1) {
+                    try w.writeByte('-');
+                    try w.printInt(mag, 10, .lower, .{ .width = width - 1, .fill = '0', .alignment = .right });
+                } else {
+                    try w.printInt(sv, 10, .lower, opts);
+                }
+            } else {
+                try w.printInt(value, 10, .lower, opts);
+            }
+        },
+        1 => try w.printInt(value, 16, .lower, opts),
+        2 => try w.printInt(value, 16, .upper, opts),
+        3 => try w.printInt(value, 2, .lower, opts),
+        4 => try w.printInt(value, 8, .lower, opts),
+        6 => {
+            // @as: a `char` value renders its low byte.
+            const ch: u8 = @truncate(value);
+            try w.alignBufferOptions(&[1]u8{ch}, opts);
+        },
+        5 => {
+            // `str`: bytes at `[acu]`, truncated to `precision` (max length).
+            var tmp: [80]u8 = undefined;
+            var n: usize = 0;
+            var src: u16 = value;
+            const max: usize = if (has_prec) @min(precision, tmp.len) else tmp.len;
+            while (n < max) {
+                const b = vm.readByte(src);
+                if (b == 0) break;
+                tmp[n] = b;
+                n += 1;
+                src +%= 1;
+            }
+            try w.alignBufferOptions(tmp[0..n], opts);
+        },
+        else => {
+            // `fixed` (7): render the Q8.8 form, then apply width / align.
+            var tmp: [16]u8 = undefined;
+            var tw: std.Io.Writer = .fixed(&tmp);
+            try writeFixedTo(vm, &tw);
+            try w.alignBufferOptions(tw.buffered(), opts);
+        },
+    }
+    for (w.buffered()) |b| writeBufByte(vm, b);
 }
 
 fn formatFixedToBuf(vm: *VM) !void {

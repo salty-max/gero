@@ -206,6 +206,12 @@ pub const Sys = struct {
     /// `format_uint_to_buf` — append `acu` as unsigned decimal to the
     /// buffer pointed to by `r1`.
     pub const format_uint_to_buf: u8 = 0x15;
+    /// `format_spec_to_buf` — append `acu` formatted per a §3.2.2 format
+    /// spec to the buffer at `r1`. `r2` = width (bits 0-7) | fill char
+    /// (bits 8-15); `r3` = type / align / flags / precision. For the `str`
+    /// type `acu` is the byte pointer; otherwise the value. The full bit
+    /// layout is the contract in `docs/isa.md`.
+    pub const format_spec_to_buf: u8 = 0x16;
 
     /// `alloc` — bump-allocate `acu` bytes on the heap. Returns
     /// the freshly-allocated address in `acu`; faults
