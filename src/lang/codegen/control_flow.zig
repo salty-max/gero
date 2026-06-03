@@ -1,15 +1,19 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
+const types = @import("../types.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const pattern = @import("pattern.zig");
 const destructure = @import("destructure.zig");
 const class = @import("class.zig");
+const value_struct = @import("value_struct.zig");
+const vec_builtin = @import("vec_builtin.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
 const Reg = opcodes.Reg;
+const Type = types.Type;
 const LoopFrame = codegen.LoopFrame;
 
 /// Walk `body` inside a fresh block scope. The common helper for
@@ -344,34 +348,12 @@ pub fn emitRepeatStmt(self: *Emitter, rs: ast.RepeatStmt) !void {
     frame.continue_patches.deinit(self.allocator);
 }
 
-/// Lower `for x in start..end [step S] body end` — the range
-/// special case per spec §4.5.3. User-defined iterables
-/// (`next(self) -> T?`) are not yet supported.
-pub fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
-    if (fs.iter.* != .range) {
-        try self.unsupported(fs.span, "`for` over non-range iterables");
-        return;
-    }
-    const range = fs.iter.range;
-    const inclusive = range.inclusive;
-    const step_expr = fs.step;
-    const binding_name = self.source[fs.binding.start..fs.binding.end];
-
-    // Allocate slots: the loop variable + a hidden `end` slot.
-    const dup_name = try self.arena.dupe(u8, binding_name);
-    const var_ofs = try self.allocLocal(dup_name);
-    const end_ofs = try self.allocLocal(try self.arena.dupe(u8, "\x00__for_end"));
-
-    try self.emitExpr(range.start);
-    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, var_ofs);
-    try self.emitExpr(range.end);
-    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, end_ofs);
-
-    const label_str: ?[]const u8 = if (fs.label) |s|
+/// Push a loop's block scope + loop frame (shared by the `for` family).
+fn enterLoop(self: *Emitter, label_span: ?ast.Span) !void {
+    const label_str: ?[]const u8 = if (label_span) |s|
         try self.arena.dupe(u8, self.source[s.start..s.end])
     else
         null;
-
     try pushBlock(self);
     const body_block_idx = self.block_stack.items.len - 1;
     try self.loop_stack.append(self.allocator, .{
@@ -380,9 +362,69 @@ pub fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
         .break_patches = .empty,
         .continue_patches = .empty,
     });
+}
 
-    // Top-of-loop: load `current`, load `end`, compare. Exit
-    // when current > end (inclusive) or current >= end (exclusive).
+/// Pop the innermost loop frame, resolving its `break` jumps to
+/// `exit_offset` and `continue` jumps to `continue_offset`.
+fn exitLoop(self: *Emitter, exit_offset: usize, continue_offset: usize) !void {
+    var frame = self.loop_stack.pop().?;
+    for (frame.break_patches.items) |p| try isa.patchJumpTo(self, p, exit_offset);
+    for (frame.continue_patches.items) |p| try isa.patchJumpTo(self, p, continue_offset);
+    frame.break_patches.deinit(self.allocator);
+    frame.continue_patches.deinit(self.allocator);
+}
+
+/// `reg = fp + ofs` — the address of a frame slot.
+fn frameAddr(self: *Emitter, ofs: i8, reg: u8) !void {
+    try isa.movRegToReg(self, Reg.fp, reg);
+    if (ofs < 0) {
+        // @as: |ofs| ≤ 127 fits u16.
+        try isa.subImmFromReg(self, @intCast(-@as(i16, ofs)), reg);
+    } else if (ofs > 0) {
+        try isa.addImmToReg(self, @intCast(ofs), reg);
+    }
+}
+
+/// Lower `for x in <iterable> body end` (§4.5.3). Ranges + the built-in
+/// iterables (`[T; N]` / `Vec(T)` / `str`) emit direct memory loops; a
+/// class with `next(self) -> T?` desugars to the iterator protocol.
+pub fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
+    if (fs.iter.* == .range) return emitForRange(self, fs);
+    const it_ty = self.typeOf(fs.iter) orelse {
+        try self.unsupported(fs.span, "`for` over a value of unknown type");
+        return;
+    };
+    switch (it_ty.*) {
+        .array => try emitForArray(self, fs),
+        .vec => |elem| try emitForVec(self, fs, elem),
+        .primitive => |p| if (p == .str)
+            try emitForStr(self, fs)
+        else
+            try self.unsupported(fs.span, "`for` over this value"),
+        .named => |n| try emitForIterator(self, fs, n.name),
+        else => try self.unsupported(fs.span, "`for` over this value"),
+    }
+}
+
+/// `for x in start..end [step S]` — the range special case (§4.5.1). No
+/// allocation, no iterator object: a hidden `end` slot bounds the
+/// iteration variable, which steps by `S` (default 1) each pass.
+fn emitForRange(self: *Emitter, fs: ast.ForStmt) !void {
+    const range = fs.iter.range;
+    const inclusive = range.inclusive;
+    const dup_name = try self.arena.dupe(u8, self.source[fs.binding.start..fs.binding.end]);
+    const var_ofs = try self.allocLocal(dup_name);
+    const end_ofs = try self.allocLocal("\x00__for_end");
+
+    try self.emitExpr(range.start);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, var_ofs);
+    try self.emitExpr(range.end);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, end_ofs);
+
+    try enterLoop(self, fs.label);
+
+    // Top-of-loop: load `current`, load `end`, compare. Exit when current
+    // > end (inclusive) or current >= end (exclusive).
     const test_offset = try self.currentOffset();
     try isa.movRegOffsetToReg(self, Reg.fp, var_ofs, Reg.acu);
     try isa.movRegOffsetToReg(self, Reg.fp, end_ofs, Reg.r1);
@@ -398,7 +440,7 @@ pub fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
     // `continue` target — the step-and-back-edge.
     const continue_offset = try self.currentOffset();
     try isa.movRegOffsetToReg(self, Reg.fp, var_ofs, Reg.acu);
-    if (step_expr) |se| {
+    if (fs.step) |se| {
         if (se.* == .int_lit) {
             // @as: parser stores int_lit as i32; range steps fit i16 per spec §4.5.1.
             const step_i16: i16 = @truncate(se.int_lit.value);
@@ -420,12 +462,193 @@ pub fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
 
     const exit_offset = try self.currentOffset();
     try isa.patchJumpTo(self, exit_patch, exit_offset);
+    try exitLoop(self, exit_offset, continue_offset);
+}
 
-    var frame = self.loop_stack.pop().?;
-    for (frame.break_patches.items) |p| try isa.patchJumpTo(self, p, exit_offset);
-    for (frame.continue_patches.items) |p| try isa.patchJumpTo(self, p, continue_offset);
-    frame.break_patches.deinit(self.allocator);
-    frame.continue_patches.deinit(self.allocator);
+/// `for x in arr` (`[T; N]`) — snapshot the base address + the comptime
+/// element count into hidden slots, then index `0..count`. An array
+/// literal is an rvalue, so it's materialized into a temp slot first; an
+/// addressable array (ident / field) yields its base address directly.
+fn emitForArray(self: *Emitter, fs: ast.ForStmt) !void {
+    const info = self.arrayInfoOf(fs.iter) orelse {
+        try self.unsupported(fs.span, "`for` over a non-array value");
+        return;
+    };
+    const base_ofs = try self.allocLocal("\x00__for_base");
+    const cnt_ofs = try self.allocLocal("\x00__for_cnt");
+    if (fs.iter.* == .list_lit or fs.iter.* == .list_repeat) {
+        // @as: array width is bounded by the i8 frame cap.
+        const width: u16 = @intCast(@as(u32, info.elem_width) * info.count);
+        const arr_ofs = try self.allocLocalSized("\x00__for_lit", width);
+        try value_struct.emitArrayInto(self, fs.iter, info.elem, info.count, arr_ofs);
+        try frameAddr(self, arr_ofs, Reg.acu);
+    } else {
+        try self.emitExpr(fs.iter); // an array value is its base address
+    }
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, base_ofs);
+    // @as: array count ≤ the i8 frame cap.
+    try isa.movImmToReg(self, @intCast(info.count), Reg.acu);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, cnt_ofs);
+    try emitIndexedBody(self, fs, base_ofs, cnt_ofs, info.elem);
+}
+
+/// `for x in v` (`Vec(T)`) — snapshot the heap buffer pointer + length
+/// once, then index `0..len`. Mutating the Vec inside the body doesn't
+/// reshape the iteration (the bounds are sampled up front).
+fn emitForVec(self: *Emitter, fs: ast.ForStmt, elem: *const Type) !void {
+    const base_ofs = try self.allocLocal("\x00__for_base");
+    const cnt_ofs = try self.allocLocal("\x00__for_cnt");
+    try self.emitExpr(fs.iter); // a Vec value is its header address
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try class.emitWordLoadAtOffset(self, Reg.r1, vec_builtin.ptr_ofs, Reg.acu);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, base_ofs);
+    try class.emitWordLoadAtOffset(self, Reg.r1, vec_builtin.len_ofs, Reg.acu);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, cnt_ofs);
+    try emitIndexedBody(self, fs, base_ofs, cnt_ofs, elem);
+}
+
+/// The shared `0..count` index loop for `[T; N]` / `Vec(T)`: `base_ofs`
+/// holds the element buffer base, `cnt_ofs` the element count. Each pass
+/// loads `base[i]` into the loop var, then steps `i`.
+fn emitIndexedBody(self: *Emitter, fs: ast.ForStmt, base_ofs: i8, cnt_ofs: i8, elem: *const Type) !void {
+    const ew = self.widthOfType(elem);
+    const scalar = switch (self.arrayElemKindOf(elem)) {
+        .scalar => true,
+        else => false,
+    };
+    const idx_ofs = try self.allocLocal("\x00__for_i");
+    const dup = try self.arena.dupe(u8, self.source[fs.binding.start..fs.binding.end]);
+    const x_ofs = if (scalar) try self.allocLocal(dup) else try self.allocLocalSized(dup, self.widthOfType(elem));
+
+    try isa.movImmToReg(self, 0, Reg.acu);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, idx_ofs);
+
+    try enterLoop(self, fs.label);
+    const test_offset = try self.currentOffset();
+    // Exit when `i >= count` (unsigned: counts span the full u16 range).
+    try isa.movRegOffsetToReg(self, Reg.fp, idx_ofs, Reg.acu);
+    try isa.movRegOffsetToReg(self, Reg.fp, cnt_ofs, Reg.r1);
+    try isa.cmpRegReg(self, Reg.acu, Reg.r1);
+    const exit_patch = try isa.emitJumpPlaceholder(self, Op.jcc_addr);
+
+    try emitElementInto(self, base_ofs, idx_ofs, ew, elem, scalar, x_ofs);
+
+    for (fs.body) |s| try self.emitStatement(s);
+    try popBlockWithDefers(self);
+
+    const continue_offset = try self.currentOffset();
+    try isa.movRegOffsetToReg(self, Reg.fp, idx_ofs, Reg.acu);
+    try isa.addImmToReg(self, 1, Reg.acu);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, idx_ofs);
+    try isa.emitJumpBack(self, test_offset);
+
+    const exit_offset = try self.currentOffset();
+    try isa.patchJumpTo(self, exit_patch, exit_offset);
+    try exitLoop(self, exit_offset, continue_offset);
+}
+
+/// Load element `base[idx]` (width `ew`) into the loop var slot `x_ofs`.
+/// A scalar element loads its value (sign-extending `i8`); an aggregate
+/// element copies its bytes — the loop var is then address-valued, like
+/// any inline-aggregate binding.
+fn emitElementInto(self: *Emitter, base_ofs: i8, idx_ofs: i8, ew: u16, elem: *const Type, scalar: bool, x_ofs: i8) !void {
+    try isa.movRegOffsetToReg(self, Reg.fp, idx_ofs, Reg.acu);
+    try value_struct.scaleIndex(self, Reg.acu, ew); // acu = idx * ew
+    try isa.movRegOffsetToReg(self, Reg.fp, base_ofs, Reg.r1);
+    try isa.addRegToAcu(self, Reg.r1); // acu = &base[idx]
+    try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = element address
+    if (scalar) {
+        if (ew == 1) {
+            try class.emitByteLoadAtOffset(self, Reg.r1, 0, Reg.acu);
+            if (elem.* == .primitive and elem.primitive == .i8) try isa.signExtendByte(self, Reg.acu);
+        } else {
+            try class.emitWordLoadAtOffset(self, Reg.r1, 0, Reg.acu);
+        }
+        try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, x_ofs);
+    } else {
+        try frameAddr(self, x_ofs, Reg.r2);
+        try value_struct.copyBytes(self, Reg.r1, Reg.r2, self.widthOfType(elem));
+    }
+}
+
+/// `for c in s` (`str`) — walk the null-terminated byte buffer: load
+/// `[cursor]` into the `char` loop var, stop at the terminator, advance.
+fn emitForStr(self: *Emitter, fs: ast.ForStmt) !void {
+    const cursor_ofs = try self.allocLocal("\x00__for_cursor");
+    const dup = try self.arena.dupe(u8, self.source[fs.binding.start..fs.binding.end]);
+    const x_ofs = try self.allocLocal(dup); // the `char` loop var (a word slot)
+    try self.emitExpr(fs.iter); // a str value is a pointer to its first byte
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, cursor_ofs);
+
+    try enterLoop(self, fs.label);
+    const test_offset = try self.currentOffset();
+    try isa.movRegOffsetToReg(self, Reg.fp, cursor_ofs, Reg.r1);
+    try class.emitByteLoadAtOffset(self, Reg.r1, 0, Reg.acu); // acu = [cursor] (zero-extended)
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const exit_patch = try isa.emitJumpPlaceholder(self, Op.jeq_addr); // null terminator → exit
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, x_ofs);
+
+    for (fs.body) |s| try self.emitStatement(s);
+    try popBlockWithDefers(self);
+
+    const continue_offset = try self.currentOffset();
+    try isa.movRegOffsetToReg(self, Reg.fp, cursor_ofs, Reg.acu);
+    try isa.addImmToReg(self, 1, Reg.acu);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, cursor_ofs);
+    try isa.emitJumpBack(self, test_offset);
+
+    const exit_offset = try self.currentOffset();
+    try isa.patchJumpTo(self, exit_patch, exit_offset);
+    try exitLoop(self, exit_offset, continue_offset);
+}
+
+/// `for x in it` (a class with `next(self) -> T?`) — the iterator protocol
+/// (§4.5.3). Evaluates the iterable once into a hidden slot (iteration is
+/// destructive — the instance's own cursor advances), then each pass calls
+/// `it.next()`, binds `x` to a present value, and exits on `nil`.
+fn emitForIterator(self: *Emitter, fs: ast.ForStmt, class_name: []const u8) !void {
+    const ret = (try class.methodReturnType(self, class_name, "next")) orelse {
+        try self.unsupported(fs.span, "`for` over a class without a `next(self) -> T?` method");
+        return;
+    };
+    if (ret.* != .optional) {
+        try self.unsupported(fs.span, "iterator `next` must return `T?`");
+        return;
+    }
+    const inner = ret.optional;
+    const it_ofs = try self.allocLocal("\x00__for_it");
+    const v_ofs = try self.allocLocalSized("\x00__for_v", self.widthOfType(ret));
+    try class.emitInstancePtr(self, fs.iter);
+    try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, it_ofs);
+
+    try enterLoop(self, fs.label);
+    // The `continue` target re-calls `next()`, so the test sits at the top.
+    const test_offset = try self.currentOffset();
+    try isa.movRegOffsetToReg(self, Reg.fp, it_ofs, Reg.acu); // acu = instance ptr
+    try class.emitMethodDispatchOnInstance(self, class_name, "next", &.{}, fs.span);
+    if (Emitter.isScalarOptional(inner)) {
+        // acu = sret buffer address — copy the 4-byte {present, value}.
+        try isa.movRegToReg(self, Reg.acu, Reg.r1);
+        try frameAddr(self, v_ofs, Reg.r2);
+        try value_struct.copyBytes(self, Reg.r1, Reg.r2, Emitter.opt_scalar_size);
+    } else {
+        // acu = the nullable pointer (nil = 0) — store the word.
+        try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, v_ofs);
+    }
+    // Unwrap: bind the loop var to a present value; any `nil` skips to exit.
+    var skip: std.ArrayList(usize) = .empty;
+    defer skip.deinit(self.allocator);
+    const x_pat: ast.Pattern = .{ .ident = .{ .name = fs.binding, .span = fs.binding } };
+    try destructure.emitMatchPattern(self, &x_pat, v_ofs, ret, &skip);
+
+    for (fs.body) |s| try self.emitStatement(s);
+    try popBlockWithDefers(self);
+
+    try isa.emitJumpBack(self, test_offset);
+
+    const exit_offset = try self.currentOffset();
+    for (skip.items) |p| try isa.patchJumpTo(self, p, exit_offset);
+    try exitLoop(self, exit_offset, test_offset);
 }
 
 // ---------- break / continue ----------

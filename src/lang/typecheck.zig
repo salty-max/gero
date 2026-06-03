@@ -759,7 +759,7 @@ pub const Checker = struct {
     }
 
     fn checkFor(self: *Checker, fs: ast.ForStmt) WalkError!void {
-        _ = try self.inferExpr(fs.iter, null);
+        const elem_ty = try self.forElementType(fs);
         if (fs.step) |st| _ = try self.inferExpr(st, null);
         const saved = self.current_scope;
         var child: Scope = .init(self.arena, saved);
@@ -768,9 +768,47 @@ pub const Checker = struct {
         try self.registerName(self.lexeme(fs.binding), .{
             .kind = .let_binding,
             .decl_span = fs.binding,
-            .ty = null,
+            .ty = elem_ty,
         });
         try self.walkStatementSequence(fs.body);
+    }
+
+    /// Resolve the loop variable's type from the iterable's element type
+    /// (§4.5.3): a range yields its bound type; `[T; N]` / `Vec(T)` yield
+    /// `T`; `str` yields `char`; a class with `next(self) -> T?` yields `T`.
+    /// A non-iterable operand is `E_TYPE_NOT_ITERABLE` and binds no type.
+    fn forElementType(self: *Checker, fs: ast.ForStmt) WalkError!?*const types.Type {
+        if (fs.iter.* == .range) {
+            // The loop variable takes the range bound's type (`0u8..` → u8).
+            const start_ty = try self.inferExpr(fs.iter.range.start, null);
+            _ = try self.inferExpr(fs.iter.range.end, null);
+            return start_ty orelse try self.primitive(.i16);
+        }
+        const it_ty = (try self.inferExpr(fs.iter, null)) orelse return null;
+        switch (it_ty.*) {
+            .array => return it_ty.array.elem,
+            .vec => return it_ty.vec,
+            .primitive => |p| if (p == .str) return try self.primitive(.char),
+            .named => |n| {
+                if (self.class_registry.get(n.name)) |cd| {
+                    if (fields.lookupClassMethod(self, cd, "next")) |m| {
+                        if (m.ret_type) |rt| {
+                            const ret = try type_resolve.resolveType(self, rt);
+                            if (ret.* == .optional) return ret.optional;
+                        }
+                    }
+                }
+            },
+            else => {},
+        }
+        const rendered = try types.render(self.arena, it_ty.*);
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "type `{s}` is not iterable — `for x in …` needs a range, `[T; N]`, `Vec(T)`, `str`, or a class with `next(self) -> T?`",
+            .{rendered},
+        );
+        try self.emitSpan("E_TYPE_NOT_ITERABLE", fs.iter.span(), msg);
+        return null;
     }
 
     fn checkRepeat(self: *Checker, rs: ast.RepeatStmt) WalkError!void {

@@ -1,11 +1,13 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
+const types = @import("../types.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const codegen_mod = @import("../codegen.zig");
 const value_struct = @import("value_struct.zig");
 
 const Emitter = codegen_mod.Emitter;
+const Type = types.Type;
 const Op = opcodes.Op;
 const Reg = opcodes.Reg;
 const Sys = opcodes.Sys;
@@ -157,13 +159,16 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
         }
     }
 
-    // A struct-returning method needs the same sret scratch buffer as
-    // a free fn — size the per-frame scratch to the widest return.
+    // A struct- or scalar-`T?`-returning method needs the same sret scratch
+    // buffer as a free fn — size the per-frame scratch to the widest return.
     for (cd.methods) |method| {
-        if (method.ret_type) |rt| if (self.structNameOfTypeAnn(rt.*)) |sname| {
+        const rt = method.ret_type orelse continue;
+        if (self.structNameOfTypeAnn(rt.*)) |sname| {
             const w = self.structSlotWidth(sname);
             if (w > self.global_sret_scratch) self.global_sret_scratch = w;
-        };
+        } else if (try self.scalarOptReturnInner(rt.*)) |_| {
+            if (Emitter.opt_scalar_size > self.global_sret_scratch) self.global_sret_scratch = Emitter.opt_scalar_size;
+        }
     }
 
     try self.class_layouts.put(self.arena, dup_class, layout);
@@ -262,6 +267,37 @@ fn methodRetStruct(self: *Emitter, class_name: []const u8, method_name: []const 
         }
     }
     return null;
+}
+
+/// Resolved return type of `class_name`.`method_name` (walking the
+/// inheritance chain to the owner), or `null` when the method has no
+/// return annotation or the class / method is unknown.
+pub fn methodReturnType(self: *Emitter, class_name: []const u8, method_name: []const u8) error{OutOfMemory}!?*const Type {
+    const layout = self.class_layouts.get(class_name) orelse return null;
+    const owner = layout.method_owners.get(method_name) orelse return null;
+    const cd = self.class_decls.get(owner) orelse return null;
+    for (cd.methods) |m| {
+        if (std.mem.eql(u8, self.source[m.name.start..m.name.end], method_name)) {
+            const rt = m.ret_type orelse return null;
+            return try self.typeAnnToType(rt.*);
+        }
+    }
+    return null;
+}
+
+/// `true` when `class_name`.`method_name` returns a scalar `T?` (the
+/// 4-byte `{present, value}` rides the sret convention like a struct).
+fn methodRetScalarOpt(self: *Emitter, class_name: []const u8, method_name: []const u8) error{OutOfMemory}!bool {
+    const layout = self.class_layouts.get(class_name) orelse return false;
+    const owner = layout.method_owners.get(method_name) orelse return false;
+    const cd = self.class_decls.get(owner) orelse return false;
+    for (cd.methods) |m| {
+        if (std.mem.eql(u8, self.source[m.name.start..m.name.end], method_name)) {
+            const rt = m.ret_type orelse return false;
+            return (try self.scalarOptReturnInner(rt.*)) != null;
+        }
+    }
+    return false;
 }
 
 /// Push an optional sret destination pointer (this frame's scratch
@@ -419,7 +455,7 @@ fn findInheritedField(
 /// `&c` produces the address of `c`'s slot, so reaching the heap-
 /// allocated instance needs one extra word load through that
 /// address.
-fn emitInstancePtr(self: *Emitter, recv: *const ast.Expr) !void {
+pub fn emitInstancePtr(self: *Emitter, recv: *const ast.Expr) !void {
     try self.emitExpr(recv);
     const ty = self.typeOf(recv) orelse return;
     if (ty.* == .reference) {
@@ -522,6 +558,22 @@ pub fn emitMethodDispatch(
     args: []const *const ast.Expr,
     span: ast.Span,
 ) !void {
+    // Evaluate the receiver (auto-deref if `&T`) → acu = instance pointer,
+    // then dispatch on it.
+    try emitInstancePtr(self, recv);
+    try emitMethodDispatchOnInstance(self, class_name, method_name, args, span);
+}
+
+/// Vtable dispatch on the instance pointer already in `acu` (the receiver
+/// has been evaluated). Drives the iterator protocol's hidden `__it.next()`
+/// — where the instance lives in a frame slot, not a source expression.
+pub fn emitMethodDispatchOnInstance(
+    self: *Emitter,
+    class_name: []const u8,
+    method_name: []const u8,
+    args: []const *const ast.Expr,
+    span: ast.Span,
+) !void {
     const layout = self.class_layouts.get(class_name) orelse {
         try self.diagFatal(span, "E_CODEGEN_UNKNOWN_CLASS", "codegen: method call on unknown class");
         return;
@@ -531,15 +583,15 @@ pub fn emitMethodDispatch(
         return;
     };
 
-    // 1. Evaluate receiver (auto-deref if `&T`) and spill the instance
-    //    pointer above the args — a struct arg's by-value push moves
-    //    `sp`, so the pointer can't ride a register across arg eval.
-    try emitInstancePtr(self, recv);
+    // 1. Spill the instance pointer above the args — a struct arg's
+    //    by-value push moves `sp`, so the pointer can't ride a register
+    //    across arg eval.
     try isa.pushReg(self, Reg.acu);
 
-    // 2. Push the optional sret destination + args (struct-aware).
-    const returns_struct = methodRetStruct(self, class_name, method_name) != null;
-    const arg_bytes = try pushSretAndArgs(self, args, returns_struct);
+    // 2. Push the optional sret destination + args (sret-aware).
+    const returns_sret = methodRetStruct(self, class_name, method_name) != null or
+        try methodRetScalarOpt(self, class_name, method_name);
+    const arg_bytes = try pushSretAndArgs(self, args, returns_sret);
 
     // 3. Reload the instance pointer (spilled at `sp + arg_bytes`),
     //    then resolve the method address through its vtable slot.
@@ -590,10 +642,11 @@ pub fn emitSuperMethodCall(
         return;
     };
 
-    // Push the optional sret destination + args (struct-aware), then
+    // Push the optional sret destination + args (sret-aware), then
     // reload self and push it last so it lands at fp+4.
-    const returns_struct = methodRetStruct(self, owner, method_name) != null;
-    const arg_bytes = try pushSretAndArgs(self, args, returns_struct);
+    const returns_sret = methodRetStruct(self, owner, method_name) != null or
+        try methodRetScalarOpt(self, owner, method_name);
+    const arg_bytes = try pushSretAndArgs(self, args, returns_sret);
     try isa.movRegOffsetToReg(self, Reg.fp, self_ofs, Reg.r1);
     try isa.pushReg(self, Reg.r1);
 

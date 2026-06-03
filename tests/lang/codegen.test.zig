@@ -1065,6 +1065,231 @@ test "codegen: for-range respects break" {
     , "0\n1\n2\n3\n");
 }
 
+test "codegen: for over a fixed array iterates its scalar elements" {
+    try runAndExpect(
+        \\def main()
+        \\  let arr: [i16; 3] = [11, 22, 33]
+        \\  for a in arr
+        \\    print a
+        \\  end
+        \\end
+    , "11\n22\n33\n");
+}
+
+test "codegen: for over an array literal iterates the materialized elements" {
+    try runAndExpect(
+        \\def main()
+        \\  for x in [1, 2, 3]
+        \\    print x
+        \\  end
+        \\  for y in [7; 3]
+        \\    print y
+        \\  end
+        \\end
+    , "1\n2\n3\n7\n7\n7\n");
+}
+
+test "codegen: for over an array honors continue + break" {
+    try runAndExpect(
+        \\def main()
+        \\  let arr: [i16; 5] = [1, 2, 3, 4, 5]
+        \\  for a in arr
+        \\    if a == 2
+        \\      continue
+        \\    end
+        \\    if a == 4
+        \\      break
+        \\    end
+        \\    print a
+        \\  end
+        \\end
+    , "1\n3\n");
+}
+
+test "codegen: for over a `Vec(T)` iterates its elements" {
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([7, 8, 9])
+        \\  for x in v
+        \\    print x
+        \\  end
+        \\end
+    , "7\n8\n9\n");
+}
+
+test "codegen: for over a `str` yields each char until the terminator" {
+    try runAndExpect(
+        \\def main()
+        \\  for c in "AB"
+        \\    print c
+        \\  end
+        \\end
+    , "A\nB\n");
+}
+
+test "codegen: for over an array of aggregates binds each element by value" {
+    try runAndExpect(
+        \\struct Pt
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let pts: [Pt; 2] = [Pt { x: 1, y: 2 }, Pt { x: 3, y: 4 }]
+        \\  for p in pts
+        \\    print p.x + p.y
+        \\  end
+        \\end
+    , "3\n7\n");
+}
+
+test "codegen: for over a class iterator (`next -> T?`) drains scalar values" {
+    try runAndExpect(
+        \\class Counter
+        \\  let n: i16
+        \\  def init(self)
+        \\    self.n = 0
+        \\  end
+        \\  def next(self) -> i16?
+        \\    if self.n >= 3
+        \\      return nil
+        \\    end
+        \\    let v = self.n
+        \\    self.n = self.n + 1
+        \\    return v * 10
+        \\  end
+        \\end
+        \\def main()
+        \\  let c = Counter()
+        \\  for n in c
+        \\    print n
+        \\  end
+        \\end
+    , "0\n10\n20\n");
+}
+
+test "codegen: for over a class iterator yielding class instances" {
+    try runAndExpect(
+        \\class Item
+        \\  let v: i16
+        \\  def init(self, x: i16)
+        \\    self.v = x
+        \\  end
+        \\end
+        \\class Bag
+        \\  let cur: i16
+        \\  def init(self)
+        \\    self.cur = 0
+        \\  end
+        \\  def next(self) -> Item?
+        \\    if self.cur >= 2
+        \\      return nil
+        \\    end
+        \\    self.cur = self.cur + 1
+        \\    return Item(self.cur * 100)
+        \\  end
+        \\end
+        \\def main()
+        \\  let b = Bag()
+        \\  for item in b
+        \\    print item.v
+        \\  end
+        \\end
+    , "100\n200\n");
+}
+
+test "codegen: nested for over array + Vec multiplies the passes" {
+    try runAndExpect(
+        \\def main()
+        \\  let arr: [i16; 2] = [1, 2]
+        \\  let v: Vec(i16) = Vec.from([10, 20])
+        \\  for a in arr
+        \\    for b in v
+        \\      print a + b
+        \\    end
+        \\  end
+        \\end
+    , "11\n21\n12\n22\n");
+}
+
+test "codegen: labeled break exits an outer for-over-iterable" {
+    try runAndExpect(
+        \\def main()
+        \\  let arr: [i16; 3] = [1, 2, 3]
+        \\  for a in arr :outer
+        \\    for c in "xy"
+        \\      if a == 2
+        \\        break :outer
+        \\      end
+        \\      print a
+        \\    end
+        \\  end
+        \\end
+    , "1\n1\n");
+}
+
+test "codegen: a present `let x: T? = v` unwraps through `if let`" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: i16? = 5
+        \\  if let v = a
+        \\    print v
+        \\  end
+        \\  let b: i16? = nil
+        \\  if let w = b
+        \\    print w
+        \\  else
+        \\    print 99
+        \\  end
+        \\end
+    , "5\n99\n");
+}
+
+test "codegen: a fn returning a scalar `T?` round-trips present + nil" {
+    try runAndExpect(
+        \\def find(t: i16) -> i16?
+        \\  if t == 7
+        \\    return nil
+        \\  end
+        \\  return t + 100
+        \\end
+        \\def main()
+        \\  if let r = find(3)
+        \\    print r
+        \\  end
+        \\  if let r2 = find(7)
+        \\    print r2
+        \\  else
+        \\    print 999
+        \\  end
+        \\end
+    , "103\n999\n");
+}
+
+test "codegen: a method returning a scalar `T?` unwraps through `if let`" {
+    try runAndExpect(
+        \\class Counter
+        \\  let n: i16
+        \\  def init(self)
+        \\    self.n = 0
+        \\  end
+        \\  def next(self) -> i16?
+        \\    if self.n >= 3
+        \\      return nil
+        \\    end
+        \\    let v = self.n
+        \\    self.n = self.n + 1
+        \\    return v
+        \\  end
+        \\end
+        \\def main()
+        \\  let c = Counter()
+        \\  if let n = c.next()
+        \\    print n
+        \\  end
+        \\end
+    , "0\n");
+}
+
 test "codegen: repeat-until runs body at least once then exits when cond is true" {
     try runAndExpect(
         \\def main()
