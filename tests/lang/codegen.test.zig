@@ -1620,6 +1620,34 @@ test "codegen: `s.cmp(other)` orders byte-wise" {
     , "-1\n1\n0\n");
 }
 
+test "codegen: str.format substitutes positional placeholders" {
+    try runAndExpect(
+        \\def main()
+        \\  let hp: i16 = 80
+        \\  let max: i16 = 100
+        \\  print str.format("hp={0}/{1}", hp, max)
+        \\end
+    , "hp=80/100\n");
+}
+
+test "codegen: str.format honors per-placeholder specs, reuse, and brace escapes" {
+    try runAndExpect(
+        \\def main()
+        \\  let addr: u16 = 1266
+        \\  print str.format("a={0:04X} b={0} {{x}}", addr)
+        \\end
+    , "a=04F2 b=1266 {x}\n");
+}
+
+test "codegen: str.format with a str argument derefs the pointer" {
+    try runAndExpect(
+        \\def main()
+        \\  let w: str = "world"
+        \\  print str.format("hi {0}", w)
+        \\end
+    , "hi world\n");
+}
+
 test "codegen: print of a string literal goes through sys print_str + emits `hi`" {
     try runAndExpect(
         \\def main()

@@ -1277,6 +1277,10 @@ pub const Checker = struct {
                     if (stdlib.isModule(recv_name)) {
                         return try stdlib.checkCall(self, recv_name, m.method, m.args, m.span);
                     }
+                    // `str.format(fmt, args)` — str module function.
+                    if (std.mem.eql(u8, recv_name, "str")) {
+                        return try str_builtin.checkModuleCall(self, m);
+                    }
                     // `Vec.new` / `with_capacity` / `from` — Vec constructors.
                     if (std.mem.eql(u8, recv_name, "Vec") and vec_builtin.isConstructor(self.lexeme(m.method))) {
                         return try vec_builtin.checkConstructor(self, m, hint);

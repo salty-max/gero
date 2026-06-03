@@ -217,8 +217,8 @@ pub const Sys = struct {
     /// (non-literal) format string; `r1` = dst cursor; `r2` = base of the
     /// `args` words; `r3` = count (bits 0-7) | element default type (bits
     /// 8-10, the `format_spec_to_buf` type codes) | element-signed (bit 11).
-    /// Parses `$(N)` / `$(N:spec)` positional placeholders and `$$`, and
-    /// formats `args[N]` per the spec at `[r1]`, advancing `r1`.
+    /// Parses `{N}` / `{N:spec}` positional placeholders and `{{` / `}}`,
+    /// and formats `args[N]` per the spec at `[r1]`, advancing `r1`.
     pub const format_runtime: u8 = 0x17;
 
     /// `format_spec_to_buf` `r3` flag bits + field shifts (§3.2.2). The VM

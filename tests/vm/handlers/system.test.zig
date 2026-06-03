@@ -197,31 +197,31 @@ test "format_runtime 0x17: positional placeholders + literal text" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     var out: [32]u8 = undefined;
-    const got = runFmtRuntime(&vm, &out, "$(0) and $(1)", &.{ 42, 7 }, 0, true);
+    const got = runFmtRuntime(&vm, &out, "{0} and {1}", &.{ 42, 7 }, 0, true);
     try std.testing.expectEqualStrings("42 and 7", got);
 }
 
-test "format_runtime 0x17: per-placeholder spec (`$(0:04X)`)" {
+test "format_runtime 0x17: per-placeholder spec (`{0:04X}`)" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     var out: [32]u8 = undefined;
-    const got = runFmtRuntime(&vm, &out, "$(0:04X)", &.{0x4F2}, 0, false);
+    const got = runFmtRuntime(&vm, &out, "{0:04X}", &.{0x4F2}, 0, false);
     try std.testing.expectEqualStrings("04F2", got);
 }
 
-test "format_runtime 0x17: `$$` escapes a literal dollar" {
+test "format_runtime 0x17: `{{` / `}}` escape literal braces" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     var out: [32]u8 = undefined;
-    const got = runFmtRuntime(&vm, &out, "$$ = $(0)", &.{5}, 0, true);
-    try std.testing.expectEqualStrings("$ = 5", got);
+    const got = runFmtRuntime(&vm, &out, "{{{0}}}", &.{5}, 0, true);
+    try std.testing.expectEqualStrings("{5}", got);
 }
 
 test "format_runtime 0x17: out-of-range placeholder is dropped" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     var out: [32]u8 = undefined;
-    const got = runFmtRuntime(&vm, &out, "a$(5)b", &.{1}, 0, true);
+    const got = runFmtRuntime(&vm, &out, "a{5}b", &.{1}, 0, true);
     try std.testing.expectEqualStrings("ab", got);
 }
 
@@ -233,7 +233,7 @@ test "format_runtime 0x17: str-element placeholders deref the pointer" {
     vm.mmap.writeByte(0x3200, 'h');
     vm.mmap.writeByte(0x3201, 'i');
     vm.mmap.writeByte(0x3202, 0);
-    const got = runFmtRuntime(&vm, &out, "[$(0)]", &.{0x3200}, 5, false);
+    const got = runFmtRuntime(&vm, &out, "[{0}]", &.{0x3200}, 5, false);
     try std.testing.expectEqualStrings("[hi]", got);
 }
 

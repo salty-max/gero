@@ -39,6 +39,30 @@ pub fn checkMethod(self: *Checker, m: ast.MethodCallExpr) WalkError!?*const type
     return null;
 }
 
+/// Type-check a `str` module call — `str.format(fmt, args...)` (§3.2.2):
+/// the format string is a `str`; the trailing args are the positional
+/// values (homogeneous). Returns `str`. The placeholder↔arg contract is
+/// runtime (the format string need not be a literal), so it isn't checked.
+pub fn checkModuleCall(self: *Checker, m: ast.MethodCallExpr) WalkError!?*const types.Type {
+    const method = self.lexeme(m.method);
+    if (std.mem.eql(u8, method, "format")) {
+        if (m.args.len < 1) {
+            try self.emitSpan("E_TYPE_ARG_COUNT", m.span, "`str.format` needs a format string");
+            return null;
+        }
+        _ = try self.inferExpr(m.args[0], try self.primitive(.str));
+        var pivot: ?*const types.Type = null;
+        for (m.args[1..]) |a| {
+            const at = try self.inferExpr(a, pivot);
+            if (pivot == null) pivot = at;
+        }
+        return try self.primitive(.str);
+    }
+    const msg = try std.fmt.allocPrint(self.arena, "`str` module has no function `{s}`", .{method});
+    try self.emitSpan("E_TYPE_UNDEFINED_METHOD", m.method, msg);
+    return null;
+}
+
 /// Emit `E_TYPE_ARG_COUNT` when `m` doesn't have exactly `n` args; returns
 /// `true` on mismatch (the caller bails).
 fn expectArity(self: *Checker, m: ast.MethodCallExpr, n: usize) WalkError!bool {

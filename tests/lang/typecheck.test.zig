@@ -211,6 +211,33 @@ test "typecheck: a malformed format spec is rejected" {
     , "E_TYPE_BAD_FORMAT_SPEC");
 }
 
+test "typecheck: str.format returns str" {
+    try expectClean(
+        \\def main()
+        \\  let n: i16 = 5
+        \\  let s: str = str.format("{0}", n)
+        \\  print s
+        \\end
+    );
+}
+
+test "typecheck: str.format requires a format string" {
+    try expectCode(
+        \\def main()
+        \\  let s: str = str.format()
+        \\  print s
+        \\end
+    , "E_TYPE_ARG_COUNT");
+}
+
+test "typecheck: an unknown str module function is rejected" {
+    try expectCode(
+        \\def main()
+        \\  print str.nope("x")
+        \\end
+    , "E_TYPE_UNDEFINED_METHOD");
+}
+
 test "typecheck: a valid format spec type-checks clean" {
     try expectClean(
         \\def main()

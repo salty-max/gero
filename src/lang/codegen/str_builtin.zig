@@ -15,6 +15,7 @@ const overflow = @import("overflow.zig");
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
 const Reg = opcodes.Reg;
+const Sys = opcodes.Sys;
 
 /// `true` when `e` is a `str`-typed expression (peeling a reference).
 pub fn isStr(self: *const Emitter, e: *const ast.Expr) bool {
@@ -68,6 +69,61 @@ fn emitCmp(self: *Emitter, recv: *const ast.Expr, other: *const ast.Expr) error{
     try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = rhs
     try isa.popReg(self, Reg.r1); // r1 = lhs
     try strings.emitStrCmp(self, Reg.r1, Reg.r2); // acu = ordering
+}
+
+/// Lower `str.format(fmt, args...)` (§3.2.2) — lay the `args` words out
+/// contiguously on the stack, allocate a fresh heap buffer, and run the
+/// `format_runtime` syscall to fill it from the runtime-parsed `fmt`. The
+/// allocated buffer's base is left in `acu` (a `str` result).
+pub fn emitFormat(self: *Emitter, fmt: *const ast.Expr, args: []const *ast.Expr) error{OutOfMemory}!void {
+    // @as: arg count fits a u16; the i8 stack offsets below bound it well
+    // under 62 args (2 + N*2 ≤ 127).
+    const n: u16 = @intCast(args.len);
+    const desc = elemDescriptor(self, if (args.len > 0) args[0] else null);
+
+    // fmt pointer parked just above the args region.
+    try self.emitExpr(fmt); // acu = fmt pointer
+    try isa.pushReg(self, Reg.acu); // [sp] = fmt
+
+    // Reserve the args region (N words) and fill it left-to-right.
+    if (n > 0) try isa.subImmFromReg(self, n * 2, Reg.sp);
+    for (args, 0..) |arg, k| {
+        try self.emitExpr(arg); // acu = arg value (sp-neutral)
+        // @as: k*2 within the reserved args region fits i8.
+        try isa.movRegToRegOffset(self, Reg.acu, Reg.sp, @intCast(k * 2));
+    }
+
+    // Allocate the output buffer; park its base (the result) above all else.
+    try isa.movImmToReg(self, strings.interp_buffer_size, Reg.acu);
+    try isa.sys(self, Sys.alloc); // acu = buffer base
+    try isa.pushReg(self, Reg.acu); // [sp] = buffer base
+
+    // Stack now: [sp+0] buffer base | [sp+2 .. sp+2+N*2) args | [sp+2+N*2] fmt.
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // r1 = cursor = buffer base
+    // @as: fmt offset = 2 (buffer) + N*2 (args), bounded under 127.
+    try isa.movRegOffsetToReg(self, Reg.sp, @intCast(2 + n * 2), Reg.acu); // acu = fmt ptr
+    try isa.movRegToReg(self, Reg.sp, Reg.r2);
+    try isa.addImmToReg(self, 2, Reg.r2); // r2 = args base = sp + 2
+    try isa.movImmToReg(self, n | desc, Reg.r3); // count | element descriptor
+    try isa.sys(self, Sys.format_runtime);
+    try isa.sys(self, Sys.format_terminate_buf);
+
+    // Result = the buffer base; drop buffer base + args + fmt.
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.acu);
+    // @as: 2 (buffer) + N*2 (args) + 2 (fmt), bounded under 127.
+    try isa.addImmToReg(self, @intCast(2 + n * 2 + 2), Reg.sp);
+}
+
+/// The `format_runtime` `r3` element descriptor (default type + signed bit)
+/// for a homogeneous `args` element of `arg`'s type — used to render a
+/// bare `$(N)` placeholder.
+fn elemDescriptor(self: *Emitter, arg: ?*const ast.Expr) u16 {
+    const a = arg orelse return 0; // no args — irrelevant, default decimal
+    if (self.isPrimitiveType(a, .str)) return 5 << 8; // str
+    if (self.isPrimitiveType(a, .fixed)) return 7 << 8; // fixed
+    if (self.isPrimitiveType(a, .char)) return 6 << 8; // char
+    if (!self.isUnsignedInt(a)) return (1 << 11); // signed decimal
+    return 0; // unsigned decimal
 }
 
 /// `count_reg = strlen(ptr_reg)` — walk a copy of `ptr_reg` to the null
