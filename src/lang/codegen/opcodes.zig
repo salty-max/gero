@@ -213,6 +213,24 @@ pub const Sys = struct {
     /// layout is the contract in `docs/isa.md`.
     pub const format_spec_to_buf: u8 = 0x16;
 
+    /// `format_spec_to_buf` `r3` flag bits + field shifts (§3.2.2). The VM
+    /// unpacker mirrors these; the type field (bits 0-2) uses the numeric
+    /// codes documented in `docs/isa.md`.
+    pub const FmtSpec = struct {
+        /// `r3` bit position of the alignment field (bits 3-4).
+        pub const align_shift: u4 = 3;
+        /// `r3` flag — signed value (decimal sign handling).
+        pub const flag_signed: u16 = 1 << 5;
+        /// `r3` flag — zero-pad numeric output to the width.
+        pub const flag_zero_pad: u16 = 1 << 6;
+        /// `r3` flag — a precision is present (bits 8-15).
+        pub const flag_has_precision: u16 = 1 << 7;
+        /// `r3` bit position of the precision field (bits 8-15).
+        pub const precision_shift: u4 = 8;
+        /// `r2` bit position of the fill char (width is bits 0-7).
+        pub const fill_shift: u4 = 8;
+    };
+
     /// `alloc` — bump-allocate `acu` bytes on the heap. Returns
     /// the freshly-allocated address in `acu`; faults
     /// `heap_exhausted` (vector `0x04`) on out-of-heap.

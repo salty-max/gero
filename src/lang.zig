@@ -14,6 +14,7 @@ const include_mod = @import("lang/include.zig");
 const tc_mem_builtin = @import("lang/typecheck/mem_builtin.zig");
 const tc_vec_builtin = @import("lang/typecheck/vec_builtin.zig");
 const tc_str_builtin = @import("lang/typecheck/str_builtin.zig");
+const fmtspec_mod = @import("lang/fmtspec.zig");
 const tc_stdlib = @import("lang/typecheck/stdlib.zig");
 const tc_match = @import("lang/typecheck/match.zig");
 const tc_predicates = @import("lang/typecheck/predicates.zig");
@@ -152,6 +153,8 @@ pub const codegen = struct {
 /// Submodule seams for mirror-layout test reachability.
 /// Not stable consumer API — members may change in any minor bump.
 pub const internal = struct {
+    /// Compile-time `$(expr:fmt)` format-spec parser (§3.2.2).
+    pub const fmtspec = fmtspec_mod;
     /// Typecheck submodule seams.
     pub const typechecker = struct {
         /// Stateful resolution + inference walker.

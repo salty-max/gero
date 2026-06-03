@@ -192,6 +192,35 @@ test "typecheck: `s.len` (u16) assigned where str is expected is a mismatch" {
     , "E_TYPE_MISMATCH");
 }
 
+test "typecheck: a format type incompatible with the value is rejected" {
+    // `s` (string) format type on an integer value.
+    try expectCode(
+        \\def main()
+        \\  let n: i16 = 5
+        \\  print "$(n:s)"
+        \\end
+    , "E_TYPE_BAD_FORMAT_SPEC");
+}
+
+test "typecheck: a malformed format spec is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let n: i16 = 5
+        \\  print "$(n:zzz)"
+        \\end
+    , "E_TYPE_BAD_FORMAT_SPEC");
+}
+
+test "typecheck: a valid format spec type-checks clean" {
+    try expectClean(
+        \\def main()
+        \\  let addr: u16 = 255
+        \\  let n: i16 = 0 - 7
+        \\  print "$(addr:04X) $(n:>4d)"
+        \\end
+    );
+}
+
 test "typecheck: an unknown str member is rejected" {
     try expectCode(
         \\def main()
