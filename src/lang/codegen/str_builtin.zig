@@ -5,11 +5,13 @@
 
 const std = @import("std");
 const ast = @import("../ast.zig");
+const types = @import("../types.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const class = @import("class.zig");
 const strings = @import("strings.zig");
+const variadic = @import("variadic.zig");
 const overflow = @import("overflow.zig");
 
 const Emitter = codegen.Emitter;
@@ -76,6 +78,13 @@ fn emitCmp(self: *Emitter, recv: *const ast.Expr, other: *const ast.Expr) error{
 /// `format_runtime` syscall to fill it from the runtime-parsed `fmt`. The
 /// allocated buffer's base is left in `acu` (a `str` result).
 pub fn emitFormat(self: *Emitter, fmt: *const ast.Expr, args: []const *ast.Expr) error{OutOfMemory}!void {
+    // `format(fmt, args)` with a single tuple argument forwards that
+    // tuple's elements positionally (§3.2.2) — the variadic `args` slot
+    // is the spelled case. Re-lay its elements as words and format those.
+    if (args.len == 1) if (self.tupleElemsOf(args[0])) |elems| {
+        try emitFormatForward(self, fmt, args[0], elems);
+        return;
+    };
     // @as: arg count fits a u16; the i8 stack offsets below bound it well
     // under 62 args (2 + N*2 ≤ 127).
     const n: u16 = @intCast(args.len);
@@ -114,9 +123,77 @@ pub fn emitFormat(self: *Emitter, fmt: *const ast.Expr, args: []const *ast.Expr)
     try isa.addImmToReg(self, @intCast(2 + n * 2 + 2), Reg.sp);
 }
 
+/// Forward a single tuple argument to `format` (§3.2.2) — re-lay its `N`
+/// elements as `N` contiguous words, then run `format_runtime` over them.
+/// The variadic `args` slot is word-strided (each vararg pushed whole),
+/// so its elements read at `k * 2`; a plain tuple value is byte-packed,
+/// so each element reads at its inline offset.
+fn emitFormatForward(self: *Emitter, fmt: *const ast.Expr, tuple: *const ast.Expr, elems: []const *const types.Type) error{OutOfMemory}!void {
+    const word_strided = variadic.isArgsForward(self, tuple);
+    // The forwarded count is this specialization's arity (§4.6.2), not
+    // the body's `args` type — that type is the whole-program *minimum*
+    // arity, pinned for sound `args.N` indexing, which may be smaller.
+    // A plain tuple value uses its own element count.
+    // @as: count is frame-bounded — the i8 offsets below cap it under 62
+    // (4 + N*2 ≤ 127).
+    const n: u16 = if (word_strided) self.current_variadic.?.arity else @intCast(elems.len);
+    const elem_ty: ?*const types.Type = if (word_strided)
+        self.current_variadic.?.elem
+    else if (elems.len > 0) elems[0] else null;
+    const desc = if (elem_ty) |t| elemDescriptorForType(t) else 0;
+
+    // Park fmt, then the tuple base, above the args region.
+    try self.emitExpr(fmt); // acu = fmt pointer
+    try isa.pushReg(self, Reg.acu); // [sp] = fmt
+    try self.emitAddrOf(tuple); // acu = tuple base address
+    try isa.pushReg(self, Reg.acu); // [sp] = tuple base, [sp+2] = fmt
+
+    // Reserve the args region (N words) and fill it from the tuple.
+    if (n > 0) try isa.subImmFromReg(self, n * 2, Reg.sp);
+    var k: u16 = 0;
+    while (k < n) : (k += 1) {
+        // @as: tuple base sits just above the N-word region; the reload
+        // offset N*2 stays within the i8 stack window.
+        try isa.movRegOffsetToReg(self, Reg.sp, @intCast(n * 2), Reg.r1); // r1 = tuple base
+        if (word_strided) {
+            try class.emitWordLoadAtOffset(self, Reg.r1, k * 2, Reg.acu);
+        } else {
+            const info = self.tupleElemInfo(elems, @intCast(k));
+            if (info.width == 1) {
+                try class.emitByteLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+                if (info.signed_byte) try isa.signExtendByte(self, Reg.acu);
+            } else {
+                try class.emitWordLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
+            }
+        }
+        // @as: k*2 within the reserved args region fits i8.
+        try isa.movRegToRegOffset(self, Reg.acu, Reg.sp, @intCast(k * 2));
+    }
+
+    // Allocate the output buffer; park its base (the result) on top.
+    try isa.movImmToReg(self, strings.interp_buffer_size, Reg.acu);
+    try isa.sys(self, Sys.alloc); // acu = buffer base
+    try isa.pushReg(self, Reg.acu); // [sp] = buffer base
+
+    // Stack: [sp] buf | [sp+2 .. +2+N*2) args | [sp+2+N*2] base | [sp+4+N*2] fmt.
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // r1 = cursor = buffer base
+    // @as: fmt offset = 4 (buffer + base) + N*2, bounded under 127.
+    try isa.movRegOffsetToReg(self, Reg.sp, @intCast(4 + n * 2), Reg.acu); // acu = fmt ptr
+    try isa.movRegToReg(self, Reg.sp, Reg.r2);
+    try isa.addImmToReg(self, 2, Reg.r2); // r2 = args base = sp + 2
+    try isa.movImmToReg(self, n | desc, Reg.r3); // count | element descriptor
+    try isa.sys(self, Sys.format_runtime);
+    try isa.sys(self, Sys.format_terminate_buf);
+
+    // Result = the buffer base; drop buffer + args + base + fmt.
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.acu);
+    // @as: 2 (buffer) + N*2 (args) + 2 (base) + 2 (fmt), bounded under 127.
+    try isa.addImmToReg(self, @intCast(6 + n * 2), Reg.sp);
+}
+
 /// The `format_runtime` `r3` element descriptor (default type + signed bit)
 /// for a homogeneous `args` element of `arg`'s type — used to render a
-/// bare `$(N)` placeholder.
+/// bare `{N}` placeholder.
 fn elemDescriptor(self: *Emitter, arg: ?*const ast.Expr) u16 {
     const a = arg orelse return 0; // no args — irrelevant, default decimal
     if (self.isPrimitiveType(a, .str)) return 5 << 8; // str
@@ -124,6 +201,20 @@ fn elemDescriptor(self: *Emitter, arg: ?*const ast.Expr) u16 {
     if (self.isPrimitiveType(a, .char)) return 6 << 8; // char
     if (!self.isUnsignedInt(a)) return (1 << 11); // signed decimal
     return 0; // unsigned decimal
+}
+
+/// Element descriptor from a type (forwarded-tuple element) — mirrors
+/// `elemDescriptor` but resolves a `*Type` rather than an expression.
+fn elemDescriptorForType(t: *const types.Type) u16 {
+    const inner = if (t.* == .reference) t.reference else t;
+    if (inner.* != .primitive) return 0; // aggregate element — decimal
+    return switch (inner.primitive) {
+        .str => 5 << 8,
+        .fixed => 7 << 8,
+        .char => 6 << 8,
+        .i8, .i16 => 1 << 11, // signed decimal
+        else => 0, // u8 / u16 / bool / nil — unsigned decimal
+    };
 }
 
 /// `count_reg = strlen(ptr_reg)` — walk a copy of `ptr_reg` to the null

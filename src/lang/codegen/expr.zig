@@ -11,6 +11,7 @@ const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
 const vec_builtin = @import("vec_builtin.zig");
 const str_builtin = @import("str_builtin.zig");
+const variadic = @import("variadic.zig");
 const strings = @import("strings.zig");
 const lambda = @import("lambda.zig");
 const overflow = @import("overflow.zig");
@@ -264,6 +265,13 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
 /// address, then load element `N` (an aggregate element leaves its
 /// inline address in `acu`, a scalar its value).
 fn emitTupleIndexExpr(self: *Emitter, ti: ast.TupleIndexExpr) !void {
+    // `args.N` inside a variadic body reads a word-strided block (each
+    // vararg was pushed as a full word), not the byte-packed tuple
+    // layout — intercept before the generic path (§4.6.2).
+    if (variadic.isArgsForward(self, ti.receiver)) {
+        try variadic.emitArgsIndex(self, ti.receiver, ti.index);
+        return;
+    }
     const elems = self.tupleElemsOf(ti.receiver) orelse {
         try self.unsupported(ti.span, "tuple element access on a non-tuple value");
         return;
@@ -999,7 +1007,15 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         return;
     }
     const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
-    const dup = try self.arena.dupe(u8, callee_name);
+    // A variadic call targets the `name$N` specialization for this
+    // site's arity; metadata (bank, return shape) stays keyed by the
+    // bare name, shared across specializations (§4.6.2).
+    const dup = if (self.variadic_decls.get(callee_name)) |decl| blk: {
+        // @as: arity = total args − fixed params; non-negative (the
+        // typechecker enforces the fixed-arg minimum) and frame-bounded.
+        const arity: u16 = @intCast(c.args.len - (decl.params.len - 1));
+        break :blk try variadic.label(self, callee_name, arity);
+    } else try self.arena.dupe(u8, callee_name);
 
     // Decide direct call vs trampoline by comparing the
     // caller's bank with the target's. The pre-pass populated

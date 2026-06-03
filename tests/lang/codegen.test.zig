@@ -1648,6 +1648,90 @@ test "codegen: str.format with a str argument derefs the pointer" {
     , "hi world\n");
 }
 
+test "codegen: variadic `args.N` reads the N-th vararg word" {
+    try runAndExpect(
+        \\def at(args: ...) -> i16
+        \\  return args.0 + args.1 + args.2
+        \\end
+        \\def main()
+        \\  print at(10, 20, 30)
+        \\end
+    , "60\n");
+}
+
+test "codegen: variadic `args.N` is word-strided, not byte-packed, for sub-word T" {
+    // Each vararg is pushed as a full word; a `u8` element rides the
+    // low half, so `args.2` must stride by a word — byte-packing it
+    // would read the high half of an earlier slot.
+    try runAndExpect(
+        \\def pick(args: ...) -> u8
+        \\  return args.2
+        \\end
+        \\def main()
+        \\  let a: u8 = 11
+        \\  let b: u8 = 22
+        \\  let c: u8 = 33
+        \\  print pick(a, b, c)
+        \\end
+    , "33\n");
+}
+
+test "codegen: each call-site arity emits its own specialization" {
+    try runAndExpect(
+        \\def first(args: ...) -> i16
+        \\  return args.0
+        \\end
+        \\def main()
+        \\  print first(7, 8, 9)
+        \\  print first(100, 200)
+        \\  print first(42)
+        \\end
+    , "7\n100\n42\n");
+}
+
+test "codegen: `format(fmt, args)` forwards the variadic tuple positionally" {
+    try runAndExpect(
+        \\def line(fmt: str, args: ...) -> str
+        \\  return str.format(fmt, args)
+        \\end
+        \\def main()
+        \\  print line("hp={0}/{1}", 30, 100)
+        \\end
+    , "hp=30/100\n");
+}
+
+test "codegen: forwarded varargs keep their specs across arities" {
+    try runAndExpect(
+        \\def log(level: u8, fmt: str, args: ...) -> str
+        \\  return str.format(fmt, args)
+        \\end
+        \\def main()
+        \\  print log(1, "x={0} y={1:04X}", 3, 255)
+        \\  print log(2, "single {0}", 42)
+        \\end
+    , "x=3 y=00FF\nsingle 42\n");
+}
+
+test "codegen: forwarding zero varargs emits the format string verbatim" {
+    try runAndExpect(
+        \\def line(fmt: str, args: ...) -> str
+        \\  return str.format(fmt, args)
+        \\end
+        \\def main()
+        \\  print line("no placeholders")
+        \\end
+    , "no placeholders\n");
+}
+
+test "codegen: a plain tuple value forwards to `str.format` positionally" {
+    try runAndExpect(
+        \\def main()
+        \\  let t = (7, 8)
+        \\  print str.format("{0}/{1}", t)
+        \\end
+    , "7/8\n");
+}
+
 test "codegen: print of a string literal goes through sys print_str + emits `hi`" {
     try runAndExpect(
         \\def main()

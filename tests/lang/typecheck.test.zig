@@ -2229,6 +2229,66 @@ test "typecheck: variadic call with leading fixed param + homogeneous variadic a
     );
 }
 
+test "typecheck: variadic body binds `args.N` to the pinned element type" {
+    try expectClean(
+        \\def sum(args: ...) -> i16
+        \\  return args.0 + args.1
+        \\end
+        \\def main()
+        \\  print sum(3, 4)
+        \\end
+    );
+}
+
+test "typecheck: `args.N` past the smallest call's arity errors" {
+    // The body binds `args` to the *minimum* call-site arity, so an
+    // index only some calls supply is rejected (the arity-1 call here).
+    try expectCode(
+        \\def two(args: ...) -> i16
+        \\  return args.0 + args.1
+        \\end
+        \\def main()
+        \\  print two(10, 20)
+        \\  print two(99)
+        \\end
+    , "E_TYPE_TUPLE_INDEX_OOR");
+}
+
+test "typecheck: a variadic called with two element types errors" {
+    try expectCode(
+        \\def sink(args: ...) -> i16
+        \\  return args.0
+        \\end
+        \\def main()
+        \\  sink(1, 2)
+        \\  sink("a", "b")
+        \\end
+    , "E_VAR_INCONSISTENT_TYPE");
+}
+
+test "typecheck: `format(fmt, args)` forwards the variadic tuple" {
+    try expectClean(
+        \\def line(fmt: str, args: ...) -> str
+        \\  return str.format(fmt, args)
+        \\end
+        \\def main()
+        \\  print line("{0}/{1}", 30, 100)
+        \\end
+    );
+}
+
+test "typecheck: a variadic `def` cannot be `@inline`" {
+    try expectCode(
+        \\@inline
+        \\def first(args: ...) -> i16
+        \\  return args.0
+        \\end
+        \\def main()
+        \\  print first(5, 6)
+        \\end
+    , "E_VAR_INLINE");
+}
+
 // ---------- CheckedProgram surface ----------
 
 test "typecheck: CheckedProgram retains program pointer" {

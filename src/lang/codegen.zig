@@ -22,6 +22,7 @@ const def_emit = @import("codegen/def.zig");
 const statements = @import("codegen/statements.zig");
 const isa = @import("codegen/isa.zig");
 const vec_builtin = @import("codegen/vec_builtin.zig");
+const variadic = @import("codegen/variadic.zig");
 const bake_mod = @import("bake.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
@@ -203,6 +204,7 @@ pub fn compile(
         .fn_ret_scalar_opt = .{},
         .global_sret_scratch = 0,
         .inline_defs = .{},
+        .variadic_decls = .{},
         .interrupt_defs = .empty,
         .inline_returns = null,
         .inline_depth = 0,
@@ -221,6 +223,7 @@ pub fn compile(
         .class_decls = .{},
         .class_layouts = .{},
         .current_class_name = null,
+        .current_variadic = null,
         .fn_closure_info = .{
             .promoted = .{},
             .lambdas = .empty,
@@ -607,6 +610,10 @@ pub const Emitter = struct {
     /// `def` names carrying `@inline`. `emitCall` inlines the
     /// body rather than emitting `call addr`.
     inline_defs: std.StringHashMapUnmanaged(*const ast.DefDecl),
+    /// Variadic `def` names → their decl. `emitCall` reads the fixed-
+    /// param count to route each call to the matching `name$N`
+    /// specialization (§4.6.2); emission walks the decls directly.
+    variadic_decls: std.StringHashMapUnmanaged(*const ast.DefDecl),
     /// `@interrupt N` defs — vector index → def. Drives IVT-init
     /// emission before `main`.
     interrupt_defs: std.ArrayList(InterruptHandler),
@@ -660,6 +667,12 @@ pub const Emitter = struct {
     /// Class whose method body is currently emitting. Drives
     /// `super` resolution.
     current_class_name: ?[]const u8,
+    /// The variadic specialization currently emitting, or `null`.
+    /// Carries the trailing `args` slot's name, element type `T`,
+    /// this specialization's vararg count, and the fp-offset of the
+    /// first vararg word — drives `args.N` word-strided loads and
+    /// `format(fmt, args)` forwarding inside the body (§4.6.2).
+    current_variadic: ?variadic.Active,
     /// Per-fn closure analysis. Populated by `lambda.analyzeFn`
     /// before each body emits. Reset between defs.
     fn_closure_info: lambda.FnClosureInfo,
@@ -1323,16 +1336,20 @@ pub const Emitter = struct {
         // group) — deterministic layout across compiler versions.
         // `@inline` defs never emit standalone — every call site
         // splices the body in place.
+        // A variadic def never emits standalone — it has no single
+        // arity. `emitSpecializations` emits one `name$N` per call-site
+        // arity below, sharing the body (§4.6.2).
         for (program.statements) |*stmt| switch (stmt.*) {
-            .def_decl => |*dd| if (dd != entry and !defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline"))
+            .def_decl => |*dd| if (dd != entry and !defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline") and !variadic.isVariadicDef(dd.*))
                 try self.emitDef(dd, .regular),
             else => {},
         };
         for (program.statements) |*stmt| switch (stmt.*) {
-            .def_decl => |*dd| if (dd != entry and defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline"))
+            .def_decl => |*dd| if (dd != entry and defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline") and !variadic.isVariadicDef(dd.*))
                 try self.emitDef(dd, .regular),
             else => {},
         };
+        try variadic.emitSpecializations(self, program);
         // Emit class methods as plain defs with mangled labels.
         try class.emitClassMethods(self, program);
 
@@ -1575,6 +1592,7 @@ pub const Emitter = struct {
                 };
                 if (noreturn_marked) try self.noreturn_defs.put(self.arena, dup, {});
                 if (inline_marked) try self.inline_defs.put(self.arena, dup, dd);
+                if (variadic.isVariadicDef(dd.*)) try self.variadic_decls.put(self.arena, dup, dd);
                 if (interrupt_vec) |vec| {
                     try self.interrupt_defs.append(self.allocator, .{
                         .vector = vec,
