@@ -2023,7 +2023,11 @@ pub const Emitter = struct {
         if (self.structNameOfTypeAnn(t.*)) |sname| {
             return self.structSlotWidth(sname);
         }
-        if (t.* == .tuple) return alignUpU16(self.widthOfTypeAnn(t.*), 2);
+        // A struct / tuple / fixed-array / `Vec` param is passed by value —
+        // its full (2-aligned) width (a `Vec` moves its 6-byte header,
+        // §3.4.3). A `&T` reference is `.reference`, not the aggregate, so it
+        // stays a 2-byte pointer.
+        if (t.* == .tuple or t.* == .array or t.* == .vec) return alignUpU16(self.widthOfTypeAnn(t.*), 2);
         return 2;
     }
 
@@ -2047,6 +2051,13 @@ pub const Emitter = struct {
     /// size for inline-value frame, param, and arg layout.
     pub fn tupleSlotWidth(self: *const Emitter, elems: []const *const Type) u16 {
         return alignUpU16(self.tupleWidth(elems), 2);
+    }
+
+    /// 2-aligned stack footprint of a `[T; N]` value — `N` element widths
+    /// byte-packed, rounded up so word access stays aligned.
+    pub fn arraySlotWidth(self: *const Emitter, elem: *const Type, count: u32) u16 {
+        // @as: total array width ≤ the i8 frame cap.
+        return alignUpU16(@intCast(@as(u32, self.widthOfType(elem)) * count), 2);
     }
 
     /// Layout of one tuple element: byte offset (sum of prior element

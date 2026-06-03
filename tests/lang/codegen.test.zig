@@ -1371,6 +1371,60 @@ test "codegen: for over a `&[T; N]` iterates the referenced array" {
     , "4\n5\n6\n");
 }
 
+test "codegen: a `[T; N]` param is passed by value — callee mutation stays local" {
+    try runAndExpect(
+        \\def clobber(a: [i16; 3]) -> i16
+        \\  a[0] = 999
+        \\  return a[0]
+        \\end
+        \\def main()
+        \\  let arr: [i16; 3] = [4, 5, 6]
+        \\  print clobber(arr)
+        \\  print arr[0]
+        \\end
+    , "999\n4\n");
+}
+
+test "codegen: a `[T; N]` param reads its copied elements among scalar args" {
+    try runAndExpect(
+        \\def pick(n: i16, a: [i16; 3], m: i16) -> i16
+        \\  return n + a[1] + m
+        \\end
+        \\def main()
+        \\  let arr: [i16; 3] = [4, 5, 6]
+        \\  print pick(10, arr, 20)
+        \\end
+    , "35\n");
+}
+
+test "codegen: a `Vec(T)` param is passed by value (the moved header)" {
+    try runAndExpect(
+        \\def total(v: Vec(i16)) -> i16
+        \\  return v.at(0) + v.at(1)
+        \\end
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([6, 7])
+        \\  print total(v)
+        \\end
+    , "13\n");
+}
+
+test "codegen: a `Vec(T)` argument reaches a method by value" {
+    try runAndExpect(
+        \\class Adder
+        \\  def init(self) end
+        \\  def sum(self, v: Vec(i16)) -> i16
+        \\    return v.at(0) + v.at(1) + v.at(2)
+        \\  end
+        \\end
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([10, 20, 30])
+        \\  let a = Adder()
+        \\  print a.sum(v)
+        \\end
+    , "60\n");
+}
+
 test "codegen: a zero-length array binding is a no-op (empty for-loop body)" {
     try runAndExpect(
         \\def main()

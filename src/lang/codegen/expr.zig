@@ -1021,6 +1021,14 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
                 try value_struct.pushTupleArg(self, arg, elems);
                 continue;
             }
+            if (self.arrayInfoOf(arg)) |info| {
+                try value_struct.pushArrayArg(self, arg, info.elem, info.count);
+                continue;
+            }
+            if (vec_builtin.elemOf(self, arg) != null) {
+                try vec_builtin.pushVecArg(self, arg);
+                continue;
+            }
         }
         try emitExpr(self, arg);
         try isa.pushReg(self, Reg.acu);

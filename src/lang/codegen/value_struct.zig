@@ -130,6 +130,13 @@ pub fn pushTupleArg(self: *Emitter, arg: *const ast.Expr, elems: []const *const 
     try emitTupleIntoDest(self, arg, elems, .{ .sp = 0 });
 }
 
+/// Pass a fixed-array argument by value (§3.4): reserve its (2-aligned)
+/// width on the stack and materialize a copy there.
+pub fn pushArrayArg(self: *Emitter, arg: *const ast.Expr, elem: *const types.Type, count: u32) error{OutOfMemory}!void {
+    try isa.subImmFromReg(self, self.arraySlotWidth(elem, count), Reg.sp);
+    try emitArrayIntoDest(self, arg, elem, count, .{ .sp = 0 });
+}
+
 /// Materialize a returned tuple into the caller's sret buffer.
 pub fn emitTupleIntoSret(self: *Emitter, src: *const ast.Expr, elems: []const *const types.Type, ptr_ofs: i16) error{OutOfMemory}!void {
     try emitTupleIntoDest(self, src, elems, .{ .indirect = .{ .ptr_ofs = ptr_ofs, .delta = 0 } });
