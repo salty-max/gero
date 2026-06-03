@@ -282,6 +282,73 @@ test "typecheck: while let binds the pattern in the loop body" {
     );
 }
 
+test "typecheck: for binds the loop variable to the array's element type" {
+    // `x` is typed `i16` (the element type), so assigning it where `str`
+    // is expected is a mismatch — the binder isn't left untyped.
+    try expectCode(
+        \\def main()
+        \\  let arr: [i16; 2] = [1, 2]
+        \\  for x in arr
+        \\    let s: str = x
+        \\  end
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: for over a `str` binds the loop variable as `char`" {
+    try expectCode(
+        \\def main()
+        \\  for c in "hi"
+        \\    let s: str = c
+        \\  end
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: a range loop variable is typed from its bound" {
+    try expectClean(
+        \\def takes(n: i16) -> i16
+        \\  return n
+        \\end
+        \\def main()
+        \\  for i in 0..3
+        \\    print takes(i)
+        \\  end
+        \\end
+    );
+}
+
+test "typecheck: an iterator loop variable carries the `next` element type" {
+    try expectClean(
+        \\class Item
+        \\  let v: i16
+        \\  def init(self)
+        \\    self.v = 0
+        \\  end
+        \\  def next(self) -> Item?
+        \\    return nil
+        \\  end
+        \\end
+        \\def main()
+        \\  let it = Item()
+        \\  for x in it
+        \\    print x.v
+        \\  end
+        \\end
+    );
+}
+
+test "typecheck: for over a non-iterable value is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let n: i16 = 5
+        \\  for x in n
+        \\    print x
+        \\  end
+        \\end
+    , "E_TYPE_NOT_ITERABLE");
+}
+
 test "typecheck: match payload binder carries the variant's field type" {
     // `n` binds the `i16` payload, so returning it where `str` is
     // expected is a mismatch (the binder isn't left untyped).

@@ -188,6 +188,7 @@ pub fn compile(
         .is_isr = false,
         .current_ret_struct = null,
         .current_ret_is_tuple = false,
+        .current_ret_scalar_opt = null,
         .sret_param_ofs = 0,
         .sret_scratch_ofs = null,
         .inline_ret_struct = null,
@@ -199,6 +200,7 @@ pub fn compile(
         .noreturn_defs = .{},
         .fn_ret_struct = .{},
         .fn_ret_tuple = .{},
+        .fn_ret_scalar_opt = .{},
         .global_sret_scratch = 0,
         .inline_defs = .{},
         .interrupt_defs = .empty,
@@ -546,10 +548,16 @@ pub const Emitter = struct {
     /// `current_ret_struct`; the element layout comes from the return
     /// expression's inferred type).
     current_ret_is_tuple: bool,
+    /// Element type of a scalar `T?` return for the def currently being
+    /// emitted, or `null`. A scalar optional is a 4-byte `{present, value}`
+    /// that rides the sret convention like a struct; `return` materializes
+    /// it into the caller's sret buffer. A pointer-like `T?` returns its
+    /// nullable word in `acu`, so it stays `null` here.
+    current_ret_scalar_opt: ?*const Type,
     /// fp-offset of the hidden sret destination pointer in the current
     /// frame (`4 + Σ user-param widths` — it sits just above the last
-    /// user param). Valid while `current_ret_struct` is set or
-    /// `current_ret_is_tuple` is true.
+    /// user param). Valid while `current_ret_struct` is set,
+    /// `current_ret_is_tuple` is true, or `current_ret_scalar_opt` is set.
     sret_param_ofs: i16,
     /// fp-offset of this frame's sret scratch buffer (a returned
     /// struct's holding space), or `null` when the program returns no
@@ -587,10 +595,14 @@ pub const Emitter = struct {
     /// convention as `fn_ret_struct` (a set: the element layout is read
     /// from the call/return expression's inferred type).
     fn_ret_tuple: std.StringHashMapUnmanaged(void),
-    /// Largest (2-aligned) struct return width across the program — the
+    /// `def` names that return a scalar `T?` by value — the 4-byte
+    /// `{present, value}` rides the same sret convention as a struct
+    /// (a set: the element type is read from the call/return expression).
+    fn_ret_scalar_opt: std.StringHashMapUnmanaged(void),
+    /// Largest (2-aligned) aggregate return width across the program — the
     /// size of the per-frame sret scratch buffer that holds a returned
-    /// struct until its consumer copies it out. 0 when no def returns a
-    /// struct.
+    /// struct / tuple / scalar-optional until its consumer copies it out.
+    /// 0 when no def returns by sret.
     global_sret_scratch: u16,
     /// `def` names carrying `@inline`. `emitCall` inlines the
     /// body rather than emitting `call addr`.
@@ -849,6 +861,16 @@ pub const Emitter = struct {
         return if (isScalarOptional(inner.optional)) inner.optional else null;
     }
 
+    /// Element type of a scalar `T?` return annotation (`-> T?` with a
+    /// scalar `T`), or `null` for any other return shape. A scalar optional
+    /// rides the sret convention; a pointer-like `T?` returns its nullable
+    /// word in `acu`, so it stays `null` here.
+    pub fn scalarOptReturnInner(self: *const Emitter, rt: ast.TypeAnn) error{OutOfMemory}!?*const Type {
+        if (rt != .nullable) return null;
+        const inner = (try self.typeAnnToType(rt.nullable.inner.*)) orelse return null;
+        return if (isScalarOptional(inner)) inner else null;
+    }
+
     /// Resolve a surface `TypeAnn` to an arena `types.Type` so the
     /// destructuring matcher can thread one type representation (struct
     /// field / enum payload types come from AST `TypeAnn`s, tuple slots
@@ -954,9 +976,7 @@ pub const Emitter = struct {
                 n += self.countFrameBytesDepth(ws.body, depth);
                 break :blk n;
             },
-            // Range-based `for` reserves 1 hidden slot for the `end`
-            // bound (the iteration variable uses its own slot).
-            .for_stmt => |fs| 2 + 2 + self.countFrameBytesDepth(fs.body, depth),
+            .for_stmt => |fs| self.forFrameBytes(fs) + self.countFrameBytesDepth(fs.body, depth),
             .repeat_stmt => |rs| self.countFrameBytesDepth(rs.body, depth),
             .match_stmt => |ms| blk: {
                 // The scrutinee is materialized into a slot once (full width
@@ -979,6 +999,47 @@ pub const Emitter = struct {
         // ...plus the inline frames in the statement's own expressions
         // (sub-bodies are covered by the recursion above).
         return own + self.stmtInlineFrameBytes(stmt, depth);
+    }
+
+    /// Frame bytes a `for x in iter` loop reserves for its hidden slots +
+    /// loop variable, by iterable kind — mirrors the codegen dispatch in
+    /// `control_flow.emitForStmt`. The body's own locals are counted by the
+    /// caller's recursion. An over-estimate is harmless (a larger reserve);
+    /// an under-estimate corrupts the frame, so this must be an upper bound.
+    fn forFrameBytes(self: *const Emitter, fs: ast.ForStmt) usize {
+        // Range: iteration variable + a hidden `end` bound.
+        if (fs.iter.* == .range) return 2 + 2;
+        const it_ty = self.typeOf(fs.iter) orelse return 2 + 2;
+        return switch (it_ty.*) {
+            // base + count + index hidden slots, plus the loop variable.
+            // An array-literal iterable also materializes into a temp slot.
+            .array => |a| blk: {
+                var n: usize = 6 + self.loopVarBytes(a.elem);
+                if (fs.iter.* == .list_lit or fs.iter.* == .list_repeat) {
+                    // @as: array byte width is bounded by the i8 frame cap.
+                    const w: u16 = @intCast(@as(usize, self.widthOfType(a.elem)) * a.len);
+                    n += alignUpU16(w, 2);
+                }
+                break :blk n;
+            },
+            .vec => |elem| 6 + self.loopVarBytes(elem),
+            // `str`: a byte cursor + the `char` loop variable.
+            .primitive => |p| if (p == .str) 2 + 2 else 0,
+            // Iterator: the hidden instance pointer + the `T?` result slot
+            // (the loop variable aliases that slot's value region).
+            .named => 2 + opt_scalar_size,
+            else => 0,
+        };
+    }
+
+    /// Frame bytes a loop variable of element type `elem` occupies — a word
+    /// for a scalar / pointer element, the full (2-aligned) inline width for
+    /// an aggregate element (struct / array / tuple).
+    fn loopVarBytes(self: *const Emitter, elem: *const Type) usize {
+        return switch (self.arrayElemKindOf(elem)) {
+            .scalar => 2,
+            else => alignUpU16(self.widthOfType(elem), 2),
+        };
     }
 
     /// Inline-expansion bytes reachable from a statement's own
@@ -1504,6 +1565,11 @@ pub const Emitter = struct {
                     try self.fn_ret_tuple.put(self.arena, dup, {});
                     const w = alignUpU16(self.widthOfTypeAnn(rt.*), 2);
                     if (w > self.global_sret_scratch) self.global_sret_scratch = w;
+                };
+                // A scalar-`T?`-returning def shares the sret scratch too.
+                if (dd.ret_type) |rt| if (try self.scalarOptReturnInner(rt.*)) |_| {
+                    try self.fn_ret_scalar_opt.put(self.arena, dup, {});
+                    if (opt_scalar_size > self.global_sret_scratch) self.global_sret_scratch = opt_scalar_size;
                 };
                 if (noreturn_marked) try self.noreturn_defs.put(self.arena, dup, {});
                 if (inline_marked) try self.inline_defs.put(self.arena, dup, dd);

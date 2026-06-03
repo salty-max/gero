@@ -989,10 +989,11 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     // returns the pointer in `acu`.
     const returns_struct = self.fn_ret_struct.contains(callee_name);
     const returns_tuple = self.fn_ret_tuple.contains(callee_name);
-    if (returns_struct or returns_tuple) {
+    const returns_scalar_opt = self.fn_ret_scalar_opt.contains(callee_name);
+    if (returns_struct or returns_tuple or returns_scalar_opt) {
         // Invariant: an aggregate-returning callee implies the program
-        // reserved an sret scratch slot in every frame (struct + tuple
-        // returns share it).
+        // reserved an sret scratch slot in every frame (struct / tuple /
+        // scalar-optional returns share it).
         const sofs = self.sret_scratch_ofs.?;
         try isa.movRegToReg(self, Reg.fp, Reg.acu);
         if (sofs < 0) try isa.subImmFromReg(self, @intCast(-sofs), Reg.acu);

@@ -1,7 +1,6 @@
 // Type-checking for the compiler-known `Vec(T)` surface (§3.4.3). Mirrors
 // `mem_builtin` — a fixed set of method signatures, generic over the
-// receiver's element type `T`. The non-optional surface; `pop` / `get`
-// (which return `T?`) await the scalar-optional model.
+// receiver's element type `T`. Includes `pop` / `get`, which return `T?`.
 
 const std = @import("std");
 const ast = @import("../ast.zig");

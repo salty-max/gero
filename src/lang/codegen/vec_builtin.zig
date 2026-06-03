@@ -1,9 +1,9 @@
 // `Vec(T)` lowering (§3.4.3) — a growable dynamic array. The value is a
 // 6-byte `(ptr, len, cap)` header stored inline (like a struct); the
 // backing buffer lives on the heap (`sys alloc`, a bump allocator — growth
-// allocates a new buffer and copies, leaking the old one). This covers the
-// non-optional surface; `pop` / `get` (which return `T?`) await the scalar-
-// optional model.
+// allocates a new buffer and copies, leaking the old one). Also hosts the
+// optional-materialization helpers (`pop` / `get` return `T?`; scalar `T?`
+// rides the sret convention) shared by `if let` / `while let` / `for`.
 
 const std = @import("std");
 const ast = @import("../ast.zig");
@@ -22,8 +22,10 @@ const Type = types.Type;
 
 /// Byte size of a `Vec` value's inline header.
 pub const header_size: u16 = 6;
-const ptr_ofs: u16 = 0;
-const len_ofs: u16 = 2;
+/// Byte offset of the buffer pointer within a `Vec` header.
+pub const ptr_ofs: u16 = 0;
+/// Byte offset of the length within a `Vec` header.
+pub const len_ofs: u16 = 2;
 const cap_ofs: u16 = 4;
 
 /// Element type of a Vec-typed expression (peeling a reference), or `null`.
@@ -185,8 +187,9 @@ pub fn emitGetInto(self: *Emitter, recv: *const ast.Expr, idx: *const ast.Expr, 
 }
 
 /// Materialize an optional-producing expression into the frame slot at
-/// `dest_ofs`: `v.pop()` / `v.get(i)` (the producers), `nil` (absent), or
-/// another optional value (byte-copied). `inner` is the element type.
+/// `dest_ofs`: `v.pop()` / `v.get(i)` (the producers), `nil` (absent), a
+/// present inner value (wrapped), or another optional value (copied).
+/// `inner` is the optional's element type.
 pub fn emitOptionalInto(self: *Emitter, src: *const ast.Expr, inner: *const Type, dest_ofs: i16) error{OutOfMemory}!void {
     if (src.* == .method_call) {
         const mc = src.method_call;
@@ -198,15 +201,50 @@ pub fn emitOptionalInto(self: *Emitter, src: *const ast.Expr, inner: *const Type
     }
     if (src.* == .nil_lit) {
         try isa.movImmToReg(self, 0, Reg.acu);
-        try storeOptional(self, dest_ofs, 0, Reg.acu);
+        if (codegen.Emitter.isScalarOptional(inner)) {
+            try storeOptional(self, dest_ofs, 0, Reg.acu);
+        } else {
+            try frameAddr(self, dest_ofs, Reg.r1);
+            try class.emitWordStoreAtOffset(self, Reg.r1, 0, Reg.acu);
+        }
         return;
     }
-    // Another optional value — byte-copy its header.
-    try self.emitExpr(src); // acu = source optional address
-    try isa.movRegToReg(self, Reg.acu, Reg.r1);
-    try frameAddr(self, dest_ofs, Reg.r2);
-    const w: u16 = if (codegen.Emitter.isScalarOptional(inner)) codegen.Emitter.opt_scalar_size else 2;
-    try value_struct.copyBytes(self, Reg.r1, Reg.r2, w);
+    // A pointer-like `T?` is the nullable pointer word itself (`nil` = 0),
+    // whether produced as a present value or copied from another optional —
+    // a call return or an ident load both leave the word in `acu`.
+    if (!codegen.Emitter.isScalarOptional(inner)) {
+        try self.emitExpr(src); // acu = pointer value (nil = 0)
+        try frameAddr(self, dest_ofs, Reg.r1);
+        try class.emitWordStoreAtOffset(self, Reg.r1, 0, Reg.acu);
+        return;
+    }
+    // A scalar `T?`. An already-optional source byte-copies its 4-byte
+    // `{present, value}` from the address it evaluates to; a present inner
+    // value wraps to `{present: 1, value}`.
+    const src_ty = self.typeOf(src);
+    if (src_ty != null and src_ty.?.* == .optional) {
+        try self.emitExpr(src); // acu = source optional address
+        try isa.movRegToReg(self, Reg.acu, Reg.r1);
+        try frameAddr(self, dest_ofs, Reg.r2);
+        try value_struct.copyBytes(self, Reg.r1, Reg.r2, codegen.Emitter.opt_scalar_size);
+    } else {
+        try self.emitExpr(src); // acu = present inner value
+        try storeOptional(self, dest_ofs, 1, Reg.acu);
+    }
+}
+
+/// Materialize a scalar `T?` return value into the caller's sret buffer
+/// (its pointer sits at `[fp + ptr_ofs]`): build the `{present, value}` in
+/// a temp slot, then copy it through the sret pointer. `inner` is the
+/// optional's element type. Caller leaves the buffer address in `acu`.
+pub fn emitScalarOptIntoSret(self: *Emitter, src: *const ast.Expr, inner: *const Type, sret_ptr_ofs: i16) error{OutOfMemory}!void {
+    const tmp = try self.allocLocalSized("\x00__retopt", codegen.Emitter.opt_scalar_size);
+    try emitOptionalInto(self, src, inner, tmp);
+    try isa.movRegToReg(self, Reg.fp, Reg.r2);
+    if (sret_ptr_ofs > 0) try isa.addImmToReg(self, @intCast(sret_ptr_ofs), Reg.r2);
+    try isa.movRegOffsetToReg(self, Reg.r2, 0, Reg.r2); // r2 = sret dest pointer
+    try frameAddr(self, tmp, Reg.r1); // r1 = &temp
+    try value_struct.copyBytes(self, Reg.r1, Reg.r2, codegen.Emitter.opt_scalar_size);
 }
 
 /// Store a scalar optional `{present, value}` into the 4-byte slot at

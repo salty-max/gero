@@ -244,6 +244,7 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_AMBIGUOUS_INFER` | Inference can't pin a single type. |
 | `E_TYPE_RECURSIVE_NO_RET` | Recursive fn missing return annotation. |
 | `E_TYPE_INVALID_CAST` | `as T` between incompatible types. |
+| `E_TYPE_NOT_ITERABLE` | `for x in e` where `e` isn't a range, `[T; N]`, `Vec(T)`, `str`, or a class with `next(self) -> T?` (§4.5.3). |
 
 **Mockup — type mismatch in let init:**
 
@@ -777,6 +778,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_AMBIGUOUS_INFER` | Typechecker | v0.3 |
 | `E_TYPE_RECURSIVE_NO_RET` | Typechecker | v0.3 |
 | `E_TYPE_INVALID_CAST` | Typechecker | v0.3 |
+| `E_TYPE_NOT_ITERABLE` | Typechecker | v0.3 |
 | `E_NULL_DEREF` | Nullable | v0.3 |
 | `E_NULL_NON_POINTER` | Nullable | v0.3 |
 | `E_NULL_NIL_TO_NONNULL` | Nullable | v0.3 |

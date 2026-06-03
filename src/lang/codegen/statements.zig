@@ -490,6 +490,14 @@ pub fn emitReturnStmt(self: *Emitter, r: ast.ReturnStmt) !void {
                 if (self.sret_param_ofs > 0) try isa.addImmToReg(self, @intCast(self.sret_param_ofs), Reg.acu);
                 try isa.movRegOffsetToReg(self, Reg.acu, 0, Reg.acu);
             } else try self.unsupported(r.span, "tuple return from a non-tuple value");
+        } else if (self.current_ret_scalar_opt) |inner| {
+            // Scalar `T?` return: materialize {present, value} into the
+            // caller's sret buffer, then leave that buffer's address in acu
+            // (the 4-byte optional *is* an address, like a struct return).
+            try vec_builtin.emitScalarOptIntoSret(self, v, inner, self.sret_param_ofs);
+            try isa.movRegToReg(self, Reg.fp, Reg.acu);
+            if (self.sret_param_ofs > 0) try isa.addImmToReg(self, @intCast(self.sret_param_ofs), Reg.acu);
+            try isa.movRegOffsetToReg(self, Reg.acu, 0, Reg.acu);
         } else {
             try self.emitExpr(v);
         }

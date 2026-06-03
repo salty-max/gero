@@ -56,6 +56,7 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     const saved_isr = self.is_isr;
     const saved_bank = self.current_bank;
     const saved_ret_struct = self.current_ret_struct;
+    const saved_ret_scalar_opt = self.current_ret_scalar_opt;
     const saved_sret_param = self.sret_param_ofs;
     const saved_sret_scratch = self.sret_scratch_ofs;
     self.locals = .{};
@@ -75,6 +76,7 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
         self.is_isr = saved_isr;
         self.current_bank = saved_bank;
         self.current_ret_struct = saved_ret_struct;
+        self.current_ret_scalar_opt = saved_ret_scalar_opt;
         self.sret_param_ofs = saved_sret_param;
         self.sret_scratch_ofs = saved_sret_scratch;
     }
@@ -108,6 +110,7 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
     // `return` copies the result there instead of into `acu`.
     self.current_ret_struct = if (def.ret_type) |rt| self.structNameOfTypeAnn(rt.*) else null;
     self.current_ret_is_tuple = if (def.ret_type) |rt| rt.* == .tuple else false;
+    self.current_ret_scalar_opt = if (def.ret_type) |rt| try self.scalarOptReturnInner(rt.*) else null;
     // A param list overrunning the fp range already set `frame_overflow`
     // above, so this clamped value is unused; the clamp only keeps the
     // narrowing from panicking on a pathologically long param list.
