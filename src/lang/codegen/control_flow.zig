@@ -394,7 +394,10 @@ pub fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
         try self.unsupported(fs.span, "`for` over a value of unknown type");
         return;
     };
-    switch (it_ty.*) {
+    // A `&T` reference iterates the pointed-to aggregate (the access helpers
+    // deref it transparently, §3.4.4).
+    const peeled = if (it_ty.* == .reference) it_ty.reference else it_ty;
+    switch (peeled.*) {
         .array => try emitForArray(self, fs),
         .vec => |elem| try emitForVec(self, fs, elem),
         .primitive => |p| if (p == .str)

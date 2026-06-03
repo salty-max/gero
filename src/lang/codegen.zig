@@ -1010,7 +1010,9 @@ pub const Emitter = struct {
         // Range: iteration variable + a hidden `end` bound.
         if (fs.iter.* == .range) return 2 + 2;
         const it_ty = self.typeOf(fs.iter) orelse return 2 + 2;
-        return switch (it_ty.*) {
+        // A `&T` reference iterates the pointed-to aggregate (§3.4.4).
+        const peeled = if (it_ty.* == .reference) it_ty.reference else it_ty;
+        return switch (peeled.*) {
             // base + count + index hidden slots, plus the loop variable.
             // An array-literal iterable also materializes into a temp slot.
             .array => |a| blk: {
@@ -2001,6 +2003,15 @@ pub const Emitter = struct {
             return if (self.struct_decls.contains(name)) name else null;
         }
         return self.structNameOf(arg);
+    }
+
+    /// `true` when `arg` has reference type `&T` — a 2-byte pointer that
+    /// must be pushed as a scalar, never copied by value (the aggregate
+    /// classifiers peel the reference, so a bare `&Struct` / `&[T;N]` /
+    /// `&Vec` would otherwise be mistaken for a by-value aggregate).
+    pub fn isReferenceArg(self: *const Emitter, arg: *const ast.Expr) bool {
+        const t = self.typeOf(arg) orelse return false;
+        return t.* == .reference;
     }
 
     /// Stack footprint of a parameter: a struct or tuple param occupies

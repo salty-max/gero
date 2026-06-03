@@ -317,14 +317,17 @@ fn pushSretAndArgs(self: *Emitter, args: []const *const ast.Expr, sret: bool) !u
     var i = args.len;
     while (i > 0) {
         i -= 1;
-        if (self.argStructName(args[i])) |sname| {
-            try value_struct.pushArg(self, args[i], sname);
-            total += self.structSlotWidth(sname);
-        } else {
-            try self.emitExpr(args[i]);
-            try isa.pushReg(self, Reg.acu);
-            total += 2;
+        // A `&T` reference arg is a 2-byte pointer, not a by-value copy.
+        if (!self.isReferenceArg(args[i])) {
+            if (self.argStructName(args[i])) |sname| {
+                try value_struct.pushArg(self, args[i], sname);
+                total += self.structSlotWidth(sname);
+                continue;
+            }
         }
+        try self.emitExpr(args[i]);
+        try isa.pushReg(self, Reg.acu);
+        total += 2;
     }
     return total;
 }

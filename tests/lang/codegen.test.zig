@@ -1290,6 +1290,99 @@ test "codegen: a method returning a scalar `T?` unwraps through `if let`" {
     , "0\n");
 }
 
+test "codegen: mutation through a `&struct` param propagates to the caller" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def setx(p: &P)
+        \\  p.x = 99
+        \\end
+        \\def main()
+        \\  let pt: P = P { x: 7, y: 42 }
+        \\  setx(&pt)
+        \\  print pt.x
+        \\  print pt.y
+        \\end
+    , "99\n42\n");
+}
+
+test "codegen: index read + write through a `&[T; N]` param hits the caller's array" {
+    try runAndExpect(
+        \\def zero1(a: &[i16; 3])
+        \\  a[1] = 0
+        \\end
+        \\def main()
+        \\  let arr: [i16; 3] = [4, 5, 6]
+        \\  zero1(&arr)
+        \\  print arr[0]
+        \\  print arr[1]
+        \\  print arr[2]
+        \\end
+    , "4\n0\n6\n");
+}
+
+test "codegen: mutating a `&Vec(T)` param is visible to the caller" {
+    try runAndExpect(
+        \\def app(v: &Vec(i16))
+        \\  v.push(30)
+        \\end
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([10, 20])
+        \\  app(&v)
+        \\  print v.len()
+        \\  print v.at(2)
+        \\end
+    , "3\n30\n");
+}
+
+test "codegen: a `&T` reference arg reaches a method through dispatch" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\class Bumper
+        \\  def init(self) end
+        \\  def bump(self, p: &P)
+        \\    p.x = p.x + 1
+        \\  end
+        \\end
+        \\def main()
+        \\  let pt: P = P { x: 5 }
+        \\  let b = Bumper()
+        \\  b.bump(&pt)
+        \\  print pt.x
+        \\end
+    , "6\n");
+}
+
+test "codegen: for over a `&[T; N]` iterates the referenced array" {
+    try runAndExpect(
+        \\def each(a: &[i16; 3])
+        \\  for x in a
+        \\    print x
+        \\  end
+        \\end
+        \\def main()
+        \\  let arr: [i16; 3] = [4, 5, 6]
+        \\  each(&arr)
+        \\end
+    , "4\n5\n6\n");
+}
+
+test "codegen: a zero-length array binding is a no-op (empty for-loop body)" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: [i16; 0] = []
+        \\  for x in a
+        \\    print x
+        \\  end
+        \\  print 100
+        \\end
+    , "100\n");
+}
+
 test "codegen: repeat-until runs body at least once then exits when cond is true" {
     try runAndExpect(
         \\def main()

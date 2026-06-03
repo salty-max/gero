@@ -785,9 +785,11 @@ pub const Checker = struct {
             return start_ty orelse try self.primitive(.i16);
         }
         const it_ty = (try self.inferExpr(fs.iter, null)) orelse return null;
-        switch (it_ty.*) {
-            .array => return it_ty.array.elem,
-            .vec => return it_ty.vec,
+        // A `&T` reference iterates the pointed-to aggregate (§3.4.4).
+        const peeled = if (it_ty.* == .reference) it_ty.reference else it_ty;
+        switch (peeled.*) {
+            .array => return peeled.array.elem,
+            .vec => return peeled.vec,
             .primitive => |p| if (p == .str) return try self.primitive(.char),
             .named => |n| {
                 if (self.class_registry.get(n.name)) |cd| {
@@ -1615,6 +1617,14 @@ pub const Checker = struct {
             .vec => |v| v,
             else => null,
         } else null;
+        // An empty literal has no element to infer from — recover the type
+        // from a `[T; N]` annotation (the literal's own count is 0). A bare
+        // `[]` with no array hint stays untyped: ambiguous, a type error at
+        // the use site.
+        if (ll.elems.len == 0) {
+            if (hint) |h| if (h.* == .array) return try types.mkArray(self.arena, h.array.elem, 0);
+            return null;
+        }
         var first_ty: ?*const types.Type = null;
         for (ll.elems) |x| {
             const t = try self.inferExpr(x, elem_hint);
