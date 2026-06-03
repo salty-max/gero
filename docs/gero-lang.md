@@ -217,6 +217,7 @@ Mutable byte buffers are `[u8; N]` (fixed size).
 | `s == other`      | `bool` (lexicographic equality, byte-wise) | No |
 | `s != other`      | `bool` | No |
 | `s < other` etc.  | `bool` (lex ordering) | No |
+| `s.cmp(other)`    | `i16` (byte-wise ordering: `< 0`, `0`, `> 0`) | No |
 | `s.slice(a, b)`   | `str` (substring view, exclusive end) | No — borrowed view; lifetime ≤ `s`'s. |
 
 Allocation lives in the parse / runtime allocator (typically the

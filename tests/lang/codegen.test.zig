@@ -1589,6 +1589,37 @@ test "codegen: defer fires on continue path before going to next iteration" {
 
 // ---------- str-literal print, fixed-point, recursion, frame slots ----------
 
+test "codegen: `s.len` counts bytes to the null terminator" {
+    try runAndExpect(
+        \\def main()
+        \\  let s: str = "hello"
+        \\  print s.len
+        \\end
+    , "5\n");
+}
+
+test "codegen: `s.at(i)` loads the byte at index i" {
+    try runAndExpect(
+        \\def main()
+        \\  let s: str = "ABC"
+        \\  print s.at(0)
+        \\  print s.at(2)
+        \\end
+    , "65\n67\n");
+}
+
+test "codegen: `s.cmp(other)` orders byte-wise" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: str = "abc"
+        \\  let b: str = "abd"
+        \\  print a.cmp(b)
+        \\  print b.cmp(a)
+        \\  print a.cmp(a)
+        \\end
+    , "-1\n1\n0\n");
+}
+
 test "codegen: print of a string literal goes through sys print_str + emits `hi`" {
     try runAndExpect(
         \\def main()

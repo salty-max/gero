@@ -138,6 +138,7 @@ const mem_builtin = @import("typecheck/mem_builtin.zig");
 const stdlib = @import("typecheck/stdlib.zig");
 const match = @import("typecheck/match.zig");
 const vec_builtin = @import("typecheck/vec_builtin.zig");
+const str_builtin = @import("typecheck/str_builtin.zig");
 const predicates = @import("typecheck/predicates.zig");
 const annotations = @import("typecheck/annotations.zig");
 const relations = @import("typecheck/relations.zig");
@@ -1254,6 +1255,10 @@ pub const Checker = struct {
                 if (peelReference(recv_ty)) |peeled| if (peeled.* == .vec) {
                     return try vec_builtin.checkMethod(self, m, peeled.vec);
                 };
+                // `str` instance method (`s.at` / `s.cmp`).
+                if (peelReference(recv_ty)) |peeled| if (peeled.* == .primitive and peeled.primitive == .str) {
+                    return try str_builtin.checkMethod(self, m);
+                };
                 return try fields.checkMethodCall(self, m, peelReference(recv_ty));
             },
             .field => |f| {
@@ -1273,6 +1278,10 @@ pub const Checker = struct {
                 }
                 const recv_ty = try self.inferExpr(f.receiver, null);
                 try self.checkNotNullableDeref(f.receiver, recv_ty, f.span);
+                // `str` property (`s.len`).
+                if (peelReference(recv_ty)) |peeled| if (peeled.* == .primitive and peeled.primitive == .str) {
+                    return try str_builtin.checkProperty(self, f);
+                };
                 return try fields.resolveFieldAccess(self, f, peelReference(recv_ty));
             },
             .tuple_index => |ti| {
