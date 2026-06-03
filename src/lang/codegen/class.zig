@@ -5,6 +5,7 @@ const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const codegen_mod = @import("../codegen.zig");
 const value_struct = @import("value_struct.zig");
+const vec_builtin = @import("vec_builtin.zig");
 
 const Emitter = codegen_mod.Emitter;
 const Type = types.Type;
@@ -322,6 +323,16 @@ fn pushSretAndArgs(self: *Emitter, args: []const *const ast.Expr, sret: bool) !u
             if (self.argStructName(args[i])) |sname| {
                 try value_struct.pushArg(self, args[i], sname);
                 total += self.structSlotWidth(sname);
+                continue;
+            }
+            if (self.arrayInfoOf(args[i])) |info| {
+                try value_struct.pushArrayArg(self, args[i], info.elem, info.count);
+                total += self.arraySlotWidth(info.elem, info.count);
+                continue;
+            }
+            if (vec_builtin.elemOf(self, args[i]) != null) {
+                try vec_builtin.pushVecArg(self, args[i]);
+                total += vec_builtin.header_size;
                 continue;
             }
         }

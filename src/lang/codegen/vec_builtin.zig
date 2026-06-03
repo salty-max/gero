@@ -35,6 +35,17 @@ pub fn elemOf(self: *const Emitter, e: *const ast.Expr) ?*const Type {
     return if (inner.* == .vec) inner.vec else null;
 }
 
+/// Pass a `Vec(T)` argument by value (§3.4.3 — moves the 6-byte header;
+/// the backing buffer is shared): reserve the header width on the stack
+/// and byte-copy it there.
+pub fn pushVecArg(self: *Emitter, arg: *const ast.Expr) error{OutOfMemory}!void {
+    try isa.subImmFromReg(self, header_size, Reg.sp);
+    try self.emitExpr(arg); // acu = source header address (a Vec value is its address)
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try isa.movRegToReg(self, Reg.sp, Reg.r2);
+    try value_struct.copyBytes(self, Reg.r1, Reg.r2, header_size);
+}
+
 /// `true` when `name` is a `Vec.<name>(...)` constructor.
 pub fn isConstructor(name: []const u8) bool {
     return std.mem.eql(u8, name, "new") or
