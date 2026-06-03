@@ -168,6 +168,75 @@ test "format_spec_to_buf 0x16: left-aligned decimal (`<3d`)" {
     try std.testing.expectEqualStrings("7  ", got);
 }
 
+// ---------- format_runtime (0x17) ----------
+
+/// Run `sys format_runtime` once: `fmt` at 0x3000, `args` words at 0x3100,
+/// output cursor at 0x2000. Returns the formatted bytes.
+fn runFmtRuntime(vm: *VM, out: []u8, fmt: []const u8, args: []const u16, elem_ftype: u16, signed: bool) []const u8 {
+    const fmt_addr: u16 = 0x3000;
+    for (fmt, 0..) |b, k| vm.mmap.writeByte(fmt_addr + @as(u16, @intCast(k)), b);
+    vm.mmap.writeByte(fmt_addr + @as(u16, @intCast(fmt.len)), 0);
+    const args_addr: u16 = 0x3100;
+    for (args, 0..) |a, k| vm.mmap.writeWord(args_addr + @as(u16, @intCast(k * 2)), a);
+    const out_addr: u16 = 0x2000;
+    vm.regs.write(.acu, fmt_addr);
+    vm.regs.write(.r1, out_addr);
+    vm.regs.write(.r2, args_addr);
+    var r3: u16 = @intCast(args.len);
+    r3 |= elem_ftype << 8;
+    if (signed) r3 |= (1 << 11);
+    vm.regs.write(.r3, r3);
+    loadProgram(vm, &.{ 0xFB, 0x17 });
+    _ = gero.vm.step(vm);
+    const len: usize = vm.regs.read(.r1) - out_addr;
+    for (0..len) |k| out[k] = vm.mmap.readByte(out_addr + @as(u16, @intCast(k)));
+    return out[0..len];
+}
+
+test "format_runtime 0x17: positional placeholders + literal text" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [32]u8 = undefined;
+    const got = runFmtRuntime(&vm, &out, "$(0) and $(1)", &.{ 42, 7 }, 0, true);
+    try std.testing.expectEqualStrings("42 and 7", got);
+}
+
+test "format_runtime 0x17: per-placeholder spec (`$(0:04X)`)" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [32]u8 = undefined;
+    const got = runFmtRuntime(&vm, &out, "$(0:04X)", &.{0x4F2}, 0, false);
+    try std.testing.expectEqualStrings("04F2", got);
+}
+
+test "format_runtime 0x17: `$$` escapes a literal dollar" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [32]u8 = undefined;
+    const got = runFmtRuntime(&vm, &out, "$$ = $(0)", &.{5}, 0, true);
+    try std.testing.expectEqualStrings("$ = 5", got);
+}
+
+test "format_runtime 0x17: out-of-range placeholder is dropped" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [32]u8 = undefined;
+    const got = runFmtRuntime(&vm, &out, "a$(5)b", &.{1}, 0, true);
+    try std.testing.expectEqualStrings("ab", got);
+}
+
+test "format_runtime 0x17: str-element placeholders deref the pointer" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    var out: [32]u8 = undefined;
+    // Put "hi" at 0x3200 and pass its pointer as arg 0; element type = str(5).
+    vm.mmap.writeByte(0x3200, 'h');
+    vm.mmap.writeByte(0x3201, 'i');
+    vm.mmap.writeByte(0x3202, 0);
+    const got = runFmtRuntime(&vm, &out, "[$(0)]", &.{0x3200}, 5, false);
+    try std.testing.expectEqualStrings("[hi]", got);
+}
+
 // ---------- system ----------
 
 test "int 0xFC: pushes state, jumps via vector table, sets flg.I" {

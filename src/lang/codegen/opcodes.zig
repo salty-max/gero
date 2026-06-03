@@ -213,6 +213,14 @@ pub const Sys = struct {
     /// layout is the contract in `docs/isa.md`.
     pub const format_spec_to_buf: u8 = 0x16;
 
+    /// `format_runtime` — `str.format(fmt, args)` (§3.2.2). `acu` = the
+    /// (non-literal) format string; `r1` = dst cursor; `r2` = base of the
+    /// `args` words; `r3` = count (bits 0-7) | element default type (bits
+    /// 8-10, the `format_spec_to_buf` type codes) | element-signed (bit 11).
+    /// Parses `$(N)` / `$(N:spec)` positional placeholders and `$$`, and
+    /// formats `args[N]` per the spec at `[r1]`, advancing `r1`.
+    pub const format_runtime: u8 = 0x17;
+
     /// `format_spec_to_buf` `r3` flag bits + field shifts (§3.2.2). The VM
     /// unpacker mirrors these; the type field (bits 0-2) uses the numeric
     /// codes documented in `docs/isa.md`.

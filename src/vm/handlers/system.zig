@@ -166,6 +166,11 @@ pub const SyscallId = enum(u8) {
     /// has-precision (bit 7) | precision (bits 8-15). Appends `acu`
     /// formatted per a §3.2.2 format spec at `[r1]`, advances `r1`.
     format_spec_to_buf = 0x16,
+    /// `str.format(fmt, args)`. `acu` = format string. `r1` = dst cursor.
+    /// `r2` = base of the `args` words. `r3` = count (bits 0-7) | element
+    /// default type (bits 8-10) | element-signed (bit 11). Parses `$(N)` /
+    /// `$(N:spec)` placeholders + `$$`, formats `args[N]` at `[r1]`.
+    format_runtime = 0x17,
 
     /// `acu` = requested size in bytes. On success: `acu` ← the
     /// address of the freshly-allocated block, and the VM's bump
@@ -203,6 +208,7 @@ pub fn sys(vm: *VM) StepResult {
         .format_int_to_buf => formatIntToBuf(vm) catch return fault(vm, .invalid_opcode),
         .format_uint_to_buf => formatUintToBuf(vm) catch return fault(vm, .invalid_opcode),
         .format_spec_to_buf => formatSpecToBuf(vm) catch return fault(vm, .invalid_opcode),
+        .format_runtime => formatRuntime(vm) catch return fault(vm, .invalid_opcode),
         .format_char_to_buf => formatCharToBuf(vm),
         .format_fixed_to_buf => formatFixedToBuf(vm) catch return fault(vm, .invalid_opcode),
         .format_terminate_buf => formatTerminateBuf(vm),
@@ -313,14 +319,22 @@ fn formatCharToBuf(vm: *VM) void {
 }
 
 /// Append `acu` formatted per a §3.2.2 format spec (the packed `r2` / `r3`
-/// params, mirroring `opcodes.FmtSpec`) to the buffer at `r1`. Numeric
-/// types render through the host writer's radix formatter; `str` / `char`
-/// align a byte run.
+/// params, mirroring `opcodes.FmtSpec`) to the buffer at `r1`.
 fn formatSpecToBuf(vm: *VM) !void {
     const std = @import("std");
-    const value = vm.regs.read(.acu);
-    const r2 = vm.regs.read(.r2);
-    const r3 = vm.regs.read(.r3);
+    var buf: [80]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try formatValueTo(vm, &w, vm.regs.read(.acu), vm.regs.read(.r2), vm.regs.read(.r3));
+    for (w.buffered()) |b| writeBufByte(vm, b);
+}
+
+/// Render `value` formatted per the packed `r2` / `r3` format-spec params
+/// to `w` (no cursor side effects). Shared by `format_spec_to_buf` and the
+/// runtime `format`'s per-placeholder formatting. Numeric types render
+/// through the host writer's radix formatter; `str` / `char` / `fixed`
+/// align a byte run. For the `str` type `value` is the byte pointer.
+fn formatValueTo(vm: *VM, w: *@import("std").Io.Writer, value: u16, r2: u16, r3: u16) !void {
+    const std = @import("std");
     // safety: each field is masked into its byte/bit width before the cast.
     const width: u8 = @truncate(r2);
     const fill: u8 = @truncate(r2 >> 8);
@@ -346,15 +360,13 @@ fn formatSpecToBuf(vm: *VM) !void {
         .precision = if (has_prec and !is_text) precision else null,
     };
 
-    var buf: [80]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&buf);
     switch (ftype) {
         0 => {
             // Decimal. A positive (or unsigned) value renders its magnitude
             // with no sign. A negative value keeps its `-`; zero-padding is
             // sign-aware (`-` then zero-padded magnitude), since the host
             // writer would otherwise pad ahead of the sign (`0-42`).
-            // safety: acu holds the i16 bit pattern.
+            // safety: `value` holds the i16 bit pattern for a signed decimal.
             const sv: i16 = @bitCast(value);
             if (signed and sv < 0) {
                 // @as: widen i16 → i32 so negating -32768 can't overflow; the magnitude fits u16.
@@ -379,7 +391,7 @@ fn formatSpecToBuf(vm: *VM) !void {
             try w.alignBufferOptions(&[1]u8{ch}, opts);
         },
         5 => {
-            // `str`: bytes at `[acu]`, truncated to `precision` (max length).
+            // `str`: bytes at `[value]`, truncated to `precision` (max length).
             var tmp: [80]u8 = undefined;
             var n: usize = 0;
             var src: u16 = value;
@@ -397,11 +409,153 @@ fn formatSpecToBuf(vm: *VM) !void {
             // `fixed` (7): render the Q8.8 form, then apply width / align.
             var tmp: [16]u8 = undefined;
             var tw: std.Io.Writer = .fixed(&tmp);
-            try writeFixedTo(vm, &tw);
+            try writeFixedValueTo(&tw, value);
             try w.alignBufferOptions(tw.buffered(), opts);
         },
     }
-    for (w.buffered()) |b| writeBufByte(vm, b);
+}
+
+/// `str.format(fmt, args)` — walk the runtime format string, copying
+/// literal bytes and replacing `$(N)` / `$(N:spec)` with `args[N]`
+/// formatted per the (runtime-parsed) spec. `$$` is a literal `$`. An
+/// out-of-range or digit-less placeholder is dropped (the format string is
+/// runtime data — leniency over a fault).
+fn formatRuntime(vm: *VM) !void {
+    const std = @import("std");
+    const args_base: u16 = vm.regs.read(.r2);
+    const r3 = vm.regs.read(.r3);
+    // safety: each field is masked to its width.
+    const count: u16 = r3 & 0xFF;
+    const elem_ftype: u16 = (r3 >> 8) & 0x7;
+    const elem_signed: bool = r3 & (1 << 11) != 0;
+
+    var i: u16 = vm.regs.read(.acu);
+    while (true) {
+        const c = vm.readByte(i);
+        if (c == 0) break;
+        if (c == '$') {
+            const nx = vm.readByte(i +% 1);
+            if (nx == '$') { // `$$` → literal `$`
+                writeBufByte(vm, '$');
+                i +%= 2;
+                continue;
+            }
+            if (nx == '(') {
+                var j: u16 = i +% 2;
+                // Positional index `N`.
+                var n: u16 = 0;
+                var have_digit = false;
+                while (vm.readByte(j) >= '0' and vm.readByte(j) <= '9') : (j +%= 1) {
+                    n = n *% 10 +% (vm.readByte(j) - '0');
+                    have_digit = true;
+                }
+                // Optional `:spec`, captured up to `)`.
+                var spec: [24]u8 = undefined;
+                var spec_len: usize = 0;
+                if (vm.readByte(j) == ':') {
+                    j +%= 1;
+                    while (vm.readByte(j) != ')' and vm.readByte(j) != 0) : (j +%= 1) {
+                        if (spec_len < spec.len) {
+                            spec[spec_len] = vm.readByte(j);
+                            spec_len += 1;
+                        }
+                    }
+                }
+                if (vm.readByte(j) == ')') j +%= 1;
+                if (have_digit and n < count) {
+                    const value: u16 = vm.readWord(args_base +% n *% 2);
+                    const params = packSpecRuntime(spec[0..spec_len], elem_ftype, elem_signed);
+                    var tmp: [80]u8 = undefined;
+                    var w: std.Io.Writer = .fixed(&tmp);
+                    try formatValueTo(vm, &w, value, params.r2, params.r3);
+                    for (w.buffered()) |b| writeBufByte(vm, b);
+                }
+                i = j;
+                continue;
+            }
+        }
+        writeBufByte(vm, c);
+        i +%= 1;
+    }
+}
+
+/// Parse a runtime format spec (`[[fill]align][0][width][.precision][type]`)
+/// into the packed `format_spec_to_buf` `r2` / `r3` words, defaulting the
+/// type + signedness to the element's when the spec omits a type letter.
+/// Mirrors the compile-time `lang/fmtspec.zig`; leniency over errors since
+/// the format string is runtime data.
+fn packSpecRuntime(bytes: []const u8, default_ftype: u16, default_signed: bool) struct { r2: u16, r3: u16 } {
+    var fill: u8 = 0;
+    var align_code: u16 = 0;
+    var zero_pad = false;
+    var width: u16 = 0;
+    var has_prec = false;
+    var precision: u16 = 0;
+    var ftype: u16 = default_ftype;
+    var signed = default_signed;
+
+    var k: usize = 0;
+    if (bytes.len >= 2 and isAlignByte(bytes[1])) {
+        fill = bytes[0];
+        align_code = alignCode(bytes[1]);
+        k = 2;
+    } else if (bytes.len >= 1 and isAlignByte(bytes[0])) {
+        align_code = alignCode(bytes[0]);
+        k = 1;
+    }
+    if (k < bytes.len and bytes[k] == '0') {
+        zero_pad = true;
+        k += 1;
+    }
+    while (k < bytes.len and bytes[k] >= '0' and bytes[k] <= '9') : (k += 1) width = width *% 10 +% (bytes[k] - '0');
+    if (k < bytes.len and bytes[k] == '.') {
+        k += 1;
+        has_prec = true;
+        while (k < bytes.len and bytes[k] >= '0' and bytes[k] <= '9') : (k += 1) precision = precision *% 10 +% (bytes[k] - '0');
+    }
+    if (k < bytes.len) switch (bytes[k]) {
+        'd' => ftype = 0,
+        'x' => {
+            ftype = 1;
+            signed = false;
+        },
+        'X' => {
+            ftype = 2;
+            signed = false;
+        },
+        'b' => {
+            ftype = 3;
+            signed = false;
+        },
+        'o' => {
+            ftype = 4;
+            signed = false;
+        },
+        's' => ftype = 5,
+        'c' => ftype = 6,
+        else => {},
+    };
+
+    var r3: u16 = (ftype & 0x7) | (align_code << 3);
+    if (signed) r3 |= (1 << 5);
+    if (zero_pad) r3 |= (1 << 6);
+    if (has_prec) r3 |= (1 << 7) | ((precision & 0xFF) << 8);
+    // @as: width + fill are u8 fields packed into the 16-bit r2 word.
+    const r2: u16 = (width & 0xFF) | (@as(u16, fill) << 8);
+    return .{ .r2 = r2, .r3 = r3 };
+}
+
+fn isAlignByte(c: u8) bool {
+    return c == '<' or c == '>' or c == '^';
+}
+
+fn alignCode(c: u8) u16 {
+    return switch (c) {
+        '<' => 1,
+        '>' => 2,
+        '^' => 3,
+        else => 0,
+    };
 }
 
 fn formatFixedToBuf(vm: *VM) !void {
@@ -420,8 +574,13 @@ fn formatTerminateBuf(vm: *VM) void {
 /// `format_fixed_to_buf` (writes to VM memory at `r1`) — the
 /// formatting math is identical; only the sink differs.
 fn writeFixedTo(vm: *VM, writer: *@import("std").Io.Writer) !void {
-    // safety: Q8.8 lives in acu as a u16 — bit-cast to i16 for sign + magnitude split.
-    const raw: i16 = @bitCast(vm.regs.read(.acu));
+    return writeFixedValueTo(writer, vm.regs.read(.acu));
+}
+
+/// Render the Q8.8 value `raw` as `<int>.<3-digit-frac>` to `writer`.
+fn writeFixedValueTo(writer: *@import("std").Io.Writer, raw_bits: u16) !void {
+    // safety: Q8.8 is a u16 — bit-cast to i16 for sign + magnitude split.
+    const raw: i16 = @bitCast(raw_bits);
     if (raw < 0) try writer.writeByte('-');
     // @as: widen i16 → i32 so negating the minimum value (-32768) doesn't overflow.
     const widened_neg: i32 = -@as(i32, raw);
