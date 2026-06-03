@@ -178,15 +178,14 @@ end
 -- §3.4.1 multi-return for fallible ops (no Result<T, E> type)
 def parse_attack_command(s: str) -> ((u8, i16), str?)
   -- success: ((target, power), nil) ; failure: ((0, 0), "message")
-  let parts = s.split(" ")
-  if parts.len != 3
+  if s.len == 0
     return ((0, 0), "usage: attack <target> <power>")
   end
-  let (target, e1) = parse_u8(parts.at(1))
+  let (target, e1) = parse_u8(s)
   if e1 != nil
     return ((0, 0), e1)
   end
-  let (power, e2) = parse_i16(parts.at(2))
+  let (power, e2) = parse_i16(s)
   if e2 != nil
     return ((0, 0), e2)
   end

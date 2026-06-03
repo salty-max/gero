@@ -13,6 +13,7 @@ const include_mod = @import("lang/include.zig");
 
 const tc_mem_builtin = @import("lang/typecheck/mem_builtin.zig");
 const tc_vec_builtin = @import("lang/typecheck/vec_builtin.zig");
+const tc_str_builtin = @import("lang/typecheck/str_builtin.zig");
 const tc_stdlib = @import("lang/typecheck/stdlib.zig");
 const tc_match = @import("lang/typecheck/match.zig");
 const tc_predicates = @import("lang/typecheck/predicates.zig");
@@ -39,6 +40,7 @@ const cg_strings = @import("lang/codegen/strings.zig");
 const cg_pattern = @import("lang/codegen/pattern.zig");
 const cg_destructure = @import("lang/codegen/destructure.zig");
 const cg_vec_builtin = @import("lang/codegen/vec_builtin.zig");
+const cg_str_builtin = @import("lang/codegen/str_builtin.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 const cg_class = @import("lang/codegen/class.zig");
@@ -168,6 +170,8 @@ pub const internal = struct {
         pub const mem_builtin = tc_mem_builtin;
         /// `Vec(T)` method / constructor type-checking.
         pub const vec_builtin = tc_vec_builtin;
+        /// `str` member (`len` / `at` / `cmp`) type-checking.
+        pub const str_builtin = tc_str_builtin;
         /// `math.*` / `bank.*` / `test.*` stdlib typecheck dispatch.
         pub const stdlib = tc_stdlib;
         /// "Did you mean…?" Levenshtein-based name suggestions.
@@ -220,6 +224,8 @@ pub const internal = struct {
         pub const destructure = cg_destructure;
         /// `Vec(T)` lowering (construct / push / at / slice / …).
         pub const vec_builtin = cg_vec_builtin;
+        /// `str` member lowering (`len` / `at` / `cmp`).
+        pub const str_builtin = cg_str_builtin;
         /// Expression lowering.
         pub const expr_emit = cg_expr_emit;
         /// Control-flow lowering (if / while / for / match / break / continue / defer).

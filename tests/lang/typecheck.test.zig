@@ -165,6 +165,42 @@ test "typecheck: let x: str = \"hi\" accepts" {
     try expectClean("let x: str = \"hi\"");
 }
 
+test "typecheck: `s.len` is u16, `s.at` is u8, `s.cmp` is i16" {
+    try expectClean(
+        \\def takes16(n: i16) -> i16
+        \\  return n
+        \\end
+        \\def takes8(n: u8) -> u8
+        \\  return n
+        \\end
+        \\def main()
+        \\  let a: str = "x"
+        \\  print takes16(a.cmp("y"))
+        \\  print takes8(a.at(0))
+        \\  print takes16(a.len as i16)
+        \\end
+    );
+}
+
+test "typecheck: `s.len` (u16) assigned where str is expected is a mismatch" {
+    try expectCode(
+        \\def main()
+        \\  let s: str = "hi"
+        \\  let n: str = s.len
+        \\  print n
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: an unknown str member is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let s: str = "hi"
+        \\  print s.nope
+        \\end
+    , "E_TYPE_UNDEFINED_FIELD");
+}
+
 test "typecheck: let x: str = 42 errors with E_TYPE_MISMATCH" {
     try expectCode("let x: str = 42", "E_TYPE_MISMATCH");
 }

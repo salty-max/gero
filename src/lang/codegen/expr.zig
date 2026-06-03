@@ -10,6 +10,7 @@ const stdlib = @import("stdlib.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
 const vec_builtin = @import("vec_builtin.zig");
+const str_builtin = @import("str_builtin.zig");
 const strings = @import("strings.zig");
 const lambda = @import("lambda.zig");
 const overflow = @import("overflow.zig");
@@ -245,6 +246,14 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
                 return;
             }
             try isa.movImmToReg(self, tag, Reg.acu);
+            return;
+        }
+    }
+    // str property (`s.len`).
+    if (str_builtin.isStr(self, f.receiver)) {
+        const fname = self.source[f.field.start..f.field.end];
+        if (std.mem.eql(u8, fname, "len")) {
+            try str_builtin.emitLen(self, f.receiver);
             return;
         }
     }
@@ -848,6 +857,12 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
     if (vec_builtin.elemOf(self, m.receiver)) |elem| {
         const mname = self.source[m.method.start..m.method.end];
         try vec_builtin.emitMethod(self, m.receiver, mname, m.args, elem);
+        return;
+    }
+    // str-typed receiver — builtin method (`s.at` / `s.cmp`).
+    if (str_builtin.isStr(self, m.receiver)) {
+        const mname = self.source[m.method.start..m.method.end];
+        try str_builtin.emitMethod(self, m.receiver, mname, m.args);
         return;
     }
     if (m.receiver.* == .ident) {
