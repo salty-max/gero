@@ -139,6 +139,7 @@ const stdlib = @import("typecheck/stdlib.zig");
 const match = @import("typecheck/match.zig");
 const vec_builtin = @import("typecheck/vec_builtin.zig");
 const str_builtin = @import("typecheck/str_builtin.zig");
+const fmtspec = @import("fmtspec.zig");
 const predicates = @import("typecheck/predicates.zig");
 const annotations = @import("typecheck/annotations.zig");
 const relations = @import("typecheck/relations.zig");
@@ -759,6 +760,41 @@ pub const Checker = struct {
         try self.walkStatementSequence(ws.body);
     }
 
+    /// Validate a `$(expr:fmt)` format spec (§3.2.2) against the value's
+    /// type — well-formed, scalar-only, and its type letter + precision
+    /// compatible with the value. Emits `E_TYPE_BAD_FORMAT_SPEC`.
+    fn validateFormatSpec(self: *Checker, ty: ?*const types.Type, span: ast.Span) WalkError!void {
+        const spec = fmtspec.parse(self.lexeme(span)) catch {
+            try self.emitSpan("E_TYPE_BAD_FORMAT_SPEC", span, "malformed format spec — expected `[align][fill][width][.precision][type]`");
+            return;
+        };
+        const t = ty orelse return;
+        const peeled = if (t.* == .reference) t.reference else t;
+        if (peeled.* != .primitive) {
+            try self.emitSpan("E_TYPE_BAD_FORMAT_SPEC", span, "a format spec applies to scalar (primitive) values only");
+            return;
+        }
+        const prim = peeled.primitive;
+        const int_like = switch (prim) {
+            .i8, .u8, .i16, .u16, .char, .bool_ => true,
+            else => false,
+        };
+        const compatible = switch (spec.ty) {
+            .default => true,
+            .str => prim == .str,
+            .dec, .hex_lower, .hex_upper, .bin, .oct, .char => int_like,
+        };
+        if (!compatible) {
+            const ts = try types.render(self.arena, peeled.*);
+            const msg = try std.fmt.allocPrint(self.arena, "the format type in this spec is not valid for a `{s}` value", .{ts});
+            try self.emitSpan("E_TYPE_BAD_FORMAT_SPEC", span, msg);
+            return;
+        }
+        if (spec.precision != null and prim != .str and prim != .fixed) {
+            try self.emitSpan("E_TYPE_BAD_FORMAT_SPEC", span, "precision (`.N`) applies to `str` / `fixed` values only");
+        }
+    }
+
     fn checkFor(self: *Checker, fs: ast.ForStmt) WalkError!void {
         const elem_ty = try self.forElementType(fs);
         if (fs.step) |st| _ = try self.inferExpr(st, null);
@@ -1168,7 +1204,10 @@ pub const Checker = struct {
             .str_lit => |s| {
                 for (s.parts) |part| switch (part) {
                     .lit => {},
-                    .interp => |ip| _ = try self.inferExpr(ip.expr, null),
+                    .interp => |ip| {
+                        const part_ty = try self.inferExpr(ip.expr, null);
+                        if (ip.format_spec) |fs| try self.validateFormatSpec(part_ty, fs);
+                    },
                 };
                 return try self.primitive(.str);
             },

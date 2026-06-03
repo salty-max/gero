@@ -6,6 +6,7 @@ const isa = @import("isa.zig");
 const archive = @import("archive.zig");
 const class = @import("class.zig");
 const statements = @import("statements.zig");
+const fmtspec = @import("../fmtspec.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -275,9 +276,22 @@ pub fn emitInterpFill(self: *Emitter, sl: ast.StrLitExpr) !void {
             try isa.sys(self, Sys.format_str_to_buf);
         },
         .interp => |ip| {
-            if (ip.format_spec != null) {
-                try self.unsupported(ip.span, "`$(expr:fmt)` format specs");
-                return;
+            if (ip.format_spec) |fs_span| {
+                // `$(expr:fmt)` — format the scalar per the spec into the
+                // buffer via `format_spec_to_buf` (the spec is a compile-time
+                // literal; the typechecker has validated it).
+                const spec = fmtspec.parse(self.source[fs_span.start..fs_span.end]) catch {
+                    try self.unsupported(ip.span, "malformed `$(expr:fmt)` format spec");
+                    return;
+                };
+                const params = packFormatSpec(self, ip.expr, spec);
+                try isa.pushReg(self, Reg.r1); // save cursor across expr eval
+                try self.emitExpr(ip.expr); // acu = value (str pointer for `s`)
+                try isa.popReg(self, Reg.r1); // cursor back in r1
+                try isa.movImmToReg(self, params.r2, Reg.r2);
+                try isa.movImmToReg(self, params.r3, Reg.r3);
+                try isa.sys(self, Sys.format_spec_to_buf);
+                continue;
             }
             if (!self.interpFormattable(ip.expr)) {
                 const slot = cursor_slot orelse blk: {
@@ -309,12 +323,68 @@ pub fn emitInterpFill(self: *Emitter, sl: ast.StrLitExpr) !void {
     };
 }
 
+/// Pack `format_spec_to_buf`'s `r2` / `r3` params for `expr` formatted per
+/// `spec`. The effective output type + signedness come from the value's
+/// type when the spec leaves them implicit (no explicit type letter).
+fn packFormatSpec(self: *Emitter, expr: *const ast.Expr, spec: fmtspec.Spec) struct { r2: u16, r3: u16 } {
+    var signed = false;
+    // Effective type code (the numeric codes are the `docs/isa.md` contract):
+    // the explicit spec type, or the value's natural rendering.
+    const type_code: u16 = switch (spec.ty) {
+        .dec => blk: {
+            signed = !self.isUnsignedInt(expr);
+            break :blk 0;
+        },
+        .hex_lower => 1,
+        .hex_upper => 2,
+        .bin => 3,
+        .oct => 4,
+        .str => 5,
+        .char => 6,
+        .default => if (self.isPrimitiveType(expr, .char))
+            6
+        else if (self.isPrimitiveType(expr, .fixed))
+            7
+        else if (self.isPrimitiveType(expr, .str))
+            5
+        else dec: {
+            signed = !self.isUnsignedInt(expr);
+            break :dec 0;
+        },
+    };
+    const align_code: u16 = switch (spec.alignment) {
+        .default => 0,
+        .left => 1,
+        .right => 2,
+        .center => 3,
+    };
+    var r3: u16 = type_code | (align_code << Sys.FmtSpec.align_shift);
+    if (signed) r3 |= Sys.FmtSpec.flag_signed;
+    if (spec.zero_pad) r3 |= Sys.FmtSpec.flag_zero_pad;
+    if (spec.precision) |p| {
+        r3 |= Sys.FmtSpec.flag_has_precision;
+        // @as: widen the u8 precision into its r3 bit field.
+        r3 |= @as(u16, p) << Sys.FmtSpec.precision_shift;
+    }
+    // @as: width + fill are u8 fields packed into the 16-bit r2 word.
+    const r2: u16 = @as(u16, spec.width) | (@as(u16, spec.fill) << Sys.FmtSpec.fill_shift);
+    return .{ .r2 = r2, .r3 = r3 };
+}
+
 /// Walk a string literal's parts inside `print`, emitting the
 /// per-part syscall for each. Zero-alloc per spec §4.9: no
 /// runtime buffer materializes — each part writes to `host.out`
 /// directly. The interpolated value's type drives the syscall
 /// pick (same dispatch as `emitPrintArg` for non-literal args).
 pub fn emitPrintStrLit(self: *Emitter, sl: ast.StrLitExpr) !void {
+    // A format spec needs the buffer formatter (`format_spec_to_buf` writes
+    // to a cursor, not the host) — build the whole string in a heap buffer,
+    // then print it once (vs the zero-alloc per-part host path below).
+    for (sl.parts) |part| if (part == .interp and part.interp.format_spec != null) {
+        try emitStrLitExpr(self, sl);
+        try isa.sys(self, Sys.print_str);
+        return;
+    };
     for (sl.parts) |part| switch (part) {
         .lit => |lp| {
             const raw = self.source[lp.span.start..lp.span.end];

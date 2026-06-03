@@ -1859,44 +1859,42 @@ test "codegen: interpolating a value whose type has no rendering is a clean erro
     , "E_CODEGEN_UNSUPPORTED");
 }
 
-test "codegen: format-spec `$(x:d)` is rejected with E_CODEGEN_UNSUPPORTED" {
-    const source =
+test "codegen: `$(expr:fmt)` format specs render via format_spec_to_buf" {
+    try runAndExpect(
         \\def main()
-        \\  let x: i16 = 1
-        \\  let s: str = "$(x:d)"
+        \\  let addr: u16 = 1266
+        \\  print "addr=$(addr:04X)"
+        \\  let n: i16 = 42
+        \\  print "n=$(n:03d)"
+        \\  print "r=$(n:>5d)"
+        \\  let neg: i16 = 0 - 42
+        \\  print "neg=$(neg:04d)"
+        \\end
+    , "addr=04F2\nn=042\nr=   42\nneg=-042\n");
+}
+
+test "codegen: a format spec bound to a `let` formats into the heap buffer" {
+    try runAndExpect(
+        \\def main()
+        \\  let b: u16 = 180
+        \\  let s: str = "b=$(b:08b)"
         \\  print s
         \\end
-    ;
-    var stream = try gero.lang.tokenize(alloc, source);
-    defer stream.deinit();
-    var tree = try gero.lang.parse(alloc, source, stream);
-    defer tree.deinit();
-    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
-    defer checked.deinit();
-
-    var compiled = try gero.lang.compile(alloc, source, &checked, .{});
-    defer compiled.deinit();
-    try std.testing.expect(compiled.hasErrors());
-
-    var found = false;
-    for (compiled.diagnostics) |d| {
-        if (std.mem.eql(u8, d.code, "E_CODEGEN_UNSUPPORTED")) found = true;
-    }
-    try std.testing.expect(found);
+    , "b=10110100\n");
 }
 
 test "codegen: diagnostic message slices outlive `compile`" {
-    // Regression: `Diagnostic.message` strings allocated by
-    // `Emitter.unsupported` live on `Compiled.diag_arena`. A prior
-    // shape kept them on a scratch arena that deinit'd before
-    // `compile` returned, leaving the slices dangling. This test
-    // reads `.message` AFTER `compile` returns to prove the arena
-    // outlives the call.
+    // `Diagnostic.message` strings allocated by `Emitter.unsupported`
+    // live on `Compiled.diag_arena`; reading `.message` AFTER `compile`
+    // returns proves the arena outlives the call. Uses a value-returned
+    // fixed array (not yet lowered) to provoke an `E_CODEGEN_UNSUPPORTED`.
     const source =
+        \\def make() -> [i16; 3]
+        \\  return [1, 2, 3]
+        \\end
         \\def main()
-        \\  let x: i16 = 1
-        \\  let s: str = "$(x:d)"
-        \\  print s
+        \\  let a = make()
+        \\  print a[0]
         \\end
     ;
     var stream = try gero.lang.tokenize(alloc, source);
@@ -1912,7 +1910,7 @@ test "codegen: diagnostic message slices outlive `compile`" {
     var checked_message = false;
     for (compiled.diagnostics) |d| {
         if (std.mem.eql(u8, d.code, "E_CODEGEN_UNSUPPORTED")) {
-            try std.testing.expect(std.mem.indexOf(u8, d.message, "format specs") != null);
+            try std.testing.expect(std.mem.indexOf(u8, d.message, "does not yet support") != null);
             checked_message = true;
         }
     }
