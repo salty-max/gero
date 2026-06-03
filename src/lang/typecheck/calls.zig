@@ -223,11 +223,19 @@ fn checkStrArg(self: *Checker, arg: *const ast.Expr) WalkError!void {
 /// param last. Parser may already enforce; this check routes any
 /// out-of-place variadic through `E_VAR_NOT_LAST`.
 pub fn checkVariadicPosition(self: *Checker, d: ast.DefDecl) WalkError!void {
+    var is_variadic = false;
     for (d.params, 0..) |p, i| {
-        if (p.variadic and i != d.params.len - 1) {
+        if (!p.variadic) continue;
+        is_variadic = true;
+        if (i != d.params.len - 1) {
             try self.emitSpan("E_VAR_NOT_LAST", p.span, "variadic parameter must be the last in the parameter list");
             return;
         }
+    }
+    // A variadic def specializes per call-site arity (§4.6.2); `@inline`
+    // splices one shared body, which can't express a per-arity layout.
+    if (is_variadic and annotations.hasAnnotation(self, d.annotations, "inline")) {
+        try self.emitSpan("E_VAR_INLINE", d.name, "a variadic function cannot be `@inline` — it already specializes per call-site arity (§4.6.2)");
     }
 }
 
@@ -281,7 +289,54 @@ pub fn checkVariadicCall(
             pivot = at;
         }
     }
+    // Fold this call's element type + arity into the callee's
+    // whole-program variadic facts (§4.6.2) so the body can be
+    // type-checked once against `args: (T, …, T)` of the max arity.
+    if (directCalleeName(self, c.callee)) |name| {
+        const arity: u32 = @intCast(c.args.len - fixed_count);
+        try recordVariadic(self, name, pivot, arity, c.span);
+    }
     return f.ret;
+}
+
+/// Fold one call site's `(elem, arity)` into the callee's whole-program
+/// variadic facts (§4.6.2). The element type unifies across call sites;
+/// a divergent type is reported through `E_VAR_INCONSISTENT_TYPE`.
+fn recordVariadic(
+    self: *Checker,
+    name: []const u8,
+    elem: ?*const types.Type,
+    arity: u32,
+    span: ast.Span,
+) WalkError!void {
+    const gop = try self.variadic_info.getOrPut(self.arena, name);
+    if (!gop.found_existing) gop.value_ptr.* = .{};
+    if (gop.value_ptr.min_arity) |lo| {
+        if (arity < lo) gop.value_ptr.min_arity = arity;
+    } else gop.value_ptr.min_arity = arity;
+    try addArity(self, &gop.value_ptr.arities, arity);
+    const e = elem orelse return;
+    if (gop.value_ptr.elem) |existing| {
+        if (!relations.assignable(e.*, existing.*) or !relations.assignable(existing.*, e.*)) {
+            const had = try types.render(self.arena, existing.*);
+            const got = try types.render(self.arena, e.*);
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "variadic `{s}` is called with element type `{s}` here but `{s}` elsewhere — a variadic function has one element type across all call sites",
+                .{ name, got, had },
+            );
+            try self.emitSpan("E_VAR_INCONSISTENT_TYPE", span, msg);
+        }
+    } else {
+        gop.value_ptr.elem = e;
+    }
+}
+
+/// Add `arity` to a variadic def's distinct-arity set (deduped). The
+/// set drives one codegen specialization per arity (§4.6.2).
+fn addArity(self: *Checker, set: *std.ArrayListUnmanaged(u32), arity: u32) WalkError!void {
+    for (set.items) |a| if (a == arity) return;
+    try set.append(self.arena, arity);
 }
 
 /// Bake-context call rule (§3.8): only `bake def` functions may be

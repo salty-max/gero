@@ -32,7 +32,10 @@ pub fn emitMethodAsDef(self: *Emitter, def: *const ast.DefDecl, class_name: []co
     return emitDefWithLabel(self, def, .regular, label);
 }
 
-fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, label: []const u8) !void {
+/// Emit `def`'s prologue + body + epilogue under `label` (a bare name,
+/// a mangled `Class.method`, or a variadic `name$N` specialization).
+/// `kind` selects the entry / regular epilogue shape.
+pub fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, label: []const u8) !void {
     // `@bank N` routes this def's body bytes + resolved address into a
     // bank window; `@interrupt N` swaps the epilogue from `ret` to `rti`.
     var bank_target: ?u8 = null;
@@ -102,7 +105,15 @@ fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, labe
             break :blk 4;
         } else @intCast(param_ofs);
         try self.params.put(self.arena, dup_p, ofs);
-        param_ofs += self.paramWidthAligned(p);
+        // The variadic `args` slot spans this specialization's vararg
+        // count, word-strided (each vararg pushed as a full word). Its
+        // width sets where a struct-returning variadic's hidden sret
+        // pointer lands; the body reads slots via word offsets.
+        param_ofs += if (p.variadic)
+            // @as: vararg count → the slot's word-strided byte width.
+            @as(i32, if (self.current_variadic) |v| v.arity else 0) * 2
+        else
+            self.paramWidthAligned(p);
     }
 
     // A struct-returning def takes a hidden sret destination pointer

@@ -2,6 +2,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const typecheck = @import("../typecheck.zig");
+const diag_mod = @import("../diagnostic.zig");
 const annotations = @import("annotations.zig");
 const calls = @import("calls.zig");
 const predicates = @import("predicates.zig");
@@ -19,10 +20,70 @@ const WalkError = error{OutOfMemory};
 
 /// Type-check a `def`: annotations, variadic position, params +
 /// return type, and the body in a fresh scope.
+///
+/// A variadic `def` has no concrete element type at its declaration —
+/// `T` is pinned by call sites (§4.6.2). Its body walk is deferred to
+/// `resolveDeferredVariadics`, run after the whole program is seen, so
+/// `args` binds to the unified `(T, …, T)` tuple rather than an
+/// untyped slot.
 pub fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
     try annotations.validateAnnotations(self, d.annotations, T.DEF);
     if (d.is_bake) try calls.checkBakeAnnotationConflicts(self, d.annotations);
     try calls.checkVariadicPosition(self, d);
+
+    // Bake fn return type must be bakeable. `Vec(T)` and `&T`
+    // are runtime-only.
+    if (d.is_bake) if (d.ret_type) |r| {
+        const rt = try type_resolve.resolveType(self, r);
+        if (!predicates.isBakeableType(rt.*)) {
+            const ty_s = try types.render(self.arena, rt.*);
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "`bake def` cannot return `{s}` — only types representable as static data are bakeable",
+                .{ty_s},
+            );
+            try self.emitSpan("E_BAKE_NON_BAKEABLE_VALUE", r.span(), msg);
+        }
+    };
+
+    if (d.ret_type == null and self.bodyMentions(d.body, self.lexeme(d.name))) {
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "recursive function `{s}` needs an explicit return type",
+            .{self.lexeme(d.name)},
+        );
+        try self.emitSpan("E_TYPE_RECURSIVE_NO_RET", d.name, msg);
+    }
+
+    if (isVariadicDef(d)) {
+        // A top-level variadic def is monomorphized: defer its body until
+        // call sites pin `T` + the arity (the registry holds the stable
+        // decl pointer the deferred walk replays from). A variadic method
+        // isn't monomorphized — the method-call path carries no variadic
+        // arity — so its body is checked here with an untyped `args` slot.
+        if (self.def_registry.get(self.lexeme(d.name))) |ptr| {
+            try self.deferred_variadic.append(self.arena, ptr);
+            return;
+        }
+    }
+
+    try walkDefBody(self, d, null);
+}
+
+/// `true` when `d`'s last parameter is the variadic `name: ...` slot.
+pub fn isVariadicDef(d: ast.DefDecl) bool {
+    return d.params.len > 0 and d.params[d.params.len - 1].variadic;
+}
+
+/// Walk a `def` body in a fresh scope: bind params, set the bake /
+/// no-capture / return-type context, then check statements. For a
+/// variadic def, `variadic_args` carries the whole-program `(T, …, T)`
+/// tuple to bind the trailing `args` slot to.
+pub fn walkDefBody(
+    self: *Checker,
+    d: ast.DefDecl,
+    variadic_args: ?*const types.Type,
+) WalkError!void {
     const saved_scope = self.current_scope;
     var fn_scope: Scope = .init(self.arena, saved_scope);
     self.current_scope = &fn_scope;
@@ -46,23 +107,10 @@ pub fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
     self.in_no_capture = saved_nc or annotations.defHasNoCapture(self, d);
     defer self.in_no_capture = saved_nc;
 
-    // Bake fn return type must be bakeable. `Vec(T)` and `&T`
-    // are runtime-only.
-    if (d.is_bake) if (d.ret_type) |r| {
-        const rt = try type_resolve.resolveType(self, r);
-        if (!predicates.isBakeableType(rt.*)) {
-            const ty_s = try types.render(self.arena, rt.*);
-            const msg = try std.fmt.allocPrint(
-                self.arena,
-                "`bake def` cannot return `{s}` — only types representable as static data are bakeable",
-                .{ty_s},
-            );
-            try self.emitSpan("E_BAKE_NON_BAKEABLE_VALUE", r.span(), msg);
-        }
-    };
-
     for (d.params) |p| {
-        const pt: ?*const types.Type = if (p.type_ann) |t|
+        const pt: ?*const types.Type = if (p.variadic)
+            variadic_args
+        else if (p.type_ann) |t|
             try type_resolve.resolveType(self, t)
         else
             null;
@@ -73,21 +121,88 @@ pub fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
         });
     }
 
-    if (d.ret_type == null and self.bodyMentions(d.body, self.lexeme(d.name))) {
-        const msg = try std.fmt.allocPrint(
-            self.arena,
-            "recursive function `{s}` needs an explicit return type",
-            .{self.lexeme(d.name)},
-        );
-        try self.emitSpan("E_TYPE_RECURSIVE_NO_RET", d.name, msg);
-    }
-
     // Track ret type for `return expr` checking inside the body.
     const saved_ret = self.current_ret_ty;
     self.current_ret_ty = if (d.ret_type) |r| try type_resolve.resolveType(self, r) else null;
     defer self.current_ret_ty = saved_ret;
 
+    // Name the variadic slot so an out-of-range `args.N` reports against
+    // the call-site minimum, not a bare tuple width.
+    const saved_var = self.current_variadic_param;
+    self.current_variadic_param = if (variadic_args != null and d.params.len > 0)
+        self.lexeme(d.params[d.params.len - 1].name)
+    else
+        null;
+    defer self.current_variadic_param = saved_var;
+
     try self.walkStatementSequence(d.body);
+}
+
+/// Pass 3: type-check deferred variadic bodies (§4.6.2). Each body
+/// binds its trailing `args` to the whole-program `(T, …, T)` tuple
+/// pinned by call sites. A variadic body may itself call another
+/// variadic def, so discover those calls with diagnostics muted until
+/// the facts stabilize, then commit one checked walk per body.
+pub fn resolveDeferredVariadics(self: *Checker) WalkError!void {
+    if (self.deferred_variadic.items.len == 0) return;
+
+    // Discovery converges in at most one round per deferred def: each
+    // round can only extend the chain by one variadic callee.
+    var rounds: usize = 0;
+    while (rounds <= self.deferred_variadic.items.len) : (rounds += 1) {
+        const before = variadicProgress(self);
+        try walkDeferredVariadics(self, true);
+        if (variadicProgress(self) == before) break;
+    }
+    try walkDeferredVariadics(self, false);
+}
+
+/// Walk every deferred variadic body once, binding `args` to the
+/// current whole-program tuple. When `mute`, diagnostics are routed to
+/// a scratch list and dropped — the walk exists only to surface nested
+/// variadic calls into `variadic_info`.
+fn walkDeferredVariadics(self: *Checker, mute: bool) WalkError!void {
+    const saved = self.diagnostics;
+    defer self.diagnostics = saved;
+    var scratch: std.ArrayList(diag_mod.Diagnostic) = .empty;
+    defer scratch.deinit(self.diag_alloc);
+    if (mute) self.diagnostics = &scratch;
+
+    for (self.deferred_variadic.items) |decl| {
+        const info = self.variadic_info.get(self.lexeme(decl.name)) orelse continue;
+        // No call site pinned `T`: the def is uninstantiable, so there
+        // is nothing to monomorphize and no element type to check against.
+        const elem = info.elem orelse continue;
+        const args_ty = try variadicArgsTuple(self, elem, info.min_arity orelse 0);
+        try walkDefBody(self, decl.*, args_ty);
+    }
+}
+
+/// Change metric for the discovery fixpoint: a rolling combine over
+/// each entry's min arity + element-pinned flag. Any change to the
+/// whole-program facts changes the value, so equality across two
+/// rounds means they have stabilized.
+fn variadicProgress(self: *const Checker) usize {
+    var acc: usize = 0;
+    var it = self.variadic_info.iterator();
+    while (it.next()) |e| {
+        const lo = e.value_ptr.min_arity orelse 0;
+        const pinned: usize = if (e.value_ptr.elem != null) 1 else 0;
+        acc = acc *% 31 +% (lo *% 2 +% pinned + 1);
+    }
+    return acc;
+}
+
+/// Build the internal `(T, …, T)` tuple of `arity` slots a variadic
+/// body sees as `args`. Length is the call-site maximum, so it may
+/// exceed the §3.4 user-tuple cap — this aggregate is compiler-internal
+/// and never surfaces as a written type.
+fn variadicArgsTuple(self: *Checker, elem: *const types.Type, arity: u32) WalkError!*const types.Type {
+    const slots = try self.arena.alloc(*const types.Type, arity);
+    for (slots) |*s| s.* = elem;
+    const out = try self.arena.create(types.Type);
+    out.* = .{ .tuple = slots };
+    return out;
 }
 
 /// Type-check a `class`: annotations, fields, methods, inheritance +

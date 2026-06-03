@@ -575,6 +575,8 @@ help: simplify the computation, or precompute the table with a
 |------|---------|
 | `E_VAR_NOT_LAST` | Variadic parameter isn't the last in the list (parse-time). |
 | `E_VAR_HETEROGENEOUS` | Call site mixes types in the variadic slot. |
+| `E_VAR_INCONSISTENT_TYPE` | Two call sites pass different element types — a variadic function has one element type `T` across the whole program (§4.6.2). |
+| `E_VAR_INLINE` | A variadic `def` is marked `@inline` — it already specializes per call-site arity, so the two are mutually exclusive (§4.6.2). |
 | `E_VAR_NO_DEFAULT` | Variadic parameter declared with a default value. |
 
 **Mockup — heterogeneous call:**
@@ -815,6 +817,8 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_BAKE_FORBIDDEN_CALL` | Bake | v0.3 |
 | `E_VAR_NOT_LAST` | Variadic | v0.3 |
 | `E_VAR_HETEROGENEOUS` | Variadic | v0.3 |
+| `E_VAR_INCONSISTENT_TYPE` | Variadic | v0.3 |
+| `E_VAR_INLINE` | Variadic | v0.3 |
 | `E_VAR_NO_DEFAULT` | Variadic | v0.3 |
 | `E_CAST_INVALID` | Casts | v0.3 |
 | `E_CAST_PRECISION_LOSS` | Casts | v0.3 |

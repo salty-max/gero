@@ -16,6 +16,10 @@ pub const CheckedProgram = struct {
     /// Inferred type for every walked expression. `null` lookups
     /// mean the type couldn't be inferred.
     expr_types: std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type),
+    /// Whole-program variadic facts keyed by `def` name (§4.6.2):
+    /// element type + distinct call-site arities. Codegen emits one
+    /// specialization per arity. Backed by `type_arena`.
+    variadics: std.StringHashMapUnmanaged(VariadicInfo),
     type_arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
 
@@ -34,6 +38,19 @@ pub const CheckedProgram = struct {
     /// Inferred type for `e`, or `null` if missing.
     pub fn typeOf(self: *const CheckedProgram, e: *const ast.Expr) ?*const types.Type {
         return self.expr_types.get(e);
+    }
+
+    /// Element type `T` of variadic `def` `name`, or `null` if `name`
+    /// isn't a (called) variadic def.
+    pub fn variadicElem(self: *const CheckedProgram, name: []const u8) ?*const types.Type {
+        return (self.variadics.get(name) orelse return null).elem;
+    }
+
+    /// Distinct call-site arities of variadic `def` `name` (empty when
+    /// it isn't a called variadic def). One codegen specialization each.
+    pub fn variadicArities(self: *const CheckedProgram, name: []const u8) []const u32 {
+        const info = self.variadics.get(name) orelse return &.{};
+        return info.arities.items;
     }
 };
 
@@ -70,6 +87,7 @@ pub fn typecheck(
         .module_scope = &module_scope,
         .current_scope = &module_scope,
         .current_ret_ty = null,
+        .current_variadic_param = null,
         .current_class_extends = null,
         .current_class_name = null,
         .non_nil = .{},
@@ -77,6 +95,8 @@ pub fn typecheck(
         .struct_registry = .{},
         .class_registry = .{},
         .def_registry = .{},
+        .variadic_info = .{},
+        .deferred_variadic = .empty,
         .mmio_names = .{},
         .fn_locals = null,
         .tuple_correlations = .{},
@@ -125,10 +145,15 @@ pub fn typecheck(
     // Pass 2: walk + resolve + infer + check.
     try c.walkStatementSequence(program.statements);
 
+    // Pass 3: type-check variadic bodies against the whole-program
+    // `args: (T, …, T)` tuple their call sites pinned (§4.6.2).
+    try class_check.resolveDeferredVariadics(&c);
+
     return .{
         .program = program,
         .diagnostics = try diagnostics.toOwnedSlice(allocator),
         .expr_types = expr_types,
+        .variadics = c.variadic_info,
         .type_arena = arena,
         .allocator = allocator,
     };
@@ -155,6 +180,19 @@ const calls = @import("typecheck/calls.zig");
 
 const T = annotations.T;
 
+/// Whole-program variadic facts for one variadic `def` (§4.6.2): the
+/// unified element type `T` across its call sites, the *smallest* arity
+/// seen, and the set of distinct arities. The body type-checks once
+/// against `args: (T, …, T)` of `min_arity` — an index valid only for a
+/// larger call is rejected, since the smallest call cannot supply it.
+/// Codegen emits one specialization per entry of `arities`. `min_arity`
+/// is null until the first call site is recorded.
+pub const VariadicInfo = struct {
+    elem: ?*const types.Type = null,
+    min_arity: ?u32 = null,
+    arities: std.ArrayListUnmanaged(u32) = .empty,
+};
+
 /// Stateful walker that runs resolution + inference + checking.
 /// Sub-modules under `typecheck/` take a `*Checker` and call back
 /// into its public methods.
@@ -174,6 +212,10 @@ pub const Checker = struct {
     /// Used as a hint for `return expr` so int literals pin to the
     /// declared return type.
     current_ret_ty: ?*const types.Type,
+    /// Name of the trailing `args` slot while type-checking a variadic
+    /// body, else `null`. Lets an out-of-range `args.N` report against
+    /// the call-site minimum arity rather than a bare tuple width.
+    current_variadic_param: ?[]const u8,
     /// `extends Parent` span when inside a class method. `null`
     /// elsewhere. Drives `super` resolution.
     current_class_extends: ?ast.Span,
@@ -191,6 +233,14 @@ pub const Checker = struct {
     class_registry: std.StringHashMapUnmanaged(*const ast.ClassDecl),
     /// Top-level `def` name → decl pointer.
     def_registry: std.StringHashMapUnmanaged(*const ast.DefDecl),
+    /// Variadic `def` name → its whole-program element type `T` + the max
+    /// arity seen across call sites (§4.6.2). Accumulated by
+    /// `checkVariadicCall` during the main walk; consumed by the deferred
+    /// pass that type-checks each variadic body with `args: (T, …, T)`.
+    variadic_info: std.StringHashMapUnmanaged(VariadicInfo),
+    /// Variadic defs whose bodies are deferred until `variadic_info` is
+    /// fully populated (the element type comes from call sites).
+    deferred_variadic: std.ArrayListUnmanaged(*const ast.DefDecl),
     /// Module-level `let`s annotated `@addr`. Accessing from a
     /// bake context emits `E_BAKE_MMIO_ACCESS`.
     mmio_names: std.StringHashMapUnmanaged(void),
@@ -324,6 +374,14 @@ pub const Checker = struct {
     /// Delegated to `typecheck/diagnostics.zig`.
     pub fn lexeme(self: *const Checker, span: ast.Span) []const u8 {
         return diag_check.lexeme(self, span);
+    }
+
+    /// The variadic `args` slot name when `e` is a bare reference to it
+    /// inside the variadic body currently being checked, else `null`.
+    fn variadicReceiverName(self: *const Checker, e: *const ast.Expr) ?[]const u8 {
+        const vp = self.current_variadic_param orelse return null;
+        const name = flow.identName(self, e) orelse return null;
+        return if (std.mem.eql(u8, name, vp)) vp else null;
     }
 
     /// Delegated to `typecheck/diagnostics.zig`.
@@ -1339,8 +1397,10 @@ pub const Checker = struct {
                 }
                 const elems = peeled.tuple;
                 if (ti.index >= elems.len) {
-                    const suffix: []const u8 = if (elems.len == 1) "" else "s";
-                    const msg = try std.fmt.allocPrint(self.arena, "tuple index {d} out of range — tuple has {d} element{s}", .{ ti.index, elems.len, suffix });
+                    const msg = if (self.variadicReceiverName(ti.receiver)) |vname|
+                        try std.fmt.allocPrint(self.arena, "`{s}.{d}` is out of range — the smallest call to this variadic function supplies only {d} argument{s}, so index {d} isn't always present", .{ vname, ti.index, elems.len, plural(elems.len), ti.index })
+                    else
+                        try std.fmt.allocPrint(self.arena, "tuple index {d} out of range — tuple has {d} element{s}", .{ ti.index, elems.len, plural(elems.len) });
                     try self.emitSpan("E_TYPE_TUPLE_INDEX_OOR", ti.span, msg);
                     return null;
                 }
@@ -1767,4 +1827,9 @@ fn isPlaceExpr(e: *const ast.Expr) bool {
 fn peelReference(t: ?*const types.Type) ?*const types.Type {
     const ty = t orelse return null;
     return if (ty.* == .reference) ty.reference else ty;
+}
+
+/// English plural suffix for a count: `""` for one, `"s"` otherwise.
+fn plural(n: usize) []const u8 {
+    return if (n == 1) "" else "s";
 }
