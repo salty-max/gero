@@ -455,6 +455,9 @@ Annotation semantics and conflicts. Per spec §3.7.
 | `E_PRIVATE_ACCESS` | Access to a `@private` field / method from outside the declaring class. |
 | `E_STATIC_HAS_SELF` | `@static` method declares a `self` parameter. |
 | `E_METHOD_NO_SELF` | Non-`@static` method doesn't declare `self` as its first parameter (the receiver would alias the first param). |
+| `E_INSTANCE_AS_STATIC` | An instance method called as `ClassName.method(...)` — call it on an instance. |
+| `E_STATIC_ON_INSTANCE` | A `@static` method called on an instance — call it as `ClassName.method(...)`. |
+| `E_STATIC_SELF` | `self` / `super` referenced inside a `@static` method body (no receiver). |
 
 **Mockup — `@inline` too large:**
 
@@ -815,6 +818,9 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_PRIVATE_ACCESS` | Annotations | v0.3 |
 | `E_STATIC_HAS_SELF` | Annotations | v0.3 |
 | `E_METHOD_NO_SELF` | Annotations | v0.3 |
+| `E_INSTANCE_AS_STATIC` | Annotations | v0.3 |
+| `E_STATIC_ON_INSTANCE` | Annotations | v0.3 |
+| `E_STATIC_SELF` | Annotations | v0.3 |
 | `E_BAKE_MMIO_ACCESS` | Bake | v0.3 |
 | `E_BAKE_NON_BAKEABLE_VALUE` | Bake | v0.3 |
 | `E_BAKE_ASM_INSIDE` | Bake | v0.3 |

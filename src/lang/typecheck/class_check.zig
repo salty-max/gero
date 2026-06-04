@@ -96,6 +96,12 @@ pub fn walkDefBody(
     self.current_scope = &fn_scope;
     defer self.current_scope = saved_scope;
 
+    // A `@static` method body has no receiver — `self` / `super` are
+    // unavailable. Set inside a class only (a free def isn't `@static`).
+    const saved_static = self.in_static_method;
+    self.in_static_method = self.current_class_name != null and annotations.hasAnnotation(self, d.annotations, "static");
+    defer self.in_static_method = saved_static;
+
     // Fresh `fn_locals` per fn — params and inner `let`s land
     // here; nested `def`s push their own frame too so an inner
     // fn doesn't inherit outer-fn locals.

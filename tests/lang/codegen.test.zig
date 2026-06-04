@@ -1809,6 +1809,103 @@ test "codegen: a struct-returning variadic method rides the sret ABI" {
     , "11\n22\n");
 }
 
+test "codegen: a `@static` method is called as `ClassName.method` with no self" {
+    try runAndExpect(
+        \\class Box
+        \\  @static
+        \\  def make(a: i16, b: i16) -> i16
+        \\    return a + b
+        \\  end
+        \\end
+        \\def main()
+        \\  print Box.make(10, 5)
+        \\end
+    , "15\n");
+}
+
+test "codegen: a `@static` method can return a struct via the sret ABI" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\class Mk
+        \\  @static
+        \\  def origin() -> P
+        \\    return P { x: 0, y: 7 }
+        \\  end
+        \\end
+        \\def main()
+        \\  let p = Mk.origin()
+        \\  print p.y
+        \\end
+    , "7\n");
+}
+
+test "codegen: a variadic `@static` method monomorphizes per arity" {
+    try runAndExpect(
+        \\class Box
+        \\  @static
+        \\  def fmt(f: str, args: ...) -> str
+        \\    return str.format(f, args)
+        \\  end
+        \\end
+        \\def main()
+        \\  print Box.fmt("{0}/{1}", 3, 4)
+        \\  print Box.fmt("one {0}", 9)
+        \\end
+    , "3/4\none 9\n");
+}
+
+test "codegen: a tuple argument passes by value through a method call" {
+    // pushSretAndArgs must copy the tuple's bytes, not just its base
+    // address — exercised here through a `@static` method.
+    try runAndExpect(
+        \\class Math
+        \\  @static
+        \\  def sum_pair(p: (i16, i16)) -> i16
+        \\    return p.0 + p.1
+        \\  end
+        \\end
+        \\def main()
+        \\  let t = (10, 32)
+        \\  print Math.sum_pair(t)
+        \\end
+    , "42\n");
+}
+
+test "codegen: a tuple-returning method rides the sret ABI" {
+    // The returns-sret test must include tuple returns, or the callee
+    // writes its result through an un-pushed destination pointer.
+    try runAndExpect(
+        \\class Maker
+        \\  @static
+        \\  def pair() -> (i16, i16)
+        \\    return (40, 2)
+        \\  end
+        \\end
+        \\def main()
+        \\  let t = Maker.pair()
+        \\  print t.0 + t.1
+        \\end
+    , "42\n");
+}
+
+test "codegen: a value binding shadows a same-named class in receiver position" {
+    try runAndExpect(
+        \\class M
+        \\  @static
+        \\  def id(x: i16) -> i16
+        \\    return x + 1
+        \\  end
+        \\end
+        \\def main()
+        \\  let M = 5
+        \\  print M
+        \\end
+    , "5\n");
+}
+
 test "codegen: print of a string literal goes through sys print_str + emits `hi`" {
     try runAndExpect(
         \\def main()

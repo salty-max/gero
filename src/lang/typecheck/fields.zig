@@ -263,6 +263,17 @@ pub fn checkMethodCall(
         return null;
     };
     const method = hit.method;
+    if (annotations.hasAnnotation(self, method.annotations, "static")) {
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "`{s}.{s}` is `@static` — call it as `{s}.{s}(...)`, not on an instance",
+            .{ named_name, method_name, named_name, method_name },
+        );
+        try self.emitSpan("E_STATIC_ON_INSTANCE", m.method, msg);
+        for (m.args) |a| _ = try self.inferExpr(a, null);
+        if (method.ret_type) |r| return try type_resolve.resolveType(self, r);
+        return try self.primitive(.nil_);
+    }
     if (annotations.hasAnnotation(self, method.annotations, "private")) {
         const owner_name = self.lexeme(hit.owner.name);
         const visible = if (self.current_class_name) |cn| std.mem.eql(u8, cn, owner_name) else false;
@@ -303,6 +314,69 @@ pub fn checkMethodCall(
                 try type_resolve.resolveType(self, t)
             else
                 null;
+            const skip = if (param_ty) |pt| predicates.isNilType(pt.*) else true;
+            const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
+            if (!skip and param_ty != null and arg_ty != null) {
+                try self.checkStoreCompat(arg.span(), param_ty.?, arg_ty.?);
+            }
+        }
+    }
+    if (method.ret_type) |r| return try type_resolve.resolveType(self, r);
+    return try self.primitive(.nil_);
+}
+
+/// Type-check a `@static` method call `ClassName.method(args)` (§3.7) —
+/// the receiver is a class *name*, not an instance, so there's no `self`.
+/// Resolves the method, requires it be `@static`, checks the args, and
+/// (for a variadic `@static` method) records its per-arity facts. Returns
+/// the method's return type.
+pub fn checkStaticMethodCall(
+    self: *Checker,
+    m: ast.MethodCallExpr,
+    cd: *const ast.ClassDecl,
+    class_name: []const u8,
+) WalkError!?*const types.Type {
+    const method_name = self.lexeme(m.method);
+    const hit = lookupClassMethodOwner(self, cd, method_name) orelse {
+        const msg = try std.fmt.allocPrint(self.arena, "class `{s}` has no method `{s}`", .{ class_name, method_name });
+        try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED_METHOD", m.method, msg, try self.suggestClassMethod(cd, method_name));
+        for (m.args) |a| _ = try self.inferExpr(a, null);
+        return null;
+    };
+    const method = hit.method;
+    if (!annotations.hasAnnotation(self, method.annotations, "static")) {
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "`{s}.{s}` is an instance method — call it on an instance, not on the class name",
+            .{ class_name, method_name },
+        );
+        try self.emitSpan("E_INSTANCE_AS_STATIC", m.method, msg);
+        for (m.args) |a| _ = try self.inferExpr(a, null);
+        return null;
+    }
+    // A variadic `@static` method records + monomorphizes like any other
+    // (it has no `self`, which `checkVariadicMethodCall` already handles).
+    if (class_check.isVariadicDef(method.*)) {
+        return try calls.checkVariadicMethodCall(self, m, method, self.lexeme(hit.owner.name));
+    }
+    // Fixed-arity: every param is a user arg. A `@static` method takes no
+    // `self` (E_STATIC_HAS_SELF flags it at the decl); skip an illegal one
+    // here so the count reflects user args rather than cascading.
+    const has_self = method.params.len > 0 and std.mem.eql(u8, self.lexeme(method.params[0].name), "self");
+    const skip_count: usize = if (has_self) 1 else 0;
+    const sig_params = method.params[skip_count..];
+    if (m.args.len != sig_params.len) {
+        const suffix: []const u8 = if (sig_params.len == 1) "" else "s";
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "`{s}.{s}` takes {d} argument{s}, called with {d}",
+            .{ class_name, method_name, sig_params.len, suffix, m.args.len },
+        );
+        try self.emitSpan("E_TYPE_ARG_COUNT", m.span, msg);
+        for (m.args) |a| _ = try self.inferExpr(a, null);
+    } else {
+        for (m.args, sig_params) |arg, p| {
+            const param_ty: ?*const types.Type = if (p.type_ann) |t| try type_resolve.resolveType(self, t) else null;
             const skip = if (param_ty) |pt| predicates.isNilType(pt.*) else true;
             const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);
             if (!skip and param_ty != null and arg_ty != null) {

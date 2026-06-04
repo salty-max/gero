@@ -2399,6 +2399,63 @@ test "typecheck: a scalar optional (multi-word) variadic element is rejected" {
     , "E_VAR_AGGREGATE");
 }
 
+test "typecheck: a `@static` method call validates its arguments" {
+    try expectCode(
+        \\class Box
+        \\  @static
+        \\  def make(a: i16) -> i16
+        \\    return a
+        \\  end
+        \\end
+        \\def main()
+        \\  print Box.make("not an int")
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: an instance method called as `ClassName.method` errors" {
+    try expectCode(
+        \\class Box
+        \\  def make(self, a: i16) -> i16
+        \\    return a
+        \\  end
+        \\end
+        \\def main()
+        \\  print Box.make(10)
+        \\end
+    , "E_INSTANCE_AS_STATIC");
+}
+
+test "typecheck: a `@static` method called on an instance errors" {
+    try expectCode(
+        \\class Box
+        \\  @static
+        \\  def make(a: i16) -> i16
+        \\    return a
+        \\  end
+        \\end
+        \\def main()
+        \\  let b = Box()
+        \\  print b.make(10)
+        \\end
+    , "E_STATIC_ON_INSTANCE");
+}
+
+test "typecheck: `self` in a `@static` method body errors" {
+    try expectCode(
+        \\class Box
+        \\  let v: i16
+        \\  @static
+        \\  def make(x: i16) -> i16
+        \\    return self.v + x
+        \\  end
+        \\end
+        \\def main()
+        \\  print Box.make(1)
+        \\end
+    , "E_STATIC_SELF");
+}
+
 test "typecheck: a non-`@static` method must declare `self`" {
     // Without `self`, the call-site receiver (always at fp+4) would alias
     // the first declared param. Applies to variadic + plain methods.

@@ -8,6 +8,7 @@ const value_struct = @import("value_struct.zig");
 const vec_builtin = @import("vec_builtin.zig");
 const variadic = @import("variadic.zig");
 const def_emit = @import("def.zig");
+const archive = @import("archive.zig");
 
 const Emitter = codegen_mod.Emitter;
 const Type = types.Type;
@@ -166,12 +167,15 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
         }
     }
 
-    // A struct- or scalar-`T?`-returning method needs the same sret scratch
-    // buffer as a free fn — size the per-frame scratch to the widest return.
+    // A struct- / tuple- / scalar-`T?`-returning method needs the same sret
+    // scratch buffer as a free fn — size the per-frame scratch to the widest.
     for (cd.methods) |method| {
         const rt = method.ret_type orelse continue;
         if (self.structNameOfTypeAnn(rt.*)) |sname| {
             const w = self.structSlotWidth(sname);
+            if (w > self.global_sret_scratch) self.global_sret_scratch = w;
+        } else if (rt.* == .tuple) {
+            const w = archive.alignUpU16(self.widthOfTypeAnn(rt.*), 2);
             if (w > self.global_sret_scratch) self.global_sret_scratch = w;
         } else if (try self.scalarOptReturnInner(rt.*)) |_| {
             if (Emitter.opt_scalar_size > self.global_sret_scratch) self.global_sret_scratch = Emitter.opt_scalar_size;
@@ -286,50 +290,52 @@ pub fn patchVtableSlots(self: *Emitter) !void {
     }
 }
 
-/// Struct return-type name of `class_name`.`method_name` (resolving
-/// the owner up the inheritance chain), or `null` when it returns a
-/// scalar. Drives the sret convention at the call site.
+/// Return-type annotation of `class_name`.`method_name`, resolving the
+/// owner up the inheritance chain. Uses `resolveMethodOwner` (not the
+/// vtable layout) so it also covers variadic / `@static` methods, which
+/// have no vtable slot. `null` when the method / class is unknown or has
+/// no return annotation.
+fn methodRetTypeAnn(self: *Emitter, class_name: []const u8, method_name: []const u8) ?*const ast.TypeAnn {
+    const res = resolveMethodOwner(self, class_name, method_name) orelse return null;
+    return if (res.method.ret_type) |rt| rt else null;
+}
+
+/// Struct return-type name of `class_name`.`method_name`, or `null` when
+/// it doesn't return a struct. Drives the sret convention at the call site.
 fn methodRetStruct(self: *Emitter, class_name: []const u8, method_name: []const u8) ?[]const u8 {
-    const layout = self.class_layouts.get(class_name) orelse return null;
-    const owner = layout.method_owners.get(method_name) orelse return null;
-    const cd = self.class_decls.get(owner) orelse return null;
-    for (cd.methods) |m| {
-        if (std.mem.eql(u8, self.source[m.name.start..m.name.end], method_name)) {
-            return if (m.ret_type) |rt| self.structNameOfTypeAnn(rt.*) else null;
-        }
-    }
-    return null;
+    const rt = methodRetTypeAnn(self, class_name, method_name) orelse return null;
+    return self.structNameOfTypeAnn(rt.*);
+}
+
+/// `true` when `class_name`.`method_name` returns a tuple by value (rides
+/// the same sret convention as a struct).
+fn methodRetTuple(self: *Emitter, class_name: []const u8, method_name: []const u8) bool {
+    const rt = methodRetTypeAnn(self, class_name, method_name) orelse return false;
+    return rt.* == .tuple;
+}
+
+/// `true` when `class_name`.`method_name` returns a scalar `T?` (the
+/// 4-byte `{present, value}` rides the sret convention like a struct).
+fn methodRetScalarOpt(self: *Emitter, class_name: []const u8, method_name: []const u8) error{OutOfMemory}!bool {
+    const rt = methodRetTypeAnn(self, class_name, method_name) orelse return false;
+    return (try self.scalarOptReturnInner(rt.*)) != null;
+}
+
+/// `true` when a call to `class_name`.`method_name` must pass a hidden
+/// sret destination pointer — i.e. the method returns a struct, tuple,
+/// or scalar `T?` by value.
+fn methodReturnsSret(self: *Emitter, class_name: []const u8, method_name: []const u8) error{OutOfMemory}!bool {
+    return methodRetStruct(self, class_name, method_name) != null or
+        methodRetTuple(self, class_name, method_name) or
+        try methodRetScalarOpt(self, class_name, method_name);
 }
 
 /// Resolved return type of `class_name`.`method_name` (walking the
 /// inheritance chain to the owner), or `null` when the method has no
 /// return annotation or the class / method is unknown.
 pub fn methodReturnType(self: *Emitter, class_name: []const u8, method_name: []const u8) error{OutOfMemory}!?*const Type {
-    const layout = self.class_layouts.get(class_name) orelse return null;
-    const owner = layout.method_owners.get(method_name) orelse return null;
-    const cd = self.class_decls.get(owner) orelse return null;
-    for (cd.methods) |m| {
-        if (std.mem.eql(u8, self.source[m.name.start..m.name.end], method_name)) {
-            const rt = m.ret_type orelse return null;
-            return try self.typeAnnToType(rt.*);
-        }
-    }
-    return null;
-}
-
-/// `true` when `class_name`.`method_name` returns a scalar `T?` (the
-/// 4-byte `{present, value}` rides the sret convention like a struct).
-fn methodRetScalarOpt(self: *Emitter, class_name: []const u8, method_name: []const u8) error{OutOfMemory}!bool {
-    const layout = self.class_layouts.get(class_name) orelse return false;
-    const owner = layout.method_owners.get(method_name) orelse return false;
-    const cd = self.class_decls.get(owner) orelse return false;
-    for (cd.methods) |m| {
-        if (std.mem.eql(u8, self.source[m.name.start..m.name.end], method_name)) {
-            const rt = m.ret_type orelse return false;
-            return (try self.scalarOptReturnInner(rt.*)) != null;
-        }
-    }
-    return false;
+    const rt = methodRetTypeAnn(self, class_name, method_name) orelse return null;
+    return try self.typeAnnToType(rt.*);
 }
 
 /// Push an optional sret destination pointer (this frame's scratch
@@ -354,6 +360,11 @@ fn pushSretAndArgs(self: *Emitter, args: []const *const ast.Expr, sret: bool) !u
             if (self.argStructName(args[i])) |sname| {
                 try value_struct.pushArg(self, args[i], sname);
                 total += self.structSlotWidth(sname);
+                continue;
+            }
+            if (self.tupleElemsOf(args[i])) |elems| {
+                try value_struct.pushTupleArg(self, args[i], elems);
+                total += self.tupleSlotWidth(elems);
                 continue;
             }
             if (self.arrayInfoOf(args[i])) |info| {
@@ -634,8 +645,7 @@ pub fn emitMethodDispatchOnInstance(
     try isa.pushReg(self, Reg.acu);
 
     // 2. Push the optional sret destination + args (sret-aware).
-    const returns_sret = methodRetStruct(self, class_name, method_name) != null or
-        try methodRetScalarOpt(self, class_name, method_name);
+    const returns_sret = try methodReturnsSret(self, class_name, method_name);
     const arg_bytes = try pushSretAndArgs(self, args, returns_sret);
 
     // 3. Reload the instance pointer (spilled at `sp + arg_bytes`),
@@ -705,8 +715,7 @@ pub fn emitVariadicMethodCall(
     try emitInstancePtr(self, recv); // acu = instance pointer
     try isa.pushReg(self, Reg.acu); // spill above args
 
-    const returns_sret = methodRetStruct(self, owner, method_name) != null or
-        try methodRetScalarOpt(self, owner, method_name);
+    const returns_sret = try methodReturnsSret(self, owner, method_name);
     const arg_bytes = try pushSretAndArgs(self, args, returns_sret);
 
     // Reload the spilled instance pointer, push it last so self lands
@@ -718,6 +727,28 @@ pub fn emitVariadicMethodCall(
 
     // Drop self + args + the spilled instance pointer.
     try isa.addImmToReg(self, 2 + arg_bytes + 2, Reg.sp);
+}
+
+/// Lower `ClassName.method(args)` — a `@static` method call (§3.7). No
+/// receiver, so no `self` is pushed: just the optional sret pointer + the
+/// args, then a direct call to `Owner.method` (or `Owner.method$N` for a
+/// variadic `@static` method). `arity` is ignored unless `variadic`.
+pub fn emitStaticMethodCall(
+    self: *Emitter,
+    owner: []const u8,
+    method_name: []const u8,
+    args: []const *const ast.Expr,
+    span: ast.Span,
+    variadic_call: bool,
+    arity: u16,
+) !void {
+    const returns_sret = try methodReturnsSret(self, owner, method_name);
+    const arg_bytes = try pushSretAndArgs(self, args, returns_sret);
+    const base = try methodLabel(self, owner, method_name);
+    const label = if (variadic_call) try variadic.label(self, base, arity) else base;
+    try emitDirectCall(self, label, span);
+    // Drop sret + args — no `self` to clean up.
+    if (arg_bytes > 0) try isa.addImmToReg(self, arg_bytes, Reg.sp);
 }
 
 /// Lower `super.method(args)` — direct call to the named method
@@ -753,8 +784,7 @@ pub fn emitSuperMethodCall(
 
     // Push the optional sret destination + args (sret-aware), then
     // reload self and push it last so it lands at fp+4.
-    const returns_sret = methodRetStruct(self, owner, method_name) != null or
-        try methodRetScalarOpt(self, owner, method_name);
+    const returns_sret = try methodReturnsSret(self, owner, method_name);
     const arg_bytes = try pushSretAndArgs(self, args, returns_sret);
     try isa.movRegOffsetToReg(self, Reg.fp, self_ofs, Reg.r1);
     try isa.pushReg(self, Reg.r1);
@@ -781,8 +811,7 @@ pub fn emitSuperVariadicMethodCall(
         try self.diagFatal(span, "E_CODEGEN_NO_SELF", "codegen: `super.method` used outside a method body");
         return;
     };
-    const returns_sret = methodRetStruct(self, owner, method_name) != null or
-        try methodRetScalarOpt(self, owner, method_name);
+    const returns_sret = try methodReturnsSret(self, owner, method_name);
     const arg_bytes = try pushSretAndArgs(self, args, returns_sret);
     try isa.movRegOffsetToReg(self, Reg.fp, self_ofs, Reg.r1);
     try isa.pushReg(self, Reg.r1);
