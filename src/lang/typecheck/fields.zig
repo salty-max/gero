@@ -239,15 +239,29 @@ pub fn checkMethodCall(
     m: ast.MethodCallExpr,
     recv_ty: ?*const types.Type,
 ) WalkError!?*const types.Type {
-    const rt = recv_ty orelse {
+    const rt0 = recv_ty orelse {
         for (m.args) |a| _ = try self.inferExpr(a, null);
         return null;
     };
+    // Peel a nullable receiver (`Player?`) to its inner type — the
+    // nil-deref was already gated by `checkNotNullableDeref` at the call
+    // arm, so a method call here means the value is statically non-nil.
+    const rt = if (rt0.* == .optional) rt0.optional else rt0;
+    // The receiver isn't a named type (scalar / tuple / array / `Vec`) —
+    // Vec / str / stdlib receivers were already routed away, so this type
+    // has no methods. Reject here, not as a codegen-only failure.
     const named_name = flow.namedNameOf(rt.*) orelse {
+        const ty_s = try types.render(self.arena, rt.*);
+        const msg = try std.fmt.allocPrint(self.arena, "type `{s}` has no method `{s}`", .{ ty_s, self.lexeme(m.method) });
+        try self.emitSpan("E_TYPE_UNDEFINED_METHOD", m.method, msg);
         for (m.args) |a| _ = try self.inferExpr(a, null);
         return null;
     };
+    // A named type that isn't a class — a `struct` or `enum`. Only
+    // classes carry methods (§6).
     const cd = self.class_registry.get(named_name) orelse {
+        const msg = try std.fmt.allocPrint(self.arena, "`{s}` is not a class — it has no method `{s}`", .{ named_name, self.lexeme(m.method) });
+        try self.emitSpan("E_TYPE_UNDEFINED_METHOD", m.method, msg);
         for (m.args) |a| _ = try self.inferExpr(a, null);
         return null;
     };

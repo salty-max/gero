@@ -2456,6 +2456,52 @@ test "typecheck: `self` in a `@static` method body errors" {
     , "E_STATIC_SELF");
 }
 
+test "typecheck: ordering comparison on a struct is rejected" {
+    try expectCode(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def main()
+        \\  let a = P { x: 1 }
+        \\  let b = P { x: 2 }
+        \\  if a < b
+        \\    print 1
+        \\  end
+        \\end
+    , "E_TYPE_NOT_ORDERED");
+}
+
+test "typecheck: ordering comparison on a tuple is rejected" {
+    try expectCode(
+        \\def main()
+        \\  if (1, 2) < (1, 3)
+        \\    print 1
+        \\  end
+        \\end
+    , "E_TYPE_NOT_ORDERED");
+}
+
+test "typecheck: a method call on a scalar receiver is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let x: i16 = 5
+        \\  print x.nope(10)
+        \\end
+    , "E_TYPE_UNDEFINED_METHOD");
+}
+
+test "typecheck: a method call on a struct value is rejected" {
+    try expectCode(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def main()
+        \\  let p = P { x: 1 }
+        \\  print p.nope()
+        \\end
+    , "E_TYPE_UNDEFINED_METHOD");
+}
+
 test "typecheck: a non-`@static` method must declare `self`" {
     // Without `self`, the call-site receiver (always at fp+4) would alias
     // the first declared param. Applies to variadic + plain methods.

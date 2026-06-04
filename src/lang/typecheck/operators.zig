@@ -127,8 +127,35 @@ fn checkComparison(self: *Checker, b: ast.BinaryExpr) WalkError!?*const types.Ty
         if (!either_is_nil and !lhs_ty.?.eql(rhs_ty.?.*)) {
             try self.emitMismatch(b.rhs.span(), lhs_ty.?, rhs_ty.?);
         }
+        // Ordering (`<` `<=` `>` `>=`) needs a scalar — an inline
+        // aggregate has no defined order; only `==` / `!=` compare them
+        // (by identity). Reject here so it isn't a codegen-only failure.
+        const ordering = switch (b.op) {
+            .lt, .lte, .gt, .gte => true,
+            else => false,
+        };
+        if (ordering and !isOrderableType(self, lhs_ty.?.*)) {
+            const ty_s = try types.render(self.arena, lhs_ty.?.*);
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "operator {s} needs an ordered scalar, found `{s}` — aggregates compare only with `==` / `!=`",
+                .{ predicates.opLexeme(b.op), ty_s },
+            );
+            try self.emitSpan("E_TYPE_NOT_ORDERED", b.span, msg);
+        }
     }
     return try self.primitive(.bool_);
+}
+
+/// `true` when `t` has a defined `<` order at the bytecode level — every
+/// scalar / pointer-like type. Inline aggregates (struct / tuple / array
+/// / `Vec`) don't: only identity `==` / `!=` apply to them.
+fn isOrderableType(self: *const Checker, t: types.Type) bool {
+    return switch (t) {
+        .tuple, .array, .vec => false,
+        .named => |n| !self.struct_registry.contains(n.name),
+        else => true,
+    };
 }
 
 fn checkLogical(self: *Checker, b: ast.BinaryExpr) WalkError!?*const types.Type {
