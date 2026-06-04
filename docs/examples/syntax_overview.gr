@@ -6,6 +6,10 @@
 --
 -- Read this top-to-bottom to see every construct from the spec at
 -- least once. Annotations refer to spec section numbers.
+--
+-- gero-example: fmt-only — imports an illustrative `./io` module that
+-- isn't shipped, so `gero check` (which now resolves `use`) can't
+-- validate it end-to-end; the formatting gate still applies.
 ------------------------------------------------------------
 -- §5.2  Imports
 ------------------------------------------------------------
