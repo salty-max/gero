@@ -454,6 +454,7 @@ Annotation semantics and conflicts. Per spec §3.7.
 | `E_ABSTRACT_NOT_IMPLEMENTED` | Concrete subclass doesn't override an inherited `@abstract` method. |
 | `E_PRIVATE_ACCESS` | Access to a `@private` field / method from outside the declaring class. |
 | `E_STATIC_HAS_SELF` | `@static` method declares a `self` parameter. |
+| `E_METHOD_NO_SELF` | Non-`@static` method doesn't declare `self` as its first parameter (the receiver would alias the first param). |
 
 **Mockup — `@inline` too large:**
 
@@ -576,7 +577,10 @@ help: simplify the computation, or precompute the table with a
 | `E_VAR_NOT_LAST` | Variadic parameter isn't the last in the list (parse-time). |
 | `E_VAR_HETEROGENEOUS` | Call site mixes types in the variadic slot. |
 | `E_VAR_INCONSISTENT_TYPE` | Two call sites pass different element types — a variadic function has one element type `T` across the whole program (§4.6.2). |
+| `E_VAR_AGGREGATE` | A variadic argument is an inline aggregate (struct / tuple / array / `Vec`). Varargs are word-strided scalars; pass aggregate data through an explicit parameter or by reference (§4.6.2). |
 | `E_VAR_INLINE` | A variadic `def` is marked `@inline` — it already specializes per call-site arity, so the two are mutually exclusive (§4.6.2). |
+| `E_VAR_VIRTUAL` | A variadic method is `@override` or `@abstract` — variadic methods are non-virtual (statically dispatched per arity), so they can't be virtual (§4.6.2). |
+| `E_VAR_OVERRIDE` | A method collides with an ancestor method where one side is variadic — a variadic method can't participate in overriding (§4.6.2). |
 | `E_VAR_NO_DEFAULT` | Variadic parameter declared with a default value. |
 
 **Mockup — heterogeneous call:**
@@ -810,6 +814,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_ABSTRACT_NOT_IMPLEMENTED` | Annotations | v0.3 |
 | `E_PRIVATE_ACCESS` | Annotations | v0.3 |
 | `E_STATIC_HAS_SELF` | Annotations | v0.3 |
+| `E_METHOD_NO_SELF` | Annotations | v0.3 |
 | `E_BAKE_MMIO_ACCESS` | Bake | v0.3 |
 | `E_BAKE_NON_BAKEABLE_VALUE` | Bake | v0.3 |
 | `E_BAKE_ASM_INSIDE` | Bake | v0.3 |
@@ -818,7 +823,10 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_VAR_NOT_LAST` | Variadic | v0.3 |
 | `E_VAR_HETEROGENEOUS` | Variadic | v0.3 |
 | `E_VAR_INCONSISTENT_TYPE` | Variadic | v0.3 |
+| `E_VAR_AGGREGATE` | Variadic | v0.3 |
 | `E_VAR_INLINE` | Variadic | v0.3 |
+| `E_VAR_VIRTUAL` | Variadic | v0.3 |
+| `E_VAR_OVERRIDE` | Variadic | v0.3 |
 | `E_VAR_NO_DEFAULT` | Variadic | v0.3 |
 | `E_CAST_INVALID` | Casts | v0.3 |
 | `E_CAST_PRECISION_LOSS` | Casts | v0.3 |

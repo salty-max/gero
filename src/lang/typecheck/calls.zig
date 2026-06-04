@@ -7,6 +7,7 @@ const relations = @import("relations.zig");
 const annotations = @import("annotations.zig");
 const flow = @import("flow.zig");
 const stdlib = @import("stdlib.zig");
+const type_resolve = @import("type_resolve.zig");
 
 const Checker = typecheck.Checker;
 const WalkError = error{OutOfMemory};
@@ -270,8 +271,24 @@ pub fn checkVariadicCall(
         }
     }
     // Variadic slot: all trailing args must share a type.
+    const pivot = try checkVariadicSlot(self, c.args[fixed_count..]);
+    // Fold this call's element type + arity into the callee's
+    // whole-program variadic facts (§4.6.2) so the body can be
+    // type-checked once against `args: (T, …, T)` of the max arity.
+    if (directCalleeName(self, c.callee)) |name| {
+        const arity: u32 = @intCast(c.args.len - fixed_count);
+        try recordVariadic(self, name, pivot, arity, c.span);
+    }
+    return f.ret;
+}
+
+/// Type-check the trailing variadic args for homogeneity (§4.6.2):
+/// every arg must share the first inferred element type. Returns that
+/// pivot type (`null` when no arg pins one). A divergent arg is
+/// `E_VAR_HETEROGENEOUS`.
+fn checkVariadicSlot(self: *Checker, varargs: []const *ast.Expr) WalkError!?*const types.Type {
     var pivot: ?*const types.Type = null;
-    for (c.args[fixed_count..]) |arg| {
+    for (varargs) |arg| {
         const arg_ty = try self.inferExpr(arg, pivot);
         const at = arg_ty orelse continue;
         if (pivot) |p| {
@@ -289,14 +306,103 @@ pub fn checkVariadicCall(
             pivot = at;
         }
     }
-    // Fold this call's element type + arity into the callee's
-    // whole-program variadic facts (§4.6.2) so the body can be
-    // type-checked once against `args: (T, …, T)` of the max arity.
-    if (directCalleeName(self, c.callee)) |name| {
-        const arity: u32 = @intCast(c.args.len - fixed_count);
-        try recordVariadic(self, name, pivot, arity, c.span);
+    // Varargs are word-strided (each pushed as a full word); an inline
+    // aggregate element doesn't fit that ABI. Reject it — the spec's
+    // remedy for aggregate data is an explicit tuple / struct / `Vec`
+    // parameter, not a variadic element (§4.6.2).
+    if (pivot) |p| {
+        if (varargs.len > 0 and isAggregateElem(self, p)) {
+            const s = try types.render(self.arena, p.*);
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "variadic argument can't be the aggregate type `{s}` — varargs are scalar; pass it through an explicit tuple, struct, array, or `Vec` parameter (or by reference, `&{s}`) instead",
+                .{ s, s },
+            );
+            try self.emitSpan("E_VAR_AGGREGATE", varargs[0].span(), msg);
+        }
     }
-    return f.ret;
+    return pivot;
+}
+
+/// `true` when `t` is an inline aggregate pushed by value at multi-word
+/// width — a struct / tuple / array / `Vec`. It can't be a variadic
+/// element: the caller pushes the whole value while `args.N` reads a
+/// single word, so field / element access would deref garbage. Scalars
+/// and pointer-like types (`str`, `&T`, class, enum) are one word.
+fn isAggregateElem(self: *const Checker, t: *const types.Type) bool {
+    return switch (t.*) {
+        .array, .vec, .tuple => true,
+        .named => |n| self.struct_registry.contains(n.name),
+        // A scalar `T?` is a 4-byte `{present, value}` inline value (§3.4.1)
+        // — multi-word, like a struct. A pointer-like `T?` (`str?`, `&T?`,
+        // class) is a single nullable word, so it stays a legal element.
+        .optional => |inner| inner.* == .primitive and switch (inner.primitive) {
+            .i8, .u8, .i16, .u16, .char, .bool_, .fixed => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+/// Whole-program key for a variadic method's facts: `Owner.method`,
+/// matching the codegen method label so emission + call routing read
+/// the same arity set. `.` can't appear in a source identifier, so a
+/// method key never collides with a free-def key.
+pub fn methodKey(self: *Checker, owner_name: []const u8, method_name: []const u8) WalkError![]const u8 {
+    return std.fmt.allocPrint(self.arena, "{s}.{s}", .{ owner_name, method_name });
+}
+
+/// Type-check a variadic METHOD call `recv.m(args)` (§4.6.2). Mirrors
+/// `checkVariadicCall` but skips the implicit `self` param when matching
+/// fixed args, and records facts under the owner-qualified key so the
+/// body + codegen monomorphize per arity. A variadic method is
+/// statically dispatched (non-virtual), so the owner is unique.
+pub fn checkVariadicMethodCall(
+    self: *Checker,
+    m: ast.MethodCallExpr,
+    method: *const ast.DefDecl,
+    owner_name: []const u8,
+) WalkError!?*const types.Type {
+    const has_self = method.params.len > 0 and std.mem.eql(u8, self.lexeme(method.params[0].name), "self");
+    const skip: usize = if (has_self) 1 else 0;
+    // params = [self?, fixed…, args]; fixed_count excludes both. Guarded
+    // against underflow for a degenerate `self`-only / variadic-`self` list.
+    const fixed_count: usize = if (method.params.len > skip) method.params.len - skip - 1 else 0;
+    if (m.args.len < fixed_count) {
+        const suffix: []const u8 = if (fixed_count == 1) "" else "s";
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "variadic method requires at least {d} fixed argument{s}, called with {d}",
+            .{ fixed_count, suffix, m.args.len },
+        );
+        try self.emitSpan("E_TYPE_ARG_COUNT", m.span, msg);
+        for (m.args) |a| _ = try self.inferExpr(a, null);
+        return try methodReturnType(self, method);
+    }
+    // Fixed params (skip `self`): standard per-arg type check.
+    for (m.args[0..fixed_count], 0..) |arg, i| {
+        const p = method.params[skip + i];
+        const param_ty: ?*const types.Type = if (p.type_ann) |t|
+            try type_resolve.resolveType(self, t)
+        else
+            null;
+        const skip_arg = if (param_ty) |pt| predicates.isNilType(pt.*) else true;
+        const arg_ty = try self.inferExpr(arg, if (skip_arg) null else param_ty);
+        if (!skip_arg and param_ty != null and arg_ty != null) {
+            try self.checkStoreCompat(arg.span(), param_ty.?, arg_ty.?);
+        }
+    }
+    const pivot = try checkVariadicSlot(self, m.args[fixed_count..]);
+    const key = try methodKey(self, owner_name, self.lexeme(method.name));
+    const arity: u32 = @intCast(m.args.len - fixed_count);
+    try recordVariadic(self, key, pivot, arity, m.span);
+    return try methodReturnType(self, method);
+}
+
+/// Resolve a method's declared return type, or `nil` when implicit.
+fn methodReturnType(self: *Checker, method: *const ast.DefDecl) WalkError!?*const types.Type {
+    if (method.ret_type) |r| return try type_resolve.resolveType(self, r);
+    return try self.primitive(.nil_);
 }
 
 /// Fold one call site's `(elem, arity)` into the callee's whole-program

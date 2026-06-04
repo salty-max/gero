@@ -849,15 +849,35 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
     if (m.receiver.* == .super_expr) {
         if (self.current_class_name) |cname| {
             const mname = self.source[m.method.start..m.method.end];
+            // A variadic ancestor method is non-virtual — static-dispatch
+            // to its `Owner.method$N` (§4.6.2). `resolveMethodOwner` skips
+            // `cname` (which can't redeclare a variadic method) to the
+            // ancestor that owns it, matching `super` semantics.
+            if (class.resolveMethodOwner(self, cname, mname)) |res| {
+                if (variadic.isVariadicDef(res.method.*)) {
+                    const arity = class.variadicMethodArity(self, res.method, m.args.len);
+                    try class.emitSuperVariadicMethodCall(self, res.owner, mname, arity, m.args, m.span);
+                    return;
+                }
+            }
             try class.emitSuperMethodCall(self, cname, mname, m.args, m.span);
             return;
         }
         try self.unsupported(m.span, "`super.method` used outside a method body");
         return;
     }
-    // Class-typed receiver — vtable dispatch.
+    // Class-typed receiver. A variadic method is non-virtual (§4.6.2):
+    // resolve its owner + this site's arity and static-dispatch to the
+    // `Owner.method$N` specialization. Everything else is vtable dispatch.
     if (self.classNameOf(m.receiver)) |cname| {
         const mname = self.source[m.method.start..m.method.end];
+        if (class.resolveMethodOwner(self, cname, mname)) |res| {
+            if (variadic.isVariadicDef(res.method.*)) {
+                const arity = class.variadicMethodArity(self, res.method, m.args.len);
+                try class.emitVariadicMethodCall(self, m.receiver, res.owner, mname, arity, m.args, m.span);
+                return;
+            }
+        }
         try class.emitMethodDispatch(self, m.receiver, cname, mname, m.args, m.span);
         return;
     }
