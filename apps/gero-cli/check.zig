@@ -45,7 +45,13 @@ pub fn execute(
         }
     } else {
         for (positionals) |path| {
-            try collectSourceFiles(io, arena, term, path, &files);
+            // A missing / unreadable path already printed a clean
+            // diagnostic; map its sentinel to exit 1 rather than letting
+            // it escape as an internal error + stack trace.
+            collectSourceFiles(io, arena, term, path, &files) catch |err| switch (err) {
+                error.SourceCollectFailed => return 1,
+                else => |e| return e,
+            };
         }
     }
 
@@ -431,12 +437,12 @@ fn collectSourceFiles(
 ) !void {
     const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| {
         try term.err("gero check: cannot stat {s} ({s})", .{ path, @errorName(err) });
-        return error.OutOfMemory;
+        return error.SourceCollectFailed;
     };
     if (stat.kind == .directory) {
         var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
             try term.err("gero check: cannot open dir {s} ({s})", .{ path, @errorName(err) });
-            return error.OutOfMemory;
+            return error.SourceCollectFailed;
         };
         defer dir.close(io);
         var walker = try dir.walk(arena);
@@ -452,7 +458,7 @@ fn collectSourceFiles(
         try out.append(arena, try arena.dupe(u8, path));
     } else {
         try term.err("gero check: {s} is neither a file nor a directory", .{path});
-        return error.OutOfMemory;
+        return error.SourceCollectFailed;
     }
 }
 

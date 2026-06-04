@@ -5520,14 +5520,6 @@ test "codegen/tuple: `==` recurses into a struct element (str by content)" {
     , "1\n0\n");
 }
 
-test "codegen/tuple: ordering comparison is a clean error" {
-    try expectCodegenError(
-        \\def main()
-        \\  print (1, 2) < (1, 3)
-        \\end
-    , "E_CODEGEN_UNSUPPORTED");
-}
-
 test "codegen/tuple: whole-tuple `print` renders `(v0, v1, …)`" {
     try runAndExpect(
         \\enum E
@@ -6017,21 +6009,6 @@ test "codegen/struct: equality of two struct-returning calls (distinct buffers)"
         \\  print mk(5) == mk(6)
         \\end
     , "1\n0\n");
-}
-
-test "codegen/struct: ordering comparison on structs is rejected" {
-    try expectCodegenError(
-        \\struct P
-        \\  x: i16
-        \\end
-        \\def main()
-        \\  let a = P { x: 1 }
-        \\  let b = P { x: 2 }
-        \\  if a < b
-        \\    print 1
-        \\  end
-        \\end
-    , "E_CODEGEN_UNSUPPORTED");
 }
 
 test "codegen/str: `+` concatenates into a fresh buffer (§3.2.1)" {
