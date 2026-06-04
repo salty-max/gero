@@ -103,7 +103,7 @@ pub fn execute(
             // it. Always render the diagnostics so the user sees
             // the warnings either way.
             const is_failure = isFailure(res.diagnostics, opts.werror);
-            try gr_files.append(arena, .{ .path = path, .source = res.source, .diagnostics = res.diagnostics, .is_failure = is_failure });
+            try gr_files.append(arena, .{ .path = path, .source = res.source, .diagnostics = res.diagnostics, .source_map = res.source_map, .is_failure = is_failure });
             if (!is_failure) {
                 pass += 1;
                 if (!opts.quiet and !json_mode) try printPassGr(stdout, style, path, single);
@@ -186,11 +186,7 @@ pub fn execute(
         // only files so editors render the squiggles regardless.
         if (gr_files.items.len > 0) {
             var lang_files: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
-            for (gr_files.items) |gf| try lang_files.append(arena, .{
-                .path = gf.path,
-                .source = gf.source,
-                .diagnostics = gf.diagnostics,
-            });
+            for (gr_files.items) |gf| try appendAttributed(arena, &lang_files, gf);
             try gero.lang.render.json(stdout, lang_files.items);
         }
         return if (fail > 0) 4 else 0;
@@ -218,11 +214,7 @@ pub fn execute(
     if (gr_files.items.len > 0) {
         if (!single and !opts.quiet and (pass > 0 or failures.items.len > 0)) try stdout.writeByte('\n');
         var lang_files: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
-        for (gr_files.items) |gf| try lang_files.append(arena, .{
-            .path = gf.path,
-            .source = gf.source,
-            .diagnostics = gf.diagnostics,
-        });
+        for (gr_files.items) |gf| try appendAttributed(arena, &lang_files, gf);
         const lang_style: gero.lang.render.Style = if (term.color) .ansi else .none;
         try gero.lang.render.pretty(stdout, lang_files.items, lang_style);
     }
@@ -262,6 +254,9 @@ const GrFile = struct {
     path: []const u8,
     source: []const u8,
     diagnostics: []gero.lang.Diagnostic,
+    /// Maps fused offsets back to their originating file, so a
+    /// diagnostic in an imported file renders against the right source.
+    source_map: gero.lang.SourceMap,
     is_failure: bool,
 };
 
@@ -319,11 +314,14 @@ test "isFailure: only notes → not a failure (notes are informational)" {
     try std.testing.expect(!isFailure(&diags, true));
 }
 
-/// Result of running parse + typecheck on one `.gr` source.
+/// Result of validating one `.gr` source (with its `use` imports).
 const GrCheckResult = struct {
     source: []const u8,
     parse_errors: []const u8 = "",
     diagnostics: []gero.lang.Diagnostic,
+    /// Fused → original-file map for diagnostic attribution. Empty for a
+    /// read error (no file was fused).
+    source_map: gero.lang.SourceMap,
     read_error: bool = false,
 };
 
@@ -339,12 +337,49 @@ fn checkOneGr(
     // Resolve `use` imports so the validated program is whole — a `use`
     // failure (missing / cyclic file) is itself a check diagnostic.
     var fused = gero.lang.resolveUseImports(io, arena, path) catch {
-        return .{ .source = "", .diagnostics = &.{}, .read_error = true };
+        return .{ .source = "", .diagnostics = &.{}, .source_map = .{ .files = .empty, .regions = .empty, .allocator = arena }, .read_error = true };
     };
     if (fused.hasErrors()) {
-        return .{ .source = fused.source, .diagnostics = try includeErrorDiagnostics(arena, fused) };
+        return .{ .source = fused.source, .diagnostics = try includeErrorDiagnostics(arena, fused), .source_map = fused.source_map };
     }
-    return .{ .source = fused.source, .diagnostics = try collectGrDiagnostics(arena, fused.source, true) };
+    return .{ .source = fused.source, .diagnostics = try collectGrDiagnostics(arena, fused.source, true), .source_map = fused.source_map };
+}
+
+/// Split a checked `.gr` file's diagnostics by their originating source
+/// file (resolved through the fused source map) and append one
+/// `FileDiagnostics` per file, with each span remapped to that file's
+/// offsets. A single-file check collapses to one entry (identity map);
+/// a multi-file check attributes each diagnostic to the right import.
+fn appendAttributed(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(gero.lang.render.FileDiagnostics),
+    gf: GrFile,
+) !void {
+    // Insertion-ordered so the root file's diagnostics render first.
+    var by_file: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(gero.lang.Diagnostic)) = .{};
+    var content: std.StringHashMapUnmanaged([]const u8) = .{};
+    for (gf.diagnostics) |d| {
+        const loc = gf.source_map.lookup(d.span.start);
+        const fpath: []const u8 = if (loc) |l| l.file.path else gf.path;
+        const fsrc: []const u8 = if (loc) |l| l.file.content else gf.source;
+        const start: u32 = if (loc) |l| l.file_offset else d.span.start;
+        const remapped: gero.lang.Diagnostic = .{
+            .severity = d.severity,
+            .code = d.code,
+            .message = d.message,
+            .span = .{ .start = start, .end = start + (d.span.end - d.span.start) },
+        };
+        const gop = try by_file.getOrPut(arena, fpath);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(arena, remapped);
+        try content.put(arena, fpath, fsrc);
+    }
+    var it = by_file.iterator();
+    while (it.next()) |e| try out.append(arena, .{
+        .path = e.key_ptr.*,
+        .source = content.get(e.key_ptr.*).?,
+        .diagnostics = try e.value_ptr.toOwnedSlice(arena),
+    });
 }
 
 /// Convert `use`-resolution failures into check diagnostics (mirrors the
@@ -551,6 +586,38 @@ test "collectGrDiagnostics: type error surfaces when parse succeeds" {
     defer arena_state.deinit();
     const diags = try collectGrDiagnostics(arena_state.allocator(), "def f()\n  return undefined_name\nend\n", false);
     try std.testing.expect(diags.len > 0);
+}
+
+test "appendAttributed: maps a diagnostic in an imported region to its file" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Fused = "ROOT--" (file 0, [0,6)) ++ "IMPORTED" (file 1, [6,14)).
+    var files: std.ArrayList(gero.lang.FileInfo) = .empty;
+    try files.append(arena, .{ .path = "root.gr", .content = "ROOT--" });
+    try files.append(arena, .{ .path = "import.gr", .content = "IMPORTED" });
+    var regions: std.ArrayList(gero.lang.Region) = .empty;
+    try regions.append(arena, .{ .fused_start = 0, .fused_end = 6, .file_id = 0, .file_offset = 0 });
+    try regions.append(arena, .{ .fused_start = 6, .fused_end = 14, .file_id = 1, .file_offset = 0 });
+    const sm: gero.lang.SourceMap = .{ .files = files, .regions = regions, .allocator = arena };
+
+    // One diagnostic in the root region, one at fused offset 8 (= import + 2).
+    var diags: std.ArrayList(gero.lang.Diagnostic) = .empty;
+    try diags.append(arena, .{ .severity = .fatal, .code = "E_A", .message = "a", .span = .{ .start = 1, .end = 3 } });
+    try diags.append(arena, .{ .severity = .fatal, .code = "E_B", .message = "b", .span = .{ .start = 8, .end = 10 } });
+
+    var out: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
+    try appendAttributed(arena, &out, .{ .path = "root.gr", .source = "ROOT--IMPORTED", .diagnostics = diags.items, .source_map = sm, .is_failure = true });
+
+    try std.testing.expectEqual(@as(usize, 2), out.items.len);
+    // Root file first (insertion order), with the original span.
+    try std.testing.expectEqualStrings("root.gr", out.items[0].path);
+    try std.testing.expectEqual(@as(u32, 1), out.items[0].diagnostics[0].span.start);
+    // Imported file, span remapped to its own offset (8 - 6 = 2).
+    try std.testing.expectEqualStrings("import.gr", out.items[1].path);
+    try std.testing.expectEqual(@as(u32, 2), out.items[1].diagnostics[0].span.start);
+    try std.testing.expectEqual(@as(u32, 4), out.items[1].diagnostics[0].span.end);
 }
 
 test "collectGrDiagnostics: codegen-validates a body even without a `main`" {

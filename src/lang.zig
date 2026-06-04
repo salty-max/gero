@@ -86,6 +86,8 @@ pub const FusedSource = include_mod.FusedSource;
 pub const SourceMap = include_mod.SourceMap;
 /// One file's metadata in the include graph.
 pub const FileInfo = include_mod.FileInfo;
+/// One fused-offset → original-file mapping in a `SourceMap`.
+pub const Region = include_mod.Region;
 /// Result of `SourceMap.lookup`.
 pub const Located = include_mod.Located;
 /// One error from include resolution (cycle / depth / not-found).
