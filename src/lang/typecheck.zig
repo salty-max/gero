@@ -88,6 +88,7 @@ pub fn typecheck(
         .current_scope = &module_scope,
         .current_ret_ty = null,
         .current_variadic_param = null,
+        .in_static_method = false,
         .current_class_extends = null,
         .current_class_name = null,
         .non_nil = .{},
@@ -225,6 +226,9 @@ pub const Checker = struct {
     /// body, else `null`. Lets an out-of-range `args.N` report against
     /// the call-site minimum arity rather than a bare tuple width.
     current_variadic_param: ?[]const u8,
+    /// `true` while checking a `@static` method body — `self` / `super`
+    /// are unavailable there (no receiver), so referencing either errors.
+    in_static_method: bool,
     /// `extends Parent` span when inside a class method. `null`
     /// elsewhere. Drives `super` resolution.
     current_class_extends: ?ast.Span,
@@ -1314,6 +1318,10 @@ pub const Checker = struct {
                 return null;
             },
             .self_expr => |se| {
+                if (self.in_static_method) {
+                    try self.emitSpan("E_STATIC_SELF", se.span, "`self` is not available in a `@static` method — it has no receiver");
+                    return null;
+                }
                 if (self.current_class_name) |cn| {
                     // `self` is a value of the enclosing class type.
                     return try types.mkNamed(self.arena, cn, se.span);
@@ -1321,6 +1329,10 @@ pub const Checker = struct {
                 return null;
             },
             .super_expr => |se| {
+                if (self.in_static_method) {
+                    try self.emitSpan("E_STATIC_SELF", se.span, "`super` is not available in a `@static` method — it has no receiver");
+                    return null;
+                }
                 if (self.current_class_extends) |ext| {
                     return try types.mkNamed(self.arena, self.lexeme(ext), ext);
                 }
@@ -1361,6 +1373,14 @@ pub const Checker = struct {
                     // payload-variant constructor.
                     if (self.enum_registry.get(recv_name)) |ed| {
                         return try fields.checkEnumVariantConstruct(self, m, ed, recv_name);
+                    }
+                    // `ClassName.method(args)` — a `@static` call (the
+                    // receiver is a class name, not an instance). A value
+                    // binding of the same name shadows the class, so only
+                    // route here when the name still resolves to the class.
+                    if (self.class_registry.get(recv_name)) |cd| {
+                        const is_class_ref = if (self.current_scope.lookup(recv_name)) |info| info.kind == .class else true;
+                        if (is_class_ref) return try fields.checkStaticMethodCall(self, m, cd, recv_name);
                     }
                 }
                 const recv_ty = try self.inferExpr(m.receiver, null);

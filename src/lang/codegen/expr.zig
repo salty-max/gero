@@ -895,6 +895,21 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
     }
     if (m.receiver.* == .ident) {
         const recv = self.source[m.receiver.ident.span.start..m.receiver.ident.span.end];
+        // `ClassName.method(args)` — `@static` call: the receiver is a
+        // class NAME, not an instance, so no `self` is pushed (§3.7). A
+        // same-named value binding shadows the class, so skip when `recv`
+        // names a local / param / capture / global value.
+        const shadowed = self.locals.contains(recv) or self.params.contains(recv) or
+            self.captures.contains(recv) or self.globals.contains(recv);
+        if (!shadowed and self.class_decls.contains(recv)) {
+            const mname = self.source[m.method.start..m.method.end];
+            if (class.resolveMethodOwner(self, recv, mname)) |res| {
+                const is_var = variadic.isVariadicDef(res.method.*);
+                const arity = if (is_var) class.variadicMethodArity(self, res.method, m.args.len) else 0;
+                try class.emitStaticMethodCall(self, res.owner, mname, m.args, m.span, is_var, arity);
+                return;
+            }
+        }
         // Payload-variant constructor — `Enum.Variant(args)` parses as
         // a method call on the enum name.
         if (self.enum_decls.get(recv)) |ed| {
