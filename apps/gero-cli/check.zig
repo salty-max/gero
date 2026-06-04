@@ -336,10 +336,35 @@ fn checkOneGr(
     arena: std.mem.Allocator,
     path: []const u8,
 ) !GrCheckResult {
-    const src = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch {
+    // Resolve `use` imports so the validated program is whole — a `use`
+    // failure (missing / cyclic file) is itself a check diagnostic.
+    var fused = gero.lang.resolveUseImports(io, arena, path) catch {
         return .{ .source = "", .diagnostics = &.{}, .read_error = true };
     };
-    return .{ .source = src, .diagnostics = try collectGrDiagnostics(arena, src) };
+    if (fused.hasErrors()) {
+        return .{ .source = fused.source, .diagnostics = try includeErrorDiagnostics(arena, fused) };
+    }
+    return .{ .source = fused.source, .diagnostics = try collectGrDiagnostics(arena, fused.source, true) };
+}
+
+/// Convert `use`-resolution failures into check diagnostics (mirrors the
+/// compile path's include-error rendering).
+fn includeErrorDiagnostics(arena: std.mem.Allocator, fused: gero.lang.FusedSource) ![]gero.lang.Diagnostic {
+    var out: std.ArrayList(gero.lang.Diagnostic) = .empty;
+    for (fused.errors) |e| {
+        const code: []const u8 = switch (e.kind) {
+            .cycle => "E_USE_CYCLE",
+            .depth_exceeded => "E_USE_DEPTH",
+            .not_found => "E_USE_NOT_FOUND",
+        };
+        const msg = switch (e.kind) {
+            .cycle => try std.fmt.allocPrint(arena, "`use` cycle detected on `{s}`", .{e.requested}),
+            .depth_exceeded => try std.fmt.allocPrint(arena, "`use` depth exceeds 32 on `{s}` — likely runaway recursion", .{e.requested}),
+            .not_found => try std.fmt.allocPrint(arena, "`use` target file not found: `{s}`", .{e.requested}),
+        };
+        try out.append(arena, .{ .severity = .fatal, .code = code, .message = msg, .span = .{ .start = e.site_offset, .end = e.site_offset } });
+    }
+    return out.toOwnedSlice(arena);
 }
 
 /// Tokenize + parse + typecheck a gero-lang source into one flat
@@ -347,7 +372,7 @@ fn checkOneGr(
 /// tests share it. Each diagnostic's `code` is the lexer/parser's
 /// stable `E_SYNTAX_*` code (see `docs/lang-diagnostics.md`), or
 /// `E_SYNTAX_GENERIC` when the emission site carries none.
-fn collectGrDiagnostics(arena: std.mem.Allocator, src: []const u8) ![]gero.lang.Diagnostic {
+fn collectGrDiagnostics(arena: std.mem.Allocator, src: []const u8, validate_codegen: bool) ![]gero.lang.Diagnostic {
     const stream = try gero.lang.tokenize(arena, src);
     var combined: std.ArrayList(gero.lang.Diagnostic) = .empty;
 
@@ -368,8 +393,30 @@ fn collectGrDiagnostics(arena: std.mem.Allocator, src: []const u8) ![]gero.lang.
     // Only typecheck when parsing succeeded — otherwise the AST
     // shape can't carry semantic information.
     if (tree.errors.len == 0) {
-        const checked = try gero.lang.typecheck(arena, src, &tree.program);
+        var checked = try gero.lang.typecheck(arena, src, &tree.program);
         for (checked.diagnostics) |d| try combined.append(arena, d);
+
+        // Codegen-validate so codegen-only errors surface at check time.
+        // `require_entry = false` lowers a library file's bodies even
+        // without a `main` (it's validation, not a runnable image). Only
+        // when the type-check is clean — codegen consumes the typed AST.
+        if (validate_codegen and !checked.hasErrors()) {
+            var compiled = gero.lang.compile(arena, src, &checked, .{ .require_entry = false }) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                // EntryNotFound can't fire (require_entry=false); any other
+                // codegen host failure leaves the type-check result standing.
+                else => null,
+            };
+            if (compiled) |*c| {
+                defer c.deinit();
+                for (c.diagnostics) |d| try combined.append(arena, .{
+                    .severity = d.severity,
+                    .code = d.code,
+                    .message = try arena.dupe(u8, d.message),
+                    .span = d.span,
+                });
+            }
+        }
     }
 
     return combined.toOwnedSlice(arena);
@@ -482,7 +529,7 @@ fn writePhaseTimings(
 test "collectGrDiagnostics: clean source yields no diagnostics" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const diags = try collectGrDiagnostics(arena_state.allocator(), "def add(x, y)\n  return x + y\nend\n");
+    const diags = try collectGrDiagnostics(arena_state.allocator(), "def add(x, y)\n  return x + y\nend\n", false);
     try std.testing.expectEqual(@as(usize, 0), diags.len);
 }
 
@@ -491,7 +538,7 @@ test "collectGrDiagnostics: lexer diagnostic is not double-counted" {
     defer arena_state.deinit();
     // A lexer diagnostic (the `0x`-prefix error) surfaces exactly
     // once, not once per phase — `tree.errors` already includes it.
-    const diags = try collectGrDiagnostics(arena_state.allocator(), "let x = 0x1\n");
+    const diags = try collectGrDiagnostics(arena_state.allocator(), "let x = 0x1\n", false);
     var hex_count: usize = 0;
     for (diags) |d| {
         if (std.mem.eql(u8, d.code, "E_SYNTAX_HEX_PREFIX")) hex_count += 1;
@@ -502,6 +549,28 @@ test "collectGrDiagnostics: lexer diagnostic is not double-counted" {
 test "collectGrDiagnostics: type error surfaces when parse succeeds" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const diags = try collectGrDiagnostics(arena_state.allocator(), "def f()\n  return undefined_name\nend\n");
+    const diags = try collectGrDiagnostics(arena_state.allocator(), "def f()\n  return undefined_name\nend\n", false);
     try std.testing.expect(diags.len > 0);
+}
+
+test "collectGrDiagnostics: codegen-validates a body even without a `main`" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    // A frame-too-large body type-checks clean but is a codegen-only
+    // error; with no `main` in the file, surfacing it proves codegen runs
+    // in validation mode.
+    const src =
+        \\def hog() -> i16
+        \\  let a: [i16; 40] = [0; 40]
+        \\  let b: [i16; 40] = [0; 40]
+        \\  return a[0] + b[0]
+        \\end
+        \\
+    ;
+    const diags = try collectGrDiagnostics(arena_state.allocator(), src, true);
+    var found = false;
+    for (diags) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_FRAME_TOO_LARGE")) found = true;
+    }
+    try std.testing.expect(found);
 }

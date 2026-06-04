@@ -136,6 +136,10 @@ pub const Options = struct {
     /// Build mode. Controls `debug_assert` elision (§5.3) and
     /// overflow trap insertion (§4.2.1).
     optimize: Optimize = .debug,
+    /// Require a top-level entry `def`. `true` for a runnable image;
+    /// `false` for validation-only (e.g. `gero check`), where a library
+    /// file with no `main` still has its bodies lowered + checked.
+    require_entry: bool = true,
 };
 
 /// Errors `compile` can return. Semantic errors land in
@@ -173,7 +177,7 @@ pub fn compile(
     var diag_arena = std.heap.ArenaAllocator.init(allocator);
     errdefer diag_arena.deinit();
 
-    if (findEntryDef(source, checked.program, opts.entry_name) == null) return error.EntryNotFound;
+    if (opts.require_entry and findEntryDef(source, checked.program, opts.entry_name) == null) return error.EntryNotFound;
 
     var emitter: Emitter = .{
         .allocator = allocator,
@@ -1329,8 +1333,11 @@ pub const Emitter = struct {
         // target's address yet.
         try self.collectDefBanks(program);
 
-        const entry = findEntryDef(self.source, program, entry_name).?;
-        try self.emitDef(entry, .entry);
+        // Validation-only builds (no entry) still lower every def / method
+        // body below so codegen errors surface; only the entry prologue
+        // (IVT init, global seeding, `hlt`) is skipped.
+        const entry = findEntryDef(self.source, program, entry_name);
+        if (entry) |e| try self.emitDef(e, .entry);
         // Two-pass over top-level defs: hot first (source order),
         // then `@cold`-marked defs (still source order within the
         // group) — deterministic layout across compiler versions.
@@ -1340,12 +1347,12 @@ pub const Emitter = struct {
         // arity. `emitSpecializations` emits one `name$N` per call-site
         // arity below, sharing the body (§4.6.2).
         for (program.statements) |*stmt| switch (stmt.*) {
-            .def_decl => |*dd| if (dd != entry and !defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline") and !variadic.isVariadicDef(dd.*))
+            .def_decl => |*dd| if ((entry == null or dd != entry.?) and !defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline") and !variadic.isVariadicDef(dd.*))
                 try self.emitDef(dd, .regular),
             else => {},
         };
         for (program.statements) |*stmt| switch (stmt.*) {
-            .def_decl => |*dd| if (dd != entry and defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline") and !variadic.isVariadicDef(dd.*))
+            .def_decl => |*dd| if ((entry == null or dd != entry.?) and defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline") and !variadic.isVariadicDef(dd.*))
                 try self.emitDef(dd, .regular),
             else => {},
         };
