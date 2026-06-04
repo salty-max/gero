@@ -6,6 +6,8 @@ const isa = @import("isa.zig");
 const codegen_mod = @import("../codegen.zig");
 const value_struct = @import("value_struct.zig");
 const vec_builtin = @import("vec_builtin.zig");
+const variadic = @import("variadic.zig");
+const def_emit = @import("def.zig");
 
 const Emitter = codegen_mod.Emitter;
 const Type = types.Type;
@@ -143,9 +145,13 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
     }
 
     // Own methods — overrides reuse the parent's slot (same name
-    // already in `method_slots`); brand-new methods append.
+    // already in `method_slots`); brand-new methods append. A variadic
+    // method is non-virtual (§4.6.2): it monomorphizes per arity and
+    // gets no vtable slot — it's reached only by static `Class.method$N`
+    // dispatch, never through the vtable.
     const dup_class = try self.arena.dupe(u8, class_name);
     for (cd.methods) |method| {
+        if (variadic.isVariadicDef(method)) continue;
         const mname = self.source[method.name.start..method.name.end];
         const dup_m = try self.arena.dupe(u8, mname);
         if (layout.method_slots.get(mname) != null) {
@@ -192,12 +198,37 @@ pub fn emitClassMethods(self: *Emitter, program: *const ast.Program) !void {
             const cname = self.source[cd.name.start..cd.name.end];
             for (cd.methods) |*method| {
                 const mname = self.source[method.name.start..method.name.end];
-                const label = try methodLabel(self, cname, mname);
-                try self.emitMethodAsDef(method, cname, label);
+                const base = try methodLabel(self, cname, mname);
+                if (variadic.isVariadicDef(method.*)) {
+                    try emitVariadicMethod(self, method, cname, base);
+                } else {
+                    try self.emitMethodAsDef(method, cname, base);
+                }
             }
         },
         else => {},
     };
+}
+
+/// Emit a variadic method's per-arity specializations under
+/// `Class.method$N` (§4.6.2) — the method analog of
+/// `variadic.emitSpecializations`, routed through `emitMethodAsDef` so
+/// each specialization keeps its class context (`self`, `super`).
+/// `base` is the `Class.method` label; the whole-program facts are keyed
+/// by it. An arity-0 specialization still emits when no `T` is pinned.
+fn emitVariadicMethod(self: *Emitter, method: *const ast.DefDecl, cname: []const u8, base: []const u8) !void {
+    const elem = self.checked.variadicElem(base);
+    const last = method.params[method.params.len - 1];
+    const param_name = self.source[last.name.start..last.name.end];
+    for (self.checked.variadicArities(base)) |arity| {
+        // @as: a call-site arity is frame-bounded well under u16.
+        const n: u16 = @intCast(arity);
+        if (n > 0 and elem == null) continue;
+        const saved = self.current_variadic;
+        self.current_variadic = .{ .param = param_name, .elem = elem, .arity = n };
+        defer self.current_variadic = saved;
+        try self.emitMethodAsDef(method, cname, try variadic.label(self, base, n));
+    }
 }
 
 /// Emit per-class vtables after all method addresses are known.
@@ -625,6 +656,70 @@ pub fn emitMethodDispatchOnInstance(
     try isa.addImmToReg(self, 2 + arg_bytes + 2, Reg.sp);
 }
 
+/// The owning class + decl of `method_name` resolved up `class_name`'s
+/// inheritance chain (codegen analog of `lookupClassMethodOwner`).
+pub const MethodResolution = struct { owner: []const u8, method: *const ast.DefDecl };
+
+/// Walk `class_name`'s ancestor chain for a method named `method_name`,
+/// returning the owning class name + its decl, or `null`.
+pub fn resolveMethodOwner(self: *Emitter, class_name: []const u8, method_name: []const u8) ?MethodResolution {
+    var cname = class_name;
+    while (true) {
+        const cd = self.class_decls.get(cname) orelse return null;
+        for (cd.methods) |*m| {
+            if (std.mem.eql(u8, self.source[m.name.start..m.name.end], method_name)) {
+                return .{ .owner = cname, .method = m };
+            }
+        }
+        cname = if (cd.extends) |ext| self.source[ext.start..ext.end] else return null;
+    }
+}
+
+/// Vararg count at a variadic method call site: `n_args` minus the
+/// fixed params (excluding `self` when present + the variadic slot).
+/// Underflow-safe — a `self`-less method (`has_self == false`) would
+/// otherwise wrap `params.len - 2`.
+pub fn variadicMethodArity(self: *Emitter, method: *const ast.DefDecl, n_args: usize) u16 {
+    const params = method.params;
+    const has_self = params.len > 0 and std.mem.eql(u8, self.source[params[0].name.start..params[0].name.end], "self");
+    const skip: usize = if (has_self) 1 else 0;
+    const fixed: usize = if (params.len > skip) params.len - skip - 1 else 0;
+    // @as: arity is frame-bounded; clamp to keep the narrowing safe.
+    return @intCast(if (n_args > fixed) n_args - fixed else 0);
+}
+
+/// Static-dispatch a variadic method call to `Owner.method$arity`
+/// (§4.6.2). A variadic method is non-virtual, so there's no vtable
+/// slot — this mirrors the instance dispatch (spill receiver, push
+/// sret + args, reload + push self) but ends in a direct call to the
+/// arity specialization rather than a vtable-indexed `call_reg`.
+pub fn emitVariadicMethodCall(
+    self: *Emitter,
+    recv: *const ast.Expr,
+    owner: []const u8,
+    method_name: []const u8,
+    arity: u16,
+    args: []const *const ast.Expr,
+    span: ast.Span,
+) !void {
+    try emitInstancePtr(self, recv); // acu = instance pointer
+    try isa.pushReg(self, Reg.acu); // spill above args
+
+    const returns_sret = methodRetStruct(self, owner, method_name) != null or
+        try methodRetScalarOpt(self, owner, method_name);
+    const arg_bytes = try pushSretAndArgs(self, args, returns_sret);
+
+    // Reload the spilled instance pointer, push it last so self lands
+    // at fp+4, then direct-call the per-arity specialization.
+    try loadFromStack(self, arg_bytes, Reg.r1);
+    try isa.pushReg(self, Reg.r1);
+    const base = try methodLabel(self, owner, method_name);
+    try emitDirectCall(self, try variadic.label(self, base, arity), span);
+
+    // Drop self + args + the spilled instance pointer.
+    try isa.addImmToReg(self, 2 + arg_bytes + 2, Reg.sp);
+}
+
 /// Lower `super.method(args)` — direct call to the named method
 /// on the parent of the enclosing method's class. Bypasses vtable
 /// lookup entirely (the dispatch is static at compile time).
@@ -668,6 +763,31 @@ pub fn emitSuperMethodCall(
     try emitDirectCall(self, label, span);
 
     // Drop self + args. The method's result survives in `acu`.
+    try isa.addImmToReg(self, 2 + arg_bytes, Reg.sp);
+}
+
+/// Static-dispatch `super.method(args)` for a variadic method (§4.6.2)
+/// to `Owner.method$arity`. Mirrors `emitSuperMethodCall` (self is the
+/// stable `fp+4` param, no spill) but targets the arity specialization.
+pub fn emitSuperVariadicMethodCall(
+    self: *Emitter,
+    owner: []const u8,
+    method_name: []const u8,
+    arity: u16,
+    args: []const *const ast.Expr,
+    span: ast.Span,
+) !void {
+    const self_ofs = self.params.get("self") orelse {
+        try self.diagFatal(span, "E_CODEGEN_NO_SELF", "codegen: `super.method` used outside a method body");
+        return;
+    };
+    const returns_sret = methodRetStruct(self, owner, method_name) != null or
+        try methodRetScalarOpt(self, owner, method_name);
+    const arg_bytes = try pushSretAndArgs(self, args, returns_sret);
+    try isa.movRegOffsetToReg(self, Reg.fp, self_ofs, Reg.r1);
+    try isa.pushReg(self, Reg.r1);
+    const base = try methodLabel(self, owner, method_name);
+    try emitDirectCall(self, try variadic.label(self, base, arity), span);
     try isa.addImmToReg(self, 2 + arg_bytes, Reg.sp);
 }
 

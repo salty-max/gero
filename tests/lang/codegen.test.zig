@@ -1732,6 +1732,83 @@ test "codegen: a plain tuple value forwards to `str.format` positionally" {
     , "7/8\n");
 }
 
+test "codegen: a variadic method monomorphizes per arity (index + forward)" {
+    try runAndExpect(
+        \\class Logger
+        \\  def fmt(self, f: str, args: ...) -> str
+        \\    return str.format(f, args)
+        \\  end
+        \\  def first(self, args: ...) -> i16
+        \\    return args.0
+        \\  end
+        \\end
+        \\def main()
+        \\  let l = Logger()
+        \\  print l.fmt("a={0} b={1}", 1, 2)
+        \\  print l.fmt("just {0}", 9)
+        \\  print l.first(100, 200, 300)
+        \\end
+    , "a=1 b=2\njust 9\n100\n");
+}
+
+test "codegen: a variadic method reads `self` fields alongside its args" {
+    try runAndExpect(
+        \\class Counter
+        \\  let base: i16
+        \\  def init(self, b: i16)
+        \\    self.base = b
+        \\  end
+        \\  def add(self, args: ...) -> i16
+        \\    return self.base + args.0 + args.1
+        \\  end
+        \\end
+        \\def main()
+        \\  let c = Counter(100)
+        \\  print c.add(10, 20)
+        \\end
+    , "130\n");
+}
+
+test "codegen: an inherited variadic method dispatches to its declaring class" {
+    try runAndExpect(
+        \\class Base
+        \\  def tag(self, args: ...) -> i16
+        \\    return args.0 + args.1
+        \\  end
+        \\end
+        \\class Derived extends Base
+        \\  def go(self) -> i16
+        \\    return super.tag(3, 4)
+        \\  end
+        \\end
+        \\def main()
+        \\  let d = Derived()
+        \\  print d.tag(5, 6)
+        \\  print d.go()
+        \\end
+    , "11\n7\n");
+}
+
+test "codegen: a struct-returning variadic method rides the sret ABI" {
+    try runAndExpect(
+        \\struct Point
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\class Maker
+        \\  def mk(self, args: ...) -> Point
+        \\    return Point { x: args.0, y: args.1 }
+        \\  end
+        \\end
+        \\def main()
+        \\  let m = Maker()
+        \\  let p = m.mk(11, 22)
+        \\  print p.x
+        \\  print p.y
+        \\end
+    , "11\n22\n");
+}
+
 test "codegen: print of a string literal goes through sys print_str + emits `hi`" {
     try runAndExpect(
         \\def main()

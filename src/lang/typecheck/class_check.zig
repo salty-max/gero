@@ -56,12 +56,19 @@ pub fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
     }
 
     if (isVariadicDef(d)) {
-        // A top-level variadic def is monomorphized: defer its body until
-        // call sites pin `T` + the arity (the registry holds the stable
-        // decl pointer the deferred walk replays from). A variadic method
-        // isn't monomorphized — the method-call path carries no variadic
-        // arity — so its body is checked here with an untyped `args` slot.
-        if (self.def_registry.get(self.lexeme(d.name))) |ptr| {
+        // A variadic def/method is monomorphized: defer its body until
+        // call sites pin `T` + the arity. Inside a class it's a method —
+        // carry the declaring class so the deferred walk restores `self`
+        // / fields / `super`; at top level it's a free def. The registries
+        // hold the stable decl pointer the deferred walk replays from.
+        if (self.current_class_name) |cn| {
+            if (self.class_registry.get(cn)) |class| {
+                if (stableMethod(self, class, self.lexeme(d.name))) |method| {
+                    try self.deferred_variadic_methods.append(self.arena, .{ .class = class, .method = method });
+                    return;
+                }
+            }
+        } else if (self.def_registry.get(self.lexeme(d.name))) |ptr| {
             try self.deferred_variadic.append(self.arena, ptr);
             return;
         }
@@ -144,12 +151,15 @@ pub fn walkDefBody(
 /// variadic def, so discover those calls with diagnostics muted until
 /// the facts stabilize, then commit one checked walk per body.
 pub fn resolveDeferredVariadics(self: *Checker) WalkError!void {
-    if (self.deferred_variadic.items.len == 0) return;
+    const total = self.deferred_variadic.items.len + self.deferred_variadic_methods.items.len;
+    if (total == 0) return;
 
-    // Discovery converges in at most one round per deferred def: each
-    // round can only extend the chain by one variadic callee.
+    // Discovery converges in at most one round per deferred body: each
+    // round can only extend the chain by one variadic callee. Free defs
+    // and methods share the loop so a method calling a free variadic def
+    // (or vice versa) contributes its arity before either commits.
     var rounds: usize = 0;
-    while (rounds <= self.deferred_variadic.items.len) : (rounds += 1) {
+    while (rounds <= total) : (rounds += 1) {
         const before = variadicProgress(self);
         try walkDeferredVariadics(self, true);
         if (variadicProgress(self) == before) break;
@@ -157,10 +167,10 @@ pub fn resolveDeferredVariadics(self: *Checker) WalkError!void {
     try walkDeferredVariadics(self, false);
 }
 
-/// Walk every deferred variadic body once, binding `args` to the
-/// current whole-program tuple. When `mute`, diagnostics are routed to
-/// a scratch list and dropped — the walk exists only to surface nested
-/// variadic calls into `variadic_info`.
+/// Walk every deferred variadic body (free defs + methods) once, binding
+/// `args` to the current whole-program tuple. When `mute`, diagnostics
+/// are routed to a scratch list and dropped — the walk exists only to
+/// surface nested variadic calls into `variadic_info`.
 fn walkDeferredVariadics(self: *Checker, mute: bool) WalkError!void {
     const saved = self.diagnostics;
     defer self.diagnostics = saved;
@@ -170,12 +180,74 @@ fn walkDeferredVariadics(self: *Checker, mute: bool) WalkError!void {
 
     for (self.deferred_variadic.items) |decl| {
         const info = self.variadic_info.get(self.lexeme(decl.name)) orelse continue;
-        // No call site pinned `T`: the def is uninstantiable, so there
-        // is nothing to monomorphize and no element type to check against.
-        const elem = info.elem orelse continue;
-        const args_ty = try variadicArgsTuple(self, elem, info.min_arity orelse 0);
+        const args_ty = try deferredArgsTuple(self, info) orelse continue;
         try walkDefBody(self, decl.*, args_ty);
     }
+    for (self.deferred_variadic_methods.items) |dm| {
+        const key = try calls.methodKey(self, self.lexeme(dm.class.name), self.lexeme(dm.method.name));
+        const info = self.variadic_info.get(key) orelse continue;
+        const args_ty = try deferredArgsTuple(self, info) orelse continue;
+        try walkMethodBody(self, dm.class, dm.method, args_ty);
+    }
+}
+
+/// The `args: (T, …, T)` tuple a deferred variadic body checks against,
+/// or `null` when it's uninstantiable (an arity ≥ 1 was seen but no `T`
+/// pinned — an inference failure already reported elsewhere). An entry
+/// called only with zero varargs has `elem == null` and `min_arity == 0`:
+/// the tuple is empty, so the body still type-checks (and its codegen
+/// `$0` specialization stays sound) — the placeholder element is never
+/// read.
+fn deferredArgsTuple(self: *Checker, info: typecheck.VariadicInfo) WalkError!?*const types.Type {
+    const min = info.min_arity orelse 0;
+    if (info.elem == null and min > 0) return null;
+    const elem = info.elem orelse try self.primitive(.nil_);
+    return try variadicArgsTuple(self, elem, min);
+}
+
+/// Walk a variadic method body in its class scope: restore the
+/// `current_class_*` context + register fields (mirrors `checkClassDecl`'s
+/// method setup, minus the per-method signature checks already done in the
+/// main walk), then walk the body with `args` bound to the pinned tuple.
+fn walkMethodBody(
+    self: *Checker,
+    class: *const ast.ClassDecl,
+    method: *const ast.DefDecl,
+    args_ty: *const types.Type,
+) WalkError!void {
+    const saved_name = self.current_class_name;
+    self.current_class_name = self.lexeme(class.name);
+    defer self.current_class_name = saved_name;
+
+    const saved_extends = self.current_class_extends;
+    self.current_class_extends = class.extends;
+    defer self.current_class_extends = saved_extends;
+
+    const saved_scope = self.current_scope;
+    var class_scope: Scope = .init(self.arena, saved_scope);
+    self.current_scope = &class_scope;
+    defer self.current_scope = saved_scope;
+
+    for (class.fields) |f| {
+        const ty: ?*const types.Type = if (f.type_ann) |t|
+            try type_resolve.resolveType(self, t)
+        else
+            null;
+        try self.registerName(self.lexeme(f.name), .{
+            .kind = .let_binding,
+            .decl_span = f.name,
+            .ty = ty,
+        });
+    }
+
+    try walkDefBody(self, method.*, args_ty);
+}
+
+/// First method named `name` declared directly on `class` — a stable
+/// AST pointer for deferral, or `null` when the class doesn't declare it.
+fn stableMethod(self: *const Checker, class: *const ast.ClassDecl, name: []const u8) ?*const ast.DefDecl {
+    for (class.methods) |*m| if (std.mem.eql(u8, self.lexeme(m.name), name)) return m;
+    return null;
 }
 
 /// Change metric for the discovery fixpoint: a rolling combine over
@@ -268,6 +340,7 @@ pub fn checkClassDecl(self: *Checker, d: ast.ClassDecl) WalkError!void {
 /// - `@override` without a parent method → `E_OVERRIDE_NO_PARENT`.
 /// - Overriding a `@final` method → `E_METHOD_FINAL_OVERRIDE`.
 /// - `@static` with a `self` first param → `E_STATIC_HAS_SELF`.
+/// - non-`@static` without a `self` first param → `E_METHOD_NO_SELF`.
 fn checkMethodAnnotations(
     self: *Checker,
     cd: *const ast.ClassDecl,
@@ -277,14 +350,40 @@ fn checkMethodAnnotations(
     const is_override = annotations.hasAnnotation(self, m.annotations, "override");
     const is_static = annotations.hasAnnotation(self, m.annotations, "static");
 
-    if (is_static and m.params.len > 0) {
-        const first = self.lexeme(m.params[0].name);
-        if (std.mem.eql(u8, first, "self")) {
+    const has_self = m.params.len > 0 and std.mem.eql(u8, self.lexeme(m.params[0].name), "self");
+    if (is_static) {
+        if (has_self) {
             try self.emitSpan(
                 "E_STATIC_HAS_SELF",
                 m.params[0].name,
                 "`@static` method must not take a `self` parameter — it's called as `ClassName.method(...)`",
             );
+        }
+    } else if (!has_self) {
+        // An instance method's receiver is always pushed at fp+4; without
+        // a `self` param to claim that slot, the first declared param
+        // would alias the receiver pointer. Require `self` (or `@static`).
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "method `{s}` must take `self` as its first parameter (or be `@static`)",
+            .{m_name},
+        );
+        try self.emitSpan("E_METHOD_NO_SELF", m.name, msg);
+    }
+
+    // A variadic method is non-virtual — it monomorphizes per call-site
+    // arity (§4.6.2) and a single vtable slot can't hold its N
+    // specializations. So it can't be `@override`/`@abstract`, and it
+    // can't share a name with an ancestor method (which would override).
+    const is_variadic = isVariadicDef(m);
+    if (is_variadic) {
+        if (is_override or annotations.hasAnnotation(self, m.annotations, "abstract")) {
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "variadic method `{s}` can't be `@override` or `@abstract` — it is non-virtual (statically dispatched per arity)",
+                .{m_name},
+            );
+            try self.emitSpan("E_VAR_VIRTUAL", m.name, msg);
         }
     }
 
@@ -300,6 +399,14 @@ fn checkMethodAnnotations(
         }
     }
     if (parent_method) |pm| {
+        if (is_variadic or isVariadicDef(pm.*)) {
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "method `{s}` collides with an ancestor method, but a variadic method is non-virtual and can't participate in overriding (§4.6.2)",
+                .{m_name},
+            );
+            try self.emitSpan("E_VAR_OVERRIDE", m.name, msg);
+        }
         if (annotations.hasAnnotation(self, pm.annotations, "final")) {
             const msg = try std.fmt.allocPrint(
                 self.arena,

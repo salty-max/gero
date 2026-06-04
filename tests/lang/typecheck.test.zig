@@ -2289,6 +2289,150 @@ test "typecheck: a variadic `def` cannot be `@inline`" {
     , "E_VAR_INLINE");
 }
 
+test "typecheck: a variadic method accepts a multi-arg call + types `args.N`" {
+    try expectClean(
+        \\class Logger
+        \\  def fmt(self, f: str, args: ...) -> str
+        \\    return str.format(f, args)
+        \\  end
+        \\  def sum(self, args: ...) -> i16
+        \\    return args.0 + args.1
+        \\  end
+        \\end
+        \\def main()
+        \\  let l = Logger()
+        \\  print l.fmt("{0}/{1}", 3, 4)
+        \\  print l.sum(10, 20)
+        \\end
+    );
+}
+
+test "typecheck: `args.N` past the smallest call's arity errors in a method" {
+    try expectCode(
+        \\class C
+        \\  def pick(self, args: ...) -> i16
+        \\    return args.2
+        \\  end
+        \\end
+        \\def main()
+        \\  let c = C()
+        \\  print c.pick(1, 2)
+        \\end
+    , "E_TYPE_TUPLE_INDEX_OOR");
+}
+
+test "typecheck: a variadic method cannot be `@override`" {
+    try expectCode(
+        \\class Base
+        \\  def log(self, args: ...) -> i16
+        \\    return args.0
+        \\  end
+        \\end
+        \\class Sub extends Base
+        \\  @override
+        \\  def log(self, args: ...) -> i16
+        \\    return args.0
+        \\  end
+        \\end
+    , "E_VAR_VIRTUAL");
+}
+
+test "typecheck: a method cannot override a variadic ancestor method" {
+    try expectCode(
+        \\class Base
+        \\  def log(self, args: ...) -> i16
+        \\    return args.0
+        \\  end
+        \\end
+        \\class Sub extends Base
+        \\  def log(self, x: i16) -> i16
+        \\    return x
+        \\  end
+        \\end
+    , "E_VAR_OVERRIDE");
+}
+
+test "typecheck: a struct (aggregate) variadic element type is rejected" {
+    // Varargs are word-strided scalars; an inline aggregate would push by
+    // value but read back as a single word, so it's a clean error here
+    // rather than a silent miscompile.
+    try expectCode(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def take(args: ...) -> i16
+        \\  return args.0.x
+        \\end
+        \\def main()
+        \\  let p = P { x: 1, y: 2 }
+        \\  print take(p)
+        \\end
+    , "E_VAR_AGGREGATE");
+}
+
+test "typecheck: an array (aggregate) variadic element type is rejected" {
+    try expectCode(
+        \\def take(args: ...) -> i16
+        \\  return 0
+        \\end
+        \\def main()
+        \\  let a: [i16; 2] = [1, 2]
+        \\  print take(a)
+        \\end
+    , "E_VAR_AGGREGATE");
+}
+
+test "typecheck: a scalar optional (multi-word) variadic element is rejected" {
+    // A scalar `T?` is a 4-byte `{present, value}` value — multi-word like
+    // a struct, so it can't be a (word-strided) variadic element. A
+    // pointer-like `str?` would stay legal.
+    try expectCode(
+        \\def take(args: ...) -> i16
+        \\  return 0
+        \\end
+        \\def main()
+        \\  let a: i16? = 1
+        \\  let b: i16? = 2
+        \\  take(a, b)
+        \\end
+    , "E_VAR_AGGREGATE");
+}
+
+test "typecheck: a non-`@static` method must declare `self`" {
+    // Without `self`, the call-site receiver (always at fp+4) would alias
+    // the first declared param. Applies to variadic + plain methods.
+    try expectCode(
+        \\class Box
+        \\  def make(first: i16, args: ...) -> i16
+        \\    return first + args.0
+        \\  end
+        \\end
+        \\def main()
+        \\  let b = Box()
+        \\  print b.make(10, 5)
+        \\end
+    , "E_METHOD_NO_SELF");
+}
+
+test "typecheck: a body called only with zero varargs is still checked" {
+    // The deferred body must type-check even when no call pins `T` — its
+    // arity-0 codegen specialization still runs, so a body type error
+    // can't be allowed to escape.
+    try expectCode(
+        \\class Box
+        \\  def each(self, args: ...) -> u16
+        \\    let z: u16 = "not a u16"
+        \\    return z
+        \\  end
+        \\end
+        \\def main()
+        \\  let b = Box()
+        \\  print b.each()
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
 // ---------- CheckedProgram surface ----------
 
 test "typecheck: CheckedProgram retains program pointer" {

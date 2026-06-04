@@ -8,6 +8,8 @@ const annotations = @import("annotations.zig");
 const flow = @import("flow.zig");
 const predicates = @import("predicates.zig");
 const mem_builtin = @import("mem_builtin.zig");
+const calls = @import("calls.zig");
+const class_check = @import("class_check.zig");
 
 const Checker = typecheck.Checker;
 const WalkError = error{OutOfMemory};
@@ -273,6 +275,13 @@ pub fn checkMethodCall(
             try self.emitSpan("E_PRIVATE_ACCESS", m.method, msg);
         }
     }
+    // A variadic method pivots to the homogeneous-args / arity rules
+    // (§4.6.2) — it's statically dispatched to its owner, so route here
+    // before the fixed-arity check below.
+    if (class_check.isVariadicDef(method.*)) {
+        return try calls.checkVariadicMethodCall(self, m, method, self.lexeme(hit.owner.name));
+    }
+
     // Build the method signature on the fly. Skip the `self`
     // param when matching args.
     var has_self = false;

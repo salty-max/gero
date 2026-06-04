@@ -1793,6 +1793,17 @@ The format-spec language (§3.2.2) understands varargs: `format(fmt,
 args)` forwards a varargs tuple positionally. User-defined helpers
 follow the same convention.
 
+A **method** may be variadic too (`def m(self, …, args: ...)`), with
+one consequence: a variadic method is **non-virtual** — it is
+statically dispatched to its declaring class. Per-call specialization
+needs a distinct address per arity, which a single vtable slot can't
+hold, so a variadic method gets no vtable entry; the call resolves to
+the owning class's specialization at compile time (the same body even
+through a base-class reference). It therefore cannot be `@override` or
+`@abstract`, and a class cannot redefine an ancestor's method with a
+variadic one (or vice versa). When a method needs to be polymorphic,
+take a tuple or `Vec` parameter instead of varargs.
+
 Restrictions:
 
 - Only the **last** parameter may be variadic.
@@ -1801,6 +1812,8 @@ Restrictions:
 - All variadic args must be **the same statically-known type** (or
   satisfy a common annotation). Mixed-type varargs aren't supported;
   for heterogeneous data, pass a tuple or struct explicitly.
+- A variadic **method** is non-virtual: not `@override` / `@abstract`,
+  and not overridable.
 
 #### 4.6.3 Method calls and chaining
 
@@ -2484,6 +2497,12 @@ class Player
   end
 end
 ```
+
+Every instance method takes `self` as its first parameter (the
+receiver). A non-`@static` method without `self` is a compile error
+(`E_METHOD_NO_SELF`) — the receiver occupies the first parameter slot,
+so omitting `self` would alias it. Class-level helpers that take no
+receiver are spelled `@static` and called as `ClassName.method(...)`.
 
 Instantiation:
 

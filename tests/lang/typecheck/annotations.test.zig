@@ -235,7 +235,7 @@ test "typecheck/annotations: @final + @override conflict errors with E_ANN_CONFL
         \\class A
         \\  @final
         \\  @override
-        \\  def m()
+        \\  def m(self)
         \\  end
         \\end
     , "E_ANN_CONFLICT");
@@ -246,7 +246,7 @@ test "typecheck/annotations: @abstract + @static conflict errors with E_ANN_CONF
         \\class A
         \\  @abstract
         \\  @static
-        \\  def m()
+        \\  def m(self)
         \\  end
         \\end
     , "E_ANN_CONFLICT");
@@ -257,7 +257,7 @@ test "typecheck/annotations: @final alone on a def accepts" {
     try expectClean(
         \\class A
         \\  @final
-        \\  def m()
+        \\  def m(self)
         \\  end
         \\end
     );

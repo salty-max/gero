@@ -97,6 +97,7 @@ pub fn typecheck(
         .def_registry = .{},
         .variadic_info = .{},
         .deferred_variadic = .empty,
+        .deferred_variadic_methods = .empty,
         .mmio_names = .{},
         .fn_locals = null,
         .tuple_correlations = .{},
@@ -193,6 +194,14 @@ pub const VariadicInfo = struct {
     arities: std.ArrayListUnmanaged(u32) = .empty,
 };
 
+/// A variadic method whose body is deferred until call sites pin its
+/// `T` + arity (§4.6.2). Carries the declaring class so the deferred
+/// walk can re-establish the method's scope (`self`, fields, `super`).
+pub const DeferredMethod = struct {
+    class: *const ast.ClassDecl,
+    method: *const ast.DefDecl,
+};
+
 /// Stateful walker that runs resolution + inference + checking.
 /// Sub-modules under `typecheck/` take a `*Checker` and call back
 /// into its public methods.
@@ -241,6 +250,10 @@ pub const Checker = struct {
     /// Variadic defs whose bodies are deferred until `variadic_info` is
     /// fully populated (the element type comes from call sites).
     deferred_variadic: std.ArrayListUnmanaged(*const ast.DefDecl),
+    /// Variadic methods whose bodies are deferred — same rule as
+    /// `deferred_variadic`, but each carries its declaring class so the
+    /// deferred walk restores the method scope.
+    deferred_variadic_methods: std.ArrayListUnmanaged(DeferredMethod),
     /// Module-level `let`s annotated `@addr`. Accessing from a
     /// bake context emits `E_BAKE_MMIO_ACCESS`.
     mmio_names: std.StringHashMapUnmanaged(void),
