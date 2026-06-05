@@ -2225,19 +2225,21 @@ windows, hand-tuned hot loops, cycle-counted timing tricks, or
 direct manipulation of the VM's register / flag state.
 
 ```
-def fast_swap(a: u16, b: u16)
-  asm "swap {a}, {b}"
+def load_acu(x: i16)
+  asm "mov {x}, acu"
 end
 
-def fence()
-  asm "memfence"
+def begin_critical()
+  asm "cli"
 end
 ```
 
 **Substitution.** Operands inside `{name}` braces resolve to the
 gero-lang local with that name. The compiler validates that the
-local exists and emits the appropriate register / addressing
-reference at the asm slot.
+local exists and emits its stack-slot addressing reference at the
+asm slot — so `{name}` operands target instructions that accept a
+memory operand (e.g. `mov`); a register-only instruction needs an
+explicit register (`asm "swap r1, r2"`).
 
 **Constraints.**
 

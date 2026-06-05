@@ -740,6 +740,7 @@ should have already enforced.
 |------|---------|
 | `E_CODEGEN_UNSUPPORTED` | A syntactically + type-valid construct the codegen doesn't lower yet (the catch-all — e.g. an ordering comparison on a struct or tuple, a `==` over an array / `Vec` / nullable field or a recursive enum, printing a value with no default rendering (array / `Vec` / class / reference) or a recursive type, storing into a tuple's aggregate element). |
 | `E_CODEGEN_FRAME_TOO_LARGE` | A function's locals or parameters exceed the 127-byte limit on `[fp + imm8]` fp-relative addressing (the ISA's only frame-offset mode). Reduce locals/params. |
+| `E_CODEGEN_INLINE_ASM` | An `asm "..."` statement (§4.11) couldn't lower — a `{name}` operand isn't a local / parameter, the instruction is malformed, or its operand types match no opcode form. |
 | `E_CODEGEN_UNDEFINED_FN` | A call's target isn't a known top-level `def` (an unresolved forward reference at patch time). |
 | `E_CODEGEN_UNKNOWN_CLASS` | A constructor / field / method targets a class with no computed layout. |
 | `E_CODEGEN_UNDEFINED_FIELD` | A `recv.field` names a field the class doesn't declare. |
@@ -850,6 +851,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_UNDEFINED_SYMBOL` | Name resolution | v0.3 |
 | `E_CODEGEN_UNSUPPORTED` | Codegen | v0.3 |
 | `E_CODEGEN_FRAME_TOO_LARGE` | Codegen | v0.3 |
+| `E_CODEGEN_INLINE_ASM` | Codegen | v0.3 |
 | `E_CODEGEN_UNDEFINED_FN` | Codegen | v0.3 |
 | `E_CODEGEN_UNKNOWN_CLASS` | Codegen | v0.3 |
 | `E_CODEGEN_UNDEFINED_FIELD` | Codegen | v0.3 |

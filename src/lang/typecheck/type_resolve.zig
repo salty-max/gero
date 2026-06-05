@@ -14,7 +14,7 @@ const WalkError = error{OutOfMemory};
 pub fn resolveType(self: *Checker, t: *const ast.TypeAnn) WalkError!*const types.Type {
     switch (t.*) {
         .named => |n| {
-            const name = self.lexeme(n.name);
+            const name = self.resolveImportAlias(self.lexeme(n.name));
             if (types.primitiveFromName(name)) |p| {
                 return try self.primitive(p);
             }

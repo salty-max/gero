@@ -77,6 +77,13 @@ fn lookup(recv: []const u8, name: []const u8) ?Sig {
     return null;
 }
 
+/// `true` when `name` is a function of stdlib module `recv` (gated by
+/// `isModule`). Lets `use <name> from <module>` validate the member at
+/// registration rather than only at the call site.
+pub fn isMember(recv: []const u8, name: []const u8) bool {
+    return lookup(recv, name) != null;
+}
+
 fn suggest(recv: []const u8, name: []const u8) ?[]const u8 {
     const sigs = sigsFor(recv);
     var pool: [16][]const u8 = undefined;
@@ -118,10 +125,24 @@ pub fn checkCall(
     args: []const *ast.Expr,
     call_span: ast.Span,
 ) WalkError!?*const types.Type {
-    const name = self.lexeme(name_span);
+    return checkCallName(self, recv, self.lexeme(name_span), name_span, args, call_span);
+}
+
+/// `checkCall` resolved by an explicit function `name` rather than its
+/// source span — used when a selectively-imported (and possibly
+/// renamed) stdlib function is called bare (`use rng as random from
+/// math` then `random()`). `diag_span` anchors any error.
+pub fn checkCallName(
+    self: *Checker,
+    recv: []const u8,
+    name: []const u8,
+    diag_span: ast.Span,
+    args: []const *ast.Expr,
+    call_span: ast.Span,
+) WalkError!?*const types.Type {
     const sig = lookup(recv, name) orelse {
         const msg = try std.fmt.allocPrint(self.arena, "stdlib module `{s}` has no member `{s}`", .{ recv, name });
-        try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED_METHOD", name_span, msg, suggest(recv, name));
+        try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED_METHOD", diag_span, msg, suggest(recv, name));
         for (args) |a| _ = try self.inferExpr(a, null);
         return null;
     };

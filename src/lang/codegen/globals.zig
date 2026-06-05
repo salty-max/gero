@@ -90,7 +90,7 @@ fn evalConstIfBake(self: *Emitter, d: *const ast.ConstDecl) !?bake_mod.BakeValue
         },
         .call => |c| {
             if (c.callee.* != .ident) return null;
-            const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
+            const callee_name = self.resolveImportAlias(self.source[c.callee.ident.span.start..c.callee.ident.span.end]);
             const decl = self.bake_defs.get(callee_name) orelse return null;
             // Top-level entry call — args must be literal / const-foldable.
             const args = try self.arena.alloc(bake_mod.BakeValue, c.args.len);

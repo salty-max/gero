@@ -112,8 +112,10 @@ fn walkArmPattern(
         .variant_pattern => |vp| {
             const split = splitPath(self.lexeme(vp.path));
             // Verify the head matches the enum name (skip when
-            // it doesn't — pattern targets a different enum).
-            if (split.head.len > 0 and !std.mem.eql(u8, split.head, self.lexeme(ed.name))) return;
+            // it doesn't — pattern targets a different enum). An
+            // import alias resolves to the real enum name first.
+            const head = self.resolveImportAlias(split.head);
+            if (head.len > 0 and !std.mem.eql(u8, head, self.lexeme(ed.name))) return;
             // Verify variant exists on this enum.
             if (!variantExists(self, ed, split.tail)) return;
             if (covered.contains(split.tail)) {
@@ -259,7 +261,7 @@ fn resolveMatchEnum(self: *Checker, ms: ast.MatchStmt, scrut_ty: ?*const types.T
     if (scrut_ty) |st| if (enumDeclForType(self, st.*)) |ed| return ed;
     for (ms.arms) |arm| {
         if (arm.pattern.* != .variant_pattern) continue;
-        const head = splitPath(self.lexeme(arm.pattern.variant_pattern.path)).head;
+        const head = self.resolveImportAlias(splitPath(self.lexeme(arm.pattern.variant_pattern.path)).head);
         if (head.len > 0) if (self.enum_registry.get(head)) |ed| return ed;
     }
     return null;

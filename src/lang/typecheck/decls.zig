@@ -4,6 +4,7 @@ const types = @import("../types.zig");
 const scope_mod = @import("../scope.zig");
 const typecheck = @import("../typecheck.zig");
 const type_resolve = @import("type_resolve.zig");
+const stdlib = @import("stdlib.zig");
 
 const Checker = typecheck.Checker;
 const WalkError = error{OutOfMemory};
@@ -82,13 +83,28 @@ fn registerUseDecl(self: *Checker, d: ast.UseDecl) WalkError!void {
     if (d.items.len > 0) {
         // `use a [as al], b [as bl] from module` — each item
         // becomes its own imported symbol.
+        const module = self.lexeme(d.module);
+        const from_stdlib = stdlib.isModule(module);
         for (d.items) |it| {
-            const name = if (it.alias) |a| self.lexeme(a) else self.lexeme(it.name);
+            const orig = self.lexeme(it.name);
+            const name = if (it.alias) |a| self.lexeme(a) else orig;
             try registerName(self, name, .{
                 .kind = .imported,
                 .decl_span = it.name,
                 .ty = null,
             });
+            // A stdlib selective import records its origin so a bare
+            // call (`rng()` after `use rng from math`) lowers like the
+            // qualified `math.rng()` form — and the member must exist,
+            // surfaced here rather than only at a call site.
+            if (from_stdlib) {
+                if (stdlib.isMember(module, orig)) {
+                    try self.selective_stdlib.put(self.arena, name, .{ .module = module, .name = orig });
+                } else {
+                    const msg = try std.fmt.allocPrint(self.arena, "stdlib module `{s}` has no member `{s}`", .{ module, orig });
+                    try self.emitSpan("E_TYPE_UNDEFINED_METHOD", it.name, msg);
+                }
+            }
         }
     } else {
         // Whole-module import — register the alias (or the

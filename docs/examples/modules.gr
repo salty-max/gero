@@ -1,0 +1,19 @@
+-- modules.gr — a focused, fully-validating tour of gero's module
+-- system (§5). Unlike the broad `syntax_overview.gr`, this one passes
+-- `gero check` end-to-end: it exercises the import forms — a whole
+-- symbol, a selective import with a rename, and a selective stdlib
+-- pull — resolving against the shipped `./io` stub and the `math`
+-- stdlib.
+use display from "./io" -- import a class by name (§5.2)
+use input as keys from "./io" -- selective import + rename: `keys` IS `input`
+use rng from math -- selective stdlib import
+
+def main()
+  display.clear() -- @static call on an imported class
+  -- The rename binds the class, so a `@static` call resolves through it.
+  if keys.button_pressed(0)
+    print "pressed"
+  end
+  -- A bare `rng()` lowers like the qualified `math.rng()` would.
+  print rng() % 100
+end

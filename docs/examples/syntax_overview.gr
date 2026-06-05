@@ -7,9 +7,11 @@
 -- Read this top-to-bottom to see every construct from the spec at
 -- least once. Annotations refer to spec section numbers.
 --
--- gero-example: fmt-only — imports an illustrative `./io` module that
--- isn't shipped, so `gero check` (which now resolves `use`) can't
--- validate it end-to-end; the formatting gate still applies.
+-- gero-example: fmt-only — this complete-syntax tour exercises
+-- constructs the codegen doesn't lower yet (`do`-as-expression §4.3,
+-- capturing closures §4.7.1), so `gero check` can't validate it
+-- end-to-end; the formatting gate still applies. The `./io` imports
+-- do resolve against the shipped stub (`docs/examples/io.gr`).
 ------------------------------------------------------------
 -- §5.2  Imports
 ------------------------------------------------------------
@@ -353,8 +355,10 @@ end
 -- §3.7.7  asm — last-resort inline asm
 ------------------------------------------------------------
 @inline
-def fast_swap(a: u16, b: u16)
-  asm "swap {a}, {b}"
+def load_acu(x: u16)
+  -- A `{name}` slot lowers to the local's stack address, so it
+  -- targets instructions that take a memory operand (here `mov`).
+  asm "mov {x}, acu"
 end
 
 ------------------------------------------------------------

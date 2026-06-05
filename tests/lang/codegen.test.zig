@@ -871,6 +871,233 @@ fn runAndExpect(source: []const u8, expected: []const u8) !void {
     try std.testing.expectEqualStrings(expected, writer.written());
 }
 
+/// Like `runAndExpect`, but threads a `use X as Y from "./mod"` alias
+/// table (`Y` → `X`) through both the typechecker and codegen — the
+/// post-fuse view of a quoted-path import whose alias has no inlined
+/// declaration. Each pair is `.{ alias, real_name }`.
+fn runWithAliasesAndExpect(source: []const u8, pairs: []const [2][]const u8, expected: []const u8) !void {
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    try std.testing.expectEqual(@as(usize, 0), tree.errors.len);
+
+    var aliases: gero.lang.ImportAliases = .{};
+    defer aliases.deinit(alloc);
+    for (pairs) |p| try aliases.put(alloc, p[0], p[1]);
+
+    var checked = try gero.lang.typecheckModule(alloc, source, &tree.program, &aliases);
+    defer checked.deinit();
+    if (checked.diagnostics.len > 0) {
+        for (checked.diagnostics) |d| std.debug.print("  - {s}: {s}\n", .{ d.code, d.message });
+    }
+    try std.testing.expectEqual(@as(usize, 0), checked.diagnostics.len);
+
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{ .import_aliases = &aliases });
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings(expected, writer.written());
+}
+
+test "codegen: import alias resolves a `@static` class call" {
+    // `keys` is `input` under another name — `keys.flag()` static-
+    // dispatches to the emitted `input.flag`.
+    try runWithAliasesAndExpect(
+        \\class input
+        \\  @static
+        \\  def flag() -> i16
+        \\    return 7
+        \\  end
+        \\end
+        \\def main()
+        \\  print keys.flag()
+        \\end
+    , &.{.{ "keys", "input" }}, "7\n");
+}
+
+test "codegen: import alias resolves a free `def` call" {
+    try runWithAliasesAndExpect(
+        \\def helper(x: i16) -> i16
+        \\  return x + 1
+        \\end
+        \\def main()
+        \\  print h(41)
+        \\end
+    , &.{.{ "h", "helper" }}, "42\n");
+}
+
+test "codegen: import alias resolves a module-level const" {
+    try runWithAliasesAndExpect(
+        \\const MAX = 100
+        \\def main()
+        \\  print M
+        \\end
+    , &.{.{ "M", "MAX" }}, "100\n");
+}
+
+test "codegen: import alias resolves a struct type + literal" {
+    try runWithAliasesAndExpect(
+        \\struct Point
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let p: P = P { x: 3, y: 4 }
+        \\  print p.y
+        \\end
+    , &.{.{ "P", "Point" }}, "4\n");
+}
+
+test "codegen: import alias resolves an enum in a `match`" {
+    try runWithAliasesAndExpect(
+        \\enum Color
+        \\  case Red
+        \\  case Green
+        \\  case Blue
+        \\end
+        \\def main()
+        \\  let c: C = C.Blue
+        \\  match c
+        \\    case C.Red => print 1
+        \\    case C.Green => print 2
+        \\    case C.Blue => print 3
+        \\  end
+        \\end
+    , &.{.{ "C", "Color" }}, "3\n");
+}
+
+test "codegen: a local binding shadows an import alias of the same name" {
+    // `h` is both an alias for `helper` and a local — the local wins,
+    // so `h` reads `5`, not a call to `helper`.
+    try runWithAliasesAndExpect(
+        \\def helper() -> i16
+        \\  return 99
+        \\end
+        \\def main()
+        \\  let h: i16 = 5
+        \\  print h
+        \\end
+    , &.{.{ "h", "helper" }}, "5\n");
+}
+
+test "codegen: a selectively-imported stdlib function lowers when called bare" {
+    try runAndExpect(
+        \\use max from math
+        \\def main()
+        \\  print max(3, 7)
+        \\end
+    , "7\n");
+}
+
+test "codegen: a renamed selective stdlib import lowers when called bare" {
+    try runAndExpect(
+        \\use max as biggest from math
+        \\def main()
+        \\  print biggest(3, 7)
+        \\end
+    , "7\n");
+}
+
+test "codegen: a param shadows an import alias of the same name" {
+    // `helper` is both an alias for `real_thing` and a param — the
+    // param wins, so `f(5)` returns 5, not a call to `real_thing`.
+    try runWithAliasesAndExpect(
+        \\def real_thing() -> i16
+        \\  return 100
+        \\end
+        \\def f(helper: i16) -> i16
+        \\  return helper
+        \\end
+        \\def main()
+        \\  print f(5)
+        \\end
+    , &.{.{ "helper", "real_thing" }}, "5\n");
+}
+
+test "codegen: a local named like an alias target doesn't capture the alias" {
+    // `h` aliases the import `helper`; a local also *named* `helper`
+    // must not capture `h` — the alias resolves to the module-level
+    // export, so `h()` calls it (11), not the local.
+    try runWithAliasesAndExpect(
+        \\def helper() -> i16
+        \\  return 11
+        \\end
+        \\def main()
+        \\  let helper: i16 = 777
+        \\  print h()
+        \\end
+    , &.{.{ "h", "helper" }}, "11\n");
+}
+
+test "codegen: a local closure shadows a selective stdlib import" {
+    // `math.max(2, 9)` is 9; the local closure `a + b` is 11 — the
+    // local must win.
+    try runAndExpect(
+        \\use max from math
+        \\def main()
+        \\  let max = |a: i16, b: i16| -> i16 a + b
+        \\  print max(2, 9)
+        \\end
+    , "11\n");
+}
+
+test "codegen: a local closure shadows a same-named class constructor" {
+    try runAndExpect(
+        \\class Widget
+        \\  let v: i16
+        \\  def init(self)
+        \\    self.v = 1
+        \\  end
+        \\end
+        \\def main()
+        \\  let Widget = |x: i16| -> i16 x * 2
+        \\  print Widget(21)
+        \\end
+    , "42\n");
+}
+
+test "codegen: an aliased `bake def` is evaluated in a const initializer" {
+    // The const init calls the bake def through its alias — it must
+    // still be folded at compile time, not silently skipped.
+    try runWithAliasesAndExpect(
+        \\bake def origin() -> i16
+        \\  return 1234
+        \\end
+        \\const C = make()
+        \\def main()
+        \\  print C
+        \\end
+    , &.{.{ "make", "origin" }}, "1234\n");
+}
+
+test "codegen: an aliased variadic `def` is called variadically" {
+    try runWithAliasesAndExpect(
+        \\def pick(first: i16, rest: ...) -> i16
+        \\  return first
+        \\end
+        \\def main()
+        \\  print choose(10, 20, 30, 40)
+        \\end
+    , &.{.{ "choose", "pick" }}, "10\n");
+}
+
+test "codegen: an `asm` body with multiple instructions is rejected" {
+    try expectCodegenError(
+        \\def main()
+        \\  asm "nop
+        \\nop"
+        \\end
+    , "E_CODEGEN_INLINE_ASM");
+}
+
 test "codegen: if-then with truthy cond runs the body" {
     try runAndExpect(
         \\def main()
@@ -1904,6 +2131,59 @@ test "codegen: a value binding shadows a same-named class in receiver position" 
         \\  print M
         \\end
     , "5\n");
+}
+
+test "codegen: an `asm` statement with no operands emits its instruction" {
+    try runAndExpect(
+        \\def main()
+        \\  asm "nop"
+        \\  print 7
+        \\end
+    , "7\n");
+}
+
+test "codegen: `asm` `{name}` operands resolve to the local's slot" {
+    // gero asm is AT&T order (src, dest): load `a` into acu, add `b`
+    // (via r1), store acu back into `r` — all through inline asm.
+    try runAndExpect(
+        \\def main()
+        \\  let a: i16 = 20
+        \\  let b: i16 = 22
+        \\  let r: i16 = 0
+        \\  asm "mov {a}, acu"
+        \\  asm "mov {b}, r1"
+        \\  asm "add r1, acu"
+        \\  asm "mov acu, {r}"
+        \\  print r
+        \\end
+    , "42\n");
+}
+
+test "codegen: `asm` with an unknown `{name}` operand is rejected" {
+    try expectCodegenError(
+        \\def main()
+        \\  asm "mov {nope}, acu"
+        \\end
+    , "E_CODEGEN_INLINE_ASM");
+}
+
+test "codegen: `asm` with no matching opcode form is rejected, not silently `hlt`" {
+    // `add [mem], acu` has no opcode form — the assembler must surface it,
+    // not emit the 0xFF fallback that would halt the program.
+    try expectCodegenError(
+        \\def main()
+        \\  let b: i16 = 1
+        \\  asm "add {b}, acu"
+        \\end
+    , "E_CODEGEN_INLINE_ASM");
+}
+
+test "codegen: `asm` with an unknown mnemonic is rejected" {
+    try expectCodegenError(
+        \\def main()
+        \\  asm "bogusmnemonic"
+        \\end
+    , "E_CODEGEN_INLINE_ASM");
 }
 
 test "codegen: print of a string literal goes through sys print_str + emits `hi`" {

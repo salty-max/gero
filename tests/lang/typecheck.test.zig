@@ -691,6 +691,29 @@ test "typecheck: selective import registers each item" {
     );
 }
 
+test "typecheck: a selectively-imported stdlib fn resolves its return type when called bare" {
+    // `max(3, 7)` binds to `math.max`'s signature, so `m` is `i16` —
+    // not an untyped import.
+    try expectClean(
+        \\use max from math
+        \\def main()
+        \\  let m: i16 = max(3, 7)
+        \\  print m
+        \\end
+    );
+}
+
+test "typecheck: a selective import of a non-existent stdlib member errors at the import" {
+    // Even unused — the bad member is caught at the `use`, not only at
+    // a call site.
+    try expectCode(
+        \\use bogus from math
+        \\def main()
+        \\  print 1
+        \\end
+    , "E_TYPE_UNDEFINED_METHOD");
+}
+
 // ---------- slice 3: bidirectional integer-literal inference ----------
 
 test "typecheck: let x: u8 = 0 pins the literal to u8" {

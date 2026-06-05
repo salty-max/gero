@@ -111,6 +111,10 @@ pub const Codegen = codegen_mod.Codegen;
 pub const CodegenOptions = codegen_mod.Options;
 /// Assemble a parsed program into a `.gx` byte image.
 pub const assemble = codegen_mod.assemble;
+/// Assemble one inline instruction to raw bytes (lang `asm "..."`).
+pub const assembleInstruction = codegen_mod.assembleInstruction;
+/// Bytes + diagnostics from `assembleInstruction`.
+pub const InlineAsm = codegen_mod.InlineAsm;
 /// Canonical-printer options (indent, etc.).
 pub const PrintOptions = printer_mod.PrintOptions;
 /// Default canonical-printer options.

@@ -62,7 +62,7 @@ pub fn execute(
         return 3;
     }
 
-    var checked = gero.lang.typecheck(arena, fused.source, &tree.program) catch |err| {
+    var checked = gero.lang.typecheckModule(arena, fused.source, &tree.program, &fused.import_aliases) catch |err| {
         try term.err("gero compile: typecheck failure ({s})", .{@errorName(err)});
         return 1;
     };
@@ -76,6 +76,7 @@ pub fn execute(
 
     var compiled = gero.lang.compile(arena, fused.source, &checked, .{
         .optimize = mapOptimize(opts.optimize),
+        .import_aliases = &fused.import_aliases,
     }) catch |err| switch (err) {
         error.EntryNotFound => {
             try term.err("gero compile: no top-level `def main()` — every program needs an entry point", .{});
@@ -240,11 +241,13 @@ fn renderIncludeErrors(
             .cycle => "E_USE_CYCLE",
             .depth_exceeded => "E_USE_DEPTH",
             .not_found => "E_USE_NOT_FOUND",
+            .duplicate_alias => "E_USE_DUPLICATE_ALIAS",
         };
         const msg = switch (e.kind) {
             .cycle => try std.fmt.allocPrint(arena, "`use` cycle detected on `{s}`", .{e.requested}),
             .depth_exceeded => try std.fmt.allocPrint(arena, "`use` depth exceeds 32 on `{s}` — likely runaway recursion", .{e.requested}),
             .not_found => try std.fmt.allocPrint(arena, "`use` target file not found: `{s}`", .{e.requested}),
+            .duplicate_alias => try std.fmt.allocPrint(arena, "import alias `{s}` is bound to two different targets", .{e.requested}),
         };
         try diags_list.append(arena, .{
             .severity = .fatal,

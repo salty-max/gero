@@ -90,7 +90,10 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
                 try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
                 return;
             }
-            if (self.globals.get(name)) |g| {
+            // Module-level names (globals / consts) resolve through an
+            // import alias; frame-local lookups above stay on the raw
+            // name, since a same-named local shadows the alias.
+            if (self.globals.get(self.resolveImportAlias(name))) |g| {
                 try self.emitGlobalLoad(g);
                 return;
             }
@@ -220,7 +223,7 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
         return;
     }
     if (f.receiver.* == .ident) {
-        const recv_name = self.source[f.receiver.ident.span.start..f.receiver.ident.span.end];
+        const recv_name = self.resolveImportAlias(self.source[f.receiver.ident.span.start..f.receiver.ident.span.end]);
         if (self.enum_decls.get(recv_name)) |ed| {
             const variant_name = self.source[f.field.start..f.field.end];
             const tag = self.variantTag(recv_name, variant_name) orelse {
@@ -343,7 +346,7 @@ pub fn emitIsTest(self: *Emitter, it: ast.IsTestExpr) !void {
                 try self.diagFatal(it.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: `is` rhs must be `EnumName.Variant`");
                 return;
             };
-            const enum_name = path[0..dot];
+            const enum_name = self.resolveImportAlias(path[0..dot]);
             const variant_name = path[dot + 1 ..];
             const tag = self.variantTag(enum_name, variant_name) orelse {
                 try self.diagFatal(it.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum variant in `is` test");
@@ -895,15 +898,19 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
     }
     if (m.receiver.* == .ident) {
         const recv = self.source[m.receiver.ident.span.start..m.receiver.ident.span.end];
+        // A quoted-path import alias resolves to the real exported name;
+        // the shadowing test stays on `recv`, since a same-named local
+        // value shadows the alias just as it would the original.
+        const resolved = self.resolveImportAlias(recv);
         // `ClassName.method(args)` — `@static` call: the receiver is a
         // class NAME, not an instance, so no `self` is pushed (§3.7). A
         // same-named value binding shadows the class, so skip when `recv`
         // names a local / param / capture / global value.
         const shadowed = self.locals.contains(recv) or self.params.contains(recv) or
             self.captures.contains(recv) or self.globals.contains(recv);
-        if (!shadowed and self.class_decls.contains(recv)) {
+        if (!shadowed and self.class_decls.contains(resolved)) {
             const mname = self.source[m.method.start..m.method.end];
-            if (class.resolveMethodOwner(self, recv, mname)) |res| {
+            if (class.resolveMethodOwner(self, resolved, mname)) |res| {
                 const is_var = variadic.isVariadicDef(res.method.*);
                 const arity = if (is_var) class.variadicMethodArity(self, res.method, m.args.len) else 0;
                 try class.emitStaticMethodCall(self, res.owner, mname, m.args, m.span, is_var, arity);
@@ -912,9 +919,9 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
         }
         // Payload-variant constructor — `Enum.Variant(args)` parses as
         // a method call on the enum name.
-        if (self.enum_decls.get(recv)) |ed| {
+        if (self.enum_decls.get(resolved)) |ed| {
             const variant_name = self.source[m.method.start..m.method.end];
-            if (self.variantTag(recv, variant_name)) |tag| {
+            if (self.variantTag(resolved, variant_name)) |tag| {
                 for (ed.variants) |v| {
                     if (!std.mem.eql(u8, self.source[v.name.start..v.name.end], variant_name)) continue;
                     try emitEnumConstruct(self, ed, v, tag, m.args);
@@ -991,23 +998,31 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
             try diverge_builtin.emitDivergeCall(self, c, callee_name);
             return;
         }
-        if (class.isClassName(self, callee_name)) {
-            try class.emitConstructor(self, callee_name, c);
-            return;
-        }
         // Closure call — `f(args)` where `f` is a let-binding
         // initialized from a lambda OR a binding whose inferred
-        // type is a function (covers `let c = make_counter()`
-        // where make_counter returns a closure). Dispatch through
-        // the tuple's fn_ptr instead of the free-fn path.
+        // type is a function. Checked FIRST so a local binding shadows
+        // a same-named import / class / stdlib function below.
         if (lambda.isClosureBinding(self, callee_name) or lambda.isClosureByType(self, c.callee)) {
             try lambda.emitClosureCall(self, c.callee, c);
+            return;
+        }
+        // A selectively-imported stdlib function called bare
+        // (`use rng from math` then `rng()`) lowers to its module's
+        // inline emitter, like the qualified `math.rng()` form.
+        if (self.selective_stdlib.get(callee_name)) |si| {
+            try stdlib.emitCallName(self, si.module, si.name, c);
+            return;
+        }
+        // A quoted-path import alias resolves to its real exported name.
+        const resolved = self.resolveImportAlias(callee_name);
+        if (class.isClassName(self, resolved)) {
+            try class.emitConstructor(self, resolved, c);
             return;
         }
         // `@inline` call — splice the callee body in place rather
         // than emit a `call addr`. No standalone def emits for
         // the callee (see `emitProgram`).
-        if (self.inline_defs.get(callee_name)) |callee_decl| {
+        if (self.inline_defs.get(resolved)) |callee_decl| {
             try self.emitInlineCall(callee_decl, c);
             return;
         }
@@ -1025,9 +1040,10 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
                 return;
             }
             // Payload-variant constructor — `Enum.Variant(args)`.
-            if (self.enum_decls.get(recv)) |ed| {
+            const resolved = self.resolveImportAlias(recv);
+            if (self.enum_decls.get(resolved)) |ed| {
                 const variant_name = self.source[fe.field.start..fe.field.end];
-                if (self.variantTag(recv, variant_name)) |tag| {
+                if (self.variantTag(resolved, variant_name)) |tag| {
                     for (ed.variants) |v| {
                         if (!std.mem.eql(u8, self.source[v.name.start..v.name.end], variant_name)) continue;
                         try emitEnumConstruct(self, ed, v, tag, c.args);
@@ -1041,7 +1057,7 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         try self.unsupported(c.span, "non-ident callee");
         return;
     }
-    const callee_name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
+    const callee_name = self.resolveImportAlias(self.source[c.callee.ident.span.start..c.callee.ident.span.end]);
     // A variadic call targets the `name$N` specialization for this
     // site's arity; metadata (bank, return shape) stays keyed by the
     // bare name, shared across specializations (§4.6.2).
