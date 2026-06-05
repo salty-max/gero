@@ -129,7 +129,7 @@ fn matchVariant(self: *Emitter, vp: ast.VariantPattern, ofs: i8, ty: ?*const Typ
         try self.diagFatal(vp.span, "E_CODEGEN_BAD_VARIANT_PATH", "codegen: variant pattern must be `EnumName.Variant`");
         return;
     };
-    const enum_name = path[0..dot];
+    const enum_name = self.resolveImportAlias(path[0..dot]);
     const variant_name = path[dot + 1 ..];
     const ed = self.enum_decls.get(enum_name) orelse {
         try self.diagFatal(vp.span, "E_CODEGEN_UNDEFINED_VARIANT", "codegen: unknown enum in variant pattern");

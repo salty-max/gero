@@ -6,6 +6,13 @@ const Dir = Io.Dir;
 const max_include_depth: u8 = 32;
 const max_file_size: usize = 16 * 1024 * 1024;
 
+/// `use X as Y from "./mod"` bindings collected while fusing: the
+/// alias `Y` mapped to the real exported name `X`. A quoted-path
+/// import inlines the module's source flat, so the alias has no
+/// declaration of its own — front-ends resolve `Y` to `X` through
+/// this table. Keys/values borrow the fused source buffer.
+pub const ImportAliases = std.StringHashMapUnmanaged([]const u8);
+
 /// One source file's metadata. Files dedupe by canonical path
 /// inside `SourceMap`; a module referenced multiple times shares
 /// one entry, several `Region`s pointing into it.
@@ -104,6 +111,9 @@ pub const IncludeErrorKind = enum {
     cycle,
     depth_exceeded,
     not_found,
+    /// `use X as Y` and `use Z as Y` bind the same alias `Y` to two
+    /// different targets.
+    duplicate_alias,
 };
 
 /// One error from the include-resolution phase. Carries the
@@ -126,6 +136,8 @@ pub const FusedSource = struct {
     source: []const u8,
     source_map: SourceMap,
     errors: []IncludeError,
+    /// `use X as Y from "./mod"` alias bindings (`Y` → `X`).
+    import_aliases: ImportAliases,
     allocator: std.mem.Allocator,
 
     /// Release the fused buffer, source map, and errors list.
@@ -134,6 +146,8 @@ pub const FusedSource = struct {
         self.source_map.deinit();
         for (self.errors) |e| self.allocator.free(e.requested);
         self.allocator.free(self.errors);
+        // Keys/values borrow the source buffers — only free the table.
+        self.import_aliases.deinit(self.allocator);
     }
 
     /// `true` when at least one include-phase error was recorded.
@@ -154,6 +168,13 @@ const Context = struct {
     source_map: *SourceMap,
     errors: *std.ArrayList(IncludeError),
     in_progress: *std.ArrayList([]const u8),
+    /// Canonical paths already fused. A file's symbols enter the
+    /// program once no matter how many `use` sites reach it — a
+    /// second emission would re-declare its top-level decls.
+    emitted: *std.ArrayList([]const u8),
+    /// `use X as Y from "./mod"` aliases, collected as each import
+    /// directive is elided (the alias has no inlined declaration).
+    import_aliases: *ImportAliases,
 };
 
 /// Resolve every `use "./path"` reachable from `root_path` into
@@ -185,6 +206,12 @@ pub fn resolveUseImports(
     var in_progress: std.ArrayList([]const u8) = .empty;
     defer in_progress.deinit(allocator);
 
+    var emitted: std.ArrayList([]const u8) = .empty;
+    defer emitted.deinit(allocator);
+
+    var import_aliases: ImportAliases = .{};
+    errdefer import_aliases.deinit(allocator);
+
     var ctx = Context{
         .io = io,
         .allocator = allocator,
@@ -192,6 +219,8 @@ pub fn resolveUseImports(
         .source_map = &source_map,
         .errors = &errors,
         .in_progress = &in_progress,
+        .emitted = &emitted,
+        .import_aliases = &import_aliases,
     };
 
     try resolveOne(&ctx, root_path, null, 0, 0);
@@ -200,6 +229,7 @@ pub fn resolveUseImports(
         .source = try fused.toOwnedSlice(allocator),
         .source_map = source_map,
         .errors = try errors.toOwnedSlice(allocator),
+        .import_aliases = import_aliases,
         .allocator = allocator,
     };
 }
@@ -244,9 +274,23 @@ fn resolveOne(
         else => return err,
     };
 
+    // Cycle check first — a file in `emitted` is also in `in_progress`
+    // mid-recursion, so a cyclic re-entry must be caught here before the
+    // include-once short-circuit below masks it.
     for (ctx.in_progress.items) |p| {
         if (std.mem.eql(u8, p, canonical)) {
             try recordError(ctx, .cycle, site_offset, requested);
+            ctx.allocator.free(canonical);
+            return;
+        }
+    }
+
+    // Include-once: already fused via an earlier `use` — its decls are
+    // in scope, so a second emission would redefine them. The
+    // directive's sentinel region (appended by the caller) still
+    // anchors any diagnostic.
+    for (ctx.emitted.items) |p| {
+        if (std.mem.eql(u8, p, canonical)) {
             ctx.allocator.free(canonical);
             return;
         }
@@ -264,6 +308,10 @@ fn resolveOne(
     };
 
     const file = ctx.source_map.files.items[file_id];
+
+    // Mark before recursing so a diamond (two paths to one file)
+    // emits it once; `in_progress` still catches true cycles.
+    try ctx.emitted.append(ctx.allocator, file.path);
 
     try ctx.in_progress.append(ctx.allocator, file.path);
     defer _ = ctx.in_progress.pop();
@@ -289,6 +337,7 @@ fn processSource(
     while (i < content.len) {
         const line_start = i;
         var in_string = false;
+        var comment_at: ?usize = null;
         while (i < content.len and content[i] != '\n') : (i += 1) {
             const b = content[i];
             if (in_string) {
@@ -303,14 +352,25 @@ fn processSource(
                 in_string = true;
             } else if (b == '-' and i + 1 < content.len and content[i + 1] == '-') {
                 // gero-lang line comment — skip the rest of the line.
+                comment_at = i;
                 while (i < content.len and content[i] != '\n') : (i += 1) {}
                 break;
             }
         }
         const line_end = i;
         const line = content[line_start..line_end];
+        // `use` detection + alias capture run on the code portion only,
+        // so a `from` / `as` inside a trailing comment isn't parsed as
+        // part of the directive.
+        const code = content[line_start .. comment_at orelse line_end];
 
-        if (matchUseQuotedLine(line)) |target| {
+        if (matchUseQuotedLine(code)) |target| {
+            // The directive is about to be elided; capture any `as`
+            // aliases first, since the inlined module carries no
+            // declaration for them. The fused length here equals the
+            // sentinel offset appended below, so a duplicate-alias
+            // diagnostic maps back to this `use` line.
+            try collectAliases(ctx, code, @intCast(ctx.fused.items.len));
             const seg_file_end: u32 = @intCast(line_start);
             if (seg_file_end > seg_file_start) {
                 try ctx.source_map.appendRegion(
@@ -376,6 +436,22 @@ fn recordError(
 /// imports (`use a, b from "./bar"`) DO match — we strip
 /// everything up to `from` first and apply the same quoted-path
 /// rule on the right.
+/// Index of a whitespace-delimited keyword `kw` (`from` / `as`) in
+/// `s`, or null. Unlike a `" kw "` substring search this matches tab-
+/// as well as space-separated tokens, and won't fire inside a longer
+/// word (`class`, `fromage`).
+fn findKeyword(s: []const u8, kw: []const u8) ?usize {
+    var i: usize = 0;
+    while (i + kw.len <= s.len) : (i += 1) {
+        if (!std.mem.eql(u8, s[i .. i + kw.len], kw)) continue;
+        const before_ws = i == 0 or s[i - 1] == ' ' or s[i - 1] == '\t';
+        const after = i + kw.len;
+        const after_ws = after >= s.len or s[after] == ' ' or s[after] == '\t';
+        if (before_ws and after_ws) return i;
+    }
+    return null;
+}
+
 fn matchUseQuotedLine(line: []const u8) ?[]const u8 {
     var i: usize = 0;
     while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
@@ -385,9 +461,9 @@ fn matchUseQuotedLine(line: []const u8) ?[]const u8 {
     i += kw.len;
     if (i >= line.len or (line[i] != ' ' and line[i] != '\t')) return null;
     while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
-    // Skip past `<items> from ` if a selective import is present.
-    if (std.mem.indexOf(u8, line[i..], " from ")) |from_off| {
-        i += from_off + " from ".len;
+    // Skip past `<items> from` if a selective import is present.
+    if (findKeyword(line[i..], "from")) |from_off| {
+        i += from_off + "from".len;
         while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
     }
     if (i >= line.len or line[i] != '"') return null;
@@ -401,6 +477,39 @@ fn matchUseQuotedLine(line: []const u8) ?[]const u8 {
     // Trailing content allowed only if it's a comment.
     if (k < line.len and !(k + 1 < line.len and line[k] == '-' and line[k + 1] == '-')) return null;
     return line[path_start..path_end];
+}
+
+/// Record `Y → X` for every `X as Y` item in a selective directive
+/// `use <items> from "path"`. The whole-module form `use "path"` has
+/// no items, so nothing is recorded. Name/alias slices borrow `line`
+/// (interned source, stable for the fuse). A repeated alias key takes
+/// the last binding.
+fn collectAliases(ctx: *Context, line: []const u8, site_offset: u32) ResolveError!void {
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    const kw = "use";
+    if (i + kw.len > line.len or !std.mem.eql(u8, line[i .. i + kw.len], kw)) return;
+    i += kw.len;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    // Aliases only appear in the selective form, ahead of `from`.
+    const from_off = findKeyword(line[i..], "from") orelse return;
+    const items = line[i .. i + from_off];
+
+    var it = std.mem.splitScalar(u8, items, ',');
+    while (it.next()) |raw| {
+        const item = std.mem.trim(u8, raw, " \t");
+        const as_off = findKeyword(item, "as") orelse continue;
+        const name = std.mem.trim(u8, item[0..as_off], " \t");
+        const alias = std.mem.trim(u8, item[as_off + "as".len ..], " \t");
+        if (name.len == 0 or alias.len == 0) continue;
+        const gop = try ctx.import_aliases.getOrPut(ctx.allocator, alias);
+        // Re-binding the same alias to the same target is a harmless
+        // repeat; to a different one is an ambiguous import.
+        if (gop.found_existing and !std.mem.eql(u8, gop.value_ptr.*, name)) {
+            try recordError(ctx, .duplicate_alias, site_offset, alias);
+        }
+        gop.value_ptr.* = name;
+    }
 }
 
 // ---------- tests ----------

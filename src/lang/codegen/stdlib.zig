@@ -22,7 +22,13 @@ pub fn isModule(name: []const u8) bool {
 
 /// Lower a `recv.name(args)` stdlib call. `recv` is gated by `isModule`.
 pub fn emitCall(self: *Emitter, recv: []const u8, fe: ast.FieldExpr, c: ast.CallExpr) !void {
-    const name = self.source[fe.field.start..fe.field.end];
+    return emitCallName(self, recv, self.source[fe.field.start..fe.field.end], c);
+}
+
+/// `emitCall` resolved by an explicit function `name` — used when a
+/// selectively-imported (and possibly renamed) stdlib function is
+/// called bare (`use rng as random from math` then `random()`).
+pub fn emitCallName(self: *Emitter, recv: []const u8, name: []const u8, c: ast.CallExpr) !void {
     if (std.mem.eql(u8, recv, "bank")) return bank_builtin.emitBankCall(self, name, c);
     if (std.mem.eql(u8, recv, "test")) return test_builtin.emitTestCall(self, name, c);
     return math_builtin.emitMathCall(self, name, c);

@@ -1,0 +1,19 @@
+-- io.gr — illustrative gtx-16 I/O façade for the syntax tour.
+--
+-- Stub bodies stand in for the device-backed console runtime; the
+-- shapes (a `display` blitter, an `input` gamepad reader) are enough
+-- for `gero check` to resolve and validate the tour end-to-end.
+-- The framebuffer blitter — clears and draws to the gtx-16 screen.
+class display
+  @static
+  def clear()
+  end
+end
+
+-- The gamepad reader — polls the gtx-16 controller ports.
+class input
+  @static
+  def button_pressed(button: i16) -> bool
+    return false
+  end
+end

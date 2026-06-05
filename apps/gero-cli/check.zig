@@ -342,7 +342,7 @@ fn checkOneGr(
     if (fused.hasErrors()) {
         return .{ .source = fused.source, .diagnostics = try includeErrorDiagnostics(arena, fused), .source_map = fused.source_map };
     }
-    return .{ .source = fused.source, .diagnostics = try collectGrDiagnostics(arena, fused.source, true), .source_map = fused.source_map };
+    return .{ .source = fused.source, .diagnostics = try collectGrDiagnostics(arena, fused.source, true, &fused.import_aliases), .source_map = fused.source_map };
 }
 
 /// Split a checked `.gr` file's diagnostics by their originating source
@@ -391,11 +391,13 @@ fn includeErrorDiagnostics(arena: std.mem.Allocator, fused: gero.lang.FusedSourc
             .cycle => "E_USE_CYCLE",
             .depth_exceeded => "E_USE_DEPTH",
             .not_found => "E_USE_NOT_FOUND",
+            .duplicate_alias => "E_USE_DUPLICATE_ALIAS",
         };
         const msg = switch (e.kind) {
             .cycle => try std.fmt.allocPrint(arena, "`use` cycle detected on `{s}`", .{e.requested}),
             .depth_exceeded => try std.fmt.allocPrint(arena, "`use` depth exceeds 32 on `{s}` — likely runaway recursion", .{e.requested}),
             .not_found => try std.fmt.allocPrint(arena, "`use` target file not found: `{s}`", .{e.requested}),
+            .duplicate_alias => try std.fmt.allocPrint(arena, "import alias `{s}` is bound to two different targets", .{e.requested}),
         };
         try out.append(arena, .{ .severity = .fatal, .code = code, .message = msg, .span = .{ .start = e.site_offset, .end = e.site_offset } });
     }
@@ -407,7 +409,12 @@ fn includeErrorDiagnostics(arena: std.mem.Allocator, fused: gero.lang.FusedSourc
 /// tests share it. Each diagnostic's `code` is the lexer/parser's
 /// stable `E_SYNTAX_*` code (see `docs/lang-diagnostics.md`), or
 /// `E_SYNTAX_GENERIC` when the emission site carries none.
-fn collectGrDiagnostics(arena: std.mem.Allocator, src: []const u8, validate_codegen: bool) ![]gero.lang.Diagnostic {
+fn collectGrDiagnostics(
+    arena: std.mem.Allocator,
+    src: []const u8,
+    validate_codegen: bool,
+    import_aliases: ?*const gero.lang.ImportAliases,
+) ![]gero.lang.Diagnostic {
     const stream = try gero.lang.tokenize(arena, src);
     var combined: std.ArrayList(gero.lang.Diagnostic) = .empty;
 
@@ -428,7 +435,7 @@ fn collectGrDiagnostics(arena: std.mem.Allocator, src: []const u8, validate_code
     // Only typecheck when parsing succeeded — otherwise the AST
     // shape can't carry semantic information.
     if (tree.errors.len == 0) {
-        var checked = try gero.lang.typecheck(arena, src, &tree.program);
+        var checked = try gero.lang.typecheckModule(arena, src, &tree.program, import_aliases);
         for (checked.diagnostics) |d| try combined.append(arena, d);
 
         // Codegen-validate so codegen-only errors surface at check time.
@@ -436,7 +443,7 @@ fn collectGrDiagnostics(arena: std.mem.Allocator, src: []const u8, validate_code
         // without a `main` (it's validation, not a runnable image). Only
         // when the type-check is clean — codegen consumes the typed AST.
         if (validate_codegen and !checked.hasErrors()) {
-            var compiled = gero.lang.compile(arena, src, &checked, .{ .require_entry = false }) catch |err| switch (err) {
+            var compiled = gero.lang.compile(arena, src, &checked, .{ .require_entry = false, .import_aliases = import_aliases }) catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 // EntryNotFound can't fire (require_entry=false); any other
                 // codegen host failure leaves the type-check result standing.
@@ -564,7 +571,7 @@ fn writePhaseTimings(
 test "collectGrDiagnostics: clean source yields no diagnostics" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const diags = try collectGrDiagnostics(arena_state.allocator(), "def add(x, y)\n  return x + y\nend\n", false);
+    const diags = try collectGrDiagnostics(arena_state.allocator(), "def add(x, y)\n  return x + y\nend\n", false, null);
     try std.testing.expectEqual(@as(usize, 0), diags.len);
 }
 
@@ -573,7 +580,7 @@ test "collectGrDiagnostics: lexer diagnostic is not double-counted" {
     defer arena_state.deinit();
     // A lexer diagnostic (the `0x`-prefix error) surfaces exactly
     // once, not once per phase — `tree.errors` already includes it.
-    const diags = try collectGrDiagnostics(arena_state.allocator(), "let x = 0x1\n", false);
+    const diags = try collectGrDiagnostics(arena_state.allocator(), "let x = 0x1\n", false, null);
     var hex_count: usize = 0;
     for (diags) |d| {
         if (std.mem.eql(u8, d.code, "E_SYNTAX_HEX_PREFIX")) hex_count += 1;
@@ -584,7 +591,7 @@ test "collectGrDiagnostics: lexer diagnostic is not double-counted" {
 test "collectGrDiagnostics: type error surfaces when parse succeeds" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const diags = try collectGrDiagnostics(arena_state.allocator(), "def f()\n  return undefined_name\nend\n", false);
+    const diags = try collectGrDiagnostics(arena_state.allocator(), "def f()\n  return undefined_name\nend\n", false, null);
     try std.testing.expect(diags.len > 0);
 }
 
@@ -634,7 +641,7 @@ test "collectGrDiagnostics: codegen-validates a body even without a `main`" {
         \\end
         \\
     ;
-    const diags = try collectGrDiagnostics(arena_state.allocator(), src, true);
+    const diags = try collectGrDiagnostics(arena_state.allocator(), src, true, null);
     var found = false;
     for (diags) |d| {
         if (std.mem.eql(u8, d.code, "E_CODEGEN_FRAME_TOO_LARGE")) found = true;

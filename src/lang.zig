@@ -43,6 +43,7 @@ const cg_destructure = @import("lang/codegen/destructure.zig");
 const cg_vec_builtin = @import("lang/codegen/vec_builtin.zig");
 const cg_str_builtin = @import("lang/codegen/str_builtin.zig");
 const cg_variadic = @import("lang/codegen/variadic.zig");
+const cg_inline_asm = @import("lang/codegen/inline_asm.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 const cg_class = @import("lang/codegen/class.zig");
@@ -82,6 +83,8 @@ pub const print = print_mod.print;
 
 /// Fused-source output from `resolveUseImports`.
 pub const FusedSource = include_mod.FusedSource;
+/// `use X as Y from "./mod"` alias table (`Y` → `X`).
+pub const ImportAliases = include_mod.ImportAliases;
 /// Fused offset → (file, file_offset) resolver.
 pub const SourceMap = include_mod.SourceMap;
 /// One file's metadata in the include graph.
@@ -108,6 +111,9 @@ pub const scope = scope_mod;
 pub const CheckedProgram = typecheck_mod.CheckedProgram;
 /// Type-check an `ast.Program`.
 pub const typecheck = typecheck_mod.typecheck;
+/// Type-check a fused multi-file program, resolving `use X as Y`
+/// quoted-path aliases (`Y` → `X`).
+pub const typecheckModule = typecheck_mod.typecheckModule;
 /// `mem.*` stdlib builtin signature.
 pub const MemBuiltinSig = tc_mem_builtin.MemBuiltinSig;
 /// Look up a `mem.X` builtin by name.
@@ -234,6 +240,8 @@ pub const internal = struct {
         pub const str_builtin = cg_str_builtin;
         /// Variadic `def` monomorphization (`name$N` specializations).
         pub const variadic = cg_variadic;
+        /// Inline-assembly statement lowering (`asm "..."`).
+        pub const inline_asm = cg_inline_asm;
         /// Expression lowering.
         pub const expr_emit = cg_expr_emit;
         /// Control-flow lowering (if / while / for / match / break / continue / defer).

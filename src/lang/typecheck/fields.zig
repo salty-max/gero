@@ -406,7 +406,7 @@ pub fn checkStaticMethodCall(
 /// unknown / missing / mistyped fields and returns the named
 /// type so the surrounding expression continues to type-check.
 pub fn checkStructLit(self: *Checker, sl: ast.StructLit) WalkError!?*const types.Type {
-    const type_name = self.lexeme(sl.type_name);
+    const type_name = self.resolveImportAlias(self.lexeme(sl.type_name));
     const named_ty = try types.mkNamed(self.arena, type_name, sl.type_name);
 
     // Struct literals can be used to construct classes too

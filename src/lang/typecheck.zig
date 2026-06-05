@@ -66,6 +66,18 @@ pub fn typecheck(
     source: []const u8,
     program: *const ast.Program,
 ) !CheckedProgram {
+    return typecheckModule(allocator, source, program, null);
+}
+
+/// Type-check a fused multi-file `program`, resolving `use X as Y`
+/// quoted-path aliases through `import_aliases` (`Y` → `X`). The
+/// single-file `typecheck` is this with no aliases.
+pub fn typecheckModule(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    program: *const ast.Program,
+    import_aliases: ?*const std.StringHashMapUnmanaged([]const u8),
+) !CheckedProgram {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const a = arena.allocator();
@@ -106,6 +118,8 @@ pub fn typecheck(
         .in_no_capture = false,
         .lambda_locals = null,
         .expr_types = &expr_types,
+        .import_aliases = import_aliases,
+        .selective_stdlib = .{},
     };
 
     // Pre-pass: index enum / struct / class / def decls and the
@@ -279,6 +293,32 @@ pub const Checker = struct {
     /// Inferred type per AST expression pointer. Owned by the
     /// caller; survives `Checker` for the codegen to read.
     expr_types: *std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type),
+    /// `use X as Y from "./mod"` aliases (`Y` → `X`) from the fuser,
+    /// or `null` for a single-file check. A top-level name lookup
+    /// resolves through this first so an alias binds like its target.
+    import_aliases: ?*const std.StringHashMapUnmanaged([]const u8),
+    /// Selectively-imported stdlib function (`use rng from math`):
+    /// the local name (alias or original) → its `(module, real_name)`.
+    /// Lets a bare call lower to the stdlib signature.
+    selective_stdlib: std.StringHashMapUnmanaged(StdlibImport),
+
+    /// A stdlib function pulled into scope by a selective `use`.
+    pub const StdlibImport = struct { module: []const u8, name: []const u8 };
+
+    /// Resolve a quoted-path import alias to the real exported name;
+    /// identity when `name` isn't an alias.
+    pub fn resolveImportAlias(self: *const Checker, name: []const u8) []const u8 {
+        const aliases = self.import_aliases orelse return name;
+        return aliases.get(name) orelse name;
+    }
+
+    /// Like `resolveImportAlias`, but in value position: a real binding
+    /// (local / param / global) of the same name shadows the alias, so
+    /// the alias applies only when `raw` isn't already in scope.
+    pub fn resolveValueAlias(self: *const Checker, raw: []const u8) []const u8 {
+        if (self.current_scope.lookup(raw) != null) return raw;
+        return self.resolveImportAlias(raw);
+    }
 
     /// Explicit error set for the mutually-recursive walker fns.
     const WalkError = error{OutOfMemory};
@@ -1149,7 +1189,7 @@ pub const Checker = struct {
     fn registerVariantBindings(self: *Checker, vp: ast.VariantPattern, ty: ?*const types.Type) WalkError!void {
         const ed: ?*const ast.EnumDecl = blk: {
             if (ty) |it| if (self.enumDeclForType(it.*)) |e| break :blk e;
-            const head = match.splitPath(self.lexeme(vp.path)).head;
+            const head = self.resolveImportAlias(match.splitPath(self.lexeme(vp.path)).head);
             break :blk if (head.len > 0) self.enum_registry.get(head) else null;
         };
         if (ed) |e| {
@@ -1186,7 +1226,7 @@ pub const Checker = struct {
                 return false;
             },
             .variant_pattern => |vp| {
-                const head = match.splitPath(self.lexeme(vp.path)).head;
+                const head = self.resolveImportAlias(match.splitPath(self.lexeme(vp.path)).head);
                 const ed = if (head.len > 0) self.enum_registry.get(head) else null;
                 // A variant of a multi-variant (or unknown) enum is refutable.
                 if (ed == null or ed.?.variants.len != 1) return true;
@@ -1287,8 +1327,22 @@ pub const Checker = struct {
                 return try self.primitive(.str);
             },
             .ident => |i| {
-                const name = self.lexeme(i.span);
-                if (self.current_scope.lookup(name)) |info| {
+                const raw = self.lexeme(i.span);
+                // A binding for `raw` in the current scope wins — locals
+                // shadow imports. Otherwise `raw` may be a quoted-path
+                // import alias: its target is a module-level export,
+                // looked up at module scope so a local named like the
+                // target can't capture it.
+                var name = raw;
+                var info_opt = self.current_scope.lookup(raw);
+                if (info_opt == null) {
+                    const target = self.resolveImportAlias(raw);
+                    if (!std.mem.eql(u8, target, raw)) {
+                        name = target;
+                        info_opt = self.module_scope.lookup(target);
+                    }
+                }
+                if (info_opt) |info| {
                     // Bake context cannot touch MMIO-bound globals.
                     if (self.in_bake and self.mmio_names.contains(name)) {
                         const msg = try std.fmt.allocPrint(
@@ -1353,7 +1407,8 @@ pub const Checker = struct {
                 // synthetic `mem` module — dispatch through the
                 // stdlib resolver rather than the class-method path.
                 if (m.receiver.* == .ident) {
-                    const recv_name = self.lexeme(m.receiver.ident.span);
+                    const raw_recv = self.lexeme(m.receiver.ident.span);
+                    const recv_name = self.resolveValueAlias(raw_recv);
                     if (std.mem.eql(u8, recv_name, "mem")) {
                         return try fields.checkMemMethodCall(self, m);
                     }
@@ -1379,7 +1434,10 @@ pub const Checker = struct {
                     // binding of the same name shadows the class, so only
                     // route here when the name still resolves to the class.
                     if (self.class_registry.get(recv_name)) |cd| {
-                        const is_class_ref = if (self.current_scope.lookup(recv_name)) |info| info.kind == .class else true;
+                        // Shadowing is judged on the RAW receiver — a local
+                        // named like the alias *target* must not mask the
+                        // class the alias points at.
+                        const is_class_ref = if (self.current_scope.lookup(raw_recv)) |info| info.kind == .class else true;
                         if (is_class_ref) return try fields.checkStaticMethodCall(self, m, cd, recv_name);
                     }
                 }
@@ -1402,7 +1460,7 @@ pub const Checker = struct {
                 //   - `EnumName.Variant` — variant constructor.
                 //   - `mem.func`         — stdlib builtin.
                 if (f.receiver.* == .ident) {
-                    const recv_name = self.lexeme(f.receiver.ident.span);
+                    const recv_name = self.resolveValueAlias(self.lexeme(f.receiver.ident.span));
                     if (self.enum_registry.get(recv_name)) |ed| {
                         return try fields.resolveEnumVariant(self, ed, recv_name, f);
                     }
@@ -1618,7 +1676,7 @@ pub const Checker = struct {
         switch (it.kind) {
             .variant => return bool_ty,
             .class_type => |probe| {
-                const class_name = self.lexeme(probe.class_name);
+                const class_name = self.resolveImportAlias(self.lexeme(probe.class_name));
                 if (!self.class_registry.contains(class_name)) {
                     const msg = try std.fmt.allocPrint(self.arena, "undefined class `{s}`", .{class_name});
                     try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED", probe.class_name, msg, try self.suggestTypeName(class_name));

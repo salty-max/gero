@@ -733,6 +733,83 @@ fn emitString(
     }
 }
 
+/// Bytes + diagnostics from assembling one inline instruction.
+/// `instruction_count` / `other_count` let the caller enforce the
+/// one-instruction-no-labels-or-directives rule (§4.11).
+pub const InlineAsm = struct {
+    bytes: []u8,
+    errors: []include.Diagnostic,
+    /// Number of `.instruction` statements parsed from the source.
+    instruction_count: usize,
+    /// Number of non-instruction statements (labels, directives).
+    other_count: usize,
+};
+
+/// Assemble a single inline-assembly instruction (no labels, banks, or
+/// directives) to its raw bytes — the lang `asm "..."` lowering (§4.11)
+/// emits these in place. Operand classification runs against empty const
+/// + symbol tables since an inline instruction references no symbols. The
+/// caller owns both returned slices. `bytes.len == 0` means the source
+/// held no instruction (a parse failure, reported in `errors`).
+pub fn assembleInstruction(allocator: std.mem.Allocator, source: []const u8) !InlineAsm {
+    var tree = try parser_mod.parse(allocator, source);
+    defer tree.deinit();
+
+    var errors: std.ArrayList(include.Diagnostic) = .empty;
+    errdefer errors.deinit(allocator);
+    for (tree.errors) |e| try errors.append(allocator, e);
+
+    var inst: ?ast.Instruction = null;
+    var instruction_count: usize = 0;
+    var other_count: usize = 0;
+    for (tree.program.statements) |s| switch (s) {
+        .instruction => |i| {
+            inst = i;
+            instruction_count += 1;
+        },
+        else => other_count += 1,
+    };
+
+    var image: std.ArrayList(u8) = .empty;
+    errdefer image.deinit(allocator);
+    if (inst) |i| {
+        var consts = expr.ConstantTable.init(allocator);
+        defer consts.deinit();
+        var symbols = symtab.SymbolTable.init(allocator);
+        defer symbols.deinit();
+        // Validate the opcode resolves — `emitInstruction` silently emits
+        // a 0xFF (`hlt`) fallback on failure, expecting the layout pass
+        // (which we skip for one instruction) to have raised the error.
+        const mnem = source[i.mnemonic.start..i.mnemonic.end];
+        if (!isBankPseudo(mnem)) {
+            var kinds: [3]opres.Kind = undefined;
+            for (i.operands, 0..) |op, idx| kinds[idx] = classifyForEmit(op, source, symbols, null, allocator);
+            if (opres.resolve(mnem, kinds[0..i.operands.len]) == null) {
+                const known = opres.isKnownMnemonic(mnem);
+                try errors.append(allocator, .{
+                    .code = if (known) .operand_type_mismatch else .unknown_mnemonic,
+                    .parse_error = core.parseError(
+                        "codegen",
+                        i.mnemonic.start,
+                        if (known) "operand type mismatch" else "unknown mnemonic",
+                        .{ .expected = "valid instruction shape", .actual = mnem, .kind = .semantic },
+                    ),
+                });
+            }
+        }
+        if (errors.items.len == 0) {
+            try emitInstruction(allocator, &image, &errors, source, i, consts, &symbols, null);
+        }
+    }
+
+    return .{
+        .bytes = try image.toOwnedSlice(allocator),
+        .errors = try errors.toOwnedSlice(allocator),
+        .instruction_count = instruction_count,
+        .other_count = other_count,
+    };
+}
+
 fn emitInstruction(
     allocator: std.mem.Allocator,
     image: *std.ArrayList(u8),

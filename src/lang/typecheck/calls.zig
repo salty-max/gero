@@ -44,10 +44,24 @@ pub fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) Walk
             }
         }
     }
+    // A selectively-imported stdlib function called bare — `use rng
+    // from math` then `rng()` — resolves to its module's checker, the
+    // same as the qualified `math.rng()` form (renames bind too). A
+    // same-named local binding shadows the import (its scope entry is
+    // no longer `.imported`), so skip the route then.
+    if (c.callee.* == .ident) {
+        const callee_name = self.lexeme(c.callee.ident.span);
+        const still_import = if (self.current_scope.lookup(callee_name)) |info| info.kind == .imported else false;
+        if (still_import) {
+            if (self.selective_stdlib.get(callee_name)) |si| {
+                return try stdlib.checkCallName(self, si.module, si.name, c.callee.ident.span, c.args, c.span);
+            }
+        }
+    }
     // Abstract-class instantiation: `ClassName(args)` where
     // `ClassName` is abstract is rejected.
     if (c.callee.* == .ident) {
-        const callee_name = self.lexeme(c.callee.ident.span);
+        const callee_name = self.resolveValueAlias(self.lexeme(c.callee.ident.span));
         if (self.class_registry.get(callee_name)) |cd| {
             if (annotations.classIsAbstract(self, cd)) {
                 const msg = try std.fmt.allocPrint(
@@ -489,14 +503,16 @@ pub fn checkBakeAnnotationConflicts(self: *Checker, anns: []const ast.Annotation
 /// wrapped in `paren`). Used by call-site rules that need to find
 /// the underlying decl (bake-call check, variadic detection).
 fn directCalleeName(c: *const Checker, callee: *const ast.Expr) ?[]const u8 {
-    return flow.identName(c, callee);
+    const raw = flow.identName(c, callee) orelse return null;
+    return c.resolveValueAlias(raw);
 }
 
 /// When `callee` resolves to a `def` decl whose last param is
 /// variadic, return that decl. Returns `null` otherwise — callers
 /// fall back to the regular fixed-arity path.
 fn variadicCalleeDecl(c: *const Checker, callee: *const ast.Expr) ?*const ast.DefDecl {
-    const name = flow.identName(c, callee) orelse return null;
+    const raw = flow.identName(c, callee) orelse return null;
+    const name = c.resolveValueAlias(raw);
     const decl = c.def_registry.get(name) orelse return null;
     if (decl.params.len == 0) return null;
     if (!decl.params[decl.params.len - 1].variadic) return null;

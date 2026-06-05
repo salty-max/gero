@@ -23,6 +23,13 @@ const statements = @import("codegen/statements.zig");
 const isa = @import("codegen/isa.zig");
 const vec_builtin = @import("codegen/vec_builtin.zig");
 const variadic = @import("codegen/variadic.zig");
+const inline_asm = @import("codegen/inline_asm.zig");
+const stdlib = @import("codegen/stdlib.zig");
+
+/// The asm assembler, re-exported here (one level up from
+/// `codegen/`) so `codegen/inline_asm.zig` can lower an
+/// `asm "<instr>"` statement without a deep cross-layer import.
+pub const assembleInstruction = @import("../asm.zig").assembleInstruction;
 const bake_mod = @import("bake.zig");
 
 const Diagnostic = diag_mod.Diagnostic;
@@ -140,7 +147,14 @@ pub const Options = struct {
     /// `false` for validation-only (e.g. `gero check`), where a library
     /// file with no `main` still has its bodies lowered + checked.
     require_entry: bool = true,
+    /// `use X as Y from "./mod"` quoted-path aliases (`Y` → `X`) from
+    /// the fuser, or `null` for a single-file build.
+    import_aliases: ?*const std.StringHashMapUnmanaged([]const u8) = null,
 };
+
+/// A stdlib function pulled into scope by a selective `use` —
+/// `use rng from math` records `rng → (math, rng)`.
+pub const StdlibImport = struct { module: []const u8, name: []const u8 };
 
 /// Errors `compile` can return. Semantic errors land in
 /// `Compiled.diagnostics`; only host failures propagate here.
@@ -225,6 +239,8 @@ pub fn compile(
         .enum_decls = .{},
         .struct_decls = .{},
         .class_decls = .{},
+        .import_aliases = opts.import_aliases,
+        .selective_stdlib = .{},
         .class_layouts = .{},
         .current_class_name = null,
         .current_variadic = null,
@@ -665,6 +681,13 @@ pub const Emitter = struct {
     /// `class` decls by name. Used by constructor detection,
     /// vtable lookup, and field / method access.
     class_decls: std.StringHashMapUnmanaged(*const ast.ClassDecl),
+    /// `use X as Y from "./mod"` aliases (`Y` → `X`), or `null` for a
+    /// single-file build. Resolved before a top-level name lookup so
+    /// an alias lowers like its target.
+    import_aliases: ?*const std.StringHashMapUnmanaged([]const u8),
+    /// Selectively-imported stdlib functions (`use rng from math`):
+    /// local name → `(module, real_name)`. Built in the pre-pass.
+    selective_stdlib: std.StringHashMapUnmanaged(StdlibImport),
     /// Per-class layout: instance size, field offsets, vtable
     /// slots, vtable address (set by `class.emitVtables`).
     class_layouts: std.StringHashMapUnmanaged(class.ClassLayout),
@@ -1326,6 +1349,9 @@ pub const Emitter = struct {
         // Pre-pass 0c: collect `bake def`s so global-init
         // resolution can call them at codegen time.
         try self.collectBakeDefs(program);
+        // Pre-pass 0d: index selectively-imported stdlib functions
+        // so a bare call lowers like its qualified form.
+        try self.collectSelectiveStdlib(program);
         // Pre-pass 1: register globals (top-level let/const).
         try self.registerGlobals(program);
         // Pre-pass 2: collect each def's bank so `emitCall` can
@@ -1466,6 +1492,30 @@ pub const Emitter = struct {
                 const name = self.source[sd.name.start..sd.name.end];
                 const dup = try self.arena.dupe(u8, name);
                 try self.struct_decls.put(self.arena, dup, &stmt.struct_decl);
+            },
+            else => {},
+        };
+    }
+
+    /// Pre-pass: record selectively-imported stdlib functions
+    /// (`use rng [as r] from math`) keyed by local name → its
+    /// `(module, real_name)`, so a bare call routes to the module's
+    /// inline emitter like the qualified `math.rng()` form.
+    fn collectSelectiveStdlib(self: *Emitter, program: *const ast.Program) !void {
+        for (program.statements) |stmt| switch (stmt) {
+            .use_decl => |d| {
+                if (d.items.len == 0) continue;
+                const module = self.source[d.module.start..d.module.end];
+                if (!stdlib.isModule(module)) continue;
+                const mod_dup = try self.arena.dupe(u8, module);
+                for (d.items) |it| {
+                    const orig = self.source[it.name.start..it.name.end];
+                    const local = if (it.alias) |a| self.source[a.start..a.end] else orig;
+                    try self.selective_stdlib.put(self.arena, try self.arena.dupe(u8, local), .{
+                        .module = mod_dup,
+                        .name = try self.arena.dupe(u8, orig),
+                    });
+                }
             },
             else => {},
         };
@@ -1787,7 +1837,7 @@ pub const Emitter = struct {
     pub fn widthOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) u16 {
         return switch (t) {
             .named => |n| blk: {
-                const name = self.source[n.name.start..n.name.end];
+                const name = self.resolveImportAlias(self.source[n.name.start..n.name.end]);
                 if (std.mem.eql(u8, name, "i8") or
                     std.mem.eql(u8, name, "u8") or
                     std.mem.eql(u8, name, "bool") or
@@ -1875,6 +1925,7 @@ pub const Emitter = struct {
             .break_stmt => |bs| try self.emitLoopJump(bs, .break_),
             .continue_stmt => |cs| try self.emitLoopJump(cs, .continue_),
             .defer_stmt => |ds| try self.emitDeferStmt(ds),
+            .asm_stmt => |as_| try inline_asm.emitInlineAsm(self, as_),
             else => try self.unsupported(stmt.span(), "this statement form"),
         }
     }
@@ -1957,6 +2008,13 @@ pub const Emitter = struct {
         return name;
     }
 
+    /// Resolve a quoted-path import alias to its real exported name;
+    /// identity when `name` isn't an alias.
+    pub fn resolveImportAlias(self: *const Emitter, name: []const u8) []const u8 {
+        const aliases = self.import_aliases orelse return name;
+        return aliases.get(name) orelse name;
+    }
+
     /// Struct name when `e`'s type is a registered struct (auto-deref
     /// through a `&T` reference). Structs are inline value aggregates,
     /// so a struct-typed expression evaluates to its base address.
@@ -1999,7 +2057,7 @@ pub const Emitter = struct {
     /// Struct name if `t` names a registered struct, else `null`.
     pub fn structNameOfTypeAnn(self: *const Emitter, t: ast.TypeAnn) ?[]const u8 {
         if (t != .named) return null;
-        const name = self.source[t.named.name.start..t.named.name.end];
+        const name = self.resolveImportAlias(self.source[t.named.name.start..t.named.name.end]);
         return if (self.struct_decls.contains(name)) name else null;
     }
 
