@@ -543,6 +543,27 @@ pub const Checker = struct {
         try self.walkStatementSequence(body);
     }
 
+    /// Type of a `do … end` value block (§4.3): the body runs in a fresh
+    /// scope and the block evaluates to its last expression's type (or
+    /// `nil` if the last item is a statement). A trailing bare `do … end`
+    /// is itself a value block, so descend into it.
+    fn doBlockType(self: *Checker, body: []const ast.Statement, hint: ?*const types.Type) WalkError!?*const types.Type {
+        const saved = self.current_scope;
+        var child: Scope = .init(self.arena, saved);
+        self.current_scope = &child;
+        defer self.current_scope = saved;
+        if (body.len == 0) return try self.primitive(.nil_);
+        try self.walkStatementSequence(body[0 .. body.len - 1]);
+        return switch (body[body.len - 1]) {
+            .expr_stmt => |es| try self.inferExpr(es.expr, hint),
+            .block => |b| try self.doBlockType(b.body, hint),
+            else => blk: {
+                try self.walkStatement(body[body.len - 1]);
+                break :blk try self.primitive(.nil_);
+            },
+        };
+    }
+
     /// Walk a flat statement list and absorb the "fall-through gain"
     /// from `if x == nil then return end` patterns — code following
     /// such an `if` may treat `x` as statically non-nil for the rest
@@ -1532,10 +1553,7 @@ pub const Checker = struct {
                 }
                 return null;
             },
-            .do_expr => |d| {
-                try self.walkInScope(d.body);
-                return null;
-            },
+            .do_expr => |d| return try self.doBlockType(d.body, hint),
             .if_expr => |ie| {
                 try self.checkIfChain(ie.arms, ie.else_body);
                 return null;

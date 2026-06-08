@@ -9,6 +9,7 @@ const diverge_builtin = @import("diverge.zig");
 const stdlib = @import("stdlib.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
+const do_expr = @import("do_expr.zig");
 const vec_builtin = @import("vec_builtin.zig");
 const str_builtin = @import("str_builtin.zig");
 const variadic = @import("variadic.zig");
@@ -69,13 +70,11 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
                 return;
             }
             const name = self.source[i.span.start..i.span.end];
-            // Lookup order: captures (lambda body) → locals → params
-            // → globals. Captures take precedence so they shadow any
-            // same-named local that might also exist in the body.
-            if (self.captures.get(name)) |slot| {
-                try lambda.emitCaptureLoad(self, slot);
-                return;
-            }
+            // Lookup order: locals → params → captures → globals. An
+            // inner-scope local (e.g. a `do`-block / loop-body `let`)
+            // shadows an enclosing capture of the same name (standard
+            // lexical scoping); block-locals are scoped out at block end,
+            // so after the block the capture resolves again.
             if (self.locals.get(name)) |ofs| {
                 // Promoted bindings live as heap cells — the slot
                 // holds the cell pointer; deref to get the value.
@@ -87,7 +86,17 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
                 return;
             }
             if (self.params.get(name)) |ofs| {
+                // A param captured-and-promoted holds a cell pointer in
+                // its slot (seeded at entry); deref like a promoted local.
+                if (lambda.isPromoted(self, name)) {
+                    try lambda.emitPromotedIdentLoad(self, ofs);
+                    return;
+                }
                 try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
+                return;
+            }
+            if (self.captures.get(name)) |slot| {
+                try lambda.emitCaptureLoad(self, slot);
                 return;
             }
             // Module-level names (globals / consts) resolve through an
@@ -107,10 +116,13 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .tuple_index => |ti| try emitTupleIndexExpr(self, ti),
         .index => |ix| try emitIndexExpr(self, ix),
         .self_expr => |se| {
-            // `self` inside a method body lives at fp+4 (the first
-            // implicit param). Outside a method it's a typecheck
-            // error — the codegen falls through to "unsupported".
-            if (self.params.get("self")) |ofs| {
+            // Inside a method-defined lambda body `self` is a capture
+            // (read from the env); inside the method itself it lives at
+            // fp+4 (the first implicit param). Outside a method it's a
+            // typecheck error — the codegen falls through to "unsupported".
+            if (self.captures.get("self")) |slot| {
+                try lambda.emitCaptureLoad(self, slot);
+            } else if (self.params.get("self")) |ofs| {
                 try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
             } else {
                 try self.unsupported(se.span, "`self` used outside a method body");
@@ -127,6 +139,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .ref_of => |r| try self.emitAddrOf(r.inner),
         .cast => |c| try emitExpr(self, c.inner), // same-width primitives share a bit pattern, so the cast is a no-op
         .sizeof => |s| try isa.movImmToReg(self, self.widthOfTypeAnn(s.type_ann.*), Reg.acu),
+        .do_expr => |de| try do_expr.emitScalar(self, de),
         else => try self.unsupported(e.span(), "this expression form"),
     }
 }

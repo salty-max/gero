@@ -3,6 +3,7 @@ const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
+const lambda = @import("lambda.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -151,7 +152,19 @@ pub fn emitAddrOf(self: *Emitter, e: *const ast.Expr) !void {
         return;
     }
     const name = self.source[e.ident.span.start..e.ident.span.end];
+    // A captured aggregate: the env slot holds its base pointer.
+    if (self.captures.get(name)) |slot| {
+        if (slot.is_aggregate) {
+            try lambda.emitCaptureLoad(self, slot);
+            return;
+        }
+    }
     if (self.locals.get(name)) |ofs| {
+        // A promoted aggregate's slot holds a heap pointer = the base.
+        if (lambda.isPromoted(self, name)) {
+            try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
+            return;
+        }
         // Local: address = fp + ofs (ofs is negative).
         try isa.movRegToReg(self, Reg.fp, Reg.acu);
         if (ofs < 0) {
@@ -168,6 +181,11 @@ pub fn emitAddrOf(self: *Emitter, e: *const ast.Expr) !void {
         return;
     }
     if (self.params.get(name)) |ofs| {
+        // A promoted aggregate param's slot holds a heap pointer = the base.
+        if (lambda.isPromoted(self, name)) {
+            try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
+            return;
+        }
         // Param: address = fp + ofs (ofs is positive).
         try isa.movRegToReg(self, Reg.fp, Reg.acu);
         // @as: positive i8 → u16.
