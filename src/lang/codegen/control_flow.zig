@@ -20,6 +20,13 @@ const LoopFrame = codegen.LoopFrame;
 /// any statement-list with its own defer lifetime (do-blocks, if
 /// arm bodies, loop bodies, match-arm bodies).
 pub fn emitScopedBody(self: *Emitter, body: []const ast.Statement) error{OutOfMemory}!void {
+    // Block-locals are name-scoped: snapshot the name→slot map so a
+    // `let` inside the block (even one shadowing an enclosing binding /
+    // capture) is forgotten at block end, and the outer name resolves
+    // again afterward. Frame slots stay reserved up front; only the
+    // name mapping is restored.
+    const saved_locals = try self.locals.clone(self.arena);
+    defer self.locals = saved_locals;
     try pushBlock(self);
     for (body) |s| try self.emitStatement(s);
     try popBlockWithDefers(self);
@@ -249,6 +256,11 @@ fn emitLetPatternTest(self: *Emitter, pat: *const ast.Pattern, expr: *const ast.
 /// byte after the back-edge. `while let` is supported for the
 /// ident-binder form per spec §4.5.2.
 pub fn emitWhileStmt(self: *Emitter, ws: ast.WhileStmt) !void {
+    // The loop var (`while let`) and body `let`s are scoped to the loop;
+    // restore the name→slot map afterward so an enclosing binding they
+    // shadow resolves again. Frame slots stay reserved up front.
+    const saved_locals = try self.locals.clone(self.arena);
+    defer self.locals = saved_locals;
     const cond_offset = try self.currentOffset();
     const label_str: ?[]const u8 = if (ws.label) |s|
         try self.arena.dupe(u8, self.source[s.start..s.end])
@@ -313,6 +325,8 @@ pub fn emitWhileStmt(self: *Emitter, ws: ast.WhileStmt) !void {
 /// runs at least once; `cond` is tested after the body and the
 /// loop exits when `cond` is truthy.
 pub fn emitRepeatStmt(self: *Emitter, rs: ast.RepeatStmt) !void {
+    const saved_locals = try self.locals.clone(self.arena);
+    defer self.locals = saved_locals;
     const top_offset = try self.currentOffset();
     const label_str: ?[]const u8 = if (rs.label) |s|
         try self.arena.dupe(u8, self.source[s.start..s.end])
@@ -389,6 +403,10 @@ fn frameAddr(self: *Emitter, ofs: i8, reg: u8) !void {
 /// iterables (`[T; N]` / `Vec(T)` / `str`) emit direct memory loops; a
 /// class with `next(self) -> T?` desugars to the iterator protocol.
 pub fn emitForStmt(self: *Emitter, fs: ast.ForStmt) !void {
+    // The loop var + body `let`s are scoped to the loop; restore the
+    // name→slot map afterward (frame slots stay reserved up front).
+    const saved_locals = try self.locals.clone(self.arena);
+    defer self.locals = saved_locals;
     if (fs.iter.* == .range) return emitForRange(self, fs);
     const it_ty = self.typeOf(fs.iter) orelse {
         try self.unsupported(fs.span, "`for` over a value of unknown type");

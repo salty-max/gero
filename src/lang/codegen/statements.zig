@@ -215,6 +215,29 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
             return;
         }
     }
+    // Lookup order mirrors `emitIdent`: locals → params → captures →
+    // globals, so an inner-scope local shadows an enclosing capture.
+    if (self.locals.get(name)) |ofs| {
+        // A promoted local stores through its cell pointer; a plain one
+        // writes the value word into its slot.
+        if (lambda.isPromoted(self, name)) {
+            try lambda.emitPromotedAssign(self, ofs, a.value);
+        } else {
+            try self.emitExpr(a.value);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+        }
+        return;
+    }
+    if (self.params.get(name)) |ofs| {
+        // A captured-and-promoted param writes through its cell pointer.
+        if (lambda.isPromoted(self, name)) {
+            try lambda.emitPromotedAssign(self, ofs, a.value);
+        } else {
+            try self.emitExpr(a.value);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+        }
+        return;
+    }
     // Captured-binding write inside a lambda body — store through the
     // env-relative cell pointer (the parent promoted the binding so the
     // write is visible everywhere).
@@ -222,24 +245,8 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
         try lambda.emitCaptureStore(self, slot, a.value);
         return;
     }
-    // Promoted local in the parent fn — store through the local-slot
-    // cell pointer.
-    if (lambda.isPromoted(self, name)) {
-        if (self.locals.get(name)) |ofs| {
-            try lambda.emitPromotedAssign(self, ofs, a.value);
-            return;
-        }
-    }
-    try self.emitExpr(a.value); // result in acu
-    if (self.locals.get(name)) |ofs| {
-        try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
-        return;
-    }
-    if (self.params.get(name)) |ofs| {
-        try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
-        return;
-    }
     if (self.globals.get(name)) |g| {
+        try self.emitExpr(a.value);
         try self.emitGlobalStore(Reg.acu, g);
         return;
     }
@@ -349,6 +356,7 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
     if (optBindingType(self, d)) |opt| {
         const slot = try self.allocLocalSized(dup_name, self.widthOfType(opt));
         if (d.init) |init_expr| try vec_builtin.emitOptionalInto(self, init_expr, opt.optional, slot);
+        if (lambda.isPromoted(self, name)) try lambda.emitPromoteAggregate(self, slot, self.widthOfType(opt));
         return;
     }
 
@@ -364,6 +372,7 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
     if (struct_name) |sname| {
         const slot = try self.allocLocalSized(dup_name, self.structWidth(sname));
         if (d.init) |init_expr| try value_struct.emitInto(self, init_expr, sname, slot);
+        if (lambda.isPromoted(self, name)) try lambda.emitPromoteAggregate(self, slot, self.structWidth(sname));
         return;
     }
 
@@ -385,6 +394,7 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
                 try value_struct.copyBytes(self, Reg.r1, Reg.r2, vec_builtin.header_size);
             }
         }
+        if (lambda.isPromoted(self, name)) try lambda.emitPromoteAggregate(self, slot, vec_builtin.header_size);
         return;
     }
 
@@ -400,6 +410,7 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
                 try value_struct.emitTupleInto(self, init_expr, elems, slot);
             } else try self.unsupported(d.span, "tuple binding initialized from a non-tuple value");
         }
+        if (lambda.isPromoted(self, name)) try lambda.emitPromoteAggregate(self, slot, width);
         return;
     }
 
@@ -421,6 +432,7 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
                 try value_struct.emitArrayInto(self, init_expr, info.elem, info.count, slot);
             } else try self.unsupported(d.span, "array binding initialized from a non-array value");
         }
+        if (lambda.isPromoted(self, name)) try lambda.emitPromoteAggregate(self, slot, width);
         return;
     }
 

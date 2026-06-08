@@ -3854,6 +3854,495 @@ test "codegen/closure: AC4 — returned closure keeps env alive (escape analysis
     try std.testing.expectEqualStrings("1\n2\n", writer.written());
 }
 
+test "codegen/closure: a captured variable used in string interpolation resolves" {
+    // The capture analysis descends into `$(…)` interpolation parts, so
+    // `v` enters the closure's capture set and the body reads it.
+    try runAndExpect(
+        \\def main()
+        \\  let v: i16 = 7
+        \\  let r = || -> str "val is $(v)"
+        \\  print r()
+        \\end
+    , "val is 7\n");
+}
+
+test "codegen/closure: a capture reached through a field access in interpolation resolves" {
+    try runAndExpect(
+        \\class Hero
+        \\  let hp: i16
+        \\  def init(self)
+        \\    self.hp = 30
+        \\  end
+        \\end
+        \\def main()
+        \\  let hero = Hero()
+        \\  let r = || -> str "hp $(hero.hp)"
+        \\  print r()
+        \\end
+    , "hp 30\n");
+}
+
+test "codegen/closure: two captures interpolated in one string resolve" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: i16 = 3
+        \\  let b: i16 = 4
+        \\  let r = || -> str "$(a) and $(b)"
+        \\  print r()
+        \\end
+    , "3 and 4\n");
+}
+
+test "codegen/closure: a `for` loop variable inside a lambda is a local, not a capture" {
+    try runAndExpect(
+        \\def main()
+        \\  let f = || -> i16 do
+        \\    let xs: [i16; 3] = [1, 2, 3]
+        \\    let total: i16 = 0
+        \\    for k in xs
+        \\      total = total + k
+        \\    end
+        \\    total
+        \\  end
+        \\  print f()
+        \\end
+    , "6\n");
+}
+
+test "codegen/closure: a captured `for`-loop range bound resolves" {
+    try runAndExpect(
+        \\def main()
+        \\  let lo: i16 = 1
+        \\  let hi: i16 = 4
+        \\  let f = || -> i16 do
+        \\    let total: i16 = 0
+        \\    for k in lo..hi
+        \\      total = total + 1
+        \\    end
+        \\    total
+        \\  end
+        \\  print f()
+        \\end
+    , "3\n");
+}
+
+test "codegen/closure: a `do`-block lambda body captures an enclosing free variable" {
+    try runAndExpect(
+        \\def main()
+        \\  let count: i16 = 7
+        \\  let f = || -> i16 do
+        \\    let x: i16 = count + 1
+        \\    x
+        \\  end
+        \\  print f()
+        \\end
+    , "8\n");
+}
+
+test "codegen/closure: a read-only struct capture survives the frame (escaping)" {
+    // `pt` is read-only, so the closure heap-copies it at construction and
+    // reads its field after `make` returns (value semantics, escape-safe).
+    try runAndExpect(
+        \\struct Pt
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def make(pt: Pt) -> fn() -> i16
+        \\  return || -> i16 pt.x
+        \\end
+        \\def main()
+        \\  let g = make(Pt { x: 11, y: 22 })
+        \\  print g()
+        \\end
+    , "11\n");
+}
+
+test "codegen/closure: a mutated struct capture is a shared upvalue" {
+    // `c` is mutated by the closure, so it is promoted to a shared heap
+    // buffer — the write is visible to the enclosing scope afterward.
+    try runAndExpect(
+        \\struct Counter
+        \\  n: i16
+        \\end
+        \\def main()
+        \\  let c = Counter { n: 5 }
+        \\  let inc = || -> i16 do
+        \\    c.n = c.n + 1
+        \\    c.n
+        \\  end
+        \\  print inc()
+        \\  print c.n
+        \\end
+    , "6\n6\n");
+}
+
+test "codegen/closure: two closures share one mutated struct upvalue" {
+    try runAndExpect(
+        \\struct Counter
+        \\  n: i16
+        \\end
+        \\def main()
+        \\  let c = Counter { n: 0 }
+        \\  let inc = || -> i16 do
+        \\    c.n = c.n + 1
+        \\    c.n
+        \\  end
+        \\  let get = || -> i16 c.n
+        \\  print inc()
+        \\  print inc()
+        \\  print get()
+        \\end
+    , "1\n2\n2\n");
+}
+
+test "codegen/closure: a mutated array capture shares one buffer with the frame" {
+    try runAndExpect(
+        \\def main()
+        \\  let xs: [i16; 2] = [0, 0]
+        \\  let setf = || -> i16 do
+        \\    xs[1] = 5
+        \\    xs[1]
+        \\  end
+        \\  print setf()
+        \\  print xs[1]
+        \\end
+    , "5\n5\n");
+}
+
+test "codegen/closure: a captured optional unwraps inside the lambda body" {
+    // `opt` is a 4-byte aggregate; `if let` over the capture reads it.
+    try runAndExpect(
+        \\def main()
+        \\  let opt: i16? = 99
+        \\  let f = lambda () -> i16
+        \\    if let v = opt
+        \\      return v
+        \\    end
+        \\    return 0
+        \\  end
+        \\  print f()
+        \\end
+    , "99\n");
+}
+
+test "codegen/closure: a captured Vec shares its header — a push is visible outside" {
+    // A method call may grow the receiver's header, so the captured Vec is
+    // promoted to a shared upvalue; the closure's push updates one header.
+    try runAndExpect(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.new()
+        \\  let add = || -> i16 do
+        \\    v.push(1)
+        \\    v.len() as i16
+        \\  end
+        \\  print add()
+        \\  print v.len() as i16
+        \\end
+    , "1\n1\n");
+}
+
+test "codegen/closure: a method-defined lambda captures self and reads a field" {
+    // `self` inside a returned closure is captured (the body reads the
+    // receiver from its env), so `self.v` resolves after the method returns.
+    try runAndExpect(
+        \\class Box
+        \\  let v: i16
+        \\  def init(self)
+        \\    self.v = 42
+        \\  end
+        \\  def getter(self) -> fn() -> i16
+        \\    return || -> i16 self.v
+        \\  end
+        \\end
+        \\def main()
+        \\  let b = Box()
+        \\  let g = b.getter()
+        \\  print g()
+        \\end
+    , "42\n");
+}
+
+test "codegen/closure: a captured self mutates a shared field across calls" {
+    // The closure holds the receiver pointer by value, so `self.n` writes
+    // hit the same heap object and persist between calls.
+    try runAndExpect(
+        \\class Counter
+        \\  let n: i16
+        \\  def init(self)
+        \\    self.n = 0
+        \\  end
+        \\  def stepper(self) -> fn() -> i16
+        \\    return || -> i16 do
+        \\      self.n = self.n + 1
+        \\      self.n
+        \\    end
+        \\  end
+        \\end
+        \\def main()
+        \\  let c = Counter()
+        \\  let advance = c.stepper()
+        \\  print advance()
+        \\  print advance()
+        \\end
+    , "1\n2\n");
+}
+
+test "codegen/closure: a captured self calls a method" {
+    try runAndExpect(
+        \\class Adder
+        \\  let base: i16
+        \\  def init(self)
+        \\    self.base = 10
+        \\  end
+        \\  def bump(self, n: i16) -> i16
+        \\    return self.base + n
+        \\  end
+        \\  def make(self) -> fn() -> i16
+        \\    return || -> i16 self.bump(5)
+        \\  end
+        \\end
+        \\def main()
+        \\  let a = Adder()
+        \\  let f = a.make()
+        \\  print f()
+        \\end
+    , "15\n");
+}
+
+test "codegen/closure: a free function called in a lambda body is not captured" {
+    // `helper` names a module-level function — globally addressable, so
+    // the lambda body calls it directly rather than capturing it.
+    try runAndExpect(
+        \\def helper(x: i16) -> i16
+        \\  return x + 5
+        \\end
+        \\def main()
+        \\  let f = || -> i16 helper(10)
+        \\  print f()
+        \\end
+    , "15\n");
+}
+
+test "codegen/closure: a lambda mixes a real capture with a free function call" {
+    // `base` is a genuine capture (enclosing local); `dbl` is a module
+    // function resolved directly — only `base` consumes an env slot.
+    try runAndExpect(
+        \\def dbl(n: i16) -> i16
+        \\  return n + n
+        \\end
+        \\def main()
+        \\  let base: i16 = 6
+        \\  let f = || -> i16 dbl(base)
+        \\  print f()
+        \\end
+    , "12\n");
+}
+
+test "codegen/closure: a class constructed inside a lambda body is not captured" {
+    try runAndExpect(
+        \\class Box
+        \\  let v: i16
+        \\  def init(self)
+        \\    self.v = 7
+        \\  end
+        \\  def get(self) -> i16
+        \\    return self.v
+        \\  end
+        \\end
+        \\def main()
+        \\  let f = || -> i16 Box().get()
+        \\  print f()
+        \\end
+    , "7\n");
+}
+
+test "codegen/closure: a capture shadowed by a `do`-block local resolves again after the block" {
+    // The `do` block's `let w` is scoped out at block end, so `w` in
+    // `w + inner` reads the captured outer `w` (50), not the stale 7.
+    try runAndExpect(
+        \\def main()
+        \\  let w: i16 = 50
+        \\  let f = lambda () -> i16
+        \\    let inner: i16 = do
+        \\      let w: i16 = 7
+        \\      w
+        \\    end
+        \\    return w + inner
+        \\  end
+        \\  print f()
+        \\end
+    , "57\n");
+}
+
+test "codegen/closure: a `for`-loop var shadowing a capture is scoped out after the loop" {
+    // The loop var `i` shadows the captured `i` only inside the loop;
+    // `sum + i` after the loop reads the capture (50).
+    try runAndExpect(
+        \\def main()
+        \\  let i: i16 = 50
+        \\  let f = lambda () -> i16
+        \\    let sum: i16 = 0
+        \\    for i in 0..3
+        \\      sum = sum + i
+        \\    end
+        \\    return sum + i
+        \\  end
+        \\  print f()
+        \\end
+    , "53\n");
+}
+
+test "codegen/closure: a returned closure capturing a param keeps its value after the frame is gone" {
+    // The param `p` escapes `make`, so it is promoted to a heap cell at
+    // entry; the closure reads the cell after `make` returns.
+    try runAndExpect(
+        \\def make(p: i16) -> fn() -> i16
+        \\  return || -> i16 p + 1
+        \\end
+        \\def main()
+        \\  let g = make(7)
+        \\  print g()
+        \\end
+    , "8\n");
+}
+
+test "codegen/closure: a mutated captured param shares one cell across calls" {
+    // The closure mutates the captured param through its heap cell, so
+    // the increment persists between calls.
+    try runAndExpect(
+        \\def make(p: i16) -> fn() -> i16
+        \\  return || -> i16 do
+        \\    p = p + 1
+        \\    p
+        \\  end
+        \\end
+        \\def main()
+        \\  let g = make(7)
+        \\  print g()
+        \\  print g()
+        \\end
+    , "8\n9\n");
+}
+
+test "codegen/closure: a capture mutated by a closure bound in a match arm is promoted" {
+    // The escaping-capture walk descends into match-arm bodies, so `n`
+    // is promoted and the mutation persists across calls.
+    try runAndExpect(
+        \\def make(tag: i16) -> fn() -> i16
+        \\  let n: i16 = 3
+        \\  match tag
+        \\    case 0 =>
+        \\      return || -> i16 do
+        \\        n = n + 1
+        \\        n
+        \\      end
+        \\    case _ =>
+        \\      return || -> i16 n
+        \\  end
+        \\end
+        \\def main()
+        \\  let g = make(0)
+        \\  print g()
+        \\  print g()
+        \\end
+    , "4\n5\n");
+}
+
+test "codegen/do: a `do … end` value block evaluates to its last expression" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = do
+        \\    let a: i16 = 3
+        \\    a + 4
+        \\  end
+        \\  print x
+        \\end
+    , "7\n");
+}
+
+test "codegen/do: an un-annotated `do` block sizes its slot from the inferred type" {
+    try runAndExpect(
+        \\def main()
+        \\  let v = do
+        \\    let a: i16 = 40
+        \\    a + 2
+        \\  end
+        \\  print v
+        \\end
+    , "42\n");
+}
+
+test "codegen/do: a `do` block can produce a tuple value" {
+    try runAndExpect(
+        \\def main()
+        \\  let p: (i16, i16) = do
+        \\    let w: i16 = 10
+        \\    let h: i16 = 20
+        \\    (w, h)
+        \\  end
+        \\  print p.0
+        \\  print p.1
+        \\end
+    , "10\n20\n");
+}
+
+test "codegen/do: a `do` block can produce a struct value" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let s: P = do
+        \\    P { x: 5, y: 6 }
+        \\  end
+        \\  print s.x
+        \\  print s.y
+        \\end
+    , "5\n6\n");
+}
+
+test "codegen/do: a `do` block can produce an array value" {
+    try runAndExpect(
+        \\def main()
+        \\  let arr: [i16; 3] = do
+        \\    [9, 8, 7]
+        \\  end
+        \\  print arr[0]
+        \\  print arr[2]
+        \\end
+    , "9\n7\n");
+}
+
+test "codegen/do: a `do` block's defer fires but doesn't clobber its value" {
+    try runAndExpect(
+        \\def note(n: i16)
+        \\  print n
+        \\end
+        \\def main()
+        \\  let x: i16 = do
+        \\    defer note(1)
+        \\    9
+        \\  end
+        \\  print x
+        \\end
+    , "1\n9\n");
+}
+
+test "codegen/do: a trailing nested `do … end` is the value, not nil" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = do
+        \\    let a: i16 = 7
+        \\    do
+        \\      a + 1
+        \\    end
+        \\  end
+        \\  print x
+        \\end
+    , "8\n");
+}
+
 test "codegen/closure: nested lambda — inner closure pulls captures through outer env" {
     var compiled = try compileSource(
         \\def main()

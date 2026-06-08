@@ -44,6 +44,7 @@ const cg_vec_builtin = @import("lang/codegen/vec_builtin.zig");
 const cg_str_builtin = @import("lang/codegen/str_builtin.zig");
 const cg_variadic = @import("lang/codegen/variadic.zig");
 const cg_inline_asm = @import("lang/codegen/inline_asm.zig");
+const cg_do_expr = @import("lang/codegen/do_expr.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 const cg_class = @import("lang/codegen/class.zig");
@@ -242,6 +243,8 @@ pub const internal = struct {
         pub const variadic = cg_variadic;
         /// Inline-assembly statement lowering (`asm "..."`).
         pub const inline_asm = cg_inline_asm;
+        /// `do … end` value-block lowering (§4.3).
+        pub const do_expr = cg_do_expr;
         /// Expression lowering.
         pub const expr_emit = cg_expr_emit;
         /// Control-flow lowering (if / while / for / match / break / continue / defer).

@@ -17,6 +17,7 @@ const isa = @import("isa.zig");
 const class = @import("class.zig");
 const strings = @import("strings.zig");
 const overflow = @import("overflow.zig");
+const do_expr = @import("do_expr.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -100,6 +101,18 @@ pub fn emitIntoSret(self: *Emitter, src: *const ast.Expr, sname: []const u8, ptr
 }
 
 fn emitIntoDest(self: *Emitter, src: *const ast.Expr, sname: []const u8, dest: Dest) error{OutOfMemory}!void {
+    // A `do … end` value block: run its scoped prefix, then materialize
+    // its tail expression into `dest`.
+    if (src.* == .do_expr) {
+        const p = try do_expr.emitPrefix(self, src.do_expr);
+        if (p.tail) |tail| {
+            try emitIntoDest(self, tail, sname, dest);
+        } else {
+            try self.unsupported(src.do_expr.span, "`do` value block must end in an expression");
+        }
+        try do_expr.emitSuffix(self, p);
+        return;
+    }
     if (src.* == .struct_lit) {
         try emitLitInto(self, src.struct_lit, sname, dest);
         return;
@@ -143,6 +156,16 @@ pub fn emitTupleIntoSret(self: *Emitter, src: *const ast.Expr, elems: []const *c
 }
 
 fn emitTupleIntoDest(self: *Emitter, src: *const ast.Expr, elems: []const *const types.Type, dest: Dest) error{OutOfMemory}!void {
+    if (src.* == .do_expr) {
+        const p = try do_expr.emitPrefix(self, src.do_expr);
+        if (p.tail) |tail| {
+            try emitTupleIntoDest(self, tail, elems, dest);
+        } else {
+            try self.unsupported(src.do_expr.span, "`do` value block must end in an expression");
+        }
+        try do_expr.emitSuffix(self, p);
+        return;
+    }
     if (src.* == .tuple_lit) {
         for (src.tuple_lit.elems, 0..) |elem, i| {
             // safety: tuple arity ≤ 4 (§3.4) fits u8.
@@ -205,6 +228,16 @@ pub fn emitArrayInto(self: *Emitter, src: *const ast.Expr, elem: *const types.Ty
 }
 
 fn emitArrayIntoDest(self: *Emitter, src: *const ast.Expr, elem: *const types.Type, count: u32, dest: Dest) error{OutOfMemory}!void {
+    if (src.* == .do_expr) {
+        const p = try do_expr.emitPrefix(self, src.do_expr);
+        if (p.tail) |tail| {
+            try emitArrayIntoDest(self, tail, elem, count, dest);
+        } else {
+            try self.unsupported(src.do_expr.span, "`do` value block must end in an expression");
+        }
+        try do_expr.emitSuffix(self, p);
+        return;
+    }
     const ew = self.widthOfType(elem);
     if (src.* == .list_lit) {
         for (src.list_lit.elems, 0..) |e, i| {

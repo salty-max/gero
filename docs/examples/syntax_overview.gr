@@ -5,13 +5,9 @@
 -- most language features in one cohesive program.
 --
 -- Read this top-to-bottom to see every construct from the spec at
--- least once. Annotations refer to spec section numbers.
---
--- gero-example: fmt-only — this complete-syntax tour exercises
--- constructs the codegen doesn't lower yet (`do`-as-expression §4.3,
--- capturing closures §4.7.1), so `gero check` can't validate it
--- end-to-end; the formatting gate still applies. The `./io` imports
--- do resolve against the shipped stub (`docs/examples/io.gr`).
+-- least once. Annotations refer to spec section numbers. The `./io`
+-- imports resolve against the shipped stub (`docs/examples/io.gr`);
+-- the whole tour type-checks and lowers under `gero check`.
 ------------------------------------------------------------
 -- §5.2  Imports
 ------------------------------------------------------------

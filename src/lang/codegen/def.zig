@@ -158,6 +158,22 @@ pub fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, 
     try lambda.analyzeFn(self, def);
     defer lambda.resetFnInfo(self);
 
+    // A captured-and-promoted param arrives by value in its slot; seed a
+    // shared upvalue so the body / closures reach it through one pointer
+    // (a heap cell for a scalar, a heap buffer for an inline aggregate).
+    for (def.params) |p| {
+        const pname = self.source[p.name.start..p.name.end];
+        if (!lambda.isPromoted(self, pname)) continue;
+        const slot = self.params.get(pname).?;
+        if (lambda.capturedType(self, pname)) |ty| {
+            if (lambda.isInlineAggregateType(self, ty)) {
+                try lambda.emitPromoteAggregate(self, slot, self.widthOfType(ty));
+                continue;
+            }
+        }
+        try lambda.emitPromoteParam(self, slot);
+    }
+
     // Entry-def prologue: write every `@interrupt N` handler address into
     // its IVT slot before the body runs — boot leaves `flg.I = 0`, so an
     // interrupt could otherwise fire against an uninitialized vector.
