@@ -188,8 +188,8 @@ fn commandSummary(cmd: Command) []const u8 {
 /// discoverable, but split into a separate "planned" section.
 fn commandIsImplemented(cmd: Command) bool {
     return switch (cmd) {
-        .asm_, .run, .info, .disasm, .test_, .check, .fmt, .new, .init, .build, .repl => true,
-        .compile, .bench => false,
+        .asm_, .compile, .run, .info, .disasm, .test_, .check, .fmt, .new, .init, .build, .repl => true,
+        .bench => false,
     };
 }
 
@@ -280,6 +280,15 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero asm prog.gas -o named.gx{s}    {s}# → named.gx{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero asm prog.gas -v{s}             {s}# per-phase timings{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
+        .compile => {
+            try out.print("  {s}gero compile{s} <file.gr> [-o <path>] [-O <m>] [-v] [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero compile main.gr{s}            {s}# → manifest path, else main.gx alongside{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero compile main.gr -o game.gx{s} {s}# → game.gx{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero compile main.gr -O release{s} {s}# → out/release/main.gx under a manifest{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero compile main.gr -v{s}         {s}# per-phase timings{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("\nResolves `use` imports relative to the source dir. Without -o, an\nancestor gero.toml decides the path; otherwise the .gx lands next\nto the source.\n", .{});
+        },
         .run => {
             try out.print("  {s}gero run{s} <file.gx> [--quiet]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
@@ -361,9 +370,24 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
     try out.print("\n{s}FLAGS{s}\n", .{ a.yellow, a.reset });
     for (flagsForCommand(cmd)) |f| {
         const h = flagHelpLine(f);
-        try out.print("  {s}{s:<22}{s} {s}\n", .{ a.cyan, h.sig, a.reset, h.desc });
+        try out.print(flag_row_fmt, .{ a.cyan, h.sig, a.reset, h.desc });
     }
 }
+
+/// Width of the FLAGS signature column: the longest signature in
+/// `flagHelpLine` plus a two-space gutter, so the table stays aligned
+/// when a signature is added or reworded.
+const flag_sig_width: usize = blk: {
+    var widest: usize = 0;
+    for (std.meta.fields(FlagKind)) |f| {
+        const sig = flagHelpLine(@enumFromInt(f.value)).sig;
+        if (sig.len > widest) widest = sig.len;
+    }
+    break :blk widest + 2;
+};
+
+/// One FLAGS row, with the signature column padded to `flag_sig_width`.
+const flag_row_fmt = std.fmt.comptimePrint("  {{s}}{{s:<{d}}}{{s}} {{s}}\n", .{flag_sig_width});
 
 /// One row of the per-command FLAGS block — the left-column
 /// signature and the right-column description.
@@ -375,9 +399,9 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .version => .{ .sig = "--version / -V", .desc = "Print build version." },
         .quiet => .{ .sig = "--quiet / -q", .desc = "Suppress non-error output." },
         .verbose => .{ .sig = "--verbose / -v", .desc = "Extra diagnostics + per-phase timings." },
-        .optimize => .{ .sig = "--optimize / -O=<m>", .desc = "debug (default) / release / size." },
-        .out => .{ .sig = "--out / -o=<path>", .desc = "Output destination." },
-        .color => .{ .sig = "--color / -c=<m>", .desc = "auto (default) / always / never." },
+        .optimize => .{ .sig = "--optimize=<m> / -O <m>", .desc = "debug (default) / release / size." },
+        .out => .{ .sig = "--out=<path> / -o <path>", .desc = "Output destination." },
+        .color => .{ .sig = "--color=<m> / -c <m>", .desc = "auto (default) / always / never." },
         .no_color => .{ .sig = "--no-color", .desc = "Shortcut for --color=never." },
         .bank => .{ .sig = "--bank=<N>", .desc = "Pick a bank slot to disassemble (default: base image)." },
         .show_bytes => .{ .sig = "--show-bytes", .desc = "(default) Show the hex-bytes column." },
@@ -816,6 +840,29 @@ test "run: --help on a subcommand prints per-command help, exit 0" {
     const code = try run(.{ .command = .run, .options = opts }, &out, &err);
     try testing.expectEqual(@as(u8, 0), code);
     try testing.expect(std.mem.indexOf(u8, out_buf[0..out.end], "gero run") != null);
+}
+
+test "commandHelp: every implemented command renders a usage block" {
+    inline for (std.meta.fields(Command)) |f| {
+        const cmd: Command = @enumFromInt(f.value);
+        if (commandIsImplemented(cmd)) {
+            var buf: [4096]u8 = undefined;
+            var out: std.Io.Writer = .fixed(&buf);
+            try commandHelp(&out, cmd, false);
+            const text = buf[0..out.end];
+            try testing.expect(std.mem.indexOf(u8, text, "USAGE") != null);
+            try testing.expect(std.mem.indexOf(u8, text, commandName(cmd)) != null);
+        }
+    }
+}
+
+test "commandHelp: an unimplemented command says so instead of a usage block" {
+    var buf: [1024]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&buf);
+    try commandHelp(&out, .bench, false);
+    const text = buf[0..out.end];
+    try testing.expect(std.mem.indexOf(u8, text, "Not yet implemented") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "USAGE") == null);
 }
 
 test "run: subcommand stub exits 1" {

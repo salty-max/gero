@@ -47,12 +47,14 @@ pre-commit framework / plain git), see
 | `gero new <name>` / `gero init` | Scaffold a fresh project / initialize the cwd (cargo-style) |
 | `gero build` | Project-aware compile — reads `gero.toml`, writes `out/<optimize>/<name>.gx` |
 | `gero asm <file.gas>` | One-shot assemble — `.gas` source → `.gx` bytecode image |
+| `gero compile <file.gr>` | Compile a gero-lang module (and its `use` imports) → `.gx` |
 | `gero run <file.gx>` | Execute a `.gx` until `hlt` |
 | `gero check [paths…]` | Parse + codegen-validate without writing a `.gx` (LSP-style smoke) |
-| `gero fmt [paths…]` | Canonical formatter for `.gas` (`--check` for CI) |
+| `gero fmt [paths…]` | Canonical formatter for `.gas` + `.gr` (`--check` for CI) |
 | `gero test [pattern]` | Walk `[test].include`, diff stdout vs `.expected` golden files |
 | `gero disasm <file.gx>` | `.gx` → asm (round-trip-safe; CI-gated) |
 | `gero info <file.gx>` | Pretty-print a `.gx` header |
+| `gero repl` | Interactive gero-lang prompt — declarations persist across inputs |
 
 Run `gero <subcommand> --help` for per-command flags, or
 [`docs/cli.md`](./docs/cli.md) for the full reference.
@@ -69,9 +71,10 @@ Run `gero <subcommand> --help` for per-command flags, or
   loops, banking, SRAM, IRQs, fixed-point, and more
 - [docs/tooling.md](./docs/tooling.md) — editor setup, CI recipes,
   pre-commit hooks
-- [docs/gero-lang.md](./docs/gero-lang.md) — high-level language
-  spec (draft for the upcoming gero-lang compiler; not yet
-  implemented)
+- [examples/lang/](./examples/lang/) — seven worked `.gr` programs
+  covering recursion, loops, payload-carrying enums, and `match`
+- [docs/gero-lang.md](./docs/gero-lang.md) — gero-lang spec (types,
+  classes, pattern matching, annotations, the compilation model)
 
 ## Use as a library
 
