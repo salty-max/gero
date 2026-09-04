@@ -137,7 +137,7 @@ fn cleanupStatements(allocator: std.mem.Allocator, statements: *std.ArrayList(as
             };
             allocator.free(d.values);
         },
-        .struct_decl => |sd| allocator.free(sd.fields),
+        .struct_decl => |sd| ast.freeStructDecl(allocator, sd),
         .org => |o| ast.freeExpr(allocator, o.addr_expr),
         .instruction => |i| {
             for (i.operands) |op| switch (op) {
@@ -653,6 +653,47 @@ fn cleanupDataValues(allocator: std.mem.Allocator, values: *std.ArrayList(ast.Da
 
 // ---------- struct directive ----------
 
+/// Consume a `; ...` comment sitting on the current line and return
+/// its span. Blanks before it are skipped; a newline (or any other
+/// byte) leaves the cursor untouched and yields `null`.
+fn takeInlineComment(state: *core.ParseState) ?ast.Span {
+    skipBlanksInLine(state);
+    if (state.index >= state.input.len or state.input[state.index] != ';') return null;
+    const start = state.index;
+    while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
+    return spanFrom(start, state.index);
+}
+
+/// Skip blanks and newlines inside a struct body, collecting each
+/// standalone `; ...` comment line into `pending`. Stops on the
+/// first byte that is neither whitespace nor a comment, so the
+/// caller sees either a field or the closing brace.
+fn skipStructSeparators(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    pending: *std.ArrayList(ast.Span),
+) std.mem.Allocator.Error!void {
+    while (state.index < state.input.len) {
+        const b = state.input[state.index];
+        if (b == ' ' or b == '\t' or b == '\n') {
+            state.advance(1);
+        } else if (b == ';') {
+            const start = state.index;
+            while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
+            try pending.append(allocator, spanFrom(start, state.index));
+        } else {
+            break;
+        }
+    }
+}
+
+/// Release a partially-built struct body: each field's captured
+/// comment spans, then the field list itself.
+fn freeFields(allocator: std.mem.Allocator, fields: *std.ArrayList(ast.StructField)) void {
+    for (fields.items) |f| allocator.free(f.leading);
+    fields.deinit(allocator);
+}
+
 fn parseStructDecl(
     state: *core.ParseState,
     allocator: std.mem.Allocator,
@@ -702,30 +743,42 @@ fn parseStructDecl(
         return;
     }
 
+    const open_comment = takeInlineComment(state);
+
     // Field list. Fields separated by commas, newlines, or both.
     // Closing `}` ends the body. Allow a trailing comma.
     var fields: std.ArrayList(ast.StructField) = .empty;
-    errdefer fields.deinit(allocator);
+    errdefer freeFields(allocator, &fields);
+
+    // Standalone comment lines seen since the previous field. They
+    // attach to whichever field comes next, or to the struct itself
+    // when the body ends first.
+    var pending: std.ArrayList(ast.Span) = .empty;
+    errdefer pending.deinit(allocator);
 
     var running_offset: u16 = 0;
+    var tail_comments: []const ast.Span = &.{};
+    errdefer allocator.free(tail_comments);
 
     while (true) {
-        skipSeparators(state);
+        try skipStructSeparators(state, allocator, &pending);
 
         // End of body?
         if (state.index < state.input.len and state.input[state.index] == '}') {
             state.advance(1);
+            tail_comments = try pending.toOwnedSlice(allocator);
             break;
         }
 
         const field_or_err = parseStructField(state, allocator, errors, running_offset);
         const field = field_or_err catch |err| switch (err) {
-            error.OutOfMemory => {
-                fields.deinit(allocator);
-                return error.OutOfMemory;
-            },
+            // An error return unwinds through the errdefers above.
+            error.OutOfMemory => return error.OutOfMemory,
+            // A recovered parse error returns normally, so the
+            // errdefers don't fire — release the partial body here.
             error.ParseFailed => {
-                fields.deinit(allocator);
+                freeFields(allocator, &fields);
+                pending.deinit(allocator);
                 try recoverToEndOfBlock(state);
                 try statements.append(allocator, .{ .unknown = .{
                     .span = spanFrom(stmt_start, state.index),
@@ -733,13 +786,21 @@ fn parseStructDecl(
                 return;
             },
         };
-        try fields.append(allocator, field);
         running_offset += field.ty.width();
 
         skipBlanksInLine(state);
         // Optional comma between fields. The next iteration's
-        // `skipSeparators` handles newlines.
+        // separator skip handles newlines.
         if (peekByte(state, ',')) state.advance(1);
+
+        // Own the field before handing it the pending comments, so a
+        // failure between the two can't orphan the slice.
+        try fields.append(allocator, field);
+        const slot = &fields.items[fields.items.len - 1];
+        slot.leading = try pending.toOwnedSlice(allocator);
+        // A comment after the comma belongs to the field it follows,
+        // not to whatever comes next.
+        slot.trailing = takeInlineComment(state);
     }
 
     // Inject `Name.field` offset constants into the parser's
@@ -752,9 +813,18 @@ fn parseStructDecl(
     }
 
     const owned = try fields.toOwnedSlice(allocator);
+    // `toOwnedSlice` emptied `fields`, so the errdefer above no longer
+    // covers the field list or the comment spans hanging off it.
+    errdefer {
+        for (owned) |f| allocator.free(f.leading);
+        allocator.free(owned);
+    }
+
     try statements.append(allocator, .{ .struct_decl = .{
         .name = ast.Span.fromToken(name_token),
         .fields = owned,
+        .open_comment = open_comment,
+        .tail_comments = tail_comments,
         .size = running_offset,
         .span = spanFrom(stmt_start, state.index),
     } });

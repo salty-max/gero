@@ -125,11 +125,7 @@ pub fn print(
             // the configured column. Single space if the host is
             // already past the column or alignment is off.
             if (trailing_comment) |c| {
-                const pad = if (opts.comment_column > 0 and opts.comment_column > host_width + 1)
-                    opts.comment_column - 1 - host_width
-                else
-                    1;
-                try writeSpaces(writer, pad);
+                try writeSpaces(writer, trailingCommentPad(opts, host_width));
                 try writer.writeAll(slice(source, c.span()));
             }
         }
@@ -298,7 +294,7 @@ fn writeStatementCanonical(
         .const_decl => |c| try writeConst(writer, c, source, opts, kv_block_width),
         .data8 => |d| try writeData(writer, "data8", d, source, opts, kv_block_width),
         .data16 => |d| try writeData(writer, "data16", d, source, opts, kv_block_width),
-        .struct_decl => |s| try writeStruct(writer, s, source),
+        .struct_decl => |s| try writeStruct(writer, s, source, opts),
         .org => |o| try writeOrg(writer, o, source, opts),
         .bank_switch => |b| try writeBankSwitch(writer, b.index orelse 0, opts),
         .sram_banks_decl => |s| try writeSramBanks(writer, s.count orelse 0, opts),
@@ -418,33 +414,70 @@ fn writeData(
     return keyword.len + 1 + name.len + pad + " = ".len + values_width;
 }
 
-/// Multi-line struct emission:
+/// Spaces between a host line of `host_width` columns and the
+/// trailing `;` comment glued onto it. Pads to
+/// `PrintOptions.comment_column` when the host still fits before it;
+/// otherwise a single space keeps the comment off the host's last
+/// byte.
+fn trailingCommentPad(opts: PrintOptions, host_width: usize) usize {
+    if (opts.comment_column > 0 and opts.comment_column > host_width + 1) {
+        return opts.comment_column - 1 - host_width;
+    }
+    return 1;
+}
+
+/// Multi-line struct emission. Comments are preserved wherever they
+/// sit in the body; trailing ones align to `comment_column`.
 ///
 /// ```asm
-/// struct NAME {
-///   field1: u8,
+/// struct NAME {        ; open_comment
+///   ; a field's `leading`
+///   field1: u8,        ; that field's `trailing`
 ///   field2: u16,
+///   ; tail_comments
 /// }
 /// ```
 fn writeStruct(
     writer: *std.Io.Writer,
     s: ast.StructDecl,
     source: []const u8,
+    opts: PrintOptions,
 ) std.Io.Writer.Error!usize {
-    try writer.print("struct {s} {{\n", .{slice(source, s.name)});
-    for (s.fields) |f| {
-        try writer.print(
-            "  {s}: {s},\n",
-            .{ slice(source, f.name), @tagName(f.ty) },
-        );
+    const name = slice(source, s.name);
+    try writer.print("struct {s} {{", .{name});
+    if (s.open_comment) |c| {
+        const head = "struct ".len + name.len + " {".len;
+        try writeSpaces(writer, trailingCommentPad(opts, head));
+        try writer.writeAll(slice(source, c));
     }
+    try writer.writeByte('\n');
+
+    for (s.fields) |f| {
+        for (f.leading) |c| try writer.print("{s}{s}\n", .{ struct_field_indent, slice(source, c) });
+        const field_name = slice(source, f.name);
+        const ty = @tagName(f.ty);
+        try writer.print("{s}{s}: {s},", .{ struct_field_indent, field_name, ty });
+        if (f.trailing) |c| {
+            const width = struct_field_indent.len + field_name.len + ": ".len + ty.len + ",".len;
+            try writeSpaces(writer, trailingCommentPad(opts, width));
+            try writer.writeAll(slice(source, c));
+        }
+        try writer.writeByte('\n');
+    }
+
+    for (s.tail_comments) |c| try writer.print("{s}{s}\n", .{ struct_field_indent, slice(source, c) });
+
     try writer.writeByte('}');
     // The host-line width for trailing-comment alignment is the
-    // closing brace's column (1) — multi-line structs almost
-    // never carry trailing comments, but returning a sane value
-    // keeps the aligner well-behaved.
+    // closing brace's column (1) — a comment after `}` aligns
+    // against that, not against the body above it.
     return 1;
 }
+
+/// Body indent for `struct` fields and the comment lines between
+/// them. Two spaces, independent of `PrintOptions.indent` — that
+/// knob governs label-body instruction indent, not brace bodies.
+const struct_field_indent = "  ";
 
 /// Instruction emission: indent + mnemonic + comma-separated
 /// operands. Zero-operand mnemonics (`hlt`, `nop`, `ret`) emit
