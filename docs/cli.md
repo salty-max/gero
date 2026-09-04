@@ -296,6 +296,15 @@ cat main.gr | gero fmt --stdin --lang=gr    # gero-lang from stdin
   printer.
 - `include "..."` directives round-trip verbatim — fmt doesn't
   expand includes (that's `gero asm`'s job).
+- **Every comment survives.** A `;` comment is preserved wherever
+  it sits, including inside a `struct` body — trailing a field, on
+  its own line between fields, on the opening-brace line, or
+  between the last field and `}`. Trailing comments align to
+  `comment_column` like any other host line; standalone ones keep
+  their position in the body.
+- **Formatting is idempotent.** Running `gero fmt` on canonical
+  output reproduces it byte-for-byte, so `--check` can't oscillate
+  in CI.
 
 **Exit:** 0 (clean / formatted); 8 (`--check` would-modify); 3 on
 parse error; 1 on host IO; 2 on usage.

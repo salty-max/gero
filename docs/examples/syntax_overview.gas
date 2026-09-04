@@ -21,19 +21,19 @@ bank $01                     ; declare a second bank slot
 sram_banks $01               ; reserve 1 sram-backed bank (last slot)
 include "shared.gas"         ; pull in another source file
 
-const PRINT   = $10
-const NEWLINE = $0A
+const PRINT    = $10
+const NEWLINE  = $0A
 const EXPORTED = $42         ; const with a name a downstream file might use
 
-data8  STRING8  = "Hello", $00
+data8 STRING8 = "Hello", $00
 data16 STRING16 = $1234, $5678
-data8  CHAR_DATA = 'X', 'Y', 'Z', $00
-data8  SCRATCH  = reserve $10            ; reserve N — inside data8 only
+data8 CHAR_DATA = 'X', 'Y', 'Z', $00
+data8 SCRATCH   = reserve $10 ; reserve N — inside data8 only
 
 struct Sprite {
-  pos:  u16,                 ; sprite x:y packed
+  pos: u16,                  ; sprite x:y packed
   size: u8,
-  attr: u8
+  attr: u8,
 }
 
 ; Data block laid out per the `Sprite` struct above.
@@ -57,60 +57,60 @@ main:
 
 mnemonic_kitchen_sink:
   ; moves
-  mov  r1, r2
+  mov r1, r2
   mov8 $FF, r3
   movh r4, &2020
   movl r5, &2022
   push r1
-  pop  r2
+  pop r2
   swap r3, r4
   bcpy r1, r2, r3            ; dst, src, len
 
   ; arithmetic
-  add  $0001, r1
-  adc  r2, r3
-  sub  r4, r5
-  sbc  $0010, r6
-  mul  r7, r8
-  div  r1, r2
+  add $01, r1
+  adc r2, r3
+  sub r4, r5
+  sbc $10, r6
+  mul r7, r8
+  div r1, r2
   divs r3, r4
-  neg  r5
-  inc  r6
-  dec  r7
+  neg r5
+  inc r6
+  dec r7
 
   ; bitwise + shift
-  and  $FFFF, r1
-  or   $0F0F, r2
-  xor  r3, r4
-  not  r5
-  shl  r6, $04
-  shr  r7, $02
-  rol  r8, $01
-  ror  r1, $08
+  and $FFFF, r1
+  or $0F0F, r2
+  xor r3, r4
+  not r5
+  shl r6, $04
+  shr r7, $02
+  rol r8, $01
+  ror r1, $08
 
   ; compare / test / bit
-  cmp  r1, $42
-  tst  r2, $0F               ; reg & imm, flags-only
+  cmp r1, $42
+  tst r2, $0F                ; reg & imm, flags-only
   bfill r1, r2, r3           ; addr, len, val — memset block fill
-  bset  r4, $03              ; r4 |= 1 << 3 — set single bit
-  bclr  r5, $07              ; r5 &= ~(1 << 7) — clear single bit
+  bset r4, $03               ; r4 |= 1 << 3 — set single bit
+  bclr r5, $07               ; r5 &= ~(1 << 7) — clear single bit
   btest r6, $0F              ; flg.Z ← !(r6 & (1 << 15))
 
   ; control flow — jumps take Addr operands, not raw hex
-  jmp  &1234
-  jeq  &1235
-  jne  &1236
-  jlt  &1237
-  jgt  &1238
-  jle  &1239
-  jge  &123A
-  jz   &123B
-  jnz  &123C
-  jcc  &123D
-  jcs  &123E
-  jvc  &123F
-  jvs  &1240
-  jr   $08                   ; relative — Imm8, signed −128..+127
+  jmp &1234
+  jeq &1235
+  jne &1236
+  jlt &1237
+  jgt &1238
+  jle &1239
+  jge &123A
+  jz &123B
+  jnz &123C
+  jcc &123D
+  jcs &123E
+  jvc &123F
+  jvs &1240
+  jr $08                     ; relative — Imm8, signed −128..+127
   djnz r4, &1242
   call routine
   ret
@@ -135,22 +135,22 @@ routine:
 ; -------------------- addressing modes ----------------------
 
 addressing_kitchen_sink:
-  mov  r1, r2                          ; reg, reg
-  mov  $00, r1                         ; imm16, reg
-  mov  r1, &2020                       ; reg, addr
-  mov  $00, &2020                      ; imm16, addr
-  mov  @STRING16, r1                   ; symbol-ref operand → folds to addr
-  mov  [r1], r2                        ; indirect via register
-  mov  [@STRING8 + r3], r1             ; indexed (sym + register)
-  mov  &[(@STRING8) + ($04 * $02)], r1 ; address expression with operators
-  mov  <Sprite> @obj.pos, r1           ; struct-field cast (compile-time fold)
+  mov r1, r2                 ; reg, reg
+  mov $00, r1                ; imm16, reg
+  mov r1, &2020              ; reg, addr
+  mov $00, &2020             ; imm16, addr
+  mov @STRING16, r1          ; symbol-ref operand → folds to addr
+  mov [r1], r2               ; indirect via register
+  mov [@STRING8 + r3], r1    ; indexed (sym + register)
+  mov &[(@STRING8) + ($04 * $02)], r1 ; address expression with operators
+  mov <Sprite> @obj.pos, r1  ; struct-field cast (compile-time fold)
 
 ; -------------------- literals ------------------------------
 
 literals_showcase:
-  mov $00,   r1      ; tiny hex
-  mov $FFFF, r1      ; full 16-bit hex
-  mov &1234, r1      ; address literal
-  mov 'A',   r1      ; char literal — same byte as $41
-  mov '\n',  r1      ; escape char literal
-  data8 ESCAPED = "He said \"hi\"\n", $00   ; string with escapes
+  mov $00, r1                ; tiny hex
+  mov $FFFF, r1              ; full 16-bit hex
+  mov &1234, r1              ; address literal
+  mov 'A', r1                ; char literal — same byte as $41
+  mov '\n', r1               ; escape char literal
+data8 ESCAPED = "He said \"hi\"\n", $00 ; string with escapes
