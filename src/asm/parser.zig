@@ -627,11 +627,16 @@ fn parseDataValue(
                 },
             }
         };
-        return .{ .reserve = .{
-            .count_expr = count_expr,
-            .count = count,
-            .span = spanFrom(start, state.index),
-        } };
+        return .{
+            .reserve = .{
+                .count_expr = count_expr,
+                .count = count,
+                // End at the count expression, not the cursor: the
+                // expression parser leaves the cursor past any trailing
+                // blanks, and the printer re-emits this span verbatim.
+                .span = spanFrom(start, count_expr.span().end),
+            },
+        };
     }
 
     // Fall through to the general compile-time expression.
