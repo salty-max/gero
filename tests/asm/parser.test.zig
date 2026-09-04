@@ -1290,3 +1290,18 @@ test "parser: a parse error inside a commented struct body releases the body" {
     defer pt.deinit();
     try std.testing.expect(pt.hasErrors());
 }
+
+test "parser: struct comment capture releases everything under OOM" {
+    const src = "struct S { ; brace\n  ; lead\n  a: u8, ; one\n  b: u16\n  ; tail\n}\n";
+    // Walk the failure point across every allocation the parse makes;
+    // each one must unwind without leaking or double-freeing.
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        var failing = std.testing.FailingAllocator.init(alloc, .{ .fail_index = i });
+        var pt = gero.asm_.parse(failing.allocator(), src) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            continue;
+        };
+        pt.deinit();
+    }
+}

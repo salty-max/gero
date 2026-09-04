@@ -48,10 +48,16 @@ pub const ConstantTable = struct {
     }
 
     /// Bind `name` to `value` and take ownership of the `name`
-    /// buffer — it will be freed by `deinit`. Used for synthetic
-    /// keys (e.g., `Player.hp`) that don't live in the source.
+    /// buffer — it will be freed by `deinit`, including when this
+    /// call fails, so the caller must never free it. Used for
+    /// synthetic keys (e.g., `Player.hp`) absent from the source.
     pub fn putOwned(self: *ConstantTable, name: []const u8, value: u16) !void {
-        try self.owned_keys.append(self.allocator, name);
+        // Take ownership on every path, so the caller never has to
+        // guess whether a failure left `name` on its hands.
+        self.owned_keys.append(self.allocator, name) catch |err| {
+            self.allocator.free(name);
+            return err;
+        };
         try self.entries.put(name, value);
     }
 
