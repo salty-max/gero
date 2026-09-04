@@ -41,7 +41,10 @@ else
     GREEN=''; RED=''; BOLD=''; RESET=''
 fi
 
-mapfile -t -d '' fixtures < <(find "$FIXTURES_DIR" -type f -name '*.gas' -print0 | sort -z)
+fixtures=()
+while IFS= read -r -d '' path; do
+    fixtures+=("$path")
+done < <(find "$FIXTURES_DIR" -type f -name '*.gas' -print0 | sort -z)
 
 if [[ ${#fixtures[@]} -eq 0 ]]; then
     printf 'check-broken: no .gas fixtures under %s\n' "$FIXTURES_DIR" >&2

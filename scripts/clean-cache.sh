@@ -49,7 +49,10 @@ before_kb="$(du -sk "$CACHE_DIR" 2>/dev/null | cut -f1)"
 # -mtime +N matches dirs last modified strictly more than N days ago.
 # -maxdepth 1 keeps us at the o/<hash> granularity — never descends to
 # prune individual files out from under an otherwise-warm output dir.
-mapfile -t -d '' stale < <(
+stale=()
+while IFS= read -r -d '' path; do
+    stale+=("$path")
+done < <(
     find "$outputs_dir" -mindepth 1 -maxdepth 1 -type d -mtime "+$MAX_AGE_DAYS" -print0
 )
 

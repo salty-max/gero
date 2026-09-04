@@ -297,16 +297,13 @@ fn checkStrict(
             }
         }
 
-        // Rule 12: //! outside the public barrel (src/gero.zig).
-        // The bash version used `src/core.zig` as the exempt path —
-        // that's a stale reference from an earlier refactor; the
-        // actual barrel is `src/gero.zig` (no `//!` exists in the
-        // tree today, so the rule's old behavior couldn't be
-        // observed). Aligned with the actual barrel here.
+        // Rule 12: `//!` is reserved for the public barrel, so a
+        // file-level doc anywhere else would claim to document the
+        // whole module tree.
         if (std.mem.startsWith(u8, stripped, "//!")) {
             const is_barrel = std.mem.eql(u8, file.path, "src/gero.zig");
             if (!is_barrel and !isAllowed(prev)) {
-                try pushStrict(alloc, violations, file.path, lineno, "module-doc-outside-core", line);
+                try pushStrict(alloc, violations, file.path, lineno, "module-doc-outside-barrel", line);
             }
         }
 
@@ -318,12 +315,10 @@ fn checkStrict(
             }
         }
 
-        // Rule 7: std.debug.print( in src/ (exempt: debug-log.zig).
+        // Rule 7: std.debug.print( in src/ — library code writes
+        // through a caller-supplied writer, never straight to stderr.
         if (!is_comment and std.mem.indexOf(u8, line, "std.debug.print(") != null) {
-            const exempt = std.mem.eql(u8, file.path, "src/parsers/util/debug-log.zig");
-            if (!exempt) {
-                try pushStrict(alloc, violations, file.path, lineno, "std.debug.print-in-src", line);
-            }
+            try pushStrict(alloc, violations, file.path, lineno, "std.debug.print-in-src", line);
         }
 
         prev = line;

@@ -43,7 +43,10 @@ if [[ ${#present_dirs[@]} -eq 0 ]]; then
     exit 1
 fi
 
-mapfile -t -d '' gr_files < <(find "${present_dirs[@]}" -type f -name '*.gr' -print0 | sort -z)
+gr_files=()
+while IFS= read -r -d '' path; do
+    gr_files+=("$path")
+done < <(find "${present_dirs[@]}" -type f -name '*.gr' -print0 | sort -z)
 
 if [[ ${#gr_files[@]} -eq 0 ]]; then
     printf 'check-examples-gr: no .gr files under [%s]\n' "$EXAMPLES_DIRS" >&2

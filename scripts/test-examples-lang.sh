@@ -39,7 +39,10 @@ fi
 tmp_root="$(mktemp -d -t gero-test-examples-lang.XXXXXX)"
 trap 'rm -rf "$tmp_root"' EXIT
 
-mapfile -t -d '' gr_files < <(find "$EXAMPLES_DIR" -type f -name '*.gr' -print0 | sort -z)
+gr_files=()
+while IFS= read -r -d '' path; do
+    gr_files+=("$path")
+done < <(find "$EXAMPLES_DIR" -type f -name '*.gr' -print0 | sort -z)
 
 if [[ ${#gr_files[@]} -eq 0 ]]; then
     printf 'test-examples-lang: no .gr files under %s\n' "$EXAMPLES_DIR" >&2
