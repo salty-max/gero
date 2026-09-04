@@ -514,3 +514,11 @@ test "printProgram: a struct body with every comment shape reaches a fixed point
     defer second.deinit();
     try std.testing.expectEqualStrings(first.text, second.text);
 }
+
+test "printProgram: reserve with a trailing comment reaches a fixed point" {
+    var first = try parseAndPrint("data8 S = reserve $10 ; n\n");
+    defer first.deinit();
+    var second = try parseAndPrint(first.text);
+    defer second.deinit();
+    try std.testing.expectEqualStrings(first.text, second.text);
+}
