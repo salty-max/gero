@@ -539,23 +539,6 @@ lands.
 
 ---
 
-## 4. Not yet shipped
-
-The following subcommands are not implemented. Invoking them
-prints `not yet implemented` and exits non-zero.
-
-| Command | Why not yet |
-|---------|--------------|
-| `gero compile <file.gr>` | Requires the gero-lang compiler. |
-| `gero bench [pattern]` | Requires the gero-lang compiler + a bench harness. |
-| `gero lsp` | Single server intended to serve both `.gas` and `.gr` — waits on gero-lang. |
-| `gero hexdump <file.gx>` | Low priority — `gero info` + `xxd` cover the use case today. |
-| `gero debug <file.gx>` | Interactive debugger — needs a real-mode UX design pass. |
-| `gero repl` | REPL on a 16-bit VM is awkward — no clear use case yet. |
-| `gero doc` | Docgen from `///` comments — waits for a substantial stdlib. |
-
----
-
 ### 3.13 `gero repl` — interactive gero-lang prompt
 
 Read-eval-print loop for gero-lang. Reads stdin lines into a
@@ -596,6 +579,21 @@ diagnostics and leave the session source untouched, so the user
 keeps typing without restarting.
 
 **Exit**: `0` on clean `.quit` / EOF.
+
+---
+
+## 4. Not yet shipped
+
+The following subcommands are not implemented. Invoking them
+prints `not yet implemented` and exits non-zero.
+
+| Command | Why not yet |
+|---------|--------------|
+| `gero bench [pattern]` | Needs the `@bench` collector + iteration runner. |
+| `gero lsp` | Single server intended to serve both `.gas` and `.gr` — needs the LSP transport layer. |
+| `gero hexdump <file.gx>` | Low priority — `gero info` + `xxd` cover the use case today. |
+| `gero debug <file.gx>` | Interactive debugger — needs a real-mode UX design pass. |
+| `gero doc` | Docgen from `///` comments — waits for a substantial stdlib. |
 
 ---
 
