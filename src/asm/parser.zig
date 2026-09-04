@@ -809,6 +809,7 @@ fn parseStructDecl(
     for (fields.items) |f| {
         const field_name = state.input[f.name.start..f.name.end];
         const qualified = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ struct_name, field_name });
+        // `putOwned` owns `qualified` from here, failure included.
         try consts.putOwned(qualified, f.offset);
     }
 
