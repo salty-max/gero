@@ -39,7 +39,10 @@ else
     GREEN=''; RED=''; BOLD=''; RESET=''
 fi
 
-mapfile -t -d '' gas_files < <(
+gas_files=()
+while IFS= read -r -d '' path; do
+    gas_files+=("$path")
+done < <(
     {
         find "$EXAMPLES_DIR" -type f -name '*.gas' -print0
         if [[ -d "$DOC_EXAMPLES_DIR" ]]; then

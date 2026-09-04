@@ -38,7 +38,10 @@ fi
 tmp_root="$(mktemp -d -t gero-test-examples.XXXXXX)"
 trap 'rm -rf "$tmp_root"' EXIT
 
-mapfile -t -d '' gas_files < <(find "$EXAMPLES_DIR" -type f -name '*.gas' -print0 | sort -z)
+gas_files=()
+while IFS= read -r -d '' path; do
+    gas_files+=("$path")
+done < <(find "$EXAMPLES_DIR" -type f -name '*.gas' -print0 | sort -z)
 
 if [[ ${#gas_files[@]} -eq 0 ]]; then
     printf 'test-examples: no .gas files under %s\n' "$EXAMPLES_DIR" >&2
