@@ -229,12 +229,26 @@ pub const StructDecl = struct {
     /// field's offset as it walks: `u8` adds 1 to the running
     /// offset, `u16` adds 2. Layout is packed — no padding.
     fields: []StructField,
+    /// `; ...` comment sitting on the same line as the opening
+    /// brace. `null` when the brace line ends after `{`.
+    open_comment: ?Span = null,
+    /// Standalone `; ...` comment lines between the last field and
+    /// the closing brace, in source order.
+    tail_comments: []const Span = &.{},
     /// Total layout size (= last field's offset + its width).
     /// `0` for an empty struct.
     size: u16,
     /// Span covering `struct NAME { ... }` end-to-end.
     span: Span,
 };
+
+/// Release a `StructDecl`'s owned slices: the field list plus the
+/// comment spans hanging off each field and the declaration itself.
+pub fn freeStructDecl(allocator: std.mem.Allocator, sd: StructDecl) void {
+    for (sd.fields) |f| allocator.free(f.leading);
+    allocator.free(sd.tail_comments);
+    allocator.free(sd.fields);
+}
 
 /// One field of a `struct` block. Field offsets start at zero
 /// for the first field and accumulate as fields are walked.
@@ -248,6 +262,12 @@ pub const StructField = struct {
     offset: u16,
     /// Span covering `field: type` end-to-end.
     span: Span,
+    /// Standalone `; ...` comment lines directly above this field,
+    /// in source order. Empty when the field has none.
+    leading: []const Span = &.{},
+    /// `; ...` comment on the same line as the field. `null` when
+    /// the line ends after the field (or its comma).
+    trailing: ?Span = null,
 };
 
 /// Field type per asm spec §2.2. The width values are 1 byte for
@@ -594,7 +614,7 @@ pub const Program = struct {
                     };
                     self.allocator.free(d.values);
                 },
-                .struct_decl => |sd| self.allocator.free(sd.fields),
+                .struct_decl => |sd| freeStructDecl(self.allocator, sd),
                 .org => |o| freeExpr(self.allocator, o.addr_expr),
                 .instruction => |i| {
                     for (i.operands) |op| switch (op) {

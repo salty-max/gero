@@ -463,3 +463,54 @@ test "printProgram: block ignore idempotent across re-formats" {
     defer p2.deinit();
     try std.testing.expectEqualStrings(p1.text, p2.text);
 }
+
+// ---------- struct-body comments ----------
+
+test "printProgram: a trailing comment on a struct field survives" {
+    var p = try parseAndPrint("struct S {\n  a: u8,   ; keep me\n  b: u16\n}\n");
+    defer p.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, p.text, "; keep me") != null);
+}
+
+test "printProgram: a standalone comment inside a struct body survives" {
+    var p = try parseAndPrint("struct S {\n  ; a note\n  a: u8\n}\n");
+    defer p.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, p.text, "; a note") != null);
+}
+
+test "printProgram: a comment on the struct's opening brace line survives" {
+    var p = try parseAndPrint("struct S {  ; layout\n  a: u8\n}\n");
+    defer p.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, p.text, "; layout") != null);
+}
+
+test "printProgram: a comment between the last field and `}` survives" {
+    var p = try parseAndPrint("struct S {\n  a: u8\n  ; end note\n}\n");
+    defer p.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, p.text, "; end note") != null);
+}
+
+test "printProgram: struct field comments align to the comment column" {
+    var p = try parseAndPrint("struct S {\n  a: u8, ; one\n  bb: u16 ; two\n}\n");
+    defer p.deinit();
+    const one = std.mem.indexOf(u8, p.text, "; one").?;
+    const two = std.mem.indexOf(u8, p.text, "; two").?;
+    const line_one = std.mem.lastIndexOfScalar(u8, p.text[0..one], '\n').? + 1;
+    const line_two = std.mem.lastIndexOfScalar(u8, p.text[0..two], '\n').? + 1;
+    try std.testing.expectEqual(one - line_one, two - line_two);
+}
+
+test "printProgram: a struct with no comments is unchanged in shape" {
+    var p = try parseAndPrint("struct S {\n  a: u8,\n  b: u16\n}\n");
+    defer p.deinit();
+    try std.testing.expectEqualStrings("struct S {\n  a: u8,\n  b: u16,\n}\n", p.text);
+}
+
+test "printProgram: a struct body with every comment shape reaches a fixed point" {
+    const src = "struct S {  ; brace\n  ; lead\n  a: u8,  ; one\n  b: u16  ; two\n  ; tail\n}\n";
+    var first = try parseAndPrint(src);
+    defer first.deinit();
+    var second = try parseAndPrint(first.text);
+    defer second.deinit();
+    try std.testing.expectEqualStrings(first.text, second.text);
+}

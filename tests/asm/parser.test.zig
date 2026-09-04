@@ -1215,3 +1215,78 @@ test "parser: nested ifdef inside skipping outer stays skipping" {
     // both endifs → 6.
     try std.testing.expectEqual(@as(usize, 6), pt.program.statements.len);
 }
+
+// ---------- struct-body comment capture ----------
+
+/// Parse `src` and hand the struct decl (plus the source it was cut
+/// from) to `check`, so a span assertion can slice the lexeme back out.
+fn withStructDecl(
+    src: []const u8,
+    check: *const fn (gero.asm_.StructDecl, []const u8) anyerror!void,
+) !void {
+    var pt = try parseSource(src);
+    defer pt.deinit();
+    try std.testing.expect(!pt.hasErrors());
+    switch (pt.program.statements[0]) {
+        .struct_decl => |sd| try check(sd, src),
+        else => return error.WrongStatementKind,
+    }
+}
+
+test "parser: a struct field records its trailing comment" {
+    try withStructDecl("struct S {\n  a: u8, ; note\n}\n", struct {
+        fn check(sd: gero.asm_.StructDecl, src: []const u8) anyerror!void {
+            try std.testing.expectEqual(@as(usize, 1), sd.fields.len);
+            const c = sd.fields[0].trailing orelse return error.MissingTrailingComment;
+            try std.testing.expectEqualStrings("; note", src[c.start..c.end]);
+        }
+    }.check);
+}
+
+test "parser: standalone comments attach to the field below them" {
+    try withStructDecl("struct S {\n  ; one\n  ; two\n  a: u8\n}\n", struct {
+        fn check(sd: gero.asm_.StructDecl, src: []const u8) anyerror!void {
+            try std.testing.expectEqual(@as(usize, 2), sd.fields[0].leading.len);
+            const first = sd.fields[0].leading[0];
+            try std.testing.expectEqualStrings("; one", src[first.start..first.end]);
+        }
+    }.check);
+}
+
+test "parser: comments after the last field land on tail_comments" {
+    try withStructDecl("struct S {\n  a: u8\n  ; done\n}\n", struct {
+        fn check(sd: gero.asm_.StructDecl, src: []const u8) anyerror!void {
+            try std.testing.expectEqual(@as(usize, 1), sd.tail_comments.len);
+            const c = sd.tail_comments[0];
+            try std.testing.expectEqualStrings("; done", src[c.start..c.end]);
+        }
+    }.check);
+}
+
+test "parser: a comment on the brace line lands on open_comment" {
+    try withStructDecl("struct S { ; layout\n  a: u8\n}\n", struct {
+        fn check(sd: gero.asm_.StructDecl, src: []const u8) anyerror!void {
+            const c = sd.open_comment orelse return error.MissingOpenComment;
+            try std.testing.expectEqualStrings("; layout", src[c.start..c.end]);
+        }
+    }.check);
+}
+
+test "parser: struct comments leave field offsets and size untouched" {
+    try withStructDecl("struct S { ; x\n  ; y\n  a: u8, ; z\n  b: u16\n  ; w\n}\n", struct {
+        fn check(sd: gero.asm_.StructDecl, _: []const u8) anyerror!void {
+            try std.testing.expectEqual(@as(u16, 0), sd.fields[0].offset);
+            try std.testing.expectEqual(@as(u16, 1), sd.fields[1].offset);
+            try std.testing.expectEqual(@as(u16, 3), sd.size);
+        }
+    }.check);
+}
+
+test "parser: a parse error inside a commented struct body releases the body" {
+    // `std.testing.allocator` fails the test on leak — the recovered
+    // parse path returns normally, so it must free the fields and
+    // their captured comment spans itself.
+    var pt = try parseSource("struct S {\n  ; lead\n  a: u8, ; ok\n  b: !!!\n}\n");
+    defer pt.deinit();
+    try std.testing.expect(pt.hasErrors());
+}
