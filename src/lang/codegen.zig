@@ -276,6 +276,7 @@ pub fn compile(
         .bake_inits = .{},
         .bake_str_patches = .empty,
         .global_inits = .empty,
+        .global_destructures = .empty,
         .bake_defs = .{},
     };
     defer emitter.code.deinit(allocator);
@@ -283,6 +284,7 @@ pub fn compile(
     defer emitter.bake_inits.deinit(allocator);
     defer emitter.bake_str_patches.deinit(allocator);
     defer emitter.global_inits.deinit(allocator);
+    defer emitter.global_destructures.deinit(allocator);
     defer emitter.bake_defs.deinit(allocator);
     defer emitter.vtable_patches.deinit(allocator);
     defer emitter.lambda_patches.deinit(allocator);
@@ -531,6 +533,14 @@ pub const GlobalInit = struct {
     init: *const ast.Expr,
 };
 
+/// A module-scope `let PATTERN = init` whose pattern binds more than a
+/// single name. Each bound name already has its own global; entry
+/// startup destructures `init` into them.
+pub const GlobalDestructure = struct {
+    pattern: *const ast.Pattern,
+    init: *const ast.Expr,
+};
+
 /// Unresolved vtable-address site. Patched by `patchVtableSlots`
 /// once `emitVtables` resolves each class's `vtable_addr`.
 pub const VtablePatch = struct {
@@ -767,6 +777,9 @@ pub const Emitter = struct {
     /// Non-`bake` top-level initializers, emitted as stores at entry
     /// startup (declaration order). See `GlobalInit`.
     global_inits: std.ArrayListUnmanaged(GlobalInit),
+    /// Module-scope destructuring `let`s, seeded at entry startup in
+    /// declaration order alongside `global_inits`.
+    global_destructures: std.ArrayList(GlobalDestructure),
     /// `bake def`s by name. Populated pre-emission so
     /// `const X = bake_def_name()` initializers can find the
     /// callee.
