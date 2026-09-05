@@ -76,6 +76,13 @@ pub const ParseTree = parser_mod.ParseTree;
 /// Parse tokens into an `ast.Program`.
 pub const parse = parser_mod.parse;
 
+/// Per-module parse: each module parses from its own tokens, sharing
+/// the buffer their offsets index into.
+pub const parseAllModules = parser_mod.parseAllModules;
+
+/// Per-module parse results plus a flat statement view.
+pub const ModuleParse = parser_mod.ModuleParse;
+
 /// Pretty-print an `ast.Program` to canonical `.gr`.
 /// Round-trip safe: `parse(print(parse(s))) == parse(s)`.
 pub const print = print_mod.print;

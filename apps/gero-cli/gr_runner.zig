@@ -26,7 +26,7 @@ pub const Entry = struct {
 pub const Module = struct {
     path: []const u8,
     fused: gero.lang.FusedSource,
-    tree: gero.lang.ParseTree,
+    tree: gero.lang.ModuleParse,
     checked: gero.lang.CheckedProgram,
     entries: []Entry,
 
@@ -71,7 +71,7 @@ pub fn discover(
         };
         defer stream.deinit();
 
-        var tree = gero.lang.parse(arena, fused.source, stream) catch {
+        var tree = gero.lang.parseAllModules(arena, fused.source, stream, &fused.source_map) catch {
             fused.deinit();
             continue;
         };

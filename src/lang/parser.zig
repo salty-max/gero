@@ -3,6 +3,7 @@ const knit = @import("knit");
 const core = knit.core;
 const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
+const include = @import("include.zig");
 const annotation_mod = @import("annotation.zig");
 const decl_mod = @import("decl.zig");
 const stmt_mod = @import("stmt.zig");
@@ -44,6 +45,120 @@ pub const ParseTree = struct {
 
 /// Parse a tokenized source into an `ast.Program` + diagnostics.
 /// Only error path is OOM. Grammar errors land in `errors`.
+/// One module's parse result: the file it came from and its own tree.
+/// Trees are parsed independently — a module's parse sees only its own
+/// tokens — while sharing the buffer the token offsets index into, so
+/// every span stays absolute and diagnostics keep pointing at the right
+/// file.
+pub const ModuleTree = struct {
+    file_id: u16,
+    tree: ParseTree,
+};
+
+/// Per-module parse results plus a flat view over all their
+/// statements, in module order. The trees own every node; `program`
+/// borrows, so it must not be deinit'd on its own.
+pub const ModuleParse = struct {
+    modules: []ModuleTree,
+    program: ast.Program,
+    errors: []core.ParseError,
+    allocator: std.mem.Allocator,
+
+    /// Release every module's tree, the flat statement view, and the
+    /// merged error list.
+    pub fn deinit(self: *ModuleParse) void {
+        self.allocator.free(self.program.statements);
+        for (self.modules) |*m| m.tree.deinit();
+        self.allocator.free(self.modules);
+        self.allocator.free(self.errors);
+    }
+
+    /// `true` when any module reported a parse error.
+    pub fn hasErrors(self: ModuleParse) bool {
+        return self.errors.len > 0;
+    }
+};
+
+/// Parse every module, then present one flat statement view for the
+/// stages that still walk the program as a whole.
+pub fn parseAllModules(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    stream: lexer.TokenStream,
+    source_map: *const include.SourceMap,
+) !ModuleParse {
+    const modules = try parseModules(allocator, source, stream, source_map);
+    errdefer {
+        for (modules) |*m| m.tree.deinit();
+        allocator.free(modules);
+    }
+
+    var flat: std.ArrayList(ast.Statement) = .empty;
+    errdefer flat.deinit(allocator);
+    var errs: std.ArrayList(core.ParseError) = .empty;
+    errdefer errs.deinit(allocator);
+    for (modules) |m| {
+        try flat.appendSlice(allocator, m.tree.program.statements);
+        try errs.appendSlice(allocator, m.tree.errors);
+    }
+
+    return .{
+        .modules = modules,
+        .program = .{
+            .statements = try flat.toOwnedSlice(allocator),
+            .allocator = allocator,
+        },
+        .errors = try errs.toOwnedSlice(allocator),
+        .allocator = allocator,
+    };
+}
+
+/// Parse each module separately from the token stream, splitting it by
+/// the file each token belongs to. A token whose offset maps to no
+/// region — a synthesized span — falls to the first module.
+pub fn parseModules(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    stream: lexer.TokenStream,
+    source_map: *const include.SourceMap,
+) ![]ModuleTree {
+    var out: std.ArrayList(ModuleTree) = .empty;
+    errdefer {
+        for (out.items) |*m| m.tree.deinit();
+        out.deinit(allocator);
+    }
+
+    const module_count = @max(source_map.files.items.len, 1);
+    var id: u16 = 0;
+    while (id < module_count) : (id += 1) {
+        var toks: std.ArrayList(lexer.Token) = .empty;
+        defer toks.deinit(allocator);
+        for (stream.tokens) |t| {
+            if (t.kind == .eof) continue;
+            const o = source_map.fileIdAt(t.start) orelse 0;
+            if (o == id) try toks.append(allocator, t);
+        }
+        if (toks.items.len == 0) continue;
+
+        // Every parse needs its own terminator; the shared stream's
+        // single `.eof` belongs to the last module only.
+        const last_end = toks.items[toks.items.len - 1].end;
+        try toks.append(allocator, .{ .kind = .eof, .start = last_end, .end = last_end, .value = 0 });
+
+        const sub: lexer.TokenStream = .{
+            .tokens = toks.items,
+            .errors = &.{},
+            .comments = &.{},
+            .allocator = allocator,
+        };
+        try out.append(allocator, .{ .file_id = id, .tree = try parse(allocator, source, sub) });
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Parse one token stream into a tree. Collects every recoverable
+/// parse error rather than stopping at the first, so a single run
+/// reports as much as it can.
 pub fn parse(
     allocator: std.mem.Allocator,
     source: []const u8,

@@ -1,5 +1,6 @@
 const std = @import("std");
 const gero = @import("gero");
+const util = @import("util");
 
 const ast = gero.lang.ast;
 const alloc = std.testing.allocator;
@@ -1561,4 +1562,59 @@ test "parse: dangling annotation at EOF surfaces a diagnostic" {
     var tree = try parseSource("@final\n");
     defer tree.deinit();
     try std.testing.expect(tree.errors.len > 0);
+}
+
+// ---------- per-module parse (§5) ----------
+
+test "parseAllModules: each module gets its own tree" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
+    try fx.write("main.gr", "use \"./lib\"\n\ndef main()\n  print helper()\nend\n");
+
+    const path = try fx.tmp.dir.realPathFileAlloc(std.testing.io, "main.gr", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+
+    var fused = try gero.lang.resolveUseImports(std.testing.io, std.testing.allocator, path);
+    defer fused.deinit();
+    var stream = try gero.lang.tokenize(std.testing.allocator, fused.source);
+    defer stream.deinit();
+
+    var mp = try gero.lang.parseAllModules(std.testing.allocator, fused.source, stream, &fused.source_map);
+    defer mp.deinit();
+
+    // One tree per file, and each holds only its own declarations.
+    try std.testing.expectEqual(@as(usize, 2), mp.modules.len);
+    for (mp.modules) |m| try std.testing.expect(m.tree.program.statements.len > 0);
+
+    // The flat view is every module's statements together.
+    var total: usize = 0;
+    for (mp.modules) |m| total += m.tree.program.statements.len;
+    try std.testing.expectEqual(total, mp.program.statements.len);
+}
+
+test "parseAllModules: a span still resolves to the file that owns it" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
+    try fx.write("main.gr", "use \"./lib\"\n\ndef main()\n  print helper()\nend\n");
+
+    const path = try fx.tmp.dir.realPathFileAlloc(std.testing.io, "main.gr", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+
+    var fused = try gero.lang.resolveUseImports(std.testing.io, std.testing.allocator, path);
+    defer fused.deinit();
+    var stream = try gero.lang.tokenize(std.testing.allocator, fused.source);
+    defer stream.deinit();
+
+    var mp = try gero.lang.parseAllModules(std.testing.allocator, fused.source, stream, &fused.source_map);
+    defer mp.deinit();
+
+    // Parsing per module must not disturb span attribution — every
+    // statement still maps back to the module that declared it.
+    for (mp.modules) |m| {
+        for (m.tree.program.statements) |st| {
+            try std.testing.expectEqual(m.file_id, fused.source_map.fileIdAt(st.span().start).?);
+        }
+    }
 }
