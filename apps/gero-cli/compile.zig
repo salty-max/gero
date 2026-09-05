@@ -24,11 +24,58 @@ pub fn execute(
         return 2;
     }
     const src_path = positionals[0];
+    const cargo_style: gero.asm_.Style = if (term.color) .ansi else .plain;
 
-    var fused = gero.lang.resolveUseImports(io, arena, src_path) catch |err| {
-        try term.err("gero compile: cannot read {s} ({s})", .{ src_path, @errorName(err) });
+    const image = switch (try compileLang(io, arena, src_path, opts.optimize, "gero compile", stdout, term, t_start)) {
+        .failed => |code| return code,
+        .image => |img| img,
+    };
+
+    const out_path = resolveOutputPath(io, arena, term, src_path, opts.out, opts.optimize) catch |err| switch (err) {
+        error.ManifestFailed => return 3,
+        error.CreateDirFailed => return 1,
+        else => |e| return e,
+    };
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = image }) catch |err| {
+        try term.err("gero compile: cannot write {s} ({s})", .{ out_path, @errorName(err) });
         return 1;
     };
+
+    if (!opts.quiet) {
+        try stdout.print("{s} ({d} bytes)\n", .{ out_path, image.len });
+        try footer.writeFooter(stdout, io, cargo_style, t_start, .ok);
+    }
+
+    return 0;
+}
+
+/// Either a compiled `.gx` image (arena-owned, so it outlives the
+/// pipeline's own buffers) or an exit code whose diagnostics have
+/// already been rendered to `stdout`.
+pub const LangResult = union(enum) {
+    image: []const u8,
+    failed: u8,
+};
+
+/// Drive `.gr` source at `src_path` through include resolution,
+/// tokenize, parse, typecheck, and codegen, rendering diagnostics as
+/// it goes. Shared by `gero compile` and `gero build` so both report
+/// identically; `cmd` names the caller in host-error messages.
+pub fn compileLang(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    src_path: []const u8,
+    optimize: cli.Optimize,
+    cmd: []const u8,
+    stdout: *std.Io.Writer,
+    term: *term_mod.Term,
+    t_start: std.Io.Timestamp,
+) !LangResult {
+    var fused = gero.lang.resolveUseImports(io, arena, src_path) catch |err| {
+        try term.err("{s}: cannot read {s} ({s})", .{ cmd, src_path, @errorName(err) });
+        return .{ .failed = 1 };
+    };
+
     defer fused.deinit();
 
     const style: gero.lang.render.Style = if (term.color) .ansi else .none;
@@ -37,18 +84,18 @@ pub fn execute(
     if (fused.hasErrors()) {
         try renderIncludeErrors(stdout, arena, fused, style);
         try footer.writeFooter(stdout, io, cargo_style, t_start, .failed);
-        return 3;
+        return .{ .failed = 3 };
     }
 
     var stream = gero.lang.tokenize(arena, fused.source) catch |err| {
-        try term.err("gero compile: tokenizer failure ({s})", .{@errorName(err)});
-        return 1;
+        try term.err("{s}: tokenizer failure ({s})", .{ cmd, @errorName(err) });
+        return .{ .failed = 1 };
     };
     defer stream.deinit();
 
     var tree = gero.lang.parse(arena, fused.source, stream) catch |err| {
-        try term.err("gero compile: parser failure ({s})", .{@errorName(err)});
-        return 1;
+        try term.err("{s}: parser failure ({s})", .{ cmd, @errorName(err) });
+        return .{ .failed = 1 };
     };
     defer tree.deinit();
 
@@ -59,32 +106,32 @@ pub fn execute(
     if (pre_check_diags.items.len > 0) {
         try renderLangDiagnostics(stdout, arena, fused, pre_check_diags.items, style);
         try footer.writeFooter(stdout, io, cargo_style, t_start, .failed);
-        return 3;
+        return .{ .failed = 3 };
     }
 
     var checked = gero.lang.typecheckModule(arena, fused.source, &tree.program, &fused.import_aliases) catch |err| {
-        try term.err("gero compile: typecheck failure ({s})", .{@errorName(err)});
-        return 1;
+        try term.err("{s}: typecheck failure ({s})", .{ cmd, @errorName(err) });
+        return .{ .failed = 1 };
     };
     defer checked.deinit();
 
     if (checked.hasErrors()) {
         try renderLangDiagnostics(stdout, arena, fused, checked.diagnostics, style);
         try footer.writeFooter(stdout, io, cargo_style, t_start, .failed);
-        return 4;
+        return .{ .failed = 4 };
     }
 
     var compiled = gero.lang.compile(arena, fused.source, &checked, .{
-        .optimize = mapOptimize(opts.optimize),
+        .optimize = mapOptimize(optimize),
         .import_aliases = &fused.import_aliases,
     }) catch |err| switch (err) {
         error.EntryNotFound => {
-            try term.err("gero compile: no top-level `def main()` — every program needs an entry point", .{});
-            return 4;
+            try term.err("{s}: no top-level `def main()` — every program needs an entry point", .{cmd});
+            return .{ .failed = 4 };
         },
         else => {
-            try term.err("gero compile: codegen failure ({s})", .{@errorName(err)});
-            return 1;
+            try term.err("{s}: codegen failure ({s})", .{ cmd, @errorName(err) });
+            return .{ .failed = 1 };
         },
     };
     defer compiled.deinit();
@@ -92,7 +139,7 @@ pub fn execute(
     if (compiled.hasErrors()) {
         try renderLangDiagnostics(stdout, arena, fused, compiled.diagnostics, style);
         try footer.writeFooter(stdout, io, cargo_style, t_start, .failed);
-        return 4;
+        return .{ .failed = 4 };
     }
 
     // Surface non-fatal warnings (e.g. W_DEAD_TEST) even when
@@ -100,22 +147,9 @@ pub fn execute(
     if (checked.diagnostics.len > 0) try renderLangDiagnostics(stdout, arena, fused, checked.diagnostics, style);
     if (compiled.diagnostics.len > 0) try renderLangDiagnostics(stdout, arena, fused, compiled.diagnostics, style);
 
-    const out_path = resolveOutputPath(io, arena, term, src_path, opts.out, opts.optimize) catch |err| switch (err) {
-        error.ManifestFailed => return 3,
-        error.CreateDirFailed => return 1,
-        else => |e| return e,
-    };
-    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = compiled.image }) catch |err| {
-        try term.err("gero compile: cannot write {s} ({s})", .{ out_path, @errorName(err) });
-        return 1;
-    };
-
-    if (!opts.quiet) {
-        try stdout.print("{s} ({d} bytes)\n", .{ out_path, compiled.image.len });
-        try footer.writeFooter(stdout, io, cargo_style, t_start, .ok);
-    }
-
-    return 0;
+    // `compiled` owns the image and frees it on return, so hand the
+    // caller an arena copy that outlives this frame.
+    return .{ .image = try arena.dupe(u8, compiled.image) };
 }
 
 fn mapOptimize(cli_opt: cli.Optimize) gero.lang.Optimize {

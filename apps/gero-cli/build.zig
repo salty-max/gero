@@ -5,6 +5,7 @@ const term_mod = @import("term.zig");
 const project = @import("project.zig");
 const diagnostics = @import("diagnostics.zig");
 const footer = @import("footer.zig");
+const compile = @import("compile.zig");
 
 /// Drive the `gero build` flow against the gero.toml found by
 /// ancestor-walk. Caller owns `arena`.
@@ -73,7 +74,19 @@ pub fn execute(
         return 1;
     };
 
-    // 5. Asm pipeline against the entry.
+    // 5. Pick the front-end from the entry's extension. A `.gr`
+    //    entry runs the lang pipeline (§7.1 — one `.gr` plus the
+    //    `use` graph it reaches); anything else is asm.
+    if (std.mem.endsWith(u8, entry_path, ".gr")) {
+        return buildLang(io, arena, opts, stdout, term, .{
+            .entry_path = entry_path,
+            .out_dir = out_dir,
+            .manifest = manifest,
+            .t_start = t_start,
+        });
+    }
+
+    // 6. Asm pipeline against the entry.
     const t_phase_start_include = std.Io.Timestamp.now(io, .awake);
     var fused = gero.asm_.resolveIncludes(io, arena, entry_path) catch |err| {
         try term.err("gero build: cannot read {s} ({s})", .{ entry_path, @errorName(err) });
@@ -110,7 +123,7 @@ pub fn execute(
         return 3;
     }
 
-    // 6. Write `<out_dir>/<stem>.gx`. Stem is `[build].name` if
+    // 7. Write `<out_dir>/<stem>.gx`. Stem is `[build].name` if
     //    set, else `[package].name` — Cargo's `[[bin]].name`
     //    convention so the binary can decouple from the crate.
     const stem = manifest.build.name orelse manifest.package.name;
@@ -166,6 +179,57 @@ fn writePhaseTimings(stdout: *std.Io.Writer, style: gero.asm_.Style, t: PhaseTim
     }
 }
 
+/// Inputs the `.gr` build path needs from `execute`, which has
+/// already resolved the manifest and created the output directory.
+const LangBuild = struct {
+    entry_path: []const u8,
+    out_dir: []const u8,
+    manifest: project.Manifest,
+    t_start: std.Io.Timestamp,
+};
+
+/// `gero build` against a `.gr` entry. Shares `gero compile`'s
+/// pipeline so diagnostics read identically between the two, then
+/// writes to the manifest-derived path rather than a sibling default.
+fn buildLang(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    opts: cli.Options,
+    stdout: *std.Io.Writer,
+    term: *term_mod.Term,
+    b: LangBuild,
+) !u8 {
+    const cargo_style: gero.asm_.Style = if (term.color) .ansi else .plain;
+
+    const image = switch (try compile.compileLang(
+        io,
+        arena,
+        b.entry_path,
+        opts.optimize,
+        "gero build",
+        stdout,
+        term,
+        b.t_start,
+    )) {
+        .failed => |code| return code,
+        .image => |img| img,
+    };
+
+    const stem = b.manifest.build.name orelse b.manifest.package.name;
+    const gx_name = try std.fmt.allocPrint(arena, "{s}.gx", .{stem});
+    const out_path = try std.fs.path.join(arena, &.{ b.out_dir, gx_name });
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = image }) catch |err| {
+        try term.err("gero build: cannot write {s} ({s})", .{ out_path, @errorName(err) });
+        return 1;
+    };
+
+    if (!opts.quiet) {
+        try stdout.print("{s} ({d} bytes)\n", .{ out_path, image.len });
+        try footer.writeFooter(stdout, io, cargo_style, b.t_start, .ok);
+    }
+    return 0;
+}
+
 /// Join a manifest-relative path under the project root. The root
 /// is `dirname(manifest_path)` — empty when `gero.toml` sits in
 /// the cwd. An empty root means "current directory"; we return
@@ -196,4 +260,24 @@ test "joinUnderRoot: deeper root prefixes correctly" {
     const out = try joinUnderRoot(testing.allocator, "../..", "out/");
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("../../out/", out);
+}
+
+test "build: a `.gr` entry routes to the lang front-end" {
+    // The extension is the whole dispatch rule, so pin it directly —
+    // an entry that ends in `.gr` must not reach the asm pipeline.
+    try std.testing.expect(std.mem.endsWith(u8, "src/main.gr", ".gr"));
+    try std.testing.expect(!std.mem.endsWith(u8, "src/main.gas", ".gr"));
+}
+
+test "build: a `.gr` stem still comes from the manifest, not the source name" {
+    // `<out>/<[build].name ?? [package].name>.gx` — the entry file's
+    // own stem never names the artifact.
+    const with_override: ?[]const u8 = "cart";
+    const package_name: []const u8 = "demo";
+    const stem = with_override orelse package_name;
+    try std.testing.expectEqualStrings("cart", stem);
+
+    const no_override: ?[]const u8 = null;
+    const stem2 = no_override orelse package_name;
+    try std.testing.expectEqualStrings("demo", stem2);
 }
