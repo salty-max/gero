@@ -347,22 +347,36 @@ PICO-8, Sonic, early Doom used.
 #### 3.4.1 Nullable types `T?`
 
 The `T?` annotation marks a binding as **nullable** — it may hold
-the special value `nil` representing absence. Restricted to
-**pointer-like types** (`str`, class instances, function pointers).
-Numeric / value types use **sentinel constants** instead (the
-6502/Z80 / Lua idiom).
+the special value `nil` representing absence. It applies to
+**pointer-like types** (`str`, class instances, function pointers)
+and to **scalars** (`i8` / `u8` / `i16` / `u16` / `bool` / `char` /
+`fixed`), which `Vec.get` / `Vec.pop` return (§3.4.3).
 
 ```
-let s: str?    = nil          -- nullable string, currently absent
+let s: str?    = nil            -- nullable string, currently absent
 let p: Player? = find_player()  -- may return nil
-let n: i16     = 0            -- not nullable; use a sentinel for "absent"
+let n: i16?    = 12             -- nullable scalar
+let x: i16     = 0              -- plain scalar
 
-const NOT_FOUND: i16 = -1     -- conventional sentinel for absent index
+const NOT_FOUND: i16 = -1       -- sentinel, still idiomatic for an index
 ```
 
-**Layout** = `sizeof(T)`. The value `$0000` is the canonical `nil`
-representation (since pointer types use `$0000` as their natural
-null), so no tag byte is needed.
+A sentinel constant remains the cheaper choice when one value of the
+range is genuinely unused (an index, an id) — it costs no extra
+bytes and no unwrap. Reach for `T?` when every value is meaningful,
+or when consuming an API that already returns one.
+
+**Layout** depends on which kind it is:
+
+| Kind | Layout | `nil` encoding |
+|---|---|---|
+| pointer-like (`str?`, `Player?`, `fn(…)?`) | `sizeof(T)` — one word | `$0000`, the natural null |
+| scalar (`i16?`, `bool?`, `char?`, …) | 4 bytes: `{present: u16, value: u16}` | `present == 0` |
+
+Pointer-like nullables need no tag byte because `$0000` is not a
+valid pointer. A scalar has no spare value — `$0000` is a legal
+`i16` — so it carries an explicit `present` word alongside the
+payload.
 
 **Testing for nil:**
 

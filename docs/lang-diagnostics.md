@@ -317,7 +317,7 @@ The `T?` (nullable) family. Per spec §3.4.1.
 | Code | Meaning |
 |------|---------|
 | `E_NULL_DEREF` | Dereferencing a nullable without a prior nil-check. |
-| `E_NULL_NON_POINTER` | `T?` applied to a non-pointer-like type. |
+| `E_NULL_NON_POINTER` | `T?` applied to a type that is neither pointer-like nor scalar (e.g. `Vec(i16)?`, an array, a struct). |
 | `E_NULL_NIL_TO_NONNULL` | Passing `nil` where the parameter is non-nullable. |
 
 **Mockup — deref without check:**
@@ -337,19 +337,22 @@ note: see §3.4.1 — gero requires an explicit nil-check; there is
       no `?.` propagation operator
 ```
 
-**Mockup — non-pointer nullable:**
+**Mockup — nullable over an unsupported type:**
 
 ```
-error: `T?` cannot be applied to `i16` [E_NULL_NON_POINTER]
+error: type `Vec(i16)?` is invalid — `T?` applies to pointer-like
+       types (`str`, class, fn-pointer, references) or scalars
+       (`i8` / `u8` / `i16` / `u16` / `char` / `bool` / `fixed`)
+       [E_NULL_NON_POINTER]
   --> src/state.gr:4:14
    |
-4  |   let n: i16? = nil
-   |          ^^^^
+4  |   let items: Vec(i16)? = nil
+   |              ^^^^^^^^^
    |
-help: use a sentinel constant for absent integer values, e.g.
-      `const NOT_FOUND: i16 = -1`
-note: `T?` is restricted to pointer-like types (`str`, classes,
-      function pointers) — see §3.4.1
+help: an aggregate has no spare value to encode `nil` — hold it
+      directly and track emptiness with `len()`, or wrap it in a
+      class and use a nullable reference to that
+note: see §3.4.1 for the two nullable layouts
 ```
 
 ### 5.4 Match (E_MATCH_*)
@@ -738,7 +741,7 @@ should have already enforced.
 
 | Code | Meaning |
 |------|---------|
-| `E_CODEGEN_UNSUPPORTED` | A syntactically + type-valid construct the codegen doesn't lower yet (the catch-all — e.g. an ordering comparison on a struct or tuple, a `==` over an array / `Vec` / nullable field or a recursive enum, printing a value with no default rendering (array / `Vec` / class / reference) or a recursive type, storing into a tuple's aggregate element). |
+| `E_CODEGEN_UNSUPPORTED` | A syntactically + type-valid construct the codegen doesn't lower yet (the catch-all — e.g. an ordering comparison on a struct or tuple, a `==` over an array / `Vec` / nullable field or a recursive enum, printing a value with no default rendering (array / `Vec` / class / reference / fn-pointer / nullable) or a recursive type, storing into a tuple's aggregate element). |
 | `E_CODEGEN_FRAME_TOO_LARGE` | A function's locals or parameters exceed the 127-byte limit on `[fp + imm8]` fp-relative addressing (the ISA's only frame-offset mode). Reduce locals/params. |
 | `E_CODEGEN_INLINE_ASM` | An `asm "..."` statement (§4.11) couldn't lower — a `{name}` operand isn't a local / parameter, the instruction is malformed, or its operand types match no opcode form. |
 | `E_CODEGEN_UNDEFINED_FN` | A call's target isn't a known top-level `def` (an unresolved forward reference at patch time). |
