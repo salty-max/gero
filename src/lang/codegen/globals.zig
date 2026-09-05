@@ -9,6 +9,7 @@ const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const archive = @import("archive.zig");
+const strings = @import("strings.zig");
 const bake_mod = @import("../bake.zig");
 const diag_mod = @import("../diagnostic.zig");
 
@@ -49,7 +50,22 @@ fn registerGlobalConst(self: *Emitter, d: *const ast.ConstDecl) !void {
     if (baked) |v| {
         const g = self.globals.get(name) orelse return;
         const bytes = try self.arena.alloc(u8, bake_mod.widthOf(v));
-        _ = bake_mod.serialize(v, bytes);
+        // Any `str` inside the value serializes as a zeroed pointer
+        // slot and reports its position; the pool has no addresses
+        // yet this early. Interning here reserves the bytes, and
+        // `compile` writes the resolved address once the pool lays
+        // out (§3.8 — a baked `str` lives in static data).
+        var str_slots: std.ArrayList(bake_mod.StrSlot) = .empty;
+        defer str_slots.deinit(self.allocator);
+        _ = try bake_mod.serialize(v, bytes, &str_slots, self.allocator);
+        for (str_slots.items) |slot| {
+            const decoded = try archive.decodeStringEscapes(self.arena, slot.bytes);
+            const id = try strings.internString(self, decoded);
+            try self.bake_str_patches.append(self.allocator, .{
+                .image_offset = g.address + slot.offset,
+                .string_id = id,
+            });
+        }
         try self.bake_inits.put(self.allocator, g.address, bytes);
         return;
     }

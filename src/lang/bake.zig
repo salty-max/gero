@@ -616,6 +616,7 @@ const Evaluator = struct {
             .struct_lit => |sl| try self.evalStructLit(sl),
             .index => |ix| try self.evalIndex(ix),
             .field => |f| try self.evalField(f),
+            .str_lit => |sl| try self.evalStrLit(sl),
             .call => |c| try self.evalCall(c),
             .method_call => |m| try self.evalMethodBake(m),
             else => {
@@ -623,6 +624,31 @@ const Evaluator = struct {
                 return error.Fault;
             },
         };
+    }
+
+    /// A string literal (§3.8 — `str` is a bakeable output type).
+    /// The value borrows the literal's raw source bytes; escape
+    /// decoding happens where the bytes are interned, so a baked
+    /// string and a runtime one resolve identically.
+    ///
+    /// A single literal run is the whole string in the common case.
+    /// Adjacent runs only appear around an interpolation, which the
+    /// evaluator has no formatter for.
+    fn evalStrLit(self: *Evaluator, sl: ast.StrLitExpr) StepError!BakeValue {
+        for (sl.parts) |p| {
+            if (p == .interp) {
+                try self.diagFatal(
+                    p.interp.span,
+                    "E_BAKE_UNSUPPORTED",
+                    "bake: `$(…)` interpolation has no compile-time formatter — build the string at runtime, or bake the interpolated values and format them there",
+                );
+                return error.Fault;
+            }
+        }
+        if (sl.parts.len == 0) return .{ .str = "" };
+        const first = sl.parts[0].lit.span;
+        const last = sl.parts[sl.parts.len - 1].lit.span;
+        return .{ .str = self.source[first.start..last.end] };
     }
 
     fn runDoExpr(self: *Evaluator, d: ast.DoExpr) StepError!BakeValue {
@@ -1189,7 +1215,7 @@ pub fn widthOf(v: BakeValue) usize {
     return switch (v) {
         .int_, .fixed_ => 2,
         .bool_, .byte, .nil_ => 1,
-        .str => 2, // interned string pointer (placeholder — codegen interns the bytes).
+        .str => 2, // a pointer into the interned string pool
         .array => |xs| if (xs.len == 0) 0 else widthOf(xs[0]) * xs.len,
         .tuple => |xs| blk: {
             var total: usize = 0;
@@ -1204,26 +1230,57 @@ pub fn widthOf(v: BakeValue) usize {
     };
 }
 
+/// Where a `str` landed inside a serialized value: the byte offset
+/// of its 2-byte pointer slot, and the literal's bytes. The caller
+/// interns the bytes and writes the resolved address into the slot,
+/// since pool addresses aren't known while the value serializes.
+pub const StrSlot = struct {
+    offset: usize,
+    bytes: []const u8,
+};
+
 /// Serialize a `BakeValue` into little-endian bytes per the
 /// runtime layout (ISA §5). Writes into `out` starting at index
 /// 0 and returns the number of bytes written. Caller sizes `out`
 /// via `widthOf` first.
-pub fn serialize(v: BakeValue, out: []u8) usize {
+///
+/// Every `str` reached — including one nested in a struct, array,
+/// or tuple — appends a `StrSlot` to `str_slots` and leaves its
+/// pointer slot zeroed for the caller to patch.
+pub fn serialize(
+    v: BakeValue,
+    out: []u8,
+    str_slots: *std.ArrayList(StrSlot),
+    allocator: std.mem.Allocator,
+) std.mem.Allocator.Error!usize {
+    return serializeAt(v, out, 0, str_slots, allocator);
+}
+
+/// `serialize`'s recursive half. `base` is the offset of `out[0]`
+/// within the whole value, so a nested `str` records where its
+/// pointer sits in the finished buffer rather than in its subslice.
+fn serializeAt(
+    v: BakeValue,
+    out: []u8,
+    base: usize,
+    str_slots: *std.ArrayList(StrSlot),
+    allocator: std.mem.Allocator,
+) std.mem.Allocator.Error!usize {
     return switch (v) {
         .int_ => |x| writeLeU16(out, x),
         .fixed_ => |x| writeLeU16(out, x),
         .byte => |x| writeLeU8(out, x),
         .bool_ => |x| writeLeU8(out, if (x) 1 else 0),
         .nil_ => writeLeU8(out, 0),
-        // Strings are pointer-width — the codegen handles
-        // pool resolution before the value reaches `serialize`
-        // (slice-N+1 follow-up). For now the slot stays zero.
-        .str => writeLeU16(out, 0),
-        .array => |xs| writeSlice(xs, out),
-        .tuple => |xs| writeSlice(xs, out),
+        .str => |bytes| blk: {
+            try str_slots.append(allocator, .{ .offset = base, .bytes = bytes });
+            break :blk writeLeU16(out, 0);
+        },
+        .array => |xs| try writeSlice(xs, out, base, str_slots, allocator),
+        .tuple => |xs| try writeSlice(xs, out, base, str_slots, allocator),
         .struct_ => |flds| blk: {
             var off: usize = 0;
-            for (flds) |f| off += serialize(f.value, out[off..]);
+            for (flds) |f| off += try serializeAt(f.value, out[off..], base + off, str_slots, allocator);
             break :blk off;
         },
     };
@@ -1242,9 +1299,15 @@ fn writeLeU8(out: []u8, v: u8) usize {
     return 1;
 }
 
-fn writeSlice(xs: []const BakeValue, out: []u8) usize {
+fn writeSlice(
+    xs: []const BakeValue,
+    out: []u8,
+    base: usize,
+    str_slots: *std.ArrayList(StrSlot),
+    allocator: std.mem.Allocator,
+) std.mem.Allocator.Error!usize {
     var off: usize = 0;
-    for (xs) |v| off += serialize(v, out[off..]);
+    for (xs) |v| off += try serializeAt(v, out[off..], base + off, str_slots, allocator);
     return off;
 }
 
