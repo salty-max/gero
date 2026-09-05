@@ -1169,11 +1169,22 @@ pub const Checker = struct {
             if (self.lambda_ret_sink) |sink| if (v_ty) |vt| {
                 try sink.append(self.arena, .{ .ty = vt, .span = v.span() });
             };
-            if (self.current_ret_ty) |rt| if (v_ty) |vt| {
-                if (!predicates.isNilType(rt.*)) {
-                    try self.checkStoreCompat(v.span(), rt, vt);
+            if (self.current_ret_ty) |rt| {
+                if (v_ty) |vt| {
+                    if (!predicates.isNilType(rt.*)) {
+                        try self.checkStoreCompat(v.span(), rt, vt);
+                    }
                 }
-            };
+            } else if (self.lambda_ret_sink == null) {
+                // No declared return type and not a lambda inferring one:
+                // a `def` without `-> T` is a void return (§4.6), so the
+                // value has nowhere to go and the caller can't read it.
+                try self.emitSpan(
+                    "E_TYPE_RETURN_FROM_VOID",
+                    v.span(),
+                    "returning a value from a function with no return type — add `-> T` to its signature, or drop the value (§4.6)",
+                );
+            }
         }
     }
 

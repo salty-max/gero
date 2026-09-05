@@ -571,7 +571,7 @@ fn writePhaseTimings(
 test "collectGrDiagnostics: clean source yields no diagnostics" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const diags = try collectGrDiagnostics(arena_state.allocator(), "def add(x, y)\n  return x + y\nend\n", false, null);
+    const diags = try collectGrDiagnostics(arena_state.allocator(), "def add(x: i16, y: i16) -> i16\n  return x + y\nend\n", false, null);
     try std.testing.expectEqual(@as(usize, 0), diags.len);
 }
 
