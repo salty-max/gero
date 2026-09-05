@@ -53,20 +53,21 @@ as the implementation — never after.
 
 ## The contract
 
-**Workflow:** one issue → one branch → one PR → wait for explicit
-merge signal → next issue. Never batch multiple issues into a
-single PR. **Do not** split a single issue across multiple PRs
-either — one issue maps to exactly one end-to-end PR, no matter
-the diff size. Multi-concern changes within that PR split into
-multiple commits (see `docs/development.md` — Branches + commits
-+ changesets), but the PR boundary matches the issue boundary.
+**Workflow:** issue(s) → one branch → one PR → wait for explicit
+merge signal → next batch. A PR may close more than one issue —
+group them when it saves a CI round-trip or when they share a root
+cause. Each issue gets its **own commit**, so history stays
+one-concern-per-commit and a squash-merge is the only thing that
+blurs them (prefer a merge commit when a PR carries several).
+**Do not** split a single issue across multiple PRs — one issue
+maps to exactly one end-to-end PR, no matter the diff size.
 
-**Close the issue from the PR.** Every `feat` / `fix` / `perf` PR
-description ends with `Closes #N` (or `Advances #N` when a partial
-ship is honestly out of scope, with the deferred AC items listed
-explicitly). GitHub auto-closes on merge — verify post-merge that
-the issue actually closed and reflect any drift back to the
-maintainer.
+**Close the issues from the PR.** Every `feat` / `fix` / `perf` PR
+description ends with a `Closes #N` line per issue it resolves (or
+`Advances #N` when a partial ship is honestly out of scope, with
+the deferred AC items listed explicitly). GitHub auto-closes on
+merge — verify post-merge that each issue actually closed and
+reflect any drift back to the maintainer.
 
 **Done means the acceptance criteria are met**, not green CI.
 Re-read the issue body before declaring the work finished.

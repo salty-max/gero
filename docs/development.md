@@ -101,8 +101,9 @@ for types (`pub const Foo = struct {...}`), snake_case for values
 - `docs/<short>` — docs-only change
 - `refactor/<short>` — internal restructure, no behavior change
 
-Branch from `main`. One issue → one branch → one PR end-to-end
-(no chunking — see CLAUDE.md "The contract").
+Branch from `main`. One PR carries one or more issues end-to-end,
+one commit each; a single issue is never chunked across PRs — see
+CLAUDE.md "The contract".
 
 **Commits:** Conventional Commits enforced by **convco** with a
 strict scope-enum from `.versionrc`.
