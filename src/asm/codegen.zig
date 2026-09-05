@@ -377,7 +377,9 @@ fn layoutPass(
                 for (sd.fields) |f| {
                     const field_name = source[f.name.start..f.name.end];
                     const qualified = try std.fmt.allocPrint(symbols.allocator, "{s}.{s}", .{ struct_name, field_name });
-                    errdefer symbols.allocator.free(qualified);
+                    // `putOwned` takes `qualified` from here — a
+                    // `.struct_field` can't collide, so `error.Duplicate`
+                    // (the one path that leaves it with us) is unreachable.
                     try symbols.putOwned(qualified, .{ .kind = .struct_field, .value = f.offset });
                 }
             },

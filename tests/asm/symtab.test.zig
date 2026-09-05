@@ -83,3 +83,34 @@ test "symtab: toConstantTable projects to expr.ConstantTable" {
     try std.testing.expectEqual(@as(u16, 0x1100), ct.get("start").?);
     try std.testing.expectEqual(@as(u16, 0x42), ct.get("N").?);
 }
+
+test "symtab: putOwned keeps the key on error.Duplicate" {
+    var st = gero.asm_.SymbolTable.init(std.testing.allocator);
+    defer st.deinit();
+    const first = try std.testing.allocator.dupe(u8, "loop");
+    try st.putOwned(first, .{ .kind = .label, .value = 0 });
+
+    // A second label at the same name is a duplicate. Ownership never
+    // transfers on that path, so this copy is still ours to free.
+    const second = try std.testing.allocator.dupe(u8, "loop");
+    try std.testing.expectError(error.Duplicate, st.putOwned(second, .{ .kind = .label, .value = 4 }));
+    std.testing.allocator.free(second);
+}
+
+test "symtab: putOwned releases the key when registration fails" {
+    // Walk the failure point across the allocations a registration
+    // makes. Whichever one fails, the key must be freed exactly once —
+    // the leak checker catches a miss, a double free traps.
+    var i: usize = 0;
+    while (i < 16) : (i += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = i });
+        const a = failing.allocator();
+        var st = gero.asm_.SymbolTable.init(a);
+        defer st.deinit();
+        const name = a.dupe(u8, "Player.hp") catch continue;
+        st.putOwned(name, .{ .kind = .struct_field, .value = 0 }) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            continue;
+        };
+    }
+}
