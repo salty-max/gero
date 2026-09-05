@@ -8127,3 +8127,85 @@ test "codegen: an inferred integer lambda still prints its value" {
         \\end
     , "42\n");
 }
+
+// ---------- printing a nullable (§4.9) ----------
+
+test "codegen/print: a scalar nullable is rejected, not printed as its slot" {
+    try expectCodegenError(
+        \\def main()
+        \\  let a: i16? = 12
+        \\  print a
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/print: a pointer-like nullable is rejected, not printed as its pointer" {
+    try expectCodegenError(
+        \\def main()
+        \\  let s: str? = "hi"
+        \\  print s
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/print: a nullable inside `$(…)` interpolation is rejected" {
+    try expectCodegenError(
+        \\def main()
+        \\  let a: i16? = 12
+        \\  print "val=$(a)"
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/print: a `Vec.get` result is rejected until unwrapped" {
+    try expectCodegenError(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.new()
+        \\  v.push(41)
+        \\  print v.get(0)
+        \\end
+    , "E_CODEGEN_UNSUPPORTED");
+}
+
+test "codegen/print: an `if let`-unwrapped scalar nullable prints its value" {
+    try expectPrints(
+        \\def main()
+        \\  let a: i16? = 12
+        \\  if let x = a
+        \\    print x
+        \\  end
+        \\end
+    , "12\n");
+}
+
+test "codegen/print: an `if let`-unwrapped `Vec.get` prints its element" {
+    try expectPrints(
+        \\def main()
+        \\  let v: Vec(i16) = Vec.new()
+        \\  v.push(41)
+        \\  if let n = v.get(0)
+        \\    print n
+        \\  end
+        \\end
+    , "41\n");
+}
+
+test "codegen/print: an `if let`-unwrapped pointer nullable prints its bytes" {
+    try expectPrints(
+        \\def main()
+        \\  let s: str? = "hi"
+        \\  if let t = s
+        \\    print t
+        \\  end
+        \\end
+    , "hi\n");
+}
+
+test "codegen/print: a plain non-nullable value is unaffected" {
+    try expectPrints(
+        \\def main()
+        \\  let n: i16 = 7
+        \\  print n
+        \\end
+    , "7\n");
+}
