@@ -46,7 +46,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [Debug, ReleaseSafe, ReleaseFast, ReleaseSmall]
+        # Pull requests run the two fast cells; pushes to `main` run
+        # all four. ReleaseSafe / ReleaseFast cold-build 111 separate
+        # test binaries through LLVM on a 2-core runner — 16-20 min
+        # each against ~1 min for Debug — so keeping them off the PR
+        # path takes review feedback from ~20 min to ~4 while every
+        # mode still gates `main` on merge.
+        mode: ${{ github.event_name == 'pull_request' && fromJSON('["Debug","ReleaseSmall"]') || fromJSON('["Debug","ReleaseSafe","ReleaseFast","ReleaseSmall"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2

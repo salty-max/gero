@@ -345,5 +345,13 @@ zig build ci      # full matrix (~4s warm / ~2m cold) — verify
                   # a release; optional before PR push.
 ```
 
-GitHub Actions runs `ci` on every push — don't gate every commit
-on it locally, but `verify` green is required before pushing.
+GitHub Actions runs the CI workflow on every push — don't gate every
+commit on it locally, but `verify` green is required before pushing.
+
+Pull requests run the two fast test cells (Debug + ReleaseSmall);
+pushes to `main` run all four. ReleaseSafe / ReleaseFast cold-build
+every test binary through LLVM on a 2-core runner, so keeping them
+off the PR path is the difference between ~20 minutes to green and
+~4. A mode-specific break therefore surfaces on `main` rather than
+on the PR — run `zig build test-modes` locally when a change could
+plausibly be optimization-sensitive.
