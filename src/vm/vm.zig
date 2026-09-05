@@ -97,6 +97,11 @@ pub const VM = struct {
     /// Host-side I/O hooks consulted by `sys`. Defaults silence
     /// every output syscall.
     host: Host,
+    /// Vector of the most recent fault, or `null` if none has fired.
+    /// Lets a host report *which* fault stopped a program rather than
+    /// only that one did — `StepResult.halted_on_fault` carries no
+    /// vector of its own.
+    last_fault: ?dispatch_mod.Vector = null,
     /// Next address `sys alloc` returns. Initialized from
     /// `loaded.header.heap_base`; `0` means no heap and `sys alloc`
     /// faults on first call.
@@ -111,6 +116,7 @@ pub const VM = struct {
             .banks = null,
             .cycles = 0,
             .host = .{},
+            .last_fault = null,
             .heap_cursor = 0,
         };
         vm.bootInitRegisters();

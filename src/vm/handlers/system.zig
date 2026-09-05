@@ -180,6 +180,12 @@ pub const SyscallId = enum(u8) {
     /// the stack (`new_cursor > sp`).
     alloc = 0x20,
 
+    /// Raise the `trap` fault (vector `$06`). Emitted by the
+    /// diverging builtins and a failed `test.assert_*` after they
+    /// print, so a halt caused by the program giving up is
+    /// distinguishable from a clean `hlt`. No args.
+    trap = 0x30,
+
     /// Open-enum tail — unknown syscall ids coerce here and the
     /// `sys` handler routes them to the `invalid_opcode` fault.
     _,
@@ -212,6 +218,7 @@ pub fn sys(vm: *VM) StepResult {
         .format_fixed_to_buf => formatFixedToBuf(vm) catch return fault(vm, .invalid_opcode),
         .format_terminate_buf => formatTerminateBuf(vm),
         .alloc => return allocSyscall(vm),
+        .trap => return fault(vm, .trap),
         // Unknown id — open-enum coercion picks this up; future
         // syscall ids should add an arm above.
         _ => return fault(vm, .invalid_opcode),

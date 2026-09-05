@@ -36,7 +36,7 @@ pub fn emitAssertCall(self: *Emitter, c: ast.CallExpr, name: []const u8) !void {
     // gets a contextual diagnostic before the halt.
     if (c.args.len >= 2) try emitMessage(self, c.args[1]);
 
-    try self.emitByte(Op.hlt);
+    try isa.sys(self, Sys.trap);
 
     const skip_target = try self.currentOffset();
     try isa.patchJumpTo(self, skip_patch, skip_target);

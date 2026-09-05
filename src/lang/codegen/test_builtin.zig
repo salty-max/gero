@@ -1,8 +1,9 @@
 // Lowering for the `test` stdlib module (§5.3): `test.assert_eq(a, b)`
 // and `test.assert_ne(a, b)`, used in `@test` functions. Both compare
-// two register-scalar operands and halt the VM with a diagnostic on a
-// failed assertion — the same compare / skip-jump / print / `hlt` shape
-// as the `assert` builtin, with the skip condition picking eq vs ne.
+// two register-scalar operands and trap on a failed assertion — the
+// same compare / skip-jump / print shape as the `assert` builtin, with
+// the skip condition picking eq vs ne, ending in `sys trap` so the
+// halt is distinguishable from a clean one.
 
 const std = @import("std");
 const ast = @import("../ast.zig");
@@ -41,7 +42,7 @@ pub fn emitTestCall(self: *Emitter, name: []const u8, c: ast.CallExpr) !void {
     const id = try strings.internString(self, "test assertion failed\n");
     try strings.emitMovStringAddrToReg(self, id, Reg.acu);
     try isa.sys(self, Sys.print_str);
-    try self.emitByte(Op.hlt);
+    try isa.sys(self, Sys.trap);
     const skip_target = try self.currentOffset();
     try isa.patchJumpTo(self, skip, skip_target);
 }

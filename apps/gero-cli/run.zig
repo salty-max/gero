@@ -76,7 +76,10 @@ pub fn execute(
             .cont, .branched => continue,
             .halted => return 0,
             .halted_on_fault => {
-                try term.err("gero run: unhandled fault at ip=0x{X:0>4}", .{vm.regs.read(.ip)});
+                try term.err("gero run: unhandled fault at ip=0x{X:0>4} — {s}", .{
+                    vm.regs.read(.ip),
+                    faultName(vm.last_fault),
+                });
                 return 6;
             },
             .breakpoint => {
@@ -85,6 +88,22 @@ pub fn execute(
             },
         }
     }
+}
+
+/// Source-level name for a fault vector, so an unhandled fault says
+/// what went wrong rather than only that something did.
+fn faultName(vector: ?gero.vm.Vector) []const u8 {
+    const v = vector orelse return "unknown";
+    return switch (v) {
+        .reset => "reset",
+        .invalid_opcode => "invalid-opcode",
+        .invalid_register => "invalid-register",
+        .div_by_zero => "divide-by-zero",
+        .heap_exhausted => "heap-exhausted",
+        .arith_overflow => "arithmetic-overflow",
+        .trap => "trap (panic / failed assertion)",
+        _ => "unknown",
+    };
 }
 
 // ---------- tests ----------
