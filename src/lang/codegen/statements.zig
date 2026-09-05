@@ -502,6 +502,14 @@ pub fn emitReturnStmt(self: *Emitter, r: ast.ReturnStmt) !void {
                 if (self.sret_param_ofs > 0) try isa.addImmToReg(self, @intCast(self.sret_param_ofs), Reg.acu);
                 try isa.movRegOffsetToReg(self, Reg.acu, 0, Reg.acu);
             } else try self.unsupported(r.span, "tuple return from a non-tuple value");
+        } else if (self.current_ret_array) |info| {
+            // Fixed-array return: same sret convention as a struct — the
+            // caller's buffer receives the elements, and its address
+            // comes back in `acu`.
+            try value_struct.emitArrayIntoSret(self, v, info.elem, info.count, self.sret_param_ofs);
+            try isa.movRegToReg(self, Reg.fp, Reg.acu);
+            if (self.sret_param_ofs > 0) try isa.addImmToReg(self, @intCast(self.sret_param_ofs), Reg.acu);
+            try isa.movRegOffsetToReg(self, Reg.acu, 0, Reg.acu);
         } else if (self.current_ret_scalar_opt) |inner| {
             // Scalar `T?` return: materialize {present, value} into the
             // caller's sret buffer, then leave that buffer's address in acu

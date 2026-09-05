@@ -106,6 +106,20 @@ const StringPatch = strings.StringPatch;
 
 // ---------- public surface ----------
 
+/// One string pointer inside a baked global: the absolute image
+/// offset of its 2-byte slot, and the interned string whose resolved
+/// address goes there.
+const BakeStrPatch = struct {
+    image_offset: usize,
+    string_id: usize,
+};
+
+/// Element type and length of a def's fixed-array return type.
+pub const ArrayRet = struct {
+    elem: *const Type,
+    count: u32,
+};
+
 /// Codegen output. Owns the `.gx` image bytes, the diagnostic
 /// slice, and the arena backing diagnostic message strings.
 pub const Compiled = struct {
@@ -207,6 +221,7 @@ pub fn compile(
         .is_isr = false,
         .current_ret_struct = null,
         .current_ret_is_tuple = false,
+        .current_ret_array = null,
         .current_ret_scalar_opt = null,
         .sret_param_ofs = 0,
         .sret_scratch_ofs = null,
@@ -219,6 +234,7 @@ pub fn compile(
         .noreturn_defs = .{},
         .fn_ret_struct = .{},
         .fn_ret_tuple = .{},
+        .fn_ret_array = .{},
         .fn_ret_scalar_opt = .{},
         .global_sret_scratch = 0,
         .inline_defs = .{},
@@ -258,12 +274,14 @@ pub fn compile(
         .diagnostics = &diagnostics,
         .optimize = opts.optimize,
         .bake_inits = .{},
+        .bake_str_patches = .empty,
         .global_inits = .empty,
         .bake_defs = .{},
     };
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
     defer emitter.bake_inits.deinit(allocator);
+    defer emitter.bake_str_patches.deinit(allocator);
     defer emitter.global_inits.deinit(allocator);
     defer emitter.bake_defs.deinit(allocator);
     defer emitter.vtable_patches.deinit(allocator);
@@ -333,6 +351,14 @@ pub fn compile(
         const addr: usize = entry.key_ptr.*;
         const bytes = entry.value_ptr.*;
         @memcpy(base_image[addr..][0..bytes.len], bytes);
+    }
+    // The string pool laid out during `emitProgram`, so a baked
+    // `str`'s pointer slot can now take its real address.
+    for (emitter.bake_str_patches.items) |p| {
+        const addr = emitter.strings.items[p.string_id].address;
+        // safety: u16 → 2 LE bytes; byte-mask casts.
+        base_image[p.image_offset] = @intCast(addr & 0xFF);
+        base_image[p.image_offset + 1] = @intCast(addr >> 8);
     }
 
     const debug_blob: ?[]u8 = if (opts.debug_symbols)
@@ -571,6 +597,10 @@ pub const Emitter = struct {
     /// `current_ret_struct`; the element layout comes from the return
     /// expression's inferred type).
     current_ret_is_tuple: bool,
+    /// Element type + length of a fixed-array return for the def being
+    /// emitted, or `null`. Like a struct return, the array materializes
+    /// into the caller's sret buffer.
+    current_ret_array: ?ArrayRet,
     /// Element type of a scalar `T?` return for the def currently being
     /// emitted, or `null`. A scalar optional is a 4-byte `{present, value}`
     /// that rides the sret convention like a struct; `return` materializes
@@ -618,6 +648,9 @@ pub const Emitter = struct {
     /// convention as `fn_ret_struct` (a set: the element layout is read
     /// from the call/return expression's inferred type).
     fn_ret_tuple: std.StringHashMapUnmanaged(void),
+    /// Defs whose return type is a fixed array. They ride the same sret
+    /// convention as struct / tuple returns.
+    fn_ret_array: std.StringHashMapUnmanaged(void),
     /// `def` names that return a scalar `T?` by value — the 4-byte
     /// `{present, value}` rides the same sret convention as a struct
     /// (a set: the element type is read from the call/return expression).
@@ -727,6 +760,10 @@ pub const Emitter = struct {
     /// data-region address. Written into the base image at
     /// `compile()` so the runtime sees baked values at boot.
     bake_inits: std.AutoHashMapUnmanaged(u16, []const u8),
+    /// String pointers inside baked values, resolved after the pool
+    /// lays out. Each entry names an absolute image offset and the
+    /// interned string whose address belongs there.
+    bake_str_patches: std.ArrayList(BakeStrPatch),
     /// Non-`bake` top-level initializers, emitted as stores at entry
     /// startup (declaration order). See `GlobalInit`.
     global_inits: std.ArrayListUnmanaged(GlobalInit),
@@ -909,6 +946,16 @@ pub const Emitter = struct {
         if (rt != .nullable) return null;
         const inner = (try self.typeAnnToType(rt.nullable.inner.*)) orelse return null;
         return if (isScalarOptional(inner)) inner else null;
+    }
+
+    /// Element type + length of a fixed-array return type, or `null`
+    /// when `rt` isn't an array. Mirrors `scalarOptReturnInner` — the
+    /// def prologue uses it to decide the sret convention.
+    pub fn arrayReturnInfo(self: *const Emitter, rt: ast.TypeAnn) error{OutOfMemory}!?ArrayRet {
+        if (rt != .array) return null;
+        const t = (try self.typeAnnToType(rt)) orelse return null;
+        if (t.* != .array) return null;
+        return .{ .elem = t.array.elem, .count = t.array.len };
     }
 
     /// Resolve a surface `TypeAnn` to an arena `types.Type` so the
@@ -1641,6 +1688,12 @@ pub const Emitter = struct {
                 // A tuple-returning def uses the same sret scratch buffer.
                 if (dd.ret_type) |rt| if (rt.* == .tuple) {
                     try self.fn_ret_tuple.put(self.arena, dup, {});
+                    const w = alignUpU16(self.widthOfTypeAnn(rt.*), 2);
+                    if (w > self.global_sret_scratch) self.global_sret_scratch = w;
+                };
+                // An array-returning def uses the same sret scratch buffer.
+                if (dd.ret_type) |rt| if (rt.* == .array) {
+                    try self.fn_ret_array.put(self.arena, dup, {});
                     const w = alignUpU16(self.widthOfTypeAnn(rt.*), 2);
                     if (w > self.global_sret_scratch) self.global_sret_scratch = w;
                 };

@@ -122,6 +122,7 @@ pub fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, 
     self.current_ret_struct = if (def.ret_type) |rt| self.structNameOfTypeAnn(rt.*) else null;
     self.current_ret_is_tuple = if (def.ret_type) |rt| rt.* == .tuple else false;
     self.current_ret_scalar_opt = if (def.ret_type) |rt| try self.scalarOptReturnInner(rt.*) else null;
+    self.current_ret_array = if (def.ret_type) |rt| try self.arrayReturnInfo(rt.*) else null;
     // A param list overrunning the fp range already set `frame_overflow`
     // above, so this clamped value is unused; the clamp only keeps the
     // narrowing from panicking on a pathologically long param list.
