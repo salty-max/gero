@@ -90,6 +90,22 @@ pub const annotation_specs = [_]AnnotationSpec{
     .{ .name = "private", .targets = T.DEF | T.LET | T.CLASS_FIELD, .args = .none },
 };
 
+/// `@private` marks a class member (§3.7.6). Outside a class body it
+/// has nothing to hide from — module-level visibility is the `local`
+/// keyword (§5.1) — so reject it there rather than accepting and
+/// ignoring it.
+pub fn rejectPrivateOutsideClass(self: *Checker, anns: []const ast.Annotation) WalkError!void {
+    if (self.current_class_name != null) return;
+    for (anns) |a| {
+        if (!std.mem.eql(u8, self.lexeme(a.name), "private")) continue;
+        try self.emitSpan(
+            "E_ANN_TARGET",
+            a.name,
+            "`@private` applies to class members (§3.7.6) — for module-level visibility use the `local` keyword (§5.1)",
+        );
+    }
+}
+
 /// Look up a spec by annotation name. Returns `null` for unknown
 /// annotations — callers emit `E_ANN_UNKNOWN` in that case.
 pub fn findAnnotationSpec(name: []const u8) ?*const AnnotationSpec {

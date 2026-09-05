@@ -8522,3 +8522,45 @@ test "codegen/modules: `use X as Y from` still binds the alias" {
     );
     try fx.expectRuns("main.gr", "42\n");
 }
+
+// ---------- module visibility (§5.1) ----------
+
+test "codegen/modules: a `local` declaration still resolves inside its own module" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\local def helper() -> i16
+        \\  return 1
+        \\end
+        \\
+        \\def exported() -> i16
+        \\  return helper() + 10
+        \\end
+    );
+    try fx.write("main.gr",
+        \\use "./lib"
+        \\
+        \\def main()
+        \\  print exported()
+        \\end
+    );
+    try fx.expectRuns("main.gr", "11\n");
+}
+
+test "codegen/modules: a non-`local` declaration is exported by default" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\def shown() -> i16
+        \\  return 5
+        \\end
+    );
+    try fx.write("main.gr",
+        \\use "./lib"
+        \\
+        \\def main()
+        \\  print shown()
+        \\end
+    );
+    try fx.expectRuns("main.gr", "5\n");
+}

@@ -121,6 +121,8 @@ pub fn typecheckGraph(
     const module_count: usize = if (graph) |g| @max(g.source_map.files.items.len, 1) else 1;
     const module_scopes = try a.alloc(Scope, module_count);
     for (module_scopes) |*ms| ms.* = .init(a, null);
+    const local_names = try a.alloc(std.StringHashMapUnmanaged(void), module_count);
+    for (local_names) |*ln| ln.* = .{};
     // Arena owns each scope's map storage; freed by `CheckedProgram.deinit`.
     var module_scope: Scope = .init(a, null);
 
@@ -136,6 +138,7 @@ pub fn typecheckGraph(
         .current_scope = if (module_count == 1) &module_scopes[0] else &module_scope,
         .graph = graph,
         .module_scopes = module_scopes,
+        .local_names = local_names,
         .current_ret_ty = null,
         .lambda_ret_sink = null,
         .current_variadic_param = null,
@@ -205,6 +208,7 @@ pub fn typecheckGraph(
     // declaration sits in the fused buffer.
     for (program.statements) |stmt| {
         c.enterModuleOf(stmt);
+        try c.noteLocalDecl(stmt);
         try c.registerTopLevel(stmt);
     }
 
@@ -301,6 +305,9 @@ pub const Checker = struct {
     /// One root scope per module, indexed by file id. A single
     /// implicit module uses index 0.
     module_scopes: []Scope,
+    /// Names each module declared `local` (§5.1), indexed by file id.
+    /// These stay out of importers' scopes.
+    local_names: []std.StringHashMapUnmanaged(void),
     /// Currently-active scope. Restored on walker exit.
     current_scope: *Scope,
     /// Return type of the enclosing function (or `null` at module
@@ -736,6 +743,44 @@ pub const Checker = struct {
         }
     }
 
+    /// Path of an imported module that declares `name` as `local`, or
+    /// `null` when no import hides it. Turns an out-of-reach name into
+    /// a precise diagnostic instead of "undefined symbol".
+    fn localInImportedModule(self: *const Checker, name: []const u8, offset: u32) ?[]const u8 {
+        const g = self.graph orelse return null;
+        const here = self.moduleIndexOf(offset);
+        for (g.imports) |edge| {
+            if (edge.from != here or edge.to >= self.local_names.len) continue;
+            if (!self.local_names[edge.to].contains(name)) continue;
+            if (edge.to < g.source_map.files.items.len) {
+                return std.fs.path.basename(g.source_map.files.items[edge.to].path);
+            }
+            return "an imported module";
+        }
+        return null;
+    }
+
+    /// Record a top-level declaration marked `local` so `linkImports`
+    /// leaves it out of importers' scopes (§5.1). Declarations are
+    /// exported by default, so only the marked ones are tracked.
+    fn noteLocalDecl(self: *Checker, stmt: ast.Statement) WalkError!void {
+        const info: struct { local: bool, name: ast.Span } = switch (stmt) {
+            .def_decl => |d| .{ .local = d.is_local, .name = d.name },
+            .const_decl => |d| .{ .local = d.is_local, .name = d.name },
+            .class_decl => |d| .{ .local = d.is_local, .name = d.name },
+            .enum_decl => |d| .{ .local = d.is_local, .name = d.name },
+            .struct_decl => |d| .{ .local = d.is_local, .name = d.name },
+            .let_decl => |d| .{
+                .local = d.is_local,
+                .name = if (d.pattern.* == .ident) d.pattern.ident.name else d.span,
+            },
+            else => return,
+        };
+        if (!info.local) return;
+        const idx = self.moduleIndexOf(info.name.start);
+        try self.local_names[idx].put(self.arena, self.lexeme(info.name), {});
+    }
+
     /// Point `module_scope` / `current_scope` at the module that
     /// declares `stmt`. Without a graph every statement shares module
     /// 0, so this is a no-op beyond the first call.
@@ -767,6 +812,8 @@ pub const Checker = struct {
             var it = self.module_scopes[edge.to].entries.iterator();
             while (it.next()) |e| {
                 const name = e.key_ptr.*;
+                // A `local` declaration never leaves its module (§5.1).
+                if (self.local_names[edge.to].contains(name)) continue;
                 // @as: pack (importer id, name hash) into one u32 key.
                 const key = (@as(u32, edge.from) << 16) | @as(u32, @truncate(std.hash.Wyhash.hash(0, name)));
                 self.module_scopes[edge.from].define(name, e.value_ptr.*) catch |err| switch (err) {
@@ -804,6 +851,7 @@ pub const Checker = struct {
 
     fn checkLetDecl(self: *Checker, d: ast.LetDecl) WalkError!void {
         try annotations.validateAnnotations(self, d.annotations, T.LET);
+        try annotations.rejectPrivateOutsideClass(self, d.annotations);
         const ann_ty: ?*const types.Type = if (d.type_ann) |t|
             try type_resolve.resolveType(self, t)
         else
@@ -1603,6 +1651,18 @@ pub const Checker = struct {
                         }
                     }
                     return info.ty;
+                }
+                // A name an imported module declares `local` is out of
+                // reach rather than missing — say which, so the reader
+                // isn't hunting for a typo.
+                if (self.localInImportedModule(name, i.span.start)) |owner| {
+                    const private_msg = try std.fmt.allocPrint(
+                        self.arena,
+                        "`{s}` is declared `local` in `{s}` — a `local` declaration stays private to its own module (§5.1); drop `local` there to export it",
+                        .{ name, owner },
+                    );
+                    try self.emitSpan("E_TYPE_PRIVATE_ACCESS", i.span, private_msg);
+                    return null;
                 }
                 const msg = try std.fmt.allocPrint(
                     self.arena,
