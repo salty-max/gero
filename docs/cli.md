@@ -505,8 +505,8 @@ gero init --quiet                 # skip the next-steps banner
 ### 3.12 `gero build` — build project
 
 Walks the ancestor chain for `gero.toml`, reads `[package]` +
-`[build]`, runs the asm pipeline against `build.entry`, and
-writes the resulting `.gx` to
+`[build]`, compiles `build.entry`, and writes the resulting `.gx`
+to
 `<project_root>/<build.out>/<build.optimize>/<stem>.gx`. The
 per-profile subdir (Cargo's `target/{debug,release}/` pattern)
 keeps debug and release artifacts side by side so rebuilding in
@@ -519,6 +519,11 @@ gero build --target=vm            # explicit target override
 ```
 
 **Behavior:**
+- The entry's extension picks the front-end. A `build.entry` ending
+  in `.gr` runs the gero-lang pipeline, resolving the `use` graph
+  from that file; anything else runs the asm pipeline, resolving
+  `include` directives. Both share `gero compile` / `gero asm`'s
+  diagnostics, so an error reads the same however it was reached.
 - Resolves `gero.toml` by ancestor walk — `gero build` works from
   any subdirectory of the project.
 - Manifest-relative `[build].entry` and `[build].out` are joined
