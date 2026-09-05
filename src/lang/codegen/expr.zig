@@ -1094,7 +1094,8 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     const returns_struct = self.fn_ret_struct.contains(callee_name);
     const returns_tuple = self.fn_ret_tuple.contains(callee_name);
     const returns_scalar_opt = self.fn_ret_scalar_opt.contains(callee_name);
-    if (returns_struct or returns_tuple or returns_scalar_opt) {
+    const returns_array = self.fn_ret_array.contains(callee_name);
+    if (returns_struct or returns_tuple or returns_scalar_opt or returns_array) {
         // Invariant: an aggregate-returning callee implies the program
         // reserved an sret scratch slot in every frame (struct / tuple /
         // scalar-optional returns share it).

@@ -155,6 +155,12 @@ pub fn emitTupleIntoSret(self: *Emitter, src: *const ast.Expr, elems: []const *c
     try emitTupleIntoDest(self, src, elems, .{ .indirect = .{ .ptr_ofs = ptr_ofs, .delta = 0 } });
 }
 
+/// Materialize a fixed-array return into the caller's sret buffer,
+/// the same convention structs and tuples use.
+pub fn emitArrayIntoSret(self: *Emitter, src: *const ast.Expr, elem: *const types.Type, count: u32, ptr_ofs: i16) error{OutOfMemory}!void {
+    try emitArrayIntoDest(self, src, elem, count, .{ .indirect = .{ .ptr_ofs = ptr_ofs, .delta = 0 } });
+}
+
 fn emitTupleIntoDest(self: *Emitter, src: *const ast.Expr, elems: []const *const types.Type, dest: Dest) error{OutOfMemory}!void {
     if (src.* == .do_expr) {
         const p = try do_expr.emitPrefix(self, src.do_expr);
