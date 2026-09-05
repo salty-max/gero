@@ -135,6 +135,10 @@ pub fn registerName(
         try self.emitSpan("E_BUILTIN_SHADOW", info.decl_span, msg);
         return;
     }
+    // Record the binder's type by declaration site. A destructured
+    // binder has no expression of its own, so `expr_types` can't
+    // answer for it; codegen reads this map instead.
+    if (info.ty) |t| try self.binder_types.put(self.arena, info.decl_span.start, t);
     self.current_scope.define(name, info) catch |err| switch (err) {
         error.AlreadyDefined => {
             const existing = self.current_scope.lookupLocal(name).?;
