@@ -31,6 +31,15 @@ pub const Region = struct {
     file_offset: u32,
 };
 
+/// One `use` edge in the module graph: `from` names the file whose
+/// `use` directive pulled `to` in. Recorded even when the target was
+/// already fused by an earlier `use`, so a diamond still shows both
+/// importers.
+pub const ImportEdge = struct {
+    from: u16,
+    to: u16,
+};
+
 /// Resolves a fused-source offset back to `(file, file_offset)`.
 pub const SourceMap = struct {
     files: std.ArrayList(FileInfo),
@@ -45,6 +54,26 @@ pub const SourceMap = struct {
         }
         self.files.deinit(self.allocator);
         self.regions.deinit(self.allocator);
+    }
+
+    /// Which file a fused offset belongs to. Cheaper than `lookup`
+    /// when only the module identity is wanted — resolution asks this
+    /// of every top-level declaration.
+    pub fn fileIdAt(self: SourceMap, fused_offset: u32) ?u16 {
+        for (self.regions.items) |r| {
+            if (fused_offset >= r.fused_start and fused_offset < r.fused_end) return r.file_id;
+        }
+        return null;
+    }
+
+    /// File id for an already-interned canonical path, or `null` when
+    /// the path hasn't been seen.
+    pub fn findFileId(self: SourceMap, path: []const u8) ?u16 {
+        for (self.files.items, 0..) |f, i| {
+            // safety: file count is bounded by the include-depth walk; fits u16.
+            if (std.mem.eql(u8, f.path, path)) return @intCast(i);
+        }
+        return null;
     }
 
     /// Find which file + offset `fused_offset` resolves to.
@@ -138,6 +167,10 @@ pub const FusedSource = struct {
     errors: []IncludeError,
     /// `use X as Y from "./mod"` alias bindings (`Y` → `X`).
     import_aliases: ImportAliases,
+    /// Module graph: one entry per `use` directive, naming the file
+    /// that declared it and the file it pulled in. Resolution reads
+    /// this to decide which modules a given module can see.
+    imports: []const ImportEdge,
     allocator: std.mem.Allocator,
 
     /// Release the fused buffer, source map, and errors list.
@@ -148,6 +181,7 @@ pub const FusedSource = struct {
         self.allocator.free(self.errors);
         // Keys/values borrow the source buffers — only free the table.
         self.import_aliases.deinit(self.allocator);
+        self.allocator.free(self.imports);
     }
 
     /// `true` when at least one include-phase error was recorded.
@@ -175,6 +209,7 @@ const Context = struct {
     /// `use X as Y from "./mod"` aliases, collected as each import
     /// directive is elided (the alias has no inlined declaration).
     import_aliases: *ImportAliases,
+    imports: *std.ArrayList(ImportEdge),
 };
 
 /// Resolve every `use "./path"` reachable from `root_path` into
@@ -212,6 +247,9 @@ pub fn resolveUseImports(
     var import_aliases: ImportAliases = .{};
     errdefer import_aliases.deinit(allocator);
 
+    var imports: std.ArrayList(ImportEdge) = .empty;
+    errdefer imports.deinit(allocator);
+
     var ctx = Context{
         .io = io,
         .allocator = allocator,
@@ -221,15 +259,17 @@ pub fn resolveUseImports(
         .in_progress = &in_progress,
         .emitted = &emitted,
         .import_aliases = &import_aliases,
+        .imports = &imports,
     };
 
-    try resolveOne(&ctx, root_path, null, 0, 0);
+    _ = try resolveOne(&ctx, root_path, null, 0, 0);
 
     return .{
         .source = try fused.toOwnedSlice(allocator),
         .source_map = source_map,
         .errors = try errors.toOwnedSlice(allocator),
         .import_aliases = import_aliases,
+        .imports = try imports.toOwnedSlice(allocator),
         .allocator = allocator,
     };
 }
@@ -240,10 +280,10 @@ fn resolveOne(
     base_dir: ?[]const u8,
     depth: u8,
     site_offset: u32,
-) ResolveError!void {
+) ResolveError!?u16 {
     if (depth > max_include_depth) {
         try recordError(ctx, .depth_exceeded, site_offset, requested);
-        return;
+        return null;
     }
 
     // Append `.gr` when missing so `use "./util"` resolves to
@@ -269,7 +309,7 @@ fn resolveOne(
     const canonical = Dir.cwd().realPathFileAlloc(ctx.io, absolute, ctx.allocator) catch |err| switch (err) {
         error.FileNotFound => {
             try recordError(ctx, .not_found, site_offset, requested);
-            return;
+            return null;
         },
         else => return err,
     };
@@ -281,7 +321,7 @@ fn resolveOne(
         if (std.mem.eql(u8, p, canonical)) {
             try recordError(ctx, .cycle, site_offset, requested);
             ctx.allocator.free(canonical);
-            return;
+            return null;
         }
     }
 
@@ -291,8 +331,11 @@ fn resolveOne(
     // anchors any diagnostic.
     for (ctx.emitted.items) |p| {
         if (std.mem.eql(u8, p, canonical)) {
+            // Already fused, but the importer still gains the edge —
+            // a diamond means both files can see this module.
+            const existing = ctx.source_map.findFileId(canonical);
             ctx.allocator.free(canonical);
-            return;
+            return existing;
         }
     }
 
@@ -317,6 +360,7 @@ fn resolveOne(
     defer _ = ctx.in_progress.pop();
 
     try processSource(ctx, file.content, file.path, file_id, depth);
+    return file_id;
 }
 
 /// Walk one file: copy non-`use` lines into the fused buffer,
@@ -392,7 +436,9 @@ fn processSource(
                 @intCast(line_start),
             );
             const this_dir = std.fs.path.dirname(canonical) orelse ".";
-            try resolveOne(ctx, target, this_dir, depth + 1, sentinel_start);
+            if (try resolveOne(ctx, target, this_dir, depth + 1, sentinel_start)) |target_id| {
+                try ctx.imports.append(ctx.allocator, .{ .from = file_id, .to = target_id });
+            }
             const after_newline = if (i < content.len) i + 1 else i;
             seg_file_start = @intCast(after_newline);
             seg_fused_start = @intCast(ctx.fused.items.len);

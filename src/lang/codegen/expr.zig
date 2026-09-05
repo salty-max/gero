@@ -1079,7 +1079,7 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         // typechecker enforces the fixed-arg minimum) and frame-bounded.
         const arity: u16 = @intCast(c.args.len - (decl.params.len - 1));
         break :blk try variadic.label(self, callee_name, arity);
-    } else try self.arena.dupe(u8, callee_name);
+    } else try self.arena.dupe(u8, try self.qualifiedFnName(callee_name, c.span.start));
 
     // Decide direct call vs trampoline by comparing the
     // caller's bank with the target's. The pre-pass populated

@@ -240,6 +240,7 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_REFUTABLE_LET` | A `let` binding uses a refutable pattern (a literal / range / or-pattern, or a multi-variant enum) that can fail to match — use `if let` / `match` instead (§4.2). |
 | `E_TYPE_TOP_LEVEL_STATEMENT` | An executable statement sits at module scope. A module body is declarations only (§7.1) — execution begins at `main`, so the statement would never run. |
 | `E_TYPE_RETURN_FROM_VOID` | `return <value>` in a function with no `-> T` in its signature. An unannotated `def` is a void return (§4.6), so the value has nowhere to go and no caller can read it. |
+| `E_TYPE_AMBIGUOUS_IMPORT` | Two of a module's imports provide the same name, so an unqualified reference can't say which is meant. Alias one with `use <name> as <other> from "..."`. |
 | `E_TYPE_TUPLE_TOO_MANY` | A tuple has more than 4 elements (§3.4) — use a struct instead. |
 | `E_TYPE_TUPLE_ARITY` | Tuple-destructuring pattern's element count doesn't match the init's tuple arity. |
 | `E_TYPE_REDEFINED` | A name is declared twice in the same scope. |
@@ -781,6 +782,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_MISMATCH` | Typechecker | v0.3 |
 | `E_TYPE_TOP_LEVEL_STATEMENT` | Typechecker | v0.3 |
 | `E_TYPE_RETURN_FROM_VOID` | Typechecker | v0.3 |
+| `E_TYPE_AMBIGUOUS_IMPORT` | Typechecker | v0.3 |
 | `E_TYPE_UNDEFINED` | Typechecker | v0.3 |
 | `E_TYPE_UNDEFINED_FIELD` | Typechecker | v0.3 |
 | `E_TYPE_UNDEFINED_METHOD` | Typechecker | v0.3 |

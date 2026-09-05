@@ -4,6 +4,7 @@ const ast = @import("ast.zig");
 const types = @import("types.zig");
 const scope_mod = @import("scope.zig");
 const diag_mod = @import("diagnostic.zig");
+const include_mod = @import("include.zig");
 const Scope = scope_mod.Scope;
 const Diagnostic = diag_mod.Diagnostic;
 const Severity = diag_mod.Severity;
@@ -78,11 +79,34 @@ pub fn typecheck(
 /// Type-check a fused multi-file `program`, resolving `use X as Y`
 /// quoted-path aliases through `import_aliases` (`Y` → `X`). The
 /// single-file `typecheck` is this with no aliases.
+/// Which module each top-level declaration belongs to, and which
+/// modules each one can see. `null` means the caller fused a single
+/// file — one implicit module, and every declaration shares it.
+pub const ModuleGraph = struct {
+    source_map: *const include_mod.SourceMap,
+    imports: []const include_mod.ImportEdge,
+};
+
+/// Type-check a fused program as a single implicit module. Callers
+/// with a module graph should use `typecheckGraph` so declarations
+/// from different files get their own namespaces.
 pub fn typecheckModule(
     allocator: std.mem.Allocator,
     source: []const u8,
     program: *const ast.Program,
     import_aliases: ?*const std.StringHashMapUnmanaged([]const u8),
+) !CheckedProgram {
+    return typecheckGraph(allocator, source, program, import_aliases, null);
+}
+
+/// `typecheckModule` with the module graph supplied, so declarations
+/// from different files land in different namespaces (§5).
+pub fn typecheckGraph(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    program: *const ast.Program,
+    import_aliases: ?*const std.StringHashMapUnmanaged([]const u8),
+    graph: ?ModuleGraph,
 ) !CheckedProgram {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
@@ -91,8 +115,14 @@ pub fn typecheckModule(
     var diagnostics: std.ArrayList(Diagnostic) = .empty;
     errdefer diagnostics.deinit(allocator);
 
+    // One root scope per module, so two files may declare the same
+    // top-level name (§5). Without a graph there is a single implicit
+    // module and this collapses to the previous behavior.
+    const module_count: usize = if (graph) |g| @max(g.source_map.files.items.len, 1) else 1;
+    const module_scopes = try a.alloc(Scope, module_count);
+    for (module_scopes) |*ms| ms.* = .init(a, null);
+    // Arena owns each scope's map storage; freed by `CheckedProgram.deinit`.
     var module_scope: Scope = .init(a, null);
-    // Arena owns the scope's map storage; freed by `CheckedProgram.deinit`.
 
     var expr_types: std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type) = .{};
     errdefer expr_types.deinit(a);
@@ -102,8 +132,10 @@ pub fn typecheckModule(
         .arena = a,
         .diag_alloc = allocator,
         .diagnostics = &diagnostics,
-        .module_scope = &module_scope,
-        .current_scope = &module_scope,
+        .module_scope = if (module_count == 1) &module_scopes[0] else &module_scope,
+        .current_scope = if (module_count == 1) &module_scopes[0] else &module_scope,
+        .graph = graph,
+        .module_scopes = module_scopes,
         .current_ret_ty = null,
         .lambda_ret_sink = null,
         .current_variadic_param = null,
@@ -169,10 +201,23 @@ pub fn typecheckModule(
     for (program.statements) |stmt| try c.rejectNonDeclaration(stmt);
 
     // Pass 1: register top-level decls so forward references resolve.
-    for (program.statements) |stmt| try c.registerTopLevel(stmt);
+    // Each lands in its own module's scope, picked from where the
+    // declaration sits in the fused buffer.
+    for (program.statements) |stmt| {
+        c.enterModuleOf(stmt);
+        try c.registerTopLevel(stmt);
+    }
+
+    // Imported modules' declarations become visible in the importer's
+    // scope, which is what makes a cross-module call resolve. Own
+    // declarations win — an import never shadows a local name.
+    try c.linkImports();
 
     // Pass 2: walk + resolve + infer + check.
-    try c.walkStatementSequence(program.statements);
+    for (program.statements) |stmt| {
+        c.enterModuleOf(stmt);
+        try c.walkStatement(stmt);
+    }
 
     // Pass 3: type-check variadic bodies against the whole-program
     // `args: (T, …, T)` tuple their call sites pinned (§4.6.2).
@@ -251,6 +296,11 @@ pub const Checker = struct {
     diagnostics: *std.ArrayList(Diagnostic),
     /// Outermost (module) scope.
     module_scope: *Scope,
+    /// Module graph, when the caller fused more than one file.
+    graph: ?ModuleGraph,
+    /// One root scope per module, indexed by file id. A single
+    /// implicit module uses index 0.
+    module_scopes: []Scope,
     /// Currently-active scope. Restored on walker exit.
     current_scope: *Scope,
     /// Return type of the enclosing function (or `null` at module
@@ -684,6 +734,72 @@ pub const Checker = struct {
                 try self.emitSpan("E_TYPE_TOP_LEVEL_STATEMENT", stmt.span(), msg);
             },
         }
+    }
+
+    /// Point `module_scope` / `current_scope` at the module that
+    /// declares `stmt`. Without a graph every statement shares module
+    /// 0, so this is a no-op beyond the first call.
+    fn enterModuleOf(self: *Checker, stmt: ast.Statement) void {
+        const idx = self.moduleIndexOf(stmt.span().start);
+        self.module_scope = &self.module_scopes[idx];
+        self.current_scope = &self.module_scopes[idx];
+    }
+
+    /// Module index for a fused-source offset. Offsets outside every
+    /// region — synthesized spans — fall back to module 0.
+    fn moduleIndexOf(self: *const Checker, offset: u32) usize {
+        const g = self.graph orelse return 0;
+        const id = g.source_map.fileIdAt(offset) orelse return 0;
+        return if (id < self.module_scopes.len) id else 0;
+    }
+
+    /// Copy each imported module's declarations into the importing
+    /// module's scope. A name the importer declares itself is left
+    /// alone, so a local declaration always wins over an imported one.
+    fn linkImports(self: *Checker) WalkError!void {
+        const g = self.graph orelse return;
+        // Where each imported name came from, so a second import of
+        // the same name can tell "the module I already took this
+        // from" apart from a genuine clash between two imports.
+        var origin: std.AutoHashMapUnmanaged(u32, u16) = .{};
+        for (g.imports) |edge| {
+            if (edge.from >= self.module_scopes.len or edge.to >= self.module_scopes.len) continue;
+            var it = self.module_scopes[edge.to].entries.iterator();
+            while (it.next()) |e| {
+                const name = e.key_ptr.*;
+                // @as: pack (importer id, name hash) into one u32 key.
+                const key = (@as(u32, edge.from) << 16) | @as(u32, @truncate(std.hash.Wyhash.hash(0, name)));
+                self.module_scopes[edge.from].define(name, e.value_ptr.*) catch |err| switch (err) {
+                    error.AlreadyDefined => {
+                        // A local declaration always wins, and
+                        // re-importing the same module through a
+                        // diamond is not a clash. Two *different*
+                        // modules offering one name is.
+                        if (origin.get(key)) |first| {
+                            if (first != edge.to) try self.emitAmbiguousImport(name, edge.from);
+                        }
+                        continue;
+                    },
+                    error.OutOfMemory => return error.OutOfMemory,
+                };
+                try origin.put(self.arena, key, edge.to);
+            }
+        }
+    }
+
+    /// Two imported modules provide the same name, so an unqualified
+    /// reference in the importer can't say which it means.
+    fn emitAmbiguousImport(self: *Checker, name: []const u8, importer: u16) WalkError!void {
+        _ = importer;
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "two of this module's imports provide `{s}` — an unqualified reference can't say which; alias one with `use {s} as <name> from \"...\"`",
+            .{ name, name },
+        );
+        // The clash belongs to the importing module; its `use` lines
+        // are the only sensible anchor, and the diagnostic already
+        // names the file it is reported against.
+        try self.emitSpan("E_TYPE_AMBIGUOUS_IMPORT", .{ .start = 0, .end = 0 }, msg);
     }
 
     fn checkLetDecl(self: *Checker, d: ast.LetDecl) WalkError!void {
