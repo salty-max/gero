@@ -8374,3 +8374,82 @@ test "codegen/def: a struct return is unaffected by the array return path" {
         \\end
     , "4\n5\n");
 }
+
+// ---------- module-scope destructuring `let` (§7.1) ----------
+
+test "codegen/globals: a module-scope tuple destructure binds both names" {
+    try expectPrints(
+        \\let (a, b) = (3, 4)
+        \\
+        \\def main()
+        \\  print a
+        \\  print b
+        \\end
+    , "3\n4\n");
+}
+
+test "codegen/globals: a module-scope struct destructure binds its fields" {
+    try expectPrints(
+        \\struct P
+        \\  x: i16
+        \\  y: u8
+        \\end
+        \\
+        \\def mk() -> P
+        \\  return P { x: 11, y: 22 }
+        \\end
+        \\
+        \\let P { x, y } = mk()
+        \\
+        \\def main()
+        \\  print x
+        \\  print y
+        \\end
+    , "11\n22\n");
+}
+
+test "codegen/globals: a module-scope wildcard binds nothing and skips its slot" {
+    try expectPrints(
+        \\let (_, keep) = (99, 5)
+        \\
+        \\def main()
+        \\  print keep
+        \\end
+    , "5\n");
+}
+
+test "codegen/globals: a nested module-scope destructure resolves every binder" {
+    try expectPrints(
+        \\let ((n, m), o) = ((1, 2), 3)
+        \\
+        \\def main()
+        \\  print n
+        \\  print m
+        \\  print o
+        \\end
+    , "1\n2\n3\n");
+}
+
+test "codegen/globals: a module-scope destructured binding is visible to any function" {
+    try expectPrints(
+        \\let (a, b) = (7, 8)
+        \\
+        \\def sum() -> i16
+        \\  return a + b
+        \\end
+        \\
+        \\def main()
+        \\  print sum()
+        \\end
+    , "15\n");
+}
+
+test "codegen/globals: a plain module-scope `let` is unaffected" {
+    try expectPrints(
+        \\let g = 7
+        \\
+        \\def main()
+        \\  print g
+        \\end
+    , "7\n");
+}
