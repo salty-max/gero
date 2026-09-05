@@ -243,4 +243,9 @@ pub const Sys = struct {
     /// the freshly-allocated address in `acu`; faults
     /// `heap_exhausted` (vector `0x04`) on out-of-heap.
     pub const alloc: u8 = 0x20;
+
+    /// `trap` — raise the `trap` fault (ISA vector `$06`). Emitted
+    /// after a diverging builtin or a failed `test.assert_*` prints,
+    /// so the halt is distinguishable from a clean `hlt`.
+    pub const trap: u8 = 0x30;
 };

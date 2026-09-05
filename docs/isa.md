@@ -571,6 +571,7 @@ silent no-ops. Unknown syscall numbers raise the
 | `0x17`| `format_runtime`       | `acu` = format string (null-terminated). `r1` = dst cursor. `r2` = base of the `args` words. `r3` = count (bits 0–7) \| element default type (bits 8–10, the `format_spec_to_buf` type codes) \| element-signed (bit 11). Backs `str.format(fmt, args)` (§3.2.2): walks `fmt`, copies literal bytes, and replaces each `{N}` / `{N:spec}` positional placeholder with `args[N]` formatted per the (runtime-parsed) spec (`{{` / `}}` are literal braces). An out-of-range / digit-less placeholder is dropped. |
 | `0x16`| `format_spec_to_buf`   | `acu` = value (or str byte-pointer for the `str` type). `r1` = dst cursor. `r2` = width (bits 0–7) \| fill char (bits 8–15). `r3` = type (bits 0–2: `0` dec, `1` hex-lower, `2` hex-upper, `3` bin, `4` oct, `5` str, `6` char, `7` fixed) \| align (bits 3–4: `0` type-default, `1` left, `2` right, `3` center) \| signed (bit 5) \| zero-pad (bit 6) \| has-precision (bit 7) \| precision (bits 8–15). Appends `acu` formatted per the gero-lang §3.2.2 format spec at `[r1]`, then advances `r1`. Numeric types render in the requested radix; zero-padding of a negative is sign-aware (`-042`). |
 | `0x20`| `alloc`                | bump-allocate `acu` bytes on the heap. On success, sets `acu` to the address of the freshly-allocated block and advances the VM's heap cursor by the requested size. On exhaustion (cursor + size would collide with the stack or fall outside the program's heap region), raises the **heap-exhausted** fault (vector `0x04`). Faults if `heap_base = 0` (program declared no heap). |
+| `0x30`| `trap`                 | Raise the **trap** fault (vector `0x06`). No arguments. A program calls it to give up deliberately — gero-lang emits it after a failed `test.assert_*`, `panic`, `unreachable`, or `todo` has printed. With no handler installed the VM stops with `halted_on_fault`, which a host can distinguish from the `halted` a clean `hlt` produces. |
 
 Writer failures (host stdout closed, OOM in the writer's buffer)
 raise the **invalid-opcode** fault as well. The `sys` mechanism is
@@ -596,6 +597,7 @@ Reserved vectors:
 | `0x03` | Division by zero (`div` / `divs` with divisor = 0). |
 | `0x04` | Heap exhausted (`sys alloc` with cursor + size colliding with the stack, exceeding the heap budget, or `heap_base = 0`). |
 | `0x05` | Arithmetic overflow. VM raises this on `div` / `divs` when the quotient exceeds 16 bits. Languages targeting gero may also software-raise it (via `int 5`) when their own overflow checks fire — gero-lang does so for `+` / `-` / `*` in debug builds. |
+| `0x06` | Program-initiated trap. Raised by `sys trap` when a program gives up deliberately — gero-lang emits it after a failed `test.assert_*`, `panic`, `unreachable`, or `todo` has printed its message. Distinct from `hlt` so a host can tell a program that gave up from one that finished. |
 | `0x06..0x1F` | Reserved (host-defined). |
 | `0x20..0x3F` | Software interrupts (`int N`). |
 
@@ -742,6 +744,7 @@ the VM halts with a host-visible error code.
 | `0x02` | Invalid register (operand register index `>= 0x0F`) |
 | `0x03` | Division by zero (`div` / `divs` with divisor = 0) |
 | `0x04` | Heap exhausted (`sys alloc` overflows past the available heap region) |
+| `0x06` | Program-initiated trap (`sys trap` — failed assertion, `panic`, `unreachable`, `todo`) |
 | `0x05` | Arithmetic overflow (`div` / `divs` quotient > 16 bits) |
 
 `mb >= bank_count` and stack over/underflow are **not** faults — they

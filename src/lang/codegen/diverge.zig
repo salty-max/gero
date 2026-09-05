@@ -32,20 +32,20 @@ pub fn emitDivergeCall(self: *Emitter, c: ast.CallExpr, name: []const u8) !void 
     if (std.mem.eql(u8, name, "panic")) {
         if (c.args.len == 1) try emitMessage(self, c.args[0]);
         try isa.sys(self, Sys.print_newline);
-        try self.emitByte(Op.hlt);
+        try isa.sys(self, Sys.trap);
         return;
     }
     if (std.mem.eql(u8, name, name_unreachable)) {
         try emitLiteral(self, msg_unreachable);
         try isa.sys(self, Sys.print_newline);
-        try self.emitByte(Op.hlt);
+        try isa.sys(self, Sys.trap);
         return;
     }
     if (std.mem.eql(u8, name, "todo")) {
         try emitLiteral(self, if (c.args.len == 1) "TODO: " else "TODO");
         if (c.args.len == 1) try emitMessage(self, c.args[0]);
         try isa.sys(self, Sys.print_newline);
-        try self.emitByte(Op.hlt);
+        try isa.sys(self, Sys.trap);
         return;
     }
 }

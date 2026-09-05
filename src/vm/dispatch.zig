@@ -31,6 +31,10 @@ pub const Vector = enum(u8) {
     heap_exhausted = 0x04,
     /// Arithmetic overflow.
     arith_overflow = 0x05,
+    /// Program-initiated trap — a failed `test.assert_*`, `panic`,
+    /// `unreachable`, or `todo`. Distinct from `hlt` so a runner can
+    /// tell a program that gave up from one that finished.
+    trap = 0x06,
     _,
 };
 
@@ -228,6 +232,7 @@ pub fn run(vm: *VM) StepResult {
 /// otherwise pushes `ip` / `fp` / `flg`, sets `flg.I`, and jumps
 /// to the ISR.
 pub fn raiseFault(vm: *VM, vector: Vector) StepResult {
+    vm.last_fault = vector;
     const target = vm.readWord(ivtSlot(vector));
     if (target == 0) return .halted_on_fault;
 
