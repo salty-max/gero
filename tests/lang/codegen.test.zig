@@ -2452,15 +2452,14 @@ test "codegen: a format spec bound to a `let` formats into the heap buffer" {
 test "codegen: diagnostic message slices outlive `compile`" {
     // `Diagnostic.message` strings allocated by `Emitter.unsupported`
     // live on `Compiled.diag_arena`; reading `.message` AFTER `compile`
-    // returns proves the arena outlives the call. Uses a value-returned
-    // fixed array (not yet lowered) to provoke an `E_CODEGEN_UNSUPPORTED`.
+    // returns proves the arena outlives the call. Any construct that
+    // reaches `unsupported` serves — an unbound `Vec.slice` result is
+    // one the typechecker passes and codegen rejects.
     const source =
-        \\def make() -> [i16; 3]
-        \\  return [1, 2, 3]
-        \\end
         \\def main()
-        \\  let a = make()
-        \\  print a[0]
+        \\  let v: Vec(i16) = Vec.new()
+        \\  v.push(1)
+        \\  print v.slice(0, 1).len()
         \\end
     ;
     var stream = try gero.lang.tokenize(alloc, source);
@@ -8208,4 +8207,170 @@ test "codegen/print: a plain non-nullable value is unaffected" {
         \\  print n
         \\end
     , "7\n");
+}
+
+// ---------- baked strings (§3.8) ----------
+
+test "codegen/bake: a baked `str` const resolves to its interned bytes" {
+    try expectPrints(
+        \\bake def greeting() -> str
+        \\  return "hello"
+        \\end
+        \\
+        \\const G: str = greeting()
+        \\
+        \\def main()
+        \\  print G
+        \\end
+    , "hello\n");
+}
+
+test "codegen/bake: a `str` field inside a baked struct resolves" {
+    try expectPrints(
+        \\struct Label
+        \\  id: i16
+        \\  text: str
+        \\end
+        \\
+        \\bake def make() -> Label
+        \\  return Label { id: 7, text: "nested" }
+        \\end
+        \\
+        \\const L: Label = make()
+        \\
+        \\def main()
+        \\  print L.id
+        \\  print L.text
+        \\end
+    , "7\nnested\n");
+}
+
+test "codegen/bake: a `str` element inside a baked tuple resolves" {
+    try expectPrints(
+        \\bake def pair() -> (str, i16)
+        \\  return ("tup", 9)
+        \\end
+        \\
+        \\const P: (str, i16) = pair()
+        \\
+        \\def main()
+        \\  print P.0
+        \\  print P.1
+        \\end
+    , "tup\n9\n");
+}
+
+test "codegen/bake: a baked `str` decodes escapes like a runtime literal" {
+    try expectPrints(
+        \\bake def tabbed() -> str
+        \\  return "a\tb"
+        \\end
+        \\
+        \\const T: str = tabbed()
+        \\
+        \\def main()
+        \\  print T
+        \\end
+    , "a\tb\n");
+}
+
+test "codegen/bake: baked strings with the same bytes share one pool entry" {
+    try expectPrints(
+        \\bake def one() -> str
+        \\  return "same"
+        \\end
+        \\
+        \\bake def two() -> str
+        \\  return "same"
+        \\end
+        \\
+        \\const A: str = one()
+        \\const B: str = two()
+        \\
+        \\def main()
+        \\  print A
+        \\  print B
+        \\end
+    , "same\nsame\n");
+}
+
+test "codegen/bake: `$(…)` interpolation inside a bake body is rejected" {
+    try expectCodegenError(
+        \\bake def greet() -> str
+        \\  let n = 3
+        \\  return "n=$(n)"
+        \\end
+        \\
+        \\const G: str = greet()
+        \\
+        \\def main()
+        \\  print G
+        \\end
+    , "E_BAKE_UNSUPPORTED");
+}
+
+// ---------- fixed-array returns ----------
+
+test "codegen/def: a def returning a fixed array materializes into the caller" {
+    try expectPrints(
+        \\def nums() -> [i16; 3]
+        \\  return [1, 2, 3]
+        \\end
+        \\
+        \\def main()
+        \\  let n = nums()
+        \\  print n[0]
+        \\  print n[2]
+        \\end
+    , "1\n3\n");
+}
+
+test "codegen/bake: a baked fixed array of ints resolves" {
+    try expectPrints(
+        \\bake def nums() -> [i16; 3]
+        \\  return [1, 2, 3]
+        \\end
+        \\
+        \\const NU: [i16; 3] = nums()
+        \\
+        \\def main()
+        \\  print NU[0]
+        \\  print NU[2]
+        \\end
+    , "1\n3\n");
+}
+
+test "codegen/bake: a baked fixed array of strings resolves each element" {
+    try expectPrints(
+        \\bake def names() -> [str; 3]
+        \\  return ["a", "bb", "ccc"]
+        \\end
+        \\
+        \\const NS: [str; 3] = names()
+        \\
+        \\def main()
+        \\  print NS[0]
+        \\  print NS[1]
+        \\  print NS[2]
+        \\end
+    , "a\nbb\nccc\n");
+}
+
+test "codegen/def: a struct return is unaffected by the array return path" {
+    try expectPrints(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\
+        \\def make() -> P
+        \\  return P { x: 4, y: 5 }
+        \\end
+        \\
+        \\def main()
+        \\  let p = make()
+        \\  print p.x
+        \\  print p.y
+        \\end
+    , "4\n5\n");
 }
