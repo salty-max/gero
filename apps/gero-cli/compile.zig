@@ -93,7 +93,9 @@ pub fn compileLang(
     };
     defer stream.deinit();
 
-    var tree = gero.lang.parse(arena, fused.source, stream) catch |err| {
+    // Each module parses from its own tokens (§5); the shared buffer
+    // only supplies the bytes their offsets index into.
+    var tree = gero.lang.parseAllModules(arena, fused.source, stream, &fused.source_map) catch |err| {
         try term.err("{s}: parser failure ({s})", .{ cmd, @errorName(err) });
         return .{ .failed = 1 };
     };
