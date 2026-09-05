@@ -429,6 +429,12 @@ fn recordVariadic(
     arity: u32,
     span: ast.Span,
 ) WalkError!void {
+    // Record which module asked for this arity. Specializations are
+    // emitted from the union of every module's requests once all are
+    // known — the link step — so a module's own set is what a cache
+    // keys on rather than the whole program's.
+    try self.noteVariadicCallSite(name, arity, span.start);
+
     const gop = try self.variadic_info.getOrPut(self.arena, name);
     if (!gop.found_existing) gop.value_ptr.* = .{};
     if (gop.value_ptr.min_arity) |lo| {

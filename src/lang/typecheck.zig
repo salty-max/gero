@@ -21,6 +21,11 @@ pub const CheckedProgram = struct {
     /// element type + distinct call-site arities. Codegen emits one
     /// specialization per arity. Backed by `type_arena`.
     variadics: std.StringHashMapUnmanaged(VariadicInfo),
+    /// Variadic arities each module's own call sites asked for, keyed
+    /// `"module\x00def"`. `variadics` above is the union taken at the
+    /// link step; this is the per-module breakdown a build cache keys
+    /// on, so touching one module doesn't invalidate the rest.
+    module_variadic_arities: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)),
     /// Type of every named binding, keyed by the start offset of its
     /// declaring identifier. Codegen has the initializer's type from
     /// `expr_types`, but a destructured binder has no expression of
@@ -123,6 +128,8 @@ pub fn typecheckGraph(
     for (module_scopes) |*ms| ms.* = .init(a, null);
     const local_names = try a.alloc(std.StringHashMapUnmanaged(void), module_count);
     for (local_names) |*ln| ln.* = .{};
+    const module_decls = try a.alloc(ModuleDecls, module_count);
+    for (module_decls) |*md| md.* = .{};
     // Arena owns each scope's map storage; freed by `CheckedProgram.deinit`.
     var module_scope: Scope = .init(a, null);
 
@@ -139,6 +146,8 @@ pub fn typecheckGraph(
         .graph = graph,
         .module_scopes = module_scopes,
         .local_names = local_names,
+        .module_decls = module_decls,
+        .module_variadic_arities = .{},
         .current_ret_ty = null,
         .lambda_ret_sink = null,
         .current_variadic_param = null,
@@ -170,19 +179,19 @@ pub fn typecheckGraph(
     for (program.statements) |*stmt| switch (stmt.*) {
         .enum_decl => |ed| {
             const name = source[ed.name.start..ed.name.end];
-            try c.enum_registry.put(a, name, &stmt.enum_decl);
+            try c.module_decls[c.moduleIndexOf(ed.name.start)].enums.put(a, name, &stmt.enum_decl);
         },
         .struct_decl => |sd| {
             const name = source[sd.name.start..sd.name.end];
-            try c.struct_registry.put(a, name, &stmt.struct_decl);
+            try c.module_decls[c.moduleIndexOf(sd.name.start)].structs.put(a, name, &stmt.struct_decl);
         },
         .class_decl => |cd| {
             const name = source[cd.name.start..cd.name.end];
-            try c.class_registry.put(a, name, &stmt.class_decl);
+            try c.module_decls[c.moduleIndexOf(cd.name.start)].classes.put(a, name, &stmt.class_decl);
         },
         .def_decl => |dd| {
             const name = source[dd.name.start..dd.name.end];
-            try c.def_registry.put(a, name, &stmt.def_decl);
+            try c.module_decls[c.moduleIndexOf(dd.name.start)].defs.put(a, name, &stmt.def_decl);
         },
         .let_decl => |ld| {
             for (ld.annotations) |ann| {
@@ -216,6 +225,7 @@ pub fn typecheckGraph(
     // scope, which is what makes a cross-module call resolve. Own
     // declarations win — an import never shadows a local name.
     try c.linkImports();
+    try c.linkModuleDecls();
 
     // Pass 2: walk + resolve + infer + check.
     for (program.statements) |stmt| {
@@ -233,6 +243,7 @@ pub fn typecheckGraph(
         .expr_types = expr_types,
         .variadics = c.variadic_info,
         .binder_types = c.binder_types,
+        .module_variadic_arities = c.module_variadic_arities,
         .type_arena = arena,
         .allocator = allocator,
     };
@@ -280,6 +291,33 @@ pub const DeferredMethod = struct {
     method: *const ast.DefDecl,
 };
 
+/// Copy the non-`local` entries of `src` into `dst`, leaving any name
+/// `dst` already declares alone.
+fn mergeExported(
+    arena: std.mem.Allocator,
+    comptime V: type,
+    src: *const std.StringHashMapUnmanaged(V),
+    dst: *std.StringHashMapUnmanaged(V),
+    local: *const std.StringHashMapUnmanaged(void),
+) std.mem.Allocator.Error!void {
+    var it = src.iterator();
+    while (it.next()) |e| {
+        if (local.contains(e.key_ptr.*)) continue;
+        const gop = try dst.getOrPut(arena, e.key_ptr.*);
+        if (!gop.found_existing) gop.value_ptr.* = e.value_ptr.*;
+    }
+}
+
+/// The declarations one module can see: its own, plus the exported
+/// ones of every module it imports. Held per module so type-checking
+/// reads a dependency's *signatures* and never reaches past them.
+const ModuleDecls = struct {
+    enums: std.StringHashMapUnmanaged(*const ast.EnumDecl) = .{},
+    structs: std.StringHashMapUnmanaged(*const ast.StructDecl) = .{},
+    classes: std.StringHashMapUnmanaged(*const ast.ClassDecl) = .{},
+    defs: std.StringHashMapUnmanaged(*const ast.DefDecl) = .{},
+};
+
 /// One `return <expr>` seen while inferring a lambda's return type:
 /// the value's type plus the span to blame if a later `return`
 /// disagrees with the first one.
@@ -308,6 +346,16 @@ pub const Checker = struct {
     /// Names each module declared `local` (§5.1), indexed by file id.
     /// These stay out of importers' scopes.
     local_names: []std.StringHashMapUnmanaged(void),
+    /// Variadic arities each module's own call sites asked for, keyed
+    /// `"module\x00def"`. The program-wide `variadic_info` is the union
+    /// of these, taken once every module is walked — the link step for
+    /// specialization (§4.6.2).
+    module_variadic_arities: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)),
+    /// Declaration views, indexed by file id: each holds the module's
+    /// own declarations plus the non-`local` ones of the modules it
+    /// imports. `enterModuleOf` swaps the checker's registries to the
+    /// current module's view, so a module only ever sees what it may.
+    module_decls: []ModuleDecls,
     /// Currently-active scope. Restored on walker exit.
     current_scope: *Scope,
     /// Return type of the enclosing function (or `null` at module
@@ -760,6 +808,18 @@ pub const Checker = struct {
         return null;
     }
 
+    /// Note that the module owning `offset` calls variadic `name` with
+    /// `arity` arguments. Kept per module so the specialization set a
+    /// module needs is derivable without re-walking the program.
+    pub fn noteVariadicCallSite(self: *Checker, name: []const u8, arity: u32, offset: u32) WalkError!void {
+        const idx = self.moduleIndexOf(offset);
+        const key = try std.fmt.allocPrint(self.arena, "{d}\x00{s}", .{ idx, name });
+        const gop = try self.module_variadic_arities.getOrPut(self.arena, key);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        for (gop.value_ptr.items) |a| if (a == arity) return;
+        try gop.value_ptr.append(self.arena, arity);
+    }
+
     /// Record a top-level declaration marked `local` so `linkImports`
     /// leaves it out of importers' scopes (§5.1). Declarations are
     /// exported by default, so only the marked ones are tracked.
@@ -788,6 +848,38 @@ pub const Checker = struct {
         const idx = self.moduleIndexOf(stmt.span().start);
         self.module_scope = &self.module_scopes[idx];
         self.current_scope = &self.module_scopes[idx];
+        // Swap the declaration registries too, so a module resolves
+        // types and callees against what it can see and nothing else.
+        // Nothing mutates these after linking, so the views are shared
+        // by value.
+        const md = self.module_decls[idx];
+        self.enum_registry = md.enums;
+        self.struct_registry = md.structs;
+        self.class_registry = md.classes;
+        self.def_registry = md.defs;
+    }
+
+    /// Copy each imported module's exported declarations into the
+    /// importer's view. `local` declarations stay behind (§5.1), and a
+    /// module's own declaration always wins over an imported one.
+    fn linkModuleDecls(self: *Checker) WalkError!void {
+        const g = self.graph orelse {
+            // Single implicit module: its view is the whole program.
+            self.enum_registry = self.module_decls[0].enums;
+            self.struct_registry = self.module_decls[0].structs;
+            self.class_registry = self.module_decls[0].classes;
+            self.def_registry = self.module_decls[0].defs;
+            return;
+        };
+        for (g.imports) |edge| {
+            if (edge.from >= self.module_decls.len or edge.to >= self.module_decls.len) continue;
+            const src = self.module_decls[edge.to];
+            const dst = &self.module_decls[edge.from];
+            try mergeExported(self.arena, *const ast.EnumDecl, &src.enums, &dst.enums, &self.local_names[edge.to]);
+            try mergeExported(self.arena, *const ast.StructDecl, &src.structs, &dst.structs, &self.local_names[edge.to]);
+            try mergeExported(self.arena, *const ast.ClassDecl, &src.classes, &dst.classes, &self.local_names[edge.to]);
+            try mergeExported(self.arena, *const ast.DefDecl, &src.defs, &dst.defs, &self.local_names[edge.to]);
+        }
     }
 
     /// Module index for a fused-source offset. Offsets outside every

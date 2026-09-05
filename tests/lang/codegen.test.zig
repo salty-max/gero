@@ -8564,3 +8564,55 @@ test "codegen/modules: a non-`local` declaration is exported by default" {
     );
     try fx.expectRuns("main.gr", "5\n");
 }
+
+// ---------- per-module declaration views (§5) ----------
+
+test "codegen/modules: a `local` type is invisible to an importing module" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\local struct Hidden
+        \\  a: i16
+        \\end
+        \\
+        \\struct Shown
+        \\  b: i16
+        \\end
+    );
+    try fx.write("main.gr",
+        \\use "./lib"
+        \\
+        \\def main()
+        \\  let s = Shown { b: 1 }
+        \\  print s.b
+        \\end
+    );
+    try fx.expectRuns("main.gr", "1\n");
+}
+
+test "codegen/modules: an importer sees only what its own imports export" {
+    // `deep` is reachable from `mid`, but `main` never imports it, so
+    // its declarations must not leak through into `main`'s view.
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("deep.gr",
+        \\def deep_fn() -> i16
+        \\  return 3
+        \\end
+    );
+    try fx.write("mid.gr",
+        \\use "./deep"
+        \\
+        \\def mid_fn() -> i16
+        \\  return deep_fn() + 1
+        \\end
+    );
+    try fx.write("main.gr",
+        \\use "./mid"
+        \\
+        \\def main()
+        \\  print mid_fn()
+        \\end
+    );
+    try fx.expectRuns("main.gr", "4\n");
+}
