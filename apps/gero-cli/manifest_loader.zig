@@ -93,6 +93,7 @@ pub fn expandIncludes(
     command_name: []const u8,
     project_root: []const u8,
     includes: []const []const u8,
+    extensions: []const []const u8,
     out: *std.ArrayList([]const u8),
 ) !void {
     for (includes) |rel| {
@@ -111,14 +112,14 @@ pub fn expandIncludes(
             defer walker.deinit();
             while (try walker.next(io)) |entry| {
                 if (entry.kind != .file) continue;
-                if (!std.mem.endsWith(u8, entry.path, ".gas")) continue;
+                if (!hasAnyExtension(entry.path, extensions)) continue;
                 const joined = try std.fs.path.join(arena, &.{ full, entry.path });
                 try out.append(arena, joined);
             }
         } else if (stat.kind == .file) {
-            if (!std.mem.endsWith(u8, full, ".gas")) {
+            if (!hasAnyExtension(full, extensions)) {
                 try term.err(
-                    "{s}: include entry '{s}' is not a .gas file or directory",
+                    "{s}: include entry '{s}' is not a directory or a file this command reads",
                     .{ command_name, full },
                 );
                 return error.LoadFailed;
@@ -132,6 +133,15 @@ pub fn expandIncludes(
             return error.LoadFailed;
         }
     }
+}
+
+/// Whether `path` ends in any of `extensions`. The caller supplies the
+/// set so one walk serves commands that read `.gas`, `.gr`, or both.
+fn hasAnyExtension(path: []const u8, extensions: []const []const u8) bool {
+    for (extensions) |ext| {
+        if (std.mem.endsWith(u8, path, ext)) return true;
+    }
+    return false;
 }
 
 /// Sentinel for `expandIncludes` after a host IO / shape

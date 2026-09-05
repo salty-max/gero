@@ -3,6 +3,7 @@ const gero = @import("gero");
 const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
 const manifest_loader = @import("manifest_loader.zig");
+const gr_runner = @import("gr_runner.zig");
 
 // Per-test cycle budget comes from the manifest's `[test].cycle_budget`
 // (default 1,000,000 per `project.defaults`). Threaded through
@@ -11,12 +12,13 @@ const manifest_loader = @import("manifest_loader.zig");
 /// Discovered test program — assembled lazily, paired with its
 /// golden `.expected` body.
 const Program = struct {
-    /// Display name shown in the runner output (`.gas` basename
-    /// without extension).
+    /// Display name shown in the runner output — a `.gas` basename
+    /// without extension, or a `@test` def's own name.
     name: []const u8,
-    /// Relative path of the `.gas` source, used in failure footers
-    /// and as input to the assembler.
-    gas_path: []const u8,
+    /// Relative path of the source that produced this result — a
+    /// `.gas` program or the `.gr` module declaring a `@test` def.
+    /// Used in failure footers and as assembler input.
+    source_path: []const u8,
     /// Full byte contents of the sibling `<name>.expected`.
     expected: []const u8,
 };
@@ -38,7 +40,7 @@ const Outcome = enum {
 
 const Result = struct {
     name: []const u8,
-    gas_path: []const u8,
+    source_path: []const u8,
     outcome: Outcome,
     elapsed_ns: i96,
     /// One-line summary surfaced in the failure section (and the
@@ -85,20 +87,31 @@ pub fn execute(
         return 2;
     }
 
-    const programs = collectPrograms(
-        io,
-        arena,
-        term,
-        loaded.project_root,
-        loaded.manifest.test_.include,
-        loaded.manifest.test_.exclude,
-        pattern,
-    ) catch |err| switch (err) {
+    var source_files: std.ArrayList([]const u8) = .empty;
+    manifest_loader.expandIncludes(io, arena, term, "gero test", loaded.project_root, loaded.manifest.test_.include, &.{ ".gas", ".gr" }, &source_files) catch |err| switch (err) {
         error.LoadFailed => return 1,
         else => |e| return e,
     };
 
-    if (programs.len == 0) {
+    const programs = try collectPrograms(
+        io,
+        arena,
+        term,
+        loaded.project_root,
+        source_files.items,
+        loaded.manifest.test_.exclude,
+        pattern,
+    );
+
+    // `@test` defs in `.gr` modules run alongside the `.gas` golden
+    // programs — one walk, both languages (§3.7.5).
+    const gr_modules = try gr_runner.discover(io, arena, term, "gero test", source_files.items, "test", pattern);
+    defer for (gr_modules) |m| m.deinit();
+
+    var gr_count: usize = 0;
+    for (gr_modules) |m| gr_count += m.entries.len;
+
+    if (programs.len + gr_count == 0) {
         if (pattern) |p| {
             try stdout.print("no tests matching '{s}' under [test].include\n", .{p});
         } else {
@@ -109,9 +122,10 @@ pub fn execute(
 
     const style: gero.asm_.Style = if (term.color) .ansi else .plain;
     const t_start = std.Io.Timestamp.now(io, .awake);
-    try stdout.print("running {d} test{s}\n", .{ programs.len, if (programs.len == 1) "" else "s" });
+    const total = programs.len + gr_count;
+    try stdout.print("running {d} test{s}\n", .{ total, if (total == 1) "" else "s" });
 
-    const results = try arena.alloc(Result, programs.len);
+    const results = try arena.alloc(Result, programs.len + gr_count);
     var pass: usize = 0;
     var fail: usize = 0;
     const budget: u64 = @intCast(loaded.manifest.test_.cycle_budget);
@@ -119,6 +133,16 @@ pub fn execute(
         results[i] = try runOne(io, arena, prog, budget);
         if (results[i].outcome == .ok) pass += 1 else fail += 1;
         try writeStatusLine(stdout, style, results[i], opts.verbose);
+    }
+
+    var next = programs.len;
+    for (gr_modules) |m| {
+        for (m.entries) |entry| {
+            results[next] = try runGrTest(io, arena, m, entry, budget);
+            if (results[next].outcome == .ok) pass += 1 else fail += 1;
+            try writeStatusLine(stdout, style, results[next], opts.verbose);
+            next += 1;
+        }
     }
 
     if (fail > 0) try writeFailureBodies(stdout, style, results);
@@ -140,12 +164,10 @@ fn collectPrograms(
     arena: std.mem.Allocator,
     term: *term_mod.Term,
     project_root: []const u8,
-    includes: []const []const u8,
+    source_files: []const []const u8,
     excludes: []const []const u8,
     pattern: ?[]const u8,
 ) ![]Program {
-    var gas_files: std.ArrayList([]const u8) = .empty;
-    try manifest_loader.expandIncludes(io, arena, term, "gero test", project_root, includes, &gas_files);
 
     // Pre-resolve excludes through the same root-joining so they
     // line up with `gas_files` entries byte-for-byte. Each exclude
@@ -158,25 +180,26 @@ fn collectPrograms(
     }
 
     var list: std.ArrayList(Program) = .empty;
-    for (gas_files.items) |gas_path| {
-        if (isExcluded(gas_path, excluded.items)) continue;
-        const name_borrowed = stem(std.fs.path.basename(gas_path));
+    for (source_files) |source_path| {
+        if (!std.mem.endsWith(u8, source_path, ".gas")) continue;
+        if (isExcluded(source_path, excluded.items)) continue;
+        const name_borrowed = stem(std.fs.path.basename(source_path));
         if (pattern) |p| if (std.mem.indexOf(u8, name_borrowed, p) == null) continue;
 
         const expected_path = try std.fmt.allocPrint(
             arena,
             "{s}.expected",
-            .{gas_path[0 .. gas_path.len - ".gas".len]},
+            .{source_path[0 .. source_path.len - ".gas".len]},
         );
 
         const expected_bytes = std.Io.Dir.cwd().readFileAlloc(io, expected_path, arena, .unlimited) catch |err| {
-            try term.warn("skipping {s}: no .expected ({s})", .{ gas_path, @errorName(err) });
+            try term.warn("skipping {s}: no .expected ({s})", .{ source_path, @errorName(err) });
             continue;
         };
 
         try list.append(arena, .{
             .name = try arena.dupe(u8, name_borrowed),
-            .gas_path = gas_path,
+            .source_path = source_path,
             .expected = expected_bytes,
         });
     }
@@ -186,21 +209,96 @@ fn collectPrograms(
     return items;
 }
 
+/// Run one `@test` def: lower the module with that def as the entry,
+/// execute it, and classify. A clean `hlt` is a pass; the `trap`
+/// vector is the assertion (or `panic`) the body tripped, and any
+/// other fault means the body itself faulted.
+fn runGrTest(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    module: *const gr_runner.Module,
+    entry: gr_runner.Entry,
+    cycle_budget: u64,
+) !Result {
+    const t0 = std.Io.Timestamp.now(io, .awake);
+
+    const image = (try gr_runner.compileEntry(arena, module, entry.name)) orelse {
+        return finalizeGr(io, t0, entry, .asm_failed, "codegen failed for this entry — run `gero check`", "");
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    var captured = std.Io.Writer.Allocating.fromArrayList(arena, &buf);
+    defer captured.deinit();
+
+    const outcome = try gr_runner.run(arena, image, &captured.writer, cycle_budget);
+    const printed = captured.written();
+    return switch (outcome.outcome) {
+        .halted => finalizeGr(io, t0, entry, .ok, "", printed),
+        .faulted => finalizeGr(io, t0, entry, .runtime_failed, faultDetail(outcome.fault), printed),
+        .breakpoint => finalizeGr(io, t0, entry, .runtime_failed, "hit a `brk`", printed),
+        .timeout => finalizeGr(
+            io,
+            t0,
+            entry,
+            .timeout,
+            try std.fmt.allocPrint(arena, "exceeded {d} cycles", .{cycle_budget}),
+            printed,
+        ),
+    };
+}
+
+/// What a fault means for a `@test`. The `trap` vector is the one the
+/// body raised on purpose — a failed `test.assert_*`, `panic`,
+/// `unreachable`, or `todo`; anything else is an unintended fault, and
+/// naming it saves the reader a guess.
+fn faultDetail(vector: ?gero.vm.Vector) []const u8 {
+    const v = vector orelse return "faulted";
+    return switch (v) {
+        .trap => "assertion failed",
+        .div_by_zero => "faulted: divide by zero",
+        .arith_overflow => "faulted: arithmetic overflow",
+        .heap_exhausted => "faulted: heap exhausted",
+        .invalid_opcode => "faulted: invalid opcode",
+        .invalid_register => "faulted: invalid register",
+        .reset => "faulted: reset",
+        _ => "faulted",
+    };
+}
+
+fn finalizeGr(
+    io: std.Io,
+    t0: std.Io.Timestamp,
+    entry: gr_runner.Entry,
+    outcome: Outcome,
+    detail: []const u8,
+    printed: []const u8,
+) Result {
+    const t1 = std.Io.Timestamp.now(io, .awake);
+    return .{
+        .name = entry.name,
+        .source_path = entry.file,
+        .outcome = outcome,
+        .elapsed_ns = t0.durationTo(t1).nanoseconds,
+        .detail = detail,
+        .got = printed,
+    };
+}
+
 fn lessByName(_: void, a: Program, b: Program) bool {
     return std.mem.lessThan(u8, a.name, b.name);
 }
 
-/// True when `gas_path` is covered by an exclude entry. Excludes
+/// True when `source_path` is covered by an exclude entry. Excludes
 /// match as a prefix — `tests/wip` excludes both `tests/wip/foo.gas`
 /// and `tests/wip` itself; an exact `.gas` match excludes only that
 /// file.
-fn isExcluded(gas_path: []const u8, excludes: []const []const u8) bool {
+fn isExcluded(source_path: []const u8, excludes: []const []const u8) bool {
     for (excludes) |ex| {
-        if (std.mem.eql(u8, gas_path, ex)) return true;
+        if (std.mem.eql(u8, source_path, ex)) return true;
         // Directory prefix: ensure the next char is a separator
         // so `tests/wip` doesn't accidentally swallow `tests/wipe.gas`.
-        if (std.mem.startsWith(u8, gas_path, ex) and gas_path.len > ex.len) {
-            const next = gas_path[ex.len];
+        if (std.mem.startsWith(u8, source_path, ex) and source_path.len > ex.len) {
+            const next = source_path[ex.len];
             if (next == '/' or next == std.fs.path.sep) return true;
         }
     }
@@ -220,7 +318,7 @@ fn stem(file: []const u8) []const u8 {
 fn runOne(io: std.Io, arena: std.mem.Allocator, prog: Program, cycle_budget: u64) !Result {
     const t0 = std.Io.Timestamp.now(io, .awake);
 
-    var fused = gero.asm_.resolveIncludes(io, arena, prog.gas_path) catch |err| {
+    var fused = gero.asm_.resolveIncludes(io, arena, prog.source_path) catch |err| {
         return finalize(io, t0, prog, .asm_failed, try std.fmt.allocPrint(arena, "include error ({s})", .{@errorName(err)}));
     };
     defer fused.deinit();
@@ -263,7 +361,7 @@ fn finalize(io: std.Io, t0: std.Io.Timestamp, prog: Program, outcome: Outcome, d
     const t1 = std.Io.Timestamp.now(io, .awake);
     return .{
         .name = prog.name,
-        .gas_path = prog.gas_path,
+        .source_path = prog.source_path,
         .outcome = outcome,
         .elapsed_ns = t0.durationTo(t1).nanoseconds,
         .detail = detail,
@@ -344,7 +442,7 @@ fn writeFailureBodies(out: *std.Io.Writer, style: gero.asm_.Style, results: []co
             try out.writeAll("  got:\n");
             try writeIndented(out, r.got, "    ");
         }
-        try out.print("  at {s}\n", .{r.gas_path});
+        try out.print("  at {s}\n", .{r.source_path});
     }
 }
 
@@ -443,7 +541,7 @@ test "test: writeStatusLine non-verbose ok" {
     var w: std.Io.Writer = .fixed(&buf);
     const r: Result = .{
         .name = "hello",
-        .gas_path = "tests/asm/programs/hello.gas",
+        .source_path = "tests/asm/programs/hello.gas",
         .outcome = .ok,
         .elapsed_ns = 0,
     };
@@ -456,7 +554,7 @@ test "test: writeStatusLine FAIL with verbose duration" {
     var w: std.Io.Writer = .fixed(&buf);
     const r: Result = .{
         .name = "boom",
-        .gas_path = "x.gas",
+        .source_path = "x.gas",
         .outcome = .diff_failed,
         .elapsed_ns = 0,
     };
@@ -470,7 +568,7 @@ test "test: writeFailureBodies prints expected/got for diff fails" {
     const results = [_]Result{
         .{
             .name = "boom",
-            .gas_path = "tests/asm/programs/boom.gas",
+            .source_path = "tests/asm/programs/boom.gas",
             .outcome = .diff_failed,
             .elapsed_ns = 0,
             .detail = "stdout differs from .expected",
@@ -493,8 +591,8 @@ test "test: writeFailureBodies prints expected/got for diff fails" {
 }
 
 test "test: lessByName sorts case-sensitive alphabetically" {
-    const a: Program = .{ .name = "alpha", .gas_path = "a.gas", .expected = "" };
-    const b: Program = .{ .name = "beta", .gas_path = "b.gas", .expected = "" };
+    const a: Program = .{ .name = "alpha", .source_path = "a.gas", .expected = "" };
+    const b: Program = .{ .name = "beta", .source_path = "b.gas", .expected = "" };
     try testing.expect(lessByName({}, a, b));
     try testing.expect(!lessByName({}, b, a));
 }

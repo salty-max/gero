@@ -112,14 +112,21 @@ mismatch).
 
 ### 3.4 `gero test [pattern]` — run tests
 
-> asm-level golden-stdout harness. The
-> runner reads `[test].include` from `gero.toml`, walks each
-> declared path for `.gas` programs paired with a sibling
-> `<name>.expected` file, assembles each, boots a fresh VM,
-> captures stdout (via the host `int $10` print syscall), and diffs
-> against the golden. The lang-level form described below (`@test`
-> functions, structured assertion diagnostics) lands with the future
-> gero-lang compiler.
+> One walk, two kinds of test. The runner reads `[test].include`
+> from `gero.toml` and covers both languages found under it:
+>
+> - **`.gas` golden tests** — a program paired with a sibling
+>   `<name>.expected`. Assembled, booted on a fresh VM, stdout
+>   captured via the host `int $10` print syscall and diffed against
+>   the golden.
+> - **`.gr` `@test` defs** (§3.7.5) — each module is parsed and
+>   type-checked once, then lowered once per `@test` def with that def
+>   as the entry point and run on a fresh VM. A clean `hlt` passes; the
+>   `trap` fault a failed `test.assert_*` / `panic` raises fails, as
+>   does any other fault or a cycle-budget overrun.
+>
+> `[pattern]` filters both by name — a `.gas` program's basename or a
+> `@test` def's own name.
 
 ```bash
 gero test                         # all .gas tests under [test].include
@@ -183,20 +190,27 @@ gero bench --iter=10000           # custom iteration count
 **Output format:**
 
 ```
-running 4 benches
-bench_damage_calc       1000 iter   avg 142 cyc   min 138   max 156
-bench_format_string     1000 iter   avg 87 cyc    min 82    max 94
-...
+running 2 benchmarks, 1000 iterations each
+bench damage_calc ... ok  (avg 142 cyc, min 138 cyc, max 156 cyc)
+bench format_string ... ok  (avg 87 cyc, min 82 cyc, max 94 cyc)
 ```
 
 **Behavior:**
-- Iteration count via `--iter=N` flag (default 1000).
-- Cycle counts assume cycle-accurate VM — wall-clock
-  fallback if not.
-- Benches that fault crash the run (no error swallowing — a faulting
-  bench is a bug).
+- Discovers `@bench` defs in the `.gr` modules under
+  `[test].include`, the same walk `gero test` uses. `[pattern]`
+  filters by def name.
+- Iteration count via `--iter=N` (default 1000).
+- Each iteration boots a fresh VM, so a bench measures its own body
+  rather than state left by the run before.
+- Cycle counts come from the VM's own counter. The VM is
+  deterministic — same image, same start state, same count — so a
+  spread between `min` and `max` means the body itself varies, not
+  measurement noise.
+- A bench that faults or exceeds the cycle budget is reported and the
+  run continues; a faulting bench has no meaningful cost to report.
 
-**Exit:** 0 on success; 1 on bench fault; 2 on no benches matched.
+**Exit:** 0 when every bench completed; 6 when any faulted or ran
+away (§5 — a runtime fault). No benches matched is not an error.
 
 ### 3.6 `gero disasm <file.gx>` — disassemble
 
@@ -603,7 +617,6 @@ prints `not yet implemented` and exits non-zero.
 
 | Command | Why not yet |
 |---------|--------------|
-| `gero bench [pattern]` | Needs the `@bench` collector + iteration runner. |
 | `gero lsp` | Single server intended to serve both `.gas` and `.gr` — needs the LSP transport layer. |
 | `gero hexdump <file.gx>` | Low priority — `gero info` + `xxd` cover the use case today. |
 | `gero debug <file.gx>` | Interactive debugger — needs a real-mode UX design pass. |
