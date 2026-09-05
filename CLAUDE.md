@@ -87,6 +87,18 @@ The instinct to ship something almost-complete is paved with the
 phrase "good enough." It isn't. Ship complete or scope down
 honestly with explicit maintainer approval.
 
+**Fix bugs on discovery.** A bug found while working on something
+else gets fixed in that PR, in its own commit — not filed for
+later. A tracker entry is where a defect goes to be forgotten, and
+the person who just found it has the context to fix it cheapest.
+This overrides "diff scope matches the issue": the diff may exceed
+the issue, and the PR body says what else it carries.
+
+File instead of fixing only when the fix is a genuine design
+decision the maintainer should make (two defensible behaviors, a
+spec that has to change to settle it) — then it's a question, not
+a ticket filed silently.
+
 **Stop and ask on open questions.** Scope ambiguity, design A vs
 B, "should this defer?", missing primitive — surface to the
 maintainer, don't silently pick the path of least effort. 30
