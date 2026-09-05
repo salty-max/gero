@@ -37,7 +37,7 @@ pub fn execute(
                 defer loaded_mut.deinit(arena);
                 const entry_path = try manifest_loader.joinUnderRoot(arena, loaded.project_root, loaded.manifest.build.entry);
                 try files.append(arena, entry_path);
-                manifest_loader.expandIncludes(io, arena, term, "gero check", loaded.project_root, loaded.manifest.test_.include, &files) catch |err| switch (err) {
+                manifest_loader.expandIncludes(io, arena, term, "gero check", loaded.project_root, loaded.manifest.test_.include, &.{ ".gas", ".gr" }, &files) catch |err| switch (err) {
                     error.LoadFailed => return 1,
                     else => |e| return e,
                 };

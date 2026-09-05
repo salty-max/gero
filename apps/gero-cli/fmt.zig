@@ -62,7 +62,7 @@ pub fn execute(
                     var files_buf: std.ArrayList([]const u8) = .empty;
                     const entry_path = try manifest_loader.joinUnderRoot(arena, loaded.project_root, loaded.manifest.build.entry);
                     try files_buf.append(arena, entry_path);
-                    manifest_loader.expandIncludes(io, arena, term, "gero fmt", loaded.project_root, loaded.manifest.test_.include, &files_buf) catch |err| switch (err) {
+                    manifest_loader.expandIncludes(io, arena, term, "gero fmt", loaded.project_root, loaded.manifest.test_.include, &.{ ".gas", ".gr" }, &files_buf) catch |err| switch (err) {
                         error.LoadFailed => return 1,
                         else => |e| return e,
                     };

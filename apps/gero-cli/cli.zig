@@ -87,6 +87,9 @@ pub const Options = struct {
     /// front-end for piped source. Ignored outside stdin mode, where
     /// the file extension decides. Defaults to `gas`.
     lang: Lang = .gas,
+    /// `--iter=N` — iterations per benchmark. `null` uses the
+    /// command's default.
+    iter: ?u32 = null,
     /// `--target=<vm|gtx-16>` for `gero build` — overrides the
     /// manifest's `package.target`. `null` = inherit from manifest;
     /// `gtx-16` is reserved (errors with "not yet implemented").
@@ -188,8 +191,7 @@ fn commandSummary(cmd: Command) []const u8 {
 /// discoverable, but split into a separate "planned" section.
 fn commandIsImplemented(cmd: Command) bool {
     return switch (cmd) {
-        .asm_, .compile, .run, .info, .disasm, .test_, .check, .fmt, .new, .init, .build, .repl => true,
-        .bench => false,
+        .asm_, .compile, .run, .info, .disasm, .test_, .check, .fmt, .new, .init, .build, .repl, .bench => true,
     };
 }
 
@@ -355,6 +357,14 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero build --target=vm{s}          {s}# explicit target override (default is the manifest's){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("\nResolves gero.toml via ancestor walk. Run `gero new <name>` to scaffold.\n", .{});
         },
+        .bench => {
+            try out.print("  {s}gero bench{s} [pattern] [--iter=<N>] [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero bench{s}                      {s}# every @bench def under [test].include{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero bench sprite{s}               {s}# only benches whose name contains `sprite`{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero bench --iter=100{s}           {s}# 100 iterations instead of the default 1000{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("\nReports avg / min / max cycle counts. The VM is deterministic, so\na spread between min and max means the body itself varies.\n", .{});
+        },
         .repl => {
             try out.print("  {s}gero repl{s}\n\n", .{ a.cyan, a.reset });
             try out.print("{s}META-COMMANDS{s}\n", .{ a.yellow, a.reset });
@@ -363,8 +373,6 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}.reset{s}                           {s}# drop every binding, start fresh{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}.dump <name>{s}                     {s}# print the source of a previously-defined name{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
-        // allow-strict: commandIsImplemented() filtered above
-        else => unreachable,
     }
 
     try out.print("\n{s}FLAGS{s}\n", .{ a.yellow, a.reset });
@@ -413,6 +421,7 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .target => .{ .sig = "--target=<m>", .desc = "vm (default) / gtx-16. Overrides manifest's [package].target." },
         .werror => .{ .sig = "--werror", .desc = "Treat warnings as errors (escalates exit code to 4)." },
         .lang => .{ .sig = "--lang=<l>", .desc = "gas (default) / gr. Picks the front-end for --stdin (paths use the extension)." },
+        .iter => .{ .sig = "--iter=<N>", .desc = "Iterations per benchmark (default 1000)." },
     };
 }
 
@@ -433,7 +442,7 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .build => &.{ .help, .target, .quiet, .verbose, .color, .no_color },
         .repl => &.{ .help, .color, .no_color },
         .compile => &.{ .help, .out, .optimize, .quiet, .verbose, .color, .no_color },
-        .bench => &.{.help},
+        .bench => &.{ .help, .iter, .quiet, .color, .no_color },
     };
 }
 
@@ -468,7 +477,7 @@ fn parseLang(s: []const u8) ParseError!Lang {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, stdin, format, target, werror, lang };
+const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, stdin, format, target, werror, lang, iter };
 
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
@@ -489,6 +498,7 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "target")) return .target;
     if (std.mem.eql(u8, s, "werror")) return .werror;
     if (std.mem.eql(u8, s, "lang")) return .lang;
+    if (std.mem.eql(u8, s, "iter")) return .iter;
     return null;
 }
 
@@ -523,6 +533,7 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .target => opts.target = value orelse return error.MissingFlagValue,
         .werror => opts.werror = true,
         .lang => opts.lang = try parseLang(value orelse return error.MissingFlagValue),
+        .iter => opts.iter = std.fmt.parseInt(u32, value orelse return error.MissingFlagValue, 10) catch return error.InvalidEnumValue,
     }
 }
 
@@ -532,7 +543,7 @@ fn parseBank(s: []const u8) ParseError!u8 {
 
 fn needsValue(kind: FlagKind) bool {
     return switch (kind) {
-        .optimize, .out, .color, .bank, .format, .target, .lang => true,
+        .optimize, .out, .color, .bank, .format, .target, .lang, .iter => true,
         else => false,
     };
 }
@@ -856,13 +867,19 @@ test "commandHelp: every implemented command renders a usage block" {
     }
 }
 
-test "commandHelp: an unimplemented command says so instead of a usage block" {
-    var buf: [1024]u8 = undefined;
-    var out: std.Io.Writer = .fixed(&buf);
-    try commandHelp(&out, .bench, false);
-    const text = buf[0..out.end];
-    try testing.expect(std.mem.indexOf(u8, text, "Not yet implemented") != null);
-    try testing.expect(std.mem.indexOf(u8, text, "USAGE") == null);
+test "commandHelp: every command is implemented, so none renders the planned notice" {
+    // `commandIsImplemented` gates the "Not yet implemented" block.
+    // With every command wired there is nothing left to gate, and the
+    // notice must not appear for any of them.
+    inline for (std.meta.fields(Command)) |f| {
+        const cmd: Command = @enumFromInt(f.value);
+        try testing.expect(commandIsImplemented(cmd));
+
+        var buf: [4096]u8 = undefined;
+        var out: std.Io.Writer = .fixed(&buf);
+        try commandHelp(&out, cmd, false);
+        try testing.expect(std.mem.indexOf(u8, buf[0..out.end], "Not yet implemented") == null);
+    }
 }
 
 test "run: subcommand stub exits 1" {
