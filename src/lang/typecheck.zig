@@ -20,6 +20,12 @@ pub const CheckedProgram = struct {
     /// element type + distinct call-site arities. Codegen emits one
     /// specialization per arity. Backed by `type_arena`.
     variadics: std.StringHashMapUnmanaged(VariadicInfo),
+    /// Type of every named binding, keyed by the start offset of its
+    /// declaring identifier. Codegen has the initializer's type from
+    /// `expr_types`, but a destructured binder has no expression of
+    /// its own — this is where its type comes from. Backed by
+    /// `type_arena`.
+    binder_types: std.AutoHashMapUnmanaged(u32, *const types.Type),
     type_arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
 
@@ -105,6 +111,7 @@ pub fn typecheckModule(
         .current_class_extends = null,
         .current_class_name = null,
         .non_nil = .{},
+        .binder_types = .{},
         .enum_registry = .{},
         .struct_registry = .{},
         .class_registry = .{},
@@ -176,6 +183,7 @@ pub fn typecheckModule(
         .diagnostics = try diagnostics.toOwnedSlice(allocator),
         .expr_types = expr_types,
         .variadics = c.variadic_info,
+        .binder_types = c.binder_types,
         .type_arena = arena,
         .allocator = allocator,
     };
@@ -270,6 +278,9 @@ pub const Checker = struct {
     /// Identifiers statically known non-nil in the current flow.
     /// Populated by simple nil-check pattern matching.
     non_nil: std.StringHashMapUnmanaged(void),
+    /// Binder-name type map built during registration — see
+    /// `CheckedProgram.binder_types`.
+    binder_types: std.AutoHashMapUnmanaged(u32, *const types.Type),
     /// Enum-name → decl pointer (pass 1).
     enum_registry: std.StringHashMapUnmanaged(*const ast.EnumDecl),
     /// Struct-name → decl pointer.
