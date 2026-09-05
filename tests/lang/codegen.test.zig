@@ -8049,3 +8049,81 @@ test "codegen/vec: scalar optional == nil / != nil tests the present tag" {
         \\end
     , "1\n1\n");
 }
+
+// ---------- lambda return-type inference (§4.7.1) ----------
+
+/// Compile `source`, run it, and assert on what it printed.
+fn expectPrints(source: []const u8, expected: []const u8) !void {
+    var compiled = try compileSource(source);
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings(expected, writer.written());
+}
+
+test "codegen: an unannotated short lambda prints its string, not its pointer" {
+    try expectPrints(
+        \\def main()
+        \\  let f = || "hi"
+        \\  print f()
+        \\end
+    , "hi\n");
+}
+
+test "codegen: an unannotated long lambda prints its string" {
+    try expectPrints(
+        \\def main()
+        \\  let f = lambda ()
+        \\    return "hi"
+        \\  end
+        \\  print f()
+        \\end
+    , "hi\n");
+}
+
+test "codegen: a `do`-bodied lambda prints its string" {
+    try expectPrints(
+        \\def main()
+        \\  let f = || do
+        \\    let x = "hi"
+        \\    x
+        \\  end
+        \\  print f()
+        \\end
+    , "hi\n");
+}
+
+test "codegen: an inferred string lambda closing over a capture prints it" {
+    try expectPrints(
+        \\def main()
+        \\  let n = 7
+        \\  let f = || "n=$(n)"
+        \\  print f()
+        \\end
+    , "n=7\n");
+}
+
+test "codegen: an explicitly annotated string lambda is unchanged" {
+    try expectPrints(
+        \\def main()
+        \\  let f = || -> str "hi"
+        \\  print f()
+        \\end
+    , "hi\n");
+}
+
+test "codegen: an inferred integer lambda still prints its value" {
+    try expectPrints(
+        \\def main()
+        \\  let f = || 41 + 1
+        \\  print f()
+        \\end
+    , "42\n");
+}

@@ -3265,3 +3265,105 @@ test "typecheck/vec: an unknown Vec method is rejected" {
         \\end
     , "E_TYPE_UNDEFINED_METHOD");
 }
+
+// ---------- lambda return-type inference (§4.7.1) ----------
+
+test "typecheck: an unannotated short lambda infers `str` from its body" {
+    try expectClean(
+        \\def main()
+        \\  let f = || "hi"
+        \\  let s: str = f()
+        \\  print s
+        \\end
+    );
+}
+
+test "typecheck: an unannotated long lambda infers `str` from its return" {
+    try expectClean(
+        \\def main()
+        \\  let f = lambda ()
+        \\    return "hi"
+        \\  end
+        \\  let s: str = f()
+        \\  print s
+        \\end
+    );
+}
+
+test "typecheck: an inferred lambda return still honors an explicit annotation" {
+    try expectClean(
+        \\def main()
+        \\  let f = || -> str "hi"
+        \\  let s: str = f()
+        \\  print s
+        \\end
+    );
+}
+
+test "typecheck: a function-typed hint still wins over body inference" {
+    try expectClean(
+        \\def main()
+        \\  let f: fn() -> str = || "hi"
+        \\  let s: str = f()
+        \\  print s
+        \\end
+    );
+}
+
+test "typecheck: an inferred lambda body flows its type into a `do` block" {
+    try expectClean(
+        \\def main()
+        \\  let f = || do
+        \\    let x = "hi"
+        \\    x
+        \\  end
+        \\  let s: str = f()
+        \\  print s
+        \\end
+    );
+}
+
+test "typecheck: an inferred `str` lambda rejects a non-str binding" {
+    try expectCode(
+        \\def main()
+        \\  let f = || "hi"
+        \\  let n: i16 = f()
+        \\  print n
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: a lambda whose returns disagree is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let f = lambda (x: i16)
+        \\    if x > 0
+        \\      return "positive"
+        \\    end
+        \\    return 42
+        \\  end
+        \\  print f(1)
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: a lambda with no value-returning `return` stays nil" {
+    try expectClean(
+        \\def main()
+        \\  let f = lambda ()
+        \\    print "side effect"
+        \\  end
+        \\  f()
+        \\end
+    );
+}
+
+test "typecheck: integer inference is unchanged by body-based return inference" {
+    try expectClean(
+        \\def main()
+        \\  let f = || 41 + 1
+        \\  let n: i16 = f()
+        \\  print n
+        \\end
+    );
+}

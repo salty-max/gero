@@ -99,6 +99,7 @@ pub fn typecheckModule(
         .module_scope = &module_scope,
         .current_scope = &module_scope,
         .current_ret_ty = null,
+        .lambda_ret_sink = null,
         .current_variadic_param = null,
         .in_static_method = false,
         .current_class_extends = null,
@@ -217,6 +218,14 @@ pub const DeferredMethod = struct {
     method: *const ast.DefDecl,
 };
 
+/// One `return <expr>` seen while inferring a lambda's return type:
+/// the value's type plus the span to blame if a later `return`
+/// disagrees with the first one.
+const ReturnSample = struct {
+    ty: *const types.Type,
+    span: ast.Span,
+};
+
 /// Stateful walker that runs resolution + inference + checking.
 /// Sub-modules under `typecheck/` take a `*Checker` and call back
 /// into its public methods.
@@ -236,6 +245,10 @@ pub const Checker = struct {
     /// Used as a hint for `return expr` so int literals pin to the
     /// declared return type.
     current_ret_ty: ?*const types.Type,
+    /// Sink for `return` types while inferring an unannotated lambda's
+    /// return type (§4.7.1). Non-null only inside such a body; saved
+    /// and restored around the walk like `current_ret_ty`.
+    lambda_ret_sink: ?*std.ArrayList(ReturnSample),
     /// Name of the trailing `args` slot while type-checking a variadic
     /// body, else `null`. Lets an out-of-range `args.N` report against
     /// the call-site minimum arity rather than a bare tuple width.
@@ -1088,12 +1101,27 @@ pub const Checker = struct {
         if (rs.value) |v| {
             try self.checkReturnStackLifetime(v);
             const v_ty = try self.inferExpr(v, self.current_ret_ty);
+            if (self.lambda_ret_sink) |sink| if (v_ty) |vt| {
+                try sink.append(self.arena, .{ .ty = vt, .span = v.span() });
+            };
             if (self.current_ret_ty) |rt| if (v_ty) |vt| {
                 if (!predicates.isNilType(rt.*)) {
                     try self.checkStoreCompat(v.span(), rt, vt);
                 }
             };
         }
+    }
+
+    /// Return type for a lambda with no annotation and no hint: the
+    /// first `return`'s type, with every later `return` checked
+    /// against it so a body that returns two different types is
+    /// rejected rather than silently taking the first. A body with
+    /// no value-returning `return` is `nil`.
+    fn inferredLambdaRet(self: *Checker, samples: []const ReturnSample) WalkError!*const types.Type {
+        if (samples.len == 0) return try self.primitive(.nil_);
+        const first = samples[0].ty;
+        for (samples[1..]) |s| try self.checkStoreCompat(s.span, first, s.ty);
+        return first;
     }
 
     /// `return &x` where `x` is a function-local binding produces a
@@ -1598,19 +1626,34 @@ pub const Checker = struct {
                     });
                     try param_types.append(self.arena, pt);
                 }
-                const ret_ty: *const types.Type = if (l.ret_type) |r|
+                // An annotation wins; else a function-typed hint
+                // supplies it; else it comes from the body's own
+                // `return`s (§4.7.1 — "usually inferred").
+                const declared: ?*const types.Type = if (l.ret_type) |r|
                     try type_resolve.resolveType(self, r)
                 else if (hint_fn) |hf|
                     hf.ret
                 else
-                    try self.primitive(.nil_);
+                    null;
+
                 // Swap current_ret_ty so `return expr` inside the
                 // lambda body checks against the lambda's own
-                // return type rather than the enclosing fn's.
+                // return type rather than the enclosing fn's. While
+                // inferring it's `null`, so `checkReturn` records
+                // each return instead of comparing against a type
+                // that isn't known yet.
                 const saved_ret = self.current_ret_ty;
-                self.current_ret_ty = ret_ty;
+                self.current_ret_ty = declared;
                 defer self.current_ret_ty = saved_ret;
+
+                var samples: std.ArrayList(ReturnSample) = .empty;
+                const saved_sink = self.lambda_ret_sink;
+                self.lambda_ret_sink = if (declared == null) &samples else null;
+                defer self.lambda_ret_sink = saved_sink;
+
                 for (l.body) |s| try self.walkStatement(s);
+
+                const ret_ty = declared orelse try self.inferredLambdaRet(samples.items);
                 const sig = try self.arena.create(types.Type);
                 sig.* = .{ .function = .{
                     .params = try param_types.toOwnedSlice(self.arena),
