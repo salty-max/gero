@@ -164,6 +164,10 @@ pub const Options = struct {
     /// `use X as Y from "./mod"` quoted-path aliases (`Y` → `X`) from
     /// the fuser, or `null` for a single-file build.
     import_aliases: ?*const std.StringHashMapUnmanaged([]const u8) = null,
+    /// Module graph from the fuser, or `null` for a single-file
+    /// build. Lets same-named defs in different modules get distinct
+    /// symbols (§5).
+    graph: ?typecheck_mod.ModuleGraph = null,
 };
 
 /// A stdlib function pulled into scope by a selective `use` —
@@ -256,6 +260,8 @@ pub fn compile(
         .struct_decls = .{},
         .class_decls = .{},
         .import_aliases = opts.import_aliases,
+        .graph = opts.graph,
+        .duplicated_defs = .{},
         .selective_stdlib = .{},
         .class_layouts = .{},
         .current_class_name = null,
@@ -728,6 +734,12 @@ pub const Emitter = struct {
     /// single-file build. Resolved before a top-level name lookup so
     /// an alias lowers like its target.
     import_aliases: ?*const std.StringHashMapUnmanaged([]const u8),
+    /// Module graph, when the program spans more than one file.
+    graph: ?typecheck_mod.ModuleGraph,
+    /// Top-level def names declared in more than one module. Only
+    /// these get module-qualified symbols — an unambiguous name keeps
+    /// its bare form so a disassembly stays readable.
+    duplicated_defs: std.StringHashMapUnmanaged(void),
     /// Selectively-imported stdlib functions (`use rng from math`):
     /// local name → `(module, real_name)`. Built in the pre-pass.
     selective_stdlib: std.StringHashMapUnmanaged(StdlibImport),
@@ -1420,6 +1432,7 @@ pub const Emitter = struct {
         // decide direct-call vs trampoline without needing the
         // target's address yet.
         try self.collectDefBanks(program);
+        try self.collectDuplicatedDefs(program);
 
         // Validation-only builds (no entry) still lower every def / method
         // body below so codegen errors surface; only the entry prologue
@@ -1669,6 +1682,66 @@ pub const Emitter = struct {
 
     /// Scan top-level `def`s, recording each name → its `@bank N`
     /// annotation (or `null` for base-image defs).
+    /// Record every top-level def name declared by more than one
+    /// module. Those are the only names needing a module-qualified
+    /// symbol; a unique name keeps its bare form so a disassembly
+    /// stays readable.
+    fn collectDuplicatedDefs(self: *Emitter, program: *const ast.Program) !void {
+        if (self.graph == null) return;
+        var seen: std.StringHashMapUnmanaged(u16) = .{};
+        for (program.statements) |*stmt| switch (stmt.*) {
+            .def_decl => |*dd| {
+                const name = self.source[dd.name.start..dd.name.end];
+                const module = self.moduleOf(dd.name.start);
+                if (seen.get(name)) |first| {
+                    if (first != module) try self.duplicated_defs.put(self.arena, name, {});
+                } else {
+                    try seen.put(self.arena, name, module);
+                }
+            },
+            else => {},
+        };
+    }
+
+    /// Module id owning a fused-source offset, or `0` without a graph.
+    fn moduleOf(self: *const Emitter, offset: u32) u16 {
+        const g = self.graph orelse return 0;
+        return g.source_map.fileIdAt(offset) orelse 0;
+    }
+
+    /// Symbol name for a top-level def referenced at `offset`. A name
+    /// only one module declares keeps its bare form. A duplicated one
+    /// resolves the way the typechecker did — the referring module's
+    /// own declaration first, then the modules it imports — and takes
+    /// that module's qualified symbol.
+    pub fn qualifiedFnName(self: *Emitter, name: []const u8, offset: u32) ![]const u8 {
+        if (!self.duplicated_defs.contains(name)) return name;
+        const g = self.graph orelse return name;
+        const here = self.moduleOf(offset);
+        if (self.moduleDeclares(here, name)) return self.qualify(name, here);
+        for (g.imports) |edge| {
+            if (edge.from != here) continue;
+            if (self.moduleDeclares(edge.to, name)) return self.qualify(name, edge.to);
+        }
+        return self.qualify(name, here);
+    }
+
+    /// Whether module `id` declares a top-level def called `name`.
+    fn moduleDeclares(self: *const Emitter, id: u16, name: []const u8) bool {
+        for (self.checked.program.statements) |*stmt| switch (stmt.*) {
+            .def_decl => |*dd| {
+                if (self.moduleOf(dd.name.start) != id) continue;
+                if (std.mem.eql(u8, self.source[dd.name.start..dd.name.end], name)) return true;
+            },
+            else => {},
+        };
+        return false;
+    }
+
+    fn qualify(self: *Emitter, name: []const u8, module: u16) ![]const u8 {
+        return std.fmt.allocPrint(self.arena, "{s}${d}", .{ name, module });
+    }
+
     fn collectDefBanks(self: *Emitter, program: *const ast.Program) !void {
         for (program.statements) |*stmt| switch (stmt.*) {
             .def_decl => |*dd| {

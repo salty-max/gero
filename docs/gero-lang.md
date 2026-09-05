@@ -2289,9 +2289,16 @@ function, not for whole subroutines.
 
 ### 5.1 Files = modules
 
-Each `.gr` file is a module. The filename (without extension) is
-the module name. Top-level declarations are **exported by default**;
-prefix with `local` to keep private.
+Each `.gr` file is a module with its own namespace. Two modules may
+declare the same top-level name — each resolves its own, and neither
+is visible to the other except through a `use`. Top-level
+declarations are **exported by default**; prefix with `local` to keep
+private.
+
+When two of a module's imports provide the same name, an unqualified
+reference can't say which is meant and is rejected
+(`E_TYPE_AMBIGUOUS_IMPORT`); alias one with
+`use <name> as <other> from "..."`.
 
 ```
 -- file: math.gr

@@ -109,7 +109,7 @@ pub fn compileLang(
         return .{ .failed = 3 };
     }
 
-    var checked = gero.lang.typecheckModule(arena, fused.source, &tree.program, &fused.import_aliases) catch |err| {
+    var checked = gero.lang.typecheckGraph(arena, fused.source, &tree.program, &fused.import_aliases, .{ .source_map = &fused.source_map, .imports = fused.imports }) catch |err| {
         try term.err("{s}: typecheck failure ({s})", .{ cmd, @errorName(err) });
         return .{ .failed = 1 };
     };
@@ -124,6 +124,7 @@ pub fn compileLang(
     var compiled = gero.lang.compile(arena, fused.source, &checked, .{
         .optimize = mapOptimize(optimize),
         .import_aliases = &fused.import_aliases,
+        .graph = .{ .source_map = &fused.source_map, .imports = fused.imports },
     }) catch |err| switch (err) {
         error.EntryNotFound => {
             try term.err("{s}: no top-level `def main()` — every program needs an entry point", .{cmd});

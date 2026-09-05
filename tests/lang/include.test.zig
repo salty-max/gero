@@ -208,3 +208,63 @@ test "resolveUseImports: one alias bound to two different targets errors" {
     try std.testing.expect(dup != null);
     try std.testing.expectEqualStrings("h", dup.?.requested);
 }
+
+// ---------- module graph (§5) ----------
+
+test "resolveUseImports: a `use` records an edge from importer to imported" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
+    try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend\n");
+
+    const main_path = try fx.pathOf("main.gr");
+    defer alloc.free(main_path);
+
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, main_path);
+    defer fused.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), fused.imports.len);
+    try std.testing.expect(fused.imports[0].from != fused.imports[0].to);
+}
+
+test "resolveUseImports: fileIdAt maps an offset back to its module" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
+    try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend\n");
+
+    const main_path = try fx.pathOf("main.gr");
+    defer alloc.free(main_path);
+
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, main_path);
+    defer fused.deinit();
+
+    // The two bodies live in different files, so their offsets must
+    // not report the same module.
+    const lib_at = std.mem.indexOf(u8, fused.source, "return 1").?;
+    const main_at = std.mem.indexOf(u8, fused.source, "print helper").?;
+    // safety: both index the fused buffer, bounded well under 4 GiB.
+    const lib_id = fused.source_map.fileIdAt(@intCast(lib_at));
+    const main_id = fused.source_map.fileIdAt(@intCast(main_at));
+    try std.testing.expect(lib_id != null and main_id != null);
+    try std.testing.expect(lib_id.? != main_id.?);
+}
+
+test "resolveUseImports: a diamond records an edge for each importer" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("base.gr", "def shared() -> i16\n  return 1\nend\n");
+    try fx.write("a.gr", "use \"./base\"\ndef from_a() -> i16\n  return shared()\nend\n");
+    try fx.write("b.gr", "use \"./base\"\ndef from_b() -> i16\n  return shared()\nend\n");
+    try fx.write("main.gr", "use \"./a\"\nuse \"./b\"\ndef main()\n  print from_a()\nend\n");
+
+    const main_path = try fx.pathOf("main.gr");
+    defer alloc.free(main_path);
+
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, main_path);
+    defer fused.deinit();
+
+    // `base` is fused once but both `a` and `b` still import it, so
+    // resolution can see it from either.
+    try std.testing.expectEqual(@as(usize, 4), fused.imports.len);
+}

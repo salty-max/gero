@@ -3,6 +3,7 @@
 /// VM) and asserts on printed output or VM-memory state.
 const std = @import("std");
 const gero = @import("gero");
+const util = @import("util");
 
 const alloc = std.testing.allocator;
 
@@ -8452,4 +8453,72 @@ test "codegen/globals: a plain module-scope `let` is unaffected" {
         \\  print g
         \\end
     , "7\n");
+}
+
+// ---------- module namespaces (§5) ----------
+
+test "codegen/modules: same-named defs in different modules keep separate symbols" {
+    // Two modules each declare `helper`; each call must reach its own.
+    // Before per-module symbols the second registration overwrote the
+    // first and both call sites landed on one address.
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\def helper() -> i16
+        \\  return 1
+        \\end
+        \\
+        \\def lib_only() -> i16
+        \\  return helper() + 10
+        \\end
+    );
+    try fx.write("main.gr",
+        \\use "./lib"
+        \\
+        \\def helper() -> i16
+        \\  return 100
+        \\end
+        \\
+        \\def main()
+        \\  print helper()
+        \\  print lib_only()
+        \\end
+    );
+    try fx.expectRuns("main.gr", "100\n11\n");
+}
+
+test "codegen/modules: a cross-module call resolves through the `use` binding" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("m.gr",
+        \\def twice(n: i16) -> i16
+        \\  return n * 2
+        \\end
+    );
+    try fx.write("main.gr",
+        \\use "./m"
+        \\
+        \\def main()
+        \\  print twice(21)
+        \\end
+    );
+    try fx.expectRuns("main.gr", "42\n");
+}
+
+test "codegen/modules: `use X as Y from` still binds the alias" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("m.gr",
+        \\def twice(n: i16) -> i16
+        \\  return n * 2
+        \\end
+    );
+    try fx.write("main.gr",
+        \\use twice as dbl from "./m"
+        \\
+        \\def main()
+        \\  print dbl(21)
+        \\end
+    );
+    try fx.expectRuns("main.gr", "42\n");
 }

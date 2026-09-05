@@ -115,6 +115,16 @@ pub const typecheck = typecheck_mod.typecheck;
 /// Type-check a fused multi-file program, resolving `use X as Y`
 /// quoted-path aliases (`Y` → `X`).
 pub const typecheckModule = typecheck_mod.typecheckModule;
+
+/// `typecheckModule` with the module graph, so declarations from
+/// different files get their own namespaces (§5).
+pub const typecheckGraph = typecheck_mod.typecheckGraph;
+
+/// Which module each declaration belongs to and what each can see.
+pub const ModuleGraph = typecheck_mod.ModuleGraph;
+
+/// One `use` edge in the module graph.
+pub const ImportEdge = include_mod.ImportEdge;
 /// `mem.*` stdlib builtin signature.
 pub const MemBuiltinSig = tc_mem_builtin.MemBuiltinSig;
 /// Look up a `mem.X` builtin by name.

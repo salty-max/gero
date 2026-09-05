@@ -20,7 +20,11 @@ const bank_window_base = archive.bank_window_base;
 
 /// Emit one def under its own name: prologue + body + epilogue.
 pub fn emitDef(self: *Emitter, def: *const ast.DefDecl, kind: DefKind) !void {
-    return emitDefWithLabel(self, def, kind, self.source[def.name.start..def.name.end]);
+    // Two modules may declare the same def name (§5); the label is
+    // module-qualified when that happens, so both get their own
+    // address instead of the second overwriting the first.
+    const label = try self.qualifiedFnName(self.source[def.name.start..def.name.end], def.name.start);
+    return emitDefWithLabel(self, def, kind, label);
 }
 
 /// Emit a method as a plain def under a mangled `ClassName.methodName`

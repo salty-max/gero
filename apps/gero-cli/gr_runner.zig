@@ -82,7 +82,7 @@ pub fn discover(
             continue;
         }
 
-        var checked = gero.lang.typecheckModule(arena, fused.source, &tree.program, &fused.import_aliases) catch {
+        var checked = gero.lang.typecheckGraph(arena, fused.source, &tree.program, &fused.import_aliases, .{ .source_map = &fused.source_map, .imports = fused.imports }) catch {
             tree.deinit();
             fused.deinit();
             continue;
@@ -162,6 +162,7 @@ pub fn compileEntry(
     var compiled = gero.lang.compile(arena, module.fused.source, &module.checked, .{
         .entry_name = entry_name,
         .import_aliases = &module.fused.import_aliases,
+        .graph = .{ .source_map = &module.fused.source_map, .imports = module.fused.imports },
     }) catch return null;
     defer compiled.deinit();
     if (compiled.hasErrors()) return null;
