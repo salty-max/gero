@@ -75,6 +75,8 @@ Run `gero <subcommand> --help` for per-command flags, or
   covering recursion, loops, payload-carrying enums, and `match`
 - [docs/gero-lang.md](./docs/gero-lang.md) — gero-lang spec (types,
   classes, pattern matching, annotations, the compilation model)
+- [docs/gero-lab.md](./docs/gero-lab.md) — browser playground spec —
+  the wasm engine boundary, worker protocol, and debugger cockpit
 
 ## Use as a library
 
@@ -100,8 +102,12 @@ Open work is tracked on the
 Editor tooling (tree-sitter grammar, VS Code extension) lives in
 [`editors/`](./editors/).
 
-The gtx-16 fantasy console and the `gero-lab` web playground are out
-of scope for this repo — they consume gero as a library.
+The gtx-16 fantasy console is built in its own repo and consumes gero
+as a library; its contract lives in [`docs/gtx-16.md`](./docs/gtx-16.md).
+The `gero-lab` browser playground is specified in
+[`docs/gero-lab.md`](./docs/gero-lab.md) and belongs to this repo — it
+builds against the working tree so the playground can never lag the
+toolchain it demonstrates.
 
 ## Compatibility
 
