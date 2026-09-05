@@ -31,8 +31,8 @@ pub const Symbol = struct {
 };
 
 /// Name → Symbol lookup. Built incrementally by the codegen
-/// pass; consumed during operand resolution + diagnostics
-/// formatting (#37).
+/// pass; consumed during operand resolution and when formatting
+/// diagnostics.
 pub const SymbolTable = struct {
     entries: std.StringHashMap(Symbol),
     /// Synthetic keys (Name.field for struct offsets) we allocated
@@ -73,8 +73,12 @@ pub const SymbolTable = struct {
     }
 
     /// Register a symbol with an **owned** key (allocator-allocated).
-    /// Same duplicate rules as `putBorrowed`. On error, the caller
-    /// is responsible for freeing the key.
+    /// Same duplicate rules as `putBorrowed`.
+    ///
+    /// Ownership: `error.Duplicate` is decided before the key is taken,
+    /// so the caller still owns it and must free. On every other path —
+    /// success or allocation failure — the table owns `name` and frees
+    /// it in `deinit`; the caller must not.
     pub fn putOwned(self: *SymbolTable, name: []const u8, sym: Symbol) !void {
         if (sym.kind == .label or sym.kind == .data) {
             if (self.entries.get(name)) |existing| {
@@ -83,7 +87,13 @@ pub const SymbolTable = struct {
                 }
             }
         }
-        try self.owned_keys.append(self.allocator, name);
+        // Take ownership before the second fallible call, so a failure
+        // there leaves the key registered for `deinit` rather than
+        // stranded between the two.
+        self.owned_keys.append(self.allocator, name) catch |err| {
+            self.allocator.free(name);
+            return err;
+        };
         try self.entries.put(name, sym);
     }
 
