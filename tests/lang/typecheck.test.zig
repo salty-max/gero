@@ -3405,3 +3405,56 @@ test "typecheck: integer inference is unchanged by body-based return inference" 
         \\end
     );
 }
+
+// ---------- `@private` is class-members-only (§3.7.6) ----------
+
+test "typecheck: `@private` on a top-level def is rejected" {
+    try expectCode(
+        \\@private
+        \\def hidden() -> i16
+        \\  return 1
+        \\end
+        \\
+        \\def main()
+        \\  print hidden()
+        \\end
+    , "E_ANN_TARGET");
+}
+
+test "typecheck: `@private` on a top-level let is rejected" {
+    try expectCode(
+        \\@private
+        \\let g: i16 = 1
+        \\
+        \\def main()
+        \\  print g
+        \\end
+    , "E_ANN_TARGET");
+}
+
+test "typecheck: `@private` on a class member is still accepted" {
+    try expectClean(
+        \\class C
+        \\  @private
+        \\  let hp: i16
+        \\
+        \\  def init(self)
+        \\    self.hp = 1
+        \\  end
+        \\
+        \\  @private
+        \\  def secret(self) -> i16
+        \\    return self.hp
+        \\  end
+        \\
+        \\  def show(self) -> i16
+        \\    return self.secret()
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  let c = C()
+        \\  print c.show()
+        \\end
+    );
+}

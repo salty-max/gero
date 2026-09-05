@@ -28,6 +28,7 @@ const WalkError = error{OutOfMemory};
 /// untyped slot.
 pub fn checkDefDecl(self: *Checker, d: ast.DefDecl) WalkError!void {
     try annotations.validateAnnotations(self, d.annotations, T.DEF);
+    try annotations.rejectPrivateOutsideClass(self, d.annotations);
     if (d.is_bake) try calls.checkBakeAnnotationConflicts(self, d.annotations);
     try calls.checkVariadicPosition(self, d);
 

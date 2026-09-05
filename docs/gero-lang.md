@@ -1001,7 +1001,8 @@ of type `noreturn`.
 Module-level visibility is controlled by the `local` keyword
 (§5.1) — declarations are exported by default, prefix with
 `local` to keep private. Class-member visibility uses `@private`
-(§3.7.6).
+(§3.7.6); `@private` on a top-level `def` or `let` is rejected
+(`E_ANN_TARGET`), since a module has no members to hide.
 
 #### 3.7.4 Interrupt handlers
 
