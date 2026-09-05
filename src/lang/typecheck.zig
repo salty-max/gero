@@ -156,6 +156,11 @@ pub fn typecheckModule(
         else => {},
     };
 
+    // A module body is declarations only (§7.1) — code that should run
+    // at startup lives in `main` or what it calls. Reject anything else
+    // here rather than in codegen, which silently dropped it.
+    for (program.statements) |stmt| try c.rejectNonDeclaration(stmt);
+
     // Pass 1: register top-level decls so forward references resolve.
     for (program.statements) |stmt| try c.registerTopLevel(stmt);
 
@@ -619,6 +624,55 @@ pub const Checker = struct {
             return self.tuple_correlations.get(nc.name);
         }
         return nc.name;
+    }
+
+    /// Source-level name for a statement, for diagnostics that would
+    /// otherwise print an AST tag at the user.
+    fn statementNoun(stmt: ast.Statement) []const u8 {
+        return switch (stmt) {
+            .print_stmt => "a `print`",
+            .expr_stmt => "an expression statement",
+            .assign => "an assignment",
+            .inc_dec => "an increment / decrement",
+            .discard => "a discard",
+            .if_stmt => "an `if`",
+            .while_stmt => "a `while`",
+            .for_stmt => "a `for`",
+            .repeat_stmt => "a `repeat`",
+            .match_stmt => "a `match`",
+            .return_stmt => "a `return`",
+            .break_stmt => "a `break`",
+            .continue_stmt => "a `continue`",
+            .block => "a block",
+            .asm_stmt => "an `asm` block",
+            .defer_stmt => "a `defer`",
+            else => "this statement",
+        };
+    }
+
+    /// §7.1: a module body holds `def` / `class` / `struct` / `enum` /
+    /// `const` / `let` / `use` and nothing else. An executable statement
+    /// at module scope never runs — execution begins at `main` — so it
+    /// is rejected here instead of being dropped during lowering.
+    fn rejectNonDeclaration(self: *Checker, stmt: ast.Statement) WalkError!void {
+        switch (stmt) {
+            .def_decl,
+            .class_decl,
+            .struct_decl,
+            .enum_decl,
+            .const_decl,
+            .let_decl,
+            .use_decl,
+            => {},
+            else => {
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "{s} at module scope never runs — a module body is declarations only (§7.1); move it into `main` or a function it calls",
+                    .{statementNoun(stmt)},
+                );
+                try self.emitSpan("E_TYPE_TOP_LEVEL_STATEMENT", stmt.span(), msg);
+            },
+        }
     }
 
     fn checkLetDecl(self: *Checker, d: ast.LetDecl) WalkError!void {

@@ -988,8 +988,10 @@ test "typecheck: calling a non-function errors" {
 
 test "typecheck: assign matching type accepts" {
     try expectClean(
-        \\let x: i16 = 0
-        \\x = 5
+        \\def main()
+        \\  let x: i16 = 0
+        \\  x = 5
+        \\end
     );
 }
 
@@ -1010,15 +1012,19 @@ test "typecheck: assign LHS literal errors (not a place)" {
 
 test "typecheck: compound op= pins rhs to lhs type" {
     try expectClean(
-        \\let x: u8 = 1
-        \\x += 2
+        \\def main()
+        \\  let x: u8 = 1
+        \\  x += 2
+        \\end
     );
 }
 
 test "typecheck: ++ on integer accepts" {
     try expectClean(
-        \\let x: i16 = 0
-        \\x++
+        \\def main()
+        \\  let x: i16 = 0
+        \\  x++
+        \\end
     );
 }
 
@@ -1104,29 +1110,37 @@ test "typecheck: direct deref on nullable errors with E_NULL_DEREF" {
 
 test "typecheck: deref inside `if x != nil` arm accepts" {
     try expectClean(
-        \\let s: str? = nil
-        \\if s != nil
-        \\  let n = s.len
+        \\def main()
+        \\  let s: str? = nil
+        \\  if s != nil
+        \\    let n = s.len
+        \\  end
         \\end
     );
 }
 
 test "typecheck: deref inside `if nil != x` arm accepts (commutative)" {
     try expectClean(
-        \\let s: str? = nil
-        \\if nil != s
-        \\  let n = s.len
+        \\def main()
+        \\  let s: str? = nil
+        \\  if nil != s
+        \\    let n = s.len
+        \\  end
+        \\def main()
+        \\  end
         \\end
     );
 }
 
 test "typecheck: deref inside `if x == nil` else arm accepts" {
     try expectClean(
-        \\let s: str? = nil
-        \\if s == nil
-        \\  let x = 0
-        \\else
-        \\  let n = s.len
+        \\def main()
+        \\  let s: str? = nil
+        \\  if s == nil
+        \\    let x = 0
+        \\  else
+        \\    let n = s.len
+        \\  end
         \\end
     );
 }
@@ -1264,11 +1278,13 @@ test "typecheck: exhaustive match on enum accepts" {
         \\  case Key(name: str, count: u8)
         \\end
         \\
-        \\let it: Item = Item.Sword
-        \\match it
-        \\  case Item.Sword => let x = 0
-        \\  case Item.Potion(_) => let x = 1
-        \\  case Item.Key(_, _) => let x = 2
+        \\def main()
+        \\  let it: Item = Item.Sword
+        \\  match it
+        \\    case Item.Sword => let x = 0
+        \\    case Item.Potion(_) => let x = 1
+        \\    case Item.Key(_, _) => let x = 2
+        \\  end
         \\end
     );
 }
@@ -1296,11 +1312,13 @@ test "typecheck: a guarded arm doesn't make a later unguarded same-variant arm u
         \\  case Potion(amount: i16)
         \\end
         \\
-        \\let it: Item = Item.Potion(5)
-        \\match it
-        \\  case Item.Potion(n) when n > 0 => let a = 1
-        \\  case Item.Potion(n) => let a = 2
-        \\  case Item.Sword => let a = 0
+        \\def main()
+        \\  let it: Item = Item.Potion(5)
+        \\  match it
+        \\    case Item.Potion(n) when n > 0 => let a = 1
+        \\    case Item.Potion(n) => let a = 2
+        \\    case Item.Sword => let a = 0
+        \\  end
         \\end
     );
 }
@@ -1327,10 +1345,12 @@ test "typecheck: wildcard arm satisfies exhaustiveness" {
         \\  case Potion(amount: i16)
         \\end
         \\
-        \\let it: Item = Item.Sword
-        \\match it
-        \\  case Item.Sword => let x = 0
-        \\  case _ => let x = 1
+        \\def main()
+        \\  let it: Item = Item.Sword
+        \\  match it
+        \\    case Item.Sword => let x = 0
+        \\    case _ => let x = 1
+        \\  end
         \\end
     );
 }
@@ -1342,9 +1362,11 @@ test "typecheck: bare ident arm satisfies exhaustiveness (binding catch-all)" {
         \\  case Potion(amount: i16)
         \\end
         \\
-        \\let it: Item = Item.Sword
-        \\match it
-        \\  case anything => let x = 0
+        \\def main()
+        \\  let it: Item = Item.Sword
+        \\  match it
+        \\    case anything => let x = 0
+        \\  end
         \\end
     );
 }
@@ -1388,10 +1410,12 @@ test "typecheck: or-pattern contributes each alternative to coverage" {
         \\  case Key(name: str, count: u8)
         \\end
         \\
-        \\let it: Item = Item.Sword
-        \\match it
-        \\  case Item.Sword | Item.Potion(_) => let x = 0
-        \\  case Item.Key(_, _) => let x = 1
+        \\def main()
+        \\  let it: Item = Item.Sword
+        \\  match it
+        \\    case Item.Sword | Item.Potion(_) => let x = 0
+        \\    case Item.Key(_, _) => let x = 1
+        \\  end
         \\end
     );
 }
@@ -1401,20 +1425,24 @@ test "typecheck: match on non-enum, non-bool scrutinee skips exhaustiveness" {
     // missing-value diagnostics for arbitrary primitives. bool is
     // the lone exception — its two-value coverage is tracked.
     try expectClean(
-        \\let n: i16 = 0
-        \\match n
-        \\  case 0 => let x = 0
-        \\  case _ => let x = 1
+        \\def main()
+        \\  let n: i16 = 0
+        \\  match n
+        \\    case 0 => let x = 0
+        \\    case _ => let x = 1
+        \\  end
         \\end
     );
 }
 
 test "typecheck: exhaustive bool match (true + false) accepts" {
     try expectClean(
-        \\let flag: bool = true
-        \\match flag
-        \\  case true => let x = 0
-        \\  case false => let x = 1
+        \\def main()
+        \\  let flag: bool = true
+        \\  match flag
+        \\    case true => let x = 0
+        \\    case false => let x = 1
+        \\  end
         \\end
     );
 }
@@ -1439,10 +1467,12 @@ test "typecheck: bool match missing `true` errors with E_MATCH_NON_EXHAUSTIVE" {
 
 test "typecheck: bool match with trailing wildcard accepts" {
     try expectClean(
-        \\let flag: bool = true
-        \\match flag
-        \\  case true => let x = 0
-        \\  case _ => let x = 1
+        \\def main()
+        \\  let flag: bool = true
+        \\  match flag
+        \\    case true => let x = 0
+        \\    case _ => let x = 1
+        \\  end
         \\end
     );
 }
@@ -1589,8 +1619,10 @@ test "typecheck: class method call accepts" {
         \\  end
         \\end
         \\
-        \\let p: Player = Player { hp: 0 }
-        \\p.greet()
+        \\def main()
+        \\  let p: Player = Player { hp: 0 }
+        \\  p.greet()
+        \\end
     );
 }
 
@@ -1650,8 +1682,10 @@ test "typecheck: class constructor call returns the class type" {
         \\  end
         \\end
         \\
-        \\let p = Player(0)
-        \\p.greet()
+        \\def main()
+        \\  let p = Player(0)
+        \\  p.greet()
+        \\end
     );
 }
 
@@ -2230,7 +2264,9 @@ test "typecheck: variadic call with homogeneous args accepts" {
         \\def log(args: ...)
         \\end
         \\
-        \\log(1, 2, 3)
+        \\def main()
+        \\  log(1, 2, 3)
+        \\end
     );
 }
 
@@ -2248,7 +2284,9 @@ test "typecheck: variadic call with leading fixed param + homogeneous variadic a
         \\def log(label: str, vals: ...)
         \\end
         \\
-        \\log("nums", 1, 2, 3)
+        \\def main()
+        \\  log("nums", 1, 2, 3)
+        \\end
     );
 }
 
