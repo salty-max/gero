@@ -570,6 +570,19 @@ fn emitPrintArg(self: *Emitter, arg: *const ast.Expr) !void {
 /// host sink) and `$(…)` interpolation (the buffer sink). A value whose
 /// type — or a reachable field / element — has no rendering is rejected.
 pub fn emitRenderValue(self: *Emitter, expr: *const ast.Expr, sink: Sink) error{OutOfMemory}!void {
+    // A nullable has no rendering (§4.9) — printing one would emit the
+    // slot address for a scalar `T?` or the raw pointer for a
+    // pointer-like one, the "silently-meaningless address" the spec
+    // rules out. Struct fields and tuple elements are already screened
+    // by `fieldPrintSupportedRec`; this is the top-level value.
+    if (self.typeOf(expr)) |t| if (t.* == .optional) {
+        try self.diagFatal(
+            expr.span(),
+            "E_CODEGEN_UNSUPPORTED",
+            "codegen: a nullable has no default rendering — unwrap it first (`if let x = value`) and print `x`",
+        );
+        return;
+    };
     if (self.isPrimitiveType(expr, .char)) {
         try self.emitExpr(expr);
         try sinkEmit(self, sink, .char);
@@ -589,7 +602,7 @@ pub fn emitRenderValue(self: *Emitter, expr: *const ast.Expr, sink: Sink) error{
     // no standalone address, so materialize it as a stack copy first.
     if (self.structNameOf(expr)) |sname| {
         if (!printSupported(self, sname)) {
-            try self.unsupported(expr.span(), "a struct with a field type that has no default rendering (array / Vec / class / reference)");
+            try self.diagFatal(expr.span(), "E_CODEGEN_UNSUPPORTED", "codegen: a struct with a field type that has no default rendering (array / Vec / class / reference / fn / nullable)");
             return;
         }
         if (expr.* == .struct_lit) {
@@ -606,7 +619,7 @@ pub fn emitRenderValue(self: *Emitter, expr: *const ast.Expr, sink: Sink) error{
     // An enum value in `acu` is the tag (payload-free) or slot pointer.
     if (self.enumDeclForExpr(expr)) |ed| {
         if (!enumPrintSupported(self, ed)) {
-            try self.unsupported(expr.span(), "an enum with a payload field type that has no default rendering (array / tuple / Vec / class / reference)");
+            try self.diagFatal(expr.span(), "E_CODEGEN_UNSUPPORTED", "codegen: an enum with a payload field type that has no default rendering (array / tuple / Vec / class / reference / fn / nullable / struct)");
             return;
         }
         try self.emitExpr(expr);
@@ -615,7 +628,7 @@ pub fn emitRenderValue(self: *Emitter, expr: *const ast.Expr, sink: Sink) error{
     }
     if (self.tupleElemsOf(expr)) |elems| {
         if (!tuplePrintSupported(self, elems)) {
-            try self.unsupported(expr.span(), "a tuple with an element that has no default rendering (array / Vec / class / reference)");
+            try self.diagFatal(expr.span(), "E_CODEGEN_UNSUPPORTED", "codegen: a tuple with an element that has no default rendering (array / Vec / class / reference / fn / nullable)");
             return;
         }
         if (expr.* == .tuple_lit) {
