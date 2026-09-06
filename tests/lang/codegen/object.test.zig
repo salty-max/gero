@@ -298,3 +298,87 @@ test "splice: the cached bytes are what lands in the image" {
     defer cached.deinit();
     try std.testing.expectEqual(full.image.len + 1, cached.image.len);
 }
+
+/// Build `entry`'s module graph, optionally skipping the bodies of
+/// modules flagged in `skip` and splicing `cached` in their place.
+const IncrementalBuild = struct {
+    fused: gero.lang.FusedSource,
+    tree: gero.lang.ModuleParse,
+    checked: gero.lang.CheckedProgram,
+    compiled: gero.lang.Compiled,
+
+    fn deinit(self: *IncrementalBuild) void {
+        self.compiled.deinit();
+        self.checked.deinit();
+        self.tree.deinit();
+        self.fused.deinit();
+    }
+};
+
+fn buildGraph(
+    path: []const u8,
+    skip: []const bool,
+    cached: []const gero.lang.Fragment,
+    arities: []const gero.lang.ArityRequest,
+) !IncrementalBuild {
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, path);
+    errdefer fused.deinit();
+    var stream = try gero.lang.tokenize(alloc, fused.source);
+    defer stream.deinit();
+    var tree = try gero.lang.parseAllModules(alloc, fused.source, stream, &fused.source_map);
+    errdefer tree.deinit();
+
+    const graph: gero.lang.ModuleGraph = .{
+        .source_map = &fused.source_map,
+        .imports = fused.imports,
+        .skip_bodies = skip,
+        .cached_arities = arities,
+    };
+    var checked = try gero.lang.typecheckGraph(alloc, fused.source, &tree.program, &fused.import_aliases, graph);
+    errdefer checked.deinit();
+
+    const compiled = try gero.lang.compile(alloc, fused.source, &checked, .{
+        .import_aliases = &fused.import_aliases,
+        .graph = .{ .source_map = &fused.source_map, .imports = fused.imports },
+        .emit_fragments = true,
+        .cached_fragments = cached,
+    });
+    return .{ .fused = fused, .tree = tree, .checked = checked, .compiled = compiled };
+}
+
+test "skip_bodies: skipping a clean module's bodies builds the same image" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\def helper(n: i16) -> i16
+        \\  return n + 1
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use "./lib"
+        \\def main()
+        \\  print helper(41)
+        \\end
+        \\
+    );
+    const path = try fx.tmp.dir.realPathFileAlloc(std.testing.io, "main.gr", alloc);
+    defer alloc.free(path);
+
+    var full = try buildGraph(path, &.{}, &.{}, &.{});
+    defer full.deinit();
+    try std.testing.expect(!full.compiled.hasErrors());
+
+    // Skip the library — the module a dependent's edit cannot invalidate
+    // — and supply its code from the first build.
+    var skip = [_]bool{ false, false };
+    for (full.fused.source_map.files.items, 0..) |f, i| {
+        if (std.mem.endsWith(u8, f.path, "lib.gr")) skip[i] = true;
+    }
+    try std.testing.expect(skip[0] or skip[1]);
+
+    var incr = try buildGraph(path, &skip, full.compiled.fragments, &.{});
+    defer incr.deinit();
+    try std.testing.expect(!incr.compiled.hasErrors());
+    try std.testing.expectEqualSlices(u8, full.compiled.image, incr.compiled.image);
+}

@@ -9,6 +9,7 @@ const typecheck_mod = @import("lang/typecheck.zig");
 const diag_mod = @import("lang/diagnostic.zig");
 const render_mod = @import("lang/render.zig");
 const codegen_mod = @import("lang/codegen.zig");
+const modhash_mod = @import("lang/modhash.zig");
 const include_mod = @import("lang/include.zig");
 
 const tc_mem_builtin = @import("lang/typecheck/mem_builtin.zig");
@@ -150,6 +151,18 @@ pub const render = render_mod;
 
 /// Codegen output: `.gx` image + diagnostics.
 pub const Compiled = codegen_mod.Compiled;
+
+/// A module's request for a variadic specialization.
+pub const ArityRequest = typecheck_mod.ArityRequest;
+
+/// Hash of a module's full text.
+pub const moduleContentHash = modhash_mod.contentHash;
+
+/// Hash of what a module exports, bodies excluded.
+pub const moduleInterfaceHash = modhash_mod.interfaceHash;
+
+/// Modules that must be redone, given which ones changed.
+pub const dirtyModules = modhash_mod.dirtySet;
 
 /// One symbol's relocatable code — the unit a build cache stores.
 pub const Fragment = codegen_mod.Fragment;

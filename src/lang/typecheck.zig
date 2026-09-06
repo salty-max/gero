@@ -58,6 +58,24 @@ pub const CheckedProgram = struct {
         return (self.variadics.get(name) orelse return null).elem;
     }
 
+    /// Every variadic specialization request this run recorded, as
+    /// `(module, def, arity)` triples. A build cache stores these so a
+    /// later run can seed the requests of modules it skips.
+    pub fn arityRequests(self: *const CheckedProgram, allocator: std.mem.Allocator) ![]ArityRequest {
+        var out: std.ArrayList(ArityRequest) = .empty;
+        errdefer out.deinit(allocator);
+        var it = self.module_variadic_arities.iterator();
+        while (it.next()) |e| {
+            const key = e.key_ptr.*;
+            const sep = std.mem.indexOfScalar(u8, key, 0) orelse continue;
+            const module = std.fmt.parseInt(u16, key[0..sep], 10) catch continue;
+            for (e.value_ptr.items) |arity| {
+                try out.append(allocator, .{ .module = module, .name = key[sep + 1 ..], .arity = arity });
+            }
+        }
+        return out.toOwnedSlice(allocator);
+    }
+
     /// Iterate the per-module arity sets recorded for variadic `def`
     /// `name` — one set per module that calls it. The link step unions
     /// these to decide which specializations to emit.
@@ -90,6 +108,28 @@ pub fn typecheck(
 pub const ModuleGraph = struct {
     source_map: *const include_mod.SourceMap,
     imports: []const include_mod.ImportEdge,
+    /// Modules whose bodies this run may skip, indexed by file id.
+    /// Empty checks everything.
+    ///
+    /// Declarations are still registered for every module — that is a
+    /// dependent's interface, and skipping it would break resolution.
+    /// What a skipped module avoids is pass 2: resolving, inferring,
+    /// and checking its own bodies. A caller may only skip a module
+    /// whose compiled code it supplies from cache, since the types
+    /// codegen reads come from that walk.
+    skip_bodies: []const bool = &.{},
+    /// Variadic arities recorded for skipped modules on the build that
+    /// last walked them, keyed `"module\x00def"`. Their call sites are
+    /// not re-walked, so the link step would otherwise miss the
+    /// specializations they still need.
+    cached_arities: []const ArityRequest = &.{},
+};
+
+/// One module's request for a variadic specialization.
+pub const ArityRequest = struct {
+    module: u16,
+    name: []const u8,
+    arity: u32,
 };
 
 /// Type-check a fused program as a single implicit module. Callers
@@ -227,9 +267,19 @@ pub fn typecheckGraph(
     try c.linkImports();
     try c.linkModuleDecls();
 
-    // Pass 2: walk + resolve + infer + check.
+    // Seed the arities skipped modules asked for before pass 2, so the
+    // union the link step takes still covers call sites this run never
+    // walks.
+    if (graph) |g| for (g.cached_arities) |ca| {
+        try c.noteModuleArity(ca.module, ca.name, ca.arity);
+    };
+
+    // Pass 2: walk + resolve + infer + check. A module whose compiled
+    // code the caller supplies from cache is skipped here — its bodies
+    // are what the cache already holds the result of.
     for (program.statements) |stmt| {
         c.enterModuleOf(stmt);
+        if (c.skipsBodies(stmt)) continue;
         try c.walkStatement(stmt);
     }
 
@@ -827,16 +877,28 @@ pub const Checker = struct {
         return null;
     }
 
-    /// Note that the module owning `offset` calls variadic `name` with
-    /// `arity` arguments. Kept per module so the specialization set a
-    /// module needs is derivable without re-walking the program.
-    pub fn noteVariadicCallSite(self: *Checker, name: []const u8, arity: u32, offset: u32) WalkError!void {
-        const idx = self.moduleIndexOf(offset);
-        const key = try std.fmt.allocPrint(self.arena, "{d}\x00{s}", .{ idx, name });
+    /// `true` when this run may leave `stmt`'s module's bodies unwalked.
+    fn skipsBodies(self: *const Checker, stmt: ast.Statement) bool {
+        const g = self.graph orelse return false;
+        const idx = self.moduleIndexOf(stmt.span().start);
+        return idx < g.skip_bodies.len and g.skip_bodies[idx];
+    }
+
+    /// Record `arity` for variadic `name` against `module` directly,
+    /// for a call site this run did not walk.
+    fn noteModuleArity(self: *Checker, module: usize, name: []const u8, arity: u32) WalkError!void {
+        const key = try std.fmt.allocPrint(self.arena, "{d}\x00{s}", .{ module, name });
         const gop = try self.module_variadic_arities.getOrPut(self.arena, key);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         for (gop.value_ptr.items) |a| if (a == arity) return;
         try gop.value_ptr.append(self.arena, arity);
+    }
+
+    /// Note that the module owning `offset` calls variadic `name` with
+    /// `arity` arguments. Kept per module so the specialization set a
+    /// module needs is derivable without re-walking the program.
+    pub fn noteVariadicCallSite(self: *Checker, name: []const u8, arity: u32, offset: u32) WalkError!void {
+        try self.noteModuleArity(self.moduleIndexOf(offset), name, arity);
     }
 
     /// Record a top-level declaration marked `local` so `linkImports`
