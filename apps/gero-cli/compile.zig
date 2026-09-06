@@ -1,5 +1,6 @@
 const std = @import("std");
 const gero = @import("gero");
+const build_cache = @import("build_cache.zig");
 const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
 const footer = @import("footer.zig");
@@ -26,9 +27,12 @@ pub fn execute(
     const src_path = positionals[0];
     const cargo_style: gero.asm_.Style = if (term.color) .ansi else .plain;
 
-    const image = switch (try compileLang(io, arena, src_path, opts.optimize, "gero compile", stdout, term, t_start)) {
+    const image = switch (try compileLang(io, arena, src_path, opts.optimize, "gero compile", stdout, term, t_start, null)) {
         .failed => |code| return code,
         .image => |img| img,
+        // Only a cached project build can report this; `gero compile`
+        // passes no cache.
+        .unchanged => unreachable,
     };
 
     const out_path = resolveOutputPath(io, arena, term, src_path, opts.out, opts.optimize) catch |err| switch (err) {
@@ -55,12 +59,30 @@ pub fn execute(
 pub const LangResult = union(enum) {
     image: []const u8,
     failed: u8,
+    /// Every source is what the cache recorded and the output is still
+    /// on disk, so there is nothing to rebuild.
+    unchanged,
 };
 
 /// Drive `.gr` source at `src_path` through include resolution,
 /// tokenize, parse, typecheck, and codegen, rendering diagnostics as
 /// it goes. Shared by `gero compile` and `gero build` so both report
 /// identically; `cmd` names the caller in host-error messages.
+/// Where a project's build cache lives and what it was built for.
+/// Absent for one-shot compiles, which have no project to cache under.
+pub const CacheContext = struct {
+    /// Directory holding the index and fragment files.
+    dir: []const u8,
+    /// Entry def name — different entries lower different code.
+    entry: []const u8,
+    /// Optimize mode, for the same reason.
+    optimize: []const u8,
+    /// Path of the artifact a previous build produced. When every
+    /// source still matches the cache and this file is present, the
+    /// build has nothing to do.
+    output: []const u8,
+};
+
 pub fn compileLang(
     io: std.Io,
     arena: std.mem.Allocator,
@@ -70,6 +92,7 @@ pub fn compileLang(
     stdout: *std.Io.Writer,
     term: *term_mod.Term,
     t_start: std.Io.Timestamp,
+    cache: ?CacheContext,
 ) !LangResult {
     var fused = gero.lang.resolveUseImports(io, arena, src_path) catch |err| {
         try term.err("{s}: cannot read {s} ({s})", .{ cmd, src_path, @errorName(err) });
@@ -85,6 +108,21 @@ pub fn compileLang(
         try renderIncludeErrors(stdout, arena, fused, style);
         try footer.writeFooter(stdout, io, cargo_style, t_start, .failed);
         return .{ .failed = 3 };
+    }
+
+    // Nothing past reading the files can differ when every source is
+    // what the cache recorded, so a build with an intact artifact stops
+    // here rather than reproducing it.
+    const loaded: ?build_cache.Cache = if (cache) |cx|
+        build_cache.load(io, arena, cx.dir, cx.entry, cx.optimize)
+    else
+        null;
+    if (cache) |cx| {
+        if (loaded) |c| {
+            if (build_cache.contentUnchanged(c, &fused) and fileExists(io, cx.output)) {
+                return .unchanged;
+            }
+        }
     }
 
     var stream = gero.lang.tokenize(arena, fused.source) catch |err| {
@@ -111,7 +149,26 @@ pub fn compileLang(
         return .{ .failed = 3 };
     }
 
-    var checked = gero.lang.typecheckGraph(arena, fused.source, &tree.program, &fused.import_aliases, .{ .source_map = &fused.source_map, .imports = fused.imports }) catch |err| {
+    // What the previous build left behind decides how much of this one
+    // has to run: a module whose text and dependencies' interfaces are
+    // unchanged keeps its compiled code and never has its bodies walked.
+    var statements_of: std.ArrayList([]const gero.lang.ast.Statement) = .empty;
+    for (fused.source_map.files.items, 0..) |_, i| {
+        var found: []const gero.lang.ast.Statement = &.{};
+        for (tree.modules) |m| {
+            if (m.file_id == i) found = m.tree.program.statements;
+        }
+        try statements_of.append(arena, found);
+    }
+
+    const build_plan = try build_cache.plan(arena, loaded, &fused, statements_of.items);
+
+    var checked = gero.lang.typecheckGraph(arena, fused.source, &tree.program, &fused.import_aliases, .{
+        .source_map = &fused.source_map,
+        .imports = fused.imports,
+        .skip_bodies = if (cache != null) build_plan.skip else &.{},
+        .cached_arities = if (cache != null) build_plan.arities else &.{},
+    }) catch |err| {
         try term.err("{s}: typecheck failure ({s})", .{ cmd, @errorName(err) });
         return .{ .failed = 1 };
     };
@@ -127,6 +184,8 @@ pub fn compileLang(
         .optimize = mapOptimize(optimize),
         .import_aliases = &fused.import_aliases,
         .graph = .{ .source_map = &fused.source_map, .imports = fused.imports },
+        .emit_fragments = cache != null,
+        .cached_fragments = if (cache != null) build_plan.fragments else &.{},
     }) catch |err| switch (err) {
         error.EntryNotFound => {
             try term.err("{s}: no top-level `def main()` — every program needs an entry point", .{cmd});
@@ -149,6 +208,24 @@ pub fn compileLang(
     // the build succeeded.
     if (checked.diagnostics.len > 0) try renderLangDiagnostics(stdout, arena, fused, checked.diagnostics, style);
     if (compiled.diagnostics.len > 0) try renderLangDiagnostics(stdout, arena, fused, compiled.diagnostics, style);
+
+    // Record what this build learned. A cache that fails to write only
+    // costs the next build the work it could have skipped, so a failure
+    // here is not a build failure.
+    if (cache) |cx| {
+        const requests = try checked.arityRequests(arena);
+        build_cache.store(
+            io,
+            arena,
+            cx.dir,
+            cx.entry,
+            cx.optimize,
+            &fused,
+            statements_of.items,
+            requests,
+            compiled.fragments,
+        ) catch {};
+    }
 
     // `compiled` owns the image and frees it on return, so hand the
     // caller an arena copy that outlives this frame.
@@ -388,4 +465,11 @@ test "compile: gxBasename appends `.gx` when no extension" {
     const out = try gxBasename(testing.allocator, "scratch");
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("scratch.gx", out);
+}
+
+/// `true` when `path` names a file that can be opened.
+fn fileExists(io: std.Io, path: []const u8) bool {
+    const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    f.close(io);
+    return true;
 }

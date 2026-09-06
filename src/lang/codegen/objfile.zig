@@ -36,46 +36,49 @@ pub fn encode(allocator: std.mem.Allocator, fragments: []const Fragment) ![]u8 {
     try putU16(allocator, &out, format_version);
     try putU32(allocator, &out, @intCast(fragments.len));
 
-    for (fragments) |f| {
-        try putBytes(allocator, &out, f.symbol);
-        try putU16(allocator, &out, f.module);
-        if (f.bank) |b| {
-            try out.append(allocator, 1);
-            try out.append(allocator, b);
-        } else {
-            try out.append(allocator, 0);
-            try out.append(allocator, 0);
-        }
-        try putBytes(allocator, &out, f.bytes);
-
-        try putU32(allocator, &out, @intCast(f.relocs.len));
-        for (f.relocs) |r| {
-            try putU32(allocator, &out, @intCast(r.patch_offset));
-            try putU32(allocator, &out, @intCast(r.target_offset));
-        }
-
-        try putU32(allocator, &out, @intCast(f.refs.len));
-        for (f.refs) |r| {
-            try out.append(allocator, @intFromEnum(r.kind));
-            try putU32(allocator, &out, @intCast(r.patch_offset));
-            try putBytes(allocator, &out, r.name);
-            try putU32(allocator, &out, r.span.start);
-            try putU32(allocator, &out, r.span.end);
-        }
-
-        try putU32(allocator, &out, @intCast(f.strings.len));
-        for (f.strings) |sr| {
-            try putU32(allocator, &out, @intCast(sr.patch_offset));
-            try putBytes(allocator, &out, sr.bytes);
-        }
-
-        try putU32(allocator, &out, @intCast(f.defines.len));
-        for (f.defines) |d| {
-            try putBytes(allocator, &out, d.name);
-            try putU32(allocator, &out, @intCast(d.offset));
-        }
-    }
+    for (fragments) |f| try encodeFragment(allocator, &out, f);
     return out.toOwnedSlice(allocator);
+}
+
+/// Append one fragment's record.
+fn encodeFragment(allocator: std.mem.Allocator, out: *std.ArrayList(u8), f: Fragment) !void {
+    try putBytes(allocator, out, f.symbol);
+    try putU16(allocator, out, f.module);
+    if (f.bank) |b| {
+        try out.append(allocator, 1);
+        try out.append(allocator, b);
+    } else {
+        try out.append(allocator, 0);
+        try out.append(allocator, 0);
+    }
+    try putBytes(allocator, out, f.bytes);
+
+    try putU32(allocator, out, @intCast(f.relocs.len));
+    for (f.relocs) |r| {
+        try putU32(allocator, out, @intCast(r.patch_offset));
+        try putU32(allocator, out, @intCast(r.target_offset));
+    }
+
+    try putU32(allocator, out, @intCast(f.refs.len));
+    for (f.refs) |r| {
+        try out.append(allocator, @intFromEnum(r.kind));
+        try putU32(allocator, out, @intCast(r.patch_offset));
+        try putBytes(allocator, out, r.name);
+        try putU32(allocator, out, r.span.start);
+        try putU32(allocator, out, r.span.end);
+    }
+
+    try putU32(allocator, out, @intCast(f.strings.len));
+    for (f.strings) |sr| {
+        try putU32(allocator, out, @intCast(sr.patch_offset));
+        try putBytes(allocator, out, sr.bytes);
+    }
+
+    try putU32(allocator, out, @intCast(f.defines.len));
+    for (f.defines) |d| {
+        try putBytes(allocator, out, d.name);
+        try putU32(allocator, out, @intCast(d.offset));
+    }
 }
 
 /// Rebuild the fragments `encode` wrote. Everything returned is
@@ -89,56 +92,69 @@ pub fn decode(arena: std.mem.Allocator, blob: []const u8) (DecodeError || std.me
     const count = try r.readU32();
     var out: std.ArrayList(Fragment) = .empty;
     var i: u32 = 0;
-    while (i < count) : (i += 1) {
-        const symbol = try r.readBytes(arena);
-        const module = try r.readU16();
-        const has_bank = try r.readByte();
-        const bank_value = try r.readByte();
-        const bytes = try r.readBytes(arena);
-
-        const relocs = try arena.alloc(object.Reloc, try r.readU32());
-        for (relocs) |*rel| rel.* = .{
-            .patch_offset = try r.readU32(),
-            .target_offset = try r.readU32(),
-        };
-
-        const refs = try arena.alloc(object.SymbolRef, try r.readU32());
-        for (refs) |*ref| {
-            const tag = try r.readByte();
-            if (tag > @intFromEnum(object.RefKind.vtable)) return error.Malformed;
-            ref.* = .{
-                // safety: bounded against the enum's last tag above.
-                .kind = @enumFromInt(tag),
-                .patch_offset = try r.readU32(),
-                .name = try r.readBytes(arena),
-                .span = .{ .start = try r.readU32(), .end = try r.readU32() },
-            };
-        }
-
-        const strings = try arena.alloc(object.StringRef, try r.readU32());
-        for (strings) |*sr| sr.* = .{
-            .patch_offset = try r.readU32(),
-            .bytes = try r.readBytes(arena),
-        };
-
-        const defines = try arena.alloc(object.Definition, try r.readU32());
-        for (defines) |*d| d.* = .{
-            .name = try r.readBytes(arena),
-            .offset = try r.readU32(),
-        };
-
-        try out.append(arena, .{
-            .symbol = symbol,
-            .module = module,
-            .bank = if (has_bank == 1) bank_value else null,
-            .bytes = bytes,
-            .relocs = relocs,
-            .refs = refs,
-            .strings = strings,
-            .defines = defines,
-        });
-    }
+    while (i < count) : (i += 1) try out.append(arena, try decodeFragment(arena, &r));
     return out.toOwnedSlice(arena);
+}
+
+/// Read one fragment's record.
+fn decodeFragment(arena: std.mem.Allocator, r: *Reader) (DecodeError || std.mem.Allocator.Error)!Fragment {
+    const symbol = try r.readBytes(arena);
+    const module = try r.readU16();
+    const has_bank = try r.readByte();
+    const bank_value = try r.readByte();
+    return .{
+        .symbol = symbol,
+        .module = module,
+        .bank = if (has_bank == 1) bank_value else null,
+        .bytes = try r.readBytes(arena),
+        .relocs = try decodeRelocs(arena, r),
+        .refs = try decodeRefs(arena, r),
+        .strings = try decodeStrings(arena, r),
+        .defines = try decodeDefines(arena, r),
+    };
+}
+
+fn decodeRelocs(arena: std.mem.Allocator, r: *Reader) (DecodeError || std.mem.Allocator.Error)![]const object.Reloc {
+    const out = try arena.alloc(object.Reloc, try r.readU32());
+    for (out) |*rel| rel.* = .{
+        .patch_offset = try r.readU32(),
+        .target_offset = try r.readU32(),
+    };
+    return out;
+}
+
+fn decodeRefs(arena: std.mem.Allocator, r: *Reader) (DecodeError || std.mem.Allocator.Error)![]const object.SymbolRef {
+    const out = try arena.alloc(object.SymbolRef, try r.readU32());
+    for (out) |*ref| {
+        const tag = try r.readByte();
+        if (tag > @intFromEnum(object.RefKind.vtable)) return error.Malformed;
+        ref.* = .{
+            // safety: bounded against the enum's last tag above.
+            .kind = @enumFromInt(tag),
+            .patch_offset = try r.readU32(),
+            .name = try r.readBytes(arena),
+            .span = .{ .start = try r.readU32(), .end = try r.readU32() },
+        };
+    }
+    return out;
+}
+
+fn decodeStrings(arena: std.mem.Allocator, r: *Reader) (DecodeError || std.mem.Allocator.Error)![]const object.StringRef {
+    const out = try arena.alloc(object.StringRef, try r.readU32());
+    for (out) |*sr| sr.* = .{
+        .patch_offset = try r.readU32(),
+        .bytes = try r.readBytes(arena),
+    };
+    return out;
+}
+
+fn decodeDefines(arena: std.mem.Allocator, r: *Reader) (DecodeError || std.mem.Allocator.Error)![]const object.Definition {
+    const out = try arena.alloc(object.Definition, try r.readU32());
+    for (out) |*d| d.* = .{
+        .name = try r.readBytes(arena),
+        .offset = try r.readU32(),
+    };
+    return out;
 }
 
 /// Cursor over an encoded blob. Every read is bounds-checked, so a

@@ -222,6 +222,17 @@ pub fn splice(emitter: *Emitter, f: Fragment) !void {
     const base = try emitter.currentOffset();
     for (f.bytes) |b| try emitter.emitByte(b);
 
+    try spliceDefines(emitter, f, base);
+    try spliceRelocs(emitter, f, base);
+    try spliceRefs(emitter, f, base);
+    try spliceStrings(emitter, f, base);
+
+    try emitter.noteFragment(f.symbol, f.module, f.bank, base, base + f.bytes.len);
+}
+
+/// Re-register the symbols the fragment defines, so references from
+/// elsewhere resolve into it.
+fn spliceDefines(emitter: *Emitter, f: Fragment, base: usize) !void {
     for (f.defines) |d| {
         const name = try emitter.arena.dupe(u8, d.name);
         try emitter.fn_addresses.put(emitter.arena, name, .{
@@ -229,7 +240,9 @@ pub fn splice(emitter: *Emitter, f: Fragment) !void {
             .offset = base + d.offset,
         });
     }
+}
 
+fn spliceRelocs(emitter: *Emitter, f: Fragment, base: usize) !void {
     for (f.relocs) |r| {
         try emitter.relocations.append(emitter.allocator, .{
             .bank = f.bank,
@@ -237,7 +250,9 @@ pub fn splice(emitter: *Emitter, f: Fragment) !void {
             .target_offset = base + r.target_offset,
         });
     }
+}
 
+fn spliceRefs(emitter: *Emitter, f: Fragment, base: usize) !void {
     for (f.refs) |r| switch (r.kind) {
         .call, .trampoline => try emitter.call_patches.append(emitter.allocator, .{
             .bank = f.bank,
@@ -259,17 +274,17 @@ pub fn splice(emitter: *Emitter, f: Fragment) !void {
             .class_name = try emitter.arena.dupe(u8, r.name),
         }),
     };
+}
 
-    // Re-intern rather than carrying a pool index: the pool is a link
-    // product, and this build numbers it for itself.
-    for (f.strings) |s| {
-        const id = try emitter.internString(s.bytes);
+/// Re-intern rather than carrying a pool index: the pool is a link
+/// product, and this build numbers it for itself.
+fn spliceStrings(emitter: *Emitter, f: Fragment, base: usize) !void {
+    for (f.strings) |sr| {
+        const id = try emitter.internString(sr.bytes);
         try emitter.string_patches.append(emitter.allocator, .{
             .bank = f.bank,
-            .code_offset = base + s.patch_offset,
+            .code_offset = base + sr.patch_offset,
             .string_id = id,
         });
     }
-
-    try emitter.noteFragment(f.symbol, f.module, f.bank, base, base + f.bytes.len);
 }

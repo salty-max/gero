@@ -6,6 +6,7 @@ const project = @import("project.zig");
 const diagnostics = @import("diagnostics.zig");
 const footer = @import("footer.zig");
 const compile = @import("compile.zig");
+const build_cache = @import("build_cache.zig");
 
 /// Drive the `gero build` flow against the gero.toml found by
 /// ancestor-walk. Caller owns `arena`.
@@ -81,6 +82,7 @@ pub fn execute(
         return buildLang(io, arena, opts, stdout, term, .{
             .entry_path = entry_path,
             .out_dir = out_dir,
+            .out_root = out_root,
             .manifest = manifest,
             .t_start = t_start,
         });
@@ -184,6 +186,8 @@ fn writePhaseTimings(stdout: *std.Io.Writer, style: gero.asm_.Style, t: PhaseTim
 const LangBuild = struct {
     entry_path: []const u8,
     out_dir: []const u8,
+    /// Project output root, above the per-profile dirs.
+    out_root: []const u8,
     manifest: project.Manifest,
     t_start: std.Io.Timestamp,
 };
@@ -201,6 +205,13 @@ fn buildLang(
 ) !u8 {
     const cargo_style: gero.asm_.Style = if (term.color) .ansi else .plain;
 
+    const stem = b.manifest.build.name orelse b.manifest.package.name;
+    const gx_name = try std.fmt.allocPrint(arena, "{s}.gx", .{stem});
+    const out_path = try std.fs.path.join(arena, &.{ b.out_dir, gx_name });
+
+    // The cache lives beside the profile output dirs rather than inside
+    // one, so switching profiles doesn't discard the other's record.
+    const cache_dir = try std.fs.path.join(arena, &.{ b.out_root, build_cache.dir_name });
     const image = switch (try compile.compileLang(
         io,
         arena,
@@ -210,14 +221,26 @@ fn buildLang(
         stdout,
         term,
         b.t_start,
+        .{
+            .dir = cache_dir,
+            .entry = b.manifest.build.entry,
+            // The mode that actually reaches codegen, which `--optimize`
+            // can override the manifest with.
+            .optimize = @tagName(opts.optimize),
+            .output = out_path,
+        },
     )) {
         .failed => |code| return code,
         .image => |img| img,
+        .unchanged => {
+            if (!opts.quiet) {
+                try stdout.print("{s} (unchanged)\n", .{out_path});
+                try footer.writeFooter(stdout, io, cargo_style, b.t_start, .ok);
+            }
+            return 0;
+        },
     };
 
-    const stem = b.manifest.build.name orelse b.manifest.package.name;
-    const gx_name = try std.fmt.allocPrint(arena, "{s}.gx", .{stem});
-    const out_path = try std.fs.path.join(arena, &.{ b.out_dir, gx_name });
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = image }) catch |err| {
         try term.err("gero build: cannot write {s} ({s})", .{ out_path, @errorName(err) });
         return 1;
