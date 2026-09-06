@@ -19,7 +19,7 @@ Discover the command list with `gero --help`. Discover per-command
 flags with `gero <cmd> --help`.
 
 A single `gero` binary covers asm, compile, run, test, bench, fmt,
-check, build, disasm, info, repl. The bare-VM runtime is the only
+check, build, disasm, info, repl, lsp. The bare-VM runtime is the only
 target this repo produces — fantasy-console hosts (e.g. gtx-16)
 live downstream and consume `.gx` files as library inputs.
 
@@ -649,6 +649,30 @@ keeps typing without restarting.
 
 **Exit**: `0` on clean `.quit` / EOF.
 
+### 3.14 `gero lsp` — language server
+
+Speaks the Language Server Protocol over stdin/stdout. Editors
+spawn it; there is nothing useful to run by hand.
+
+```bash
+gero lsp                           # what an editor's LSP client runs
+```
+
+Takes no positional arguments. Everything written to stdout is a
+protocol message, so anything the server needs to say about itself
+goes to stderr.
+
+Two capabilities: diagnostics (identical to what `gero check`
+reports) and formatting (identical to what `gero fmt` writes),
+for both `.gas` and `.gr`. Buffers the editor holds unsaved are
+read from memory, so editing a library reddens its importers
+without a save.
+
+**Exit**: `0` on `shutdown` + `exit`, or when the client closes
+stdin. `1` on `exit` without `shutdown`, or a malformed header.
+
+Protocol scope and per-editor wiring: [`lsp.md`](lsp.md).
+
 ---
 
 ## 4. Not yet shipped
@@ -658,7 +682,6 @@ prints `not yet implemented` and exits non-zero.
 
 | Command | Why not yet |
 |---------|--------------|
-| `gero lsp` | Single server intended to serve both `.gas` and `.gr` — needs the LSP transport layer. |
 | `gero hexdump <file.gx>` | Low priority — `gero info` + `xxd` cover the use case today. |
 | `gero debug <file.gx>` | Interactive debugger — needs a real-mode UX design pass. |
 | `gero doc` | Docgen from `///` comments — waits for a substantial stdlib. |

@@ -9,6 +9,7 @@ const disasm_cmd = @import("disasm.zig");
 const test_cmd = @import("test.zig");
 const check_cmd = @import("check.zig");
 const fmt_cmd = @import("fmt.zig");
+const lsp_cmd = @import("lsp.zig");
 const new_cmd = @import("new.zig");
 const init_cmd = @import("init.zig");
 const build_cmd = @import("build.zig");
@@ -85,6 +86,7 @@ pub fn main(init: std.process.Init) !u8 {
         .test_ => test_cmd.execute(io, arena, parsed.options, stdout, &term),
         .check => check_cmd.execute(io, arena, parsed.options, stdout, &term),
         .fmt => fmt_cmd.execute(io, arena, parsed.options, stdout, &term),
+        .lsp => lsp_cmd.execute(io, arena, parsed.options, stdout, &term),
         .new => new_cmd.execute(io, arena, parsed.options, stdout, &term),
         .init => init_cmd.execute(io, arena, parsed.options, stdout, &term),
         .build => build_cmd.execute(io, arena, parsed.options, stdout, &term),

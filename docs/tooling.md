@@ -208,13 +208,15 @@ grammar — drop it into Sublime Text's
 `Packages/User/` or any TextMate-derived editor's bundle
 directory.
 
-### 2.5 LSP (not yet shipped)
+### 2.5 LSP
 
-`gero lsp` will offer in-editor diagnostics (from `gero check`)
-+ format-on-save (from `gero fmt`) for both `.gas` and `.gr`
-files. Waits on the gero-lang front-end so the LSP serves both
-languages in one ship. Track at
-[#157](https://github.com/salty-max/gero/issues/157).
+`gero lsp` offers in-editor diagnostics (the same ones `gero
+check` reports) and format-on-save (the same output `gero fmt`
+writes) for both `.gas` and `.gr` files. One server serves both
+languages.
+
+Per-editor wiring — Neovim, VS Code, Helix — is in
+[`lsp.md` §5](lsp.md).
 
 ---
 

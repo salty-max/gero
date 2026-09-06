@@ -55,6 +55,7 @@ pre-commit framework / plain git), see
 | `gero disasm <file.gx>` | `.gx` → asm (round-trip-safe; CI-gated) |
 | `gero info <file.gx>` | Pretty-print a `.gx` header |
 | `gero repl` | Interactive gero-lang prompt — declarations persist across inputs |
+| `gero lsp` | Language server for `.gas` + `.gr` — diagnostics and format-on-save over stdio |
 
 Run `gero <subcommand> --help` for per-command flags, or
 [`docs/cli.md`](./docs/cli.md) for the full reference.
@@ -71,6 +72,8 @@ Run `gero <subcommand> --help` for per-command flags, or
   loops, banking, SRAM, IRQs, fixed-point, and more
 - [docs/tooling.md](./docs/tooling.md) — editor setup, CI recipes,
   pre-commit hooks
+- [docs/lsp.md](./docs/lsp.md) — language-server scope and
+  per-editor wiring (Neovim, VS Code, Helix)
 - [examples/lang/](./examples/lang/) — seven worked `.gr` programs
   covering recursion, loops, payload-carrying enums, and `match`
 - [docs/gero-lang.md](./docs/gero-lang.md) — gero-lang spec (types,

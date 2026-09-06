@@ -297,6 +297,45 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-gr-diagnostics",
         .root_module = gr_diagnostics_mod,
     });
+    const lsp_protocol_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/lsp_protocol.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const lsp_protocol_test = b.addTest(.{
+        .name = "test-cli-lsp-protocol",
+        .root_module = lsp_protocol_mod,
+    });
+    const lsp_uri_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/lsp_uri.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const lsp_uri_test = b.addTest(.{
+        .name = "test-cli-lsp-uri",
+        .root_module = lsp_uri_mod,
+    });
+    const lsp_server_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/lsp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lsp_server_mod.addImport("gero", gero_mod);
+    lsp_server_mod.addOptions("build_options", cli_options);
+    const lsp_server_test = b.addTest(.{
+        .name = "test-cli-lsp",
+        .root_module = lsp_server_mod,
+    });
+    const lsp_analysis_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/lsp_analysis.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lsp_analysis_mod.addImport("gero", gero_mod);
+    const lsp_analysis_test = b.addTest(.{
+        .name = "test-cli-lsp-analysis",
+        .root_module = lsp_analysis_mod,
+    });
 
     // ----- Format ----------------------------------------------------------
 
@@ -352,6 +391,10 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(repl_test).step);
     test_step.dependOn(&b.addRunArtifact(line_editor_test).step);
     test_step.dependOn(&b.addRunArtifact(gr_diagnostics_test).step);
+    test_step.dependOn(&b.addRunArtifact(lsp_protocol_test).step);
+    test_step.dependOn(&b.addRunArtifact(lsp_uri_test).step);
+    test_step.dependOn(&b.addRunArtifact(lsp_analysis_test).step);
+    test_step.dependOn(&b.addRunArtifact(lsp_server_test).step);
     for (test_files) |rel| {
         const t = makeTest(b, gero_mod, examples_opts, rel, target, optimize);
         test_step.dependOn(&b.addRunArtifact(t).step);
