@@ -382,6 +382,14 @@ pub fn build(b: *std.Build) void {
     );
     check_examples_step.dependOn(&check_examples_cmd.step);
 
+    const check_doc_asm_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-doc-asm.sh" });
+    check_doc_asm_cmd.step.dependOn(b.getInstallStep());
+    const check_doc_asm_step = b.step(
+        "check-doc-asm",
+        "Assemble every ```asm block in docs/asm.md (fails on any that can't)",
+    );
+    check_doc_asm_step.dependOn(&check_doc_asm_cmd.step);
+
     const check_broken_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-broken.sh" });
     check_broken_cmd.step.dependOn(b.getInstallStep());
     const check_broken_step = b.step(
@@ -418,6 +426,7 @@ pub fn build(b: *std.Build) void {
     verify_step.dependOn(lint_step);
     verify_step.dependOn(test_step);
     verify_step.dependOn(&check_examples_cmd.step);
+    verify_step.dependOn(&check_doc_asm_cmd.step);
     verify_step.dependOn(&check_broken_cmd.step);
     verify_step.dependOn(&fmt_check_examples_cmd.step);
     verify_step.dependOn(&check_examples_gr_cmd.step);
