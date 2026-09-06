@@ -160,6 +160,10 @@ pub const IncludeError = struct {
 /// `resolveUseImports` output. Caller owns the buffers — call
 /// `deinit` once done.
 pub const FusedSource = struct {
+    /// File id of the file resolution started from. Tools that care
+    /// about one module's own declarations — rather than everything
+    /// its imports dragged in — start here.
+    entry_module: u16 = 0,
     /// Reachable files' contents concatenated in dependency
     /// order, with `use "..."` lines elided.
     source: []const u8,
@@ -262,10 +266,11 @@ pub fn resolveUseImports(
         .imports = &imports,
     };
 
-    _ = try resolveOne(&ctx, root_path, null, 0, 0);
+    const root_id = try resolveOne(&ctx, root_path, null, 0, 0);
 
     return .{
         .source = try fused.toOwnedSlice(allocator),
+        .entry_module = root_id orelse 0,
         .source_map = source_map,
         .errors = try errors.toOwnedSlice(allocator),
         .import_aliases = import_aliases,
