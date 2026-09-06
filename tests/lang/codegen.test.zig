@@ -8870,3 +8870,626 @@ test "stdlib: every documented call lowers" {
     }
     try std.testing.expectEqualStrings("", broke.items);
 }
+
+test "spec: every documented language feature compiles" {
+    // One minimal program per feature `gero-lang.md` documents. If a
+    // section starts describing something that no longer lowers, this
+    // names it rather than only reporting that something broke.
+    const Feature = struct { name: []const u8, src: []const u8 };
+    const features = [_]Feature{
+        .{ .name = "2.4 numeric literals", .src =
+        \\def main()
+        \\  print $FF
+        \\  print 42
+        \\  print 1_000
+        \\end
+        \\
+        },
+        .{ .name = "2.5 string literals", .src =
+        \\def main()
+        \\  print "a\nb"
+        \\end
+        \\
+        },
+        .{ .name = "2.5.1 char literals", .src =
+        \\def main()
+        \\  let c: u8 = 65
+        \\  print c
+        \\end
+        \\
+        },
+        .{ .name = "3.1 primitives", .src =
+        \\def main()
+        \\  let a: i16 = 1
+        \\  let b: u16 = 2
+        \\  let c: u8 = 3
+        \\  let d: i8 = 4
+        \\  let e: bool = true
+        \\    print a + b as i16
+        \\  print e
+        \\  print d
+        \\end
+        \\
+        },
+        .{ .name = "3.2.1 string ops", .src =
+        \\def main()
+        \\  let s: str = "hi"
+        \\  print s.len
+        \\  print s.at(0)
+        \\  print s.cmp("ho")
+        \\  print "a" + "b"
+        \\end
+        \\
+        },
+        .{ .name = "3.2.2 interpolation", .src =
+        \\def main()
+        \\  let n = 5
+        \\  print "n=$(n)"
+        \\end
+        \\
+        },
+        .{ .name = "3.2.2 format spec", .src =
+        \\def main()
+        \\  let n = 5
+        \\  print "$(n:04X)"
+        \\end
+        \\
+        },
+        .{ .name = "3.3 fixed", .src =
+        \\def main()
+        \\  let v: fixed = 1.5
+        \\  print v * 2.0
+        \\end
+        \\
+        },
+        .{ .name = "3.4 array", .src =
+        \\def main()
+        \\  let a: [i16; 3] = [1, 2, 3]
+        \\  print a[0]
+        \\end
+        \\
+        },
+        .{ .name = "3.4 array repeat", .src =
+        \\def main()
+        \\  let a: [i16; 4] = [0; 4]
+        \\  print a[3]
+        \\end
+        \\
+        },
+        .{ .name = "3.4 tuple", .src =
+        \\def main()
+        \\  let t: (i16, i16) = (1, 2)
+        \\  print t.0
+        \\end
+        \\
+        },
+        .{ .name = "3.4.1 nullable scalar", .src =
+        \\def main()
+        \\  let n: i16? = nil
+        \\  if n == nil
+        \\    print 1
+        \\  end
+        \\end
+        \\
+        },
+        .{ .name = "3.4.2 struct", .src =
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\def main()
+        \\  let p = P { x: 1, y: 2 }
+        \\  print p.x
+        \\end
+        \\
+        },
+        .{ .name = "3.4.3 Vec", .src =
+        \\def main()
+        \\  let v: Vec(i16) = Vec.from([1, 2])
+        \\  print v.len()
+        \\end
+        \\
+        },
+        .{ .name = "3.4.4 references", .src =
+        \\struct S
+        \\  hp: i16
+        \\end
+        \\def hit(s: &S)
+        \\  s.hp = s.hp - 1
+        \\end
+        \\def main()
+        \\  let s = S { hp: 3 }
+        \\  hit(&s)
+        \\  print s.hp
+        \\end
+        \\
+        },
+        .{ .name = "3.5 inference", .src =
+        \\def main()
+        \\  let x = 5
+        \\  print x
+        \\end
+        \\
+        },
+        .{ .name = "3.5.1 casts", .src =
+        \\def main()
+        \\  let a: i16 = 300
+        \\  let b: u8 = (a & $FF) as u8
+        \\  print b
+        \\end
+        \\
+        },
+        .{ .name = "3.6 enum plain", .src =
+        \\enum Item
+        \\  case Sword
+        \\  case Shield
+        \\end
+        \\def main()
+        \\  let s = Item.Sword
+        \\  if s == Item.Sword
+        \\    print 1
+        \\  end
+        \\end
+        \\
+        },
+        .{ .name = "3.6 enum payload", .src =
+        \\enum Ev
+        \\  case Key(i16)
+        \\  case Quit
+        \\end
+        \\def main()
+        \\  let e = Ev.Key(5)
+        \\  match e
+        \\    case Ev.Key(k) => print k
+        \\    case Ev.Quit => print 0
+        \\  end
+        \\end
+        \\
+        },
+        .{ .name = "3.7.1 @zero_page", .src =
+        \\@zero_page
+        \\let g: u16 = 0
+        \\def main()
+        \\  print g
+        \\end
+        \\
+        },
+        .{ .name = "3.7.1 @addr", .src =
+        \\@addr $0300
+        \\let g: u16 = 0
+        \\def main()
+        \\  print g
+        \\end
+        \\
+        },
+        .{ .name = "3.7.1 @volatile", .src =
+        \\@volatile
+        \\@addr $0300
+        \\let g: u16 = 0
+        \\def main()
+        \\  print g
+        \\end
+        \\
+        },
+        .{ .name = "3.7.1 @align", .src =
+        \\@align(4)
+        \\let g: u16 = 0
+        \\def main()
+        \\  print g
+        \\end
+        \\
+        },
+        .{ .name = "3.7.2 @inline", .src =
+        \\@inline
+        \\def d(x: i16) -> i16
+        \\  return x * 2
+        \\end
+        \\def main()
+        \\  print d(2)
+        \\end
+        \\
+        },
+        .{ .name = "3.7.2 @cold", .src =
+        \\@cold
+        \\def rare()
+        \\  print 1
+        \\end
+        \\def main()
+        \\  rare()
+        \\end
+        \\
+        },
+        .{ .name = "3.7.2 @bank", .src =
+        \\@bank 1
+        \\def far() -> i16
+        \\  return 1
+        \\end
+        \\def main()
+        \\  print far()
+        \\end
+        \\
+        },
+        .{ .name = "3.7.3 @noreturn", .src =
+        \\@noreturn
+        \\def stop()
+        \\  panic("x")
+        \\end
+        \\def main()
+        \\  print 1
+        \\end
+        \\
+        },
+        .{ .name = "3.7.4 @interrupt", .src =
+        \\@interrupt $07
+        \\def on_vb()
+        \\  print 1
+        \\end
+        \\def main()
+        \\  print 0
+        \\end
+        \\
+        },
+        .{ .name = "3.7.5 @test", .src =
+        \\@test
+        \\def t_x()
+        \\  test.assert_eq(1, 1)
+        \\end
+        \\def main()
+        \\  print 0
+        \\end
+        \\
+        },
+        .{ .name = "3.7.5 @bench", .src =
+        \\@bench
+        \\def b_x()
+        \\  let a = 1
+        \\end
+        \\def main()
+        \\  print 0
+        \\end
+        \\
+        },
+        .{ .name = "3.7.6 class", .src =
+        \\class P
+        \\  let hp: i16
+        \\  def init(self, h: i16)
+        \\    self.hp = h
+        \\  end
+        \\  def get(self) -> i16
+        \\    return self.hp
+        \\  end
+        \\end
+        \\def main()
+        \\  let p = P(5)
+        \\  print p.get()
+        \\end
+        \\
+        },
+        .{ .name = "3.7.6 inheritance", .src =
+        \\class A
+        \\  let x: i16
+        \\  def init(self)
+        \\    self.x = 1
+        \\  end
+        \\end
+        \\class B extends A
+        \\  def init(self)
+        \\    super.init()
+        \\  end
+        \\end
+        \\def main()
+        \\  let b = B()
+        \\  print b.x
+        \\end
+        \\
+        },
+        .{ .name = "3.7.7 / 4.11 inline asm", .src =
+        \\def main()
+        \\  asm "nop"
+        \\  print 1
+        \\end
+        \\
+        },
+        .{ .name = "3.8 bake", .src =
+        \\const N: i16 = bake do
+        \\  1 + 2
+        \\end
+        \\def main()
+        \\  print N
+        \\end
+        \\
+        },
+        .{ .name = "3.8 bake def", .src =
+        \\bake def f() -> i16
+        \\  return 7
+        \\end
+        \\const N: i16 = bake do
+        \\  f()
+        \\end
+        \\def main()
+        \\  print N
+        \\end
+        \\
+        },
+        .{ .name = "4.1 let / const", .src =
+        \\const K: i16 = 1
+        \\def main()
+        \\  let x = K
+        \\  print x
+        \\end
+        \\
+        },
+        .{ .name = "4.1.1 destructuring let", .src =
+        \\def pair() -> (i16, i16)
+        \\  return (1, 2)
+        \\end
+        \\def main()
+        \\  let (a, b) = pair()
+        \\  print a + b
+        \\end
+        \\
+        },
+        .{ .name = "4.2.1 operators", .src =
+        \\def main()
+        \\  print 1 + 2 - 3 * 4 / 2 % 3
+        \\  print 1 < 2 and 3 > 2 or false
+        \\  print $F0 & $0F | $01 ^ $02
+        \\  print 1 << 2 >> 1
+        \\end
+        \\
+        },
+        .{ .name = "4.2.2 discard", .src =
+        \\def f() -> i16
+        \\  return 1
+        \\end
+        \\def main()
+        \\  _ = f()
+        \\  print 0
+        \\end
+        \\
+        },
+        .{ .name = "4.3 do block", .src =
+        \\def main()
+        \\  let a = do
+        \\    1 + 2
+        \\  end
+        \\  print a
+        \\end
+        \\
+        },
+        .{ .name = "4.4 if/elif/else", .src =
+        \\def main()
+        \\  let x = 1
+        \\  if x == 0
+        \\    print 0
+        \\  elif x == 1
+        \\    print 1
+        \\  else
+        \\    print 2
+        \\  end
+        \\end
+        \\
+        },
+        .{ .name = "4.4.1 if let", .src =
+        \\enum E
+        \\  case A(i16)
+        \\  case B
+        \\end
+        \\def main()
+        \\  let e = E.A(1)
+        \\  if let E.A(n) = e
+        \\    print n
+        \\  end
+        \\end
+        \\
+        },
+        .{ .name = "4.5 while / for", .src =
+        \\def main()
+        \\  let i = 0
+        \\  while i < 2
+        \\    i = i + 1
+        \\  end
+        \\  for j in 0..2
+        \\    print j
+        \\  end
+        \\end
+        \\
+        },
+        .{ .name = "4.5.1 inclusive range", .src =
+        \\def main()
+        \\  for j in 0..=2
+        \\    print j
+        \\  end
+        \\end
+        \\
+        },
+        .{ .name = "4.5.2 while let", .src =
+        \\enum E
+        \\  case A(i16)
+        \\  case B
+        \\end
+        \\let c: i16 = 0
+        \\def poll() -> E
+        \\  c = c + 1
+        \\  if c < 3
+        \\    return E.A(c)
+        \\  end
+        \\  return E.B
+        \\end
+        \\def main()
+        \\  while let E.A(n) = poll()
+        \\    print n
+        \\  end
+        \\end
+        \\
+        },
+        .{ .name = "4.5.4 repeat until", .src =
+        \\def main()
+        \\  let i = 0
+        \\  repeat
+        \\    i = i + 1
+        \\  until i >= 2
+        \\  print i
+        \\end
+        \\
+        },
+        .{ .name = "4.5.5 labeled loops", .src =
+        \\def main()
+        \\  for y in 0..2 :rows
+        \\    for x in 0..2
+        \\      if x == 1
+        \\        break :rows
+        \\      end
+        \\    end
+        \\  end
+        \\  print 1
+        \\end
+        \\
+        },
+        .{ .name = "4.6 functions", .src =
+        \\def add(a: i16, b: i16) -> i16
+        \\  return a + b
+        \\end
+        \\def main()
+        \\  print add(1, 2)
+        \\end
+        \\
+        },
+        .{ .name = "4.6.2 variadics", .src =
+        \\def first(args: ...) -> i16
+        \\  return args.0
+        \\end
+        \\def main()
+        \\  print first(1, 2)
+        \\end
+        \\
+        },
+        .{ .name = "4.6.3 method chaining", .src =
+        \\class C
+        \\  let v: i16
+        \\  def init(self)
+        \\    self.v = 1
+        \\  end
+        \\  def bump(self) -> i16
+        \\    return self.v + 1
+        \\  end
+        \\end
+        \\def main()
+        \\  let c = C()
+        \\  print c.bump()
+        \\end
+        \\
+        },
+        .{ .name = "4.7 lambda (long form)", .src =
+        \\def main()
+        \\  let f = lambda (x: i16) -> i16
+        \\    return x * 2
+        \\  end
+        \\  print f(2)
+        \\end
+        \\
+        },
+        .{ .name = "4.7.1 short lambda", .src =
+        \\def main()
+        \\  let f = |x: i16| -> i16 x * 2
+        \\  print f(2)
+        \\end
+        \\
+        },
+        .{ .name = "4.7.2 closure capture", .src =
+        \\def main()
+        \\  let n = 5
+        \\  let f = || -> i16 n + 1
+        \\  print f()
+        \\end
+        \\
+        },
+        .{ .name = "4.8 match", .src =
+        \\enum E
+        \\  case A
+        \\  case B
+        \\end
+        \\def main()
+        \\  let e = E.A
+        \\  match e
+        \\    case E.A => print 1
+        \\    case E.B => print 2
+        \\  end
+        \\end
+        \\
+        },
+        .{ .name = "4.8.2 match guards", .src =
+        \\def main()
+        \\  let n = 5
+        \\  match n
+        \\    case x when x > 3 => print 1
+        \\    case _ => print 0
+        \\  end
+        \\end
+        \\
+        },
+        .{ .name = "4.9 print", .src =
+        \\def main()
+        \\  print 1
+        \\  print "s"
+        \\  print 1, " ", 2
+        \\end
+        \\
+        },
+        .{ .name = "4.10 defer", .src =
+        \\def main()
+        \\  defer print 2
+        \\  print 1
+        \\end
+        \\
+        },
+        .{ .name = "5.2 imports", .src =
+        \\use math
+        \\def main()
+        \\  print math.abs(0 - 1)
+        \\end
+        \\
+        },
+        .{ .name = "assert / debug_assert", .src =
+        \\def main()
+        \\  assert(true, "ok")
+        \\  debug_assert(true, "ok")
+        \\  print 1
+        \\end
+        \\
+        },
+        .{ .name = "panic / unreachable / todo", .src =
+        \\def f(x: i16) -> i16
+        \\  if x > 0
+        \\    return 1
+        \\  end
+        \\  panic("neg")
+        \\end
+        \\def main()
+        \\  print f(1)
+        \\end
+        \\
+        },
+    };
+
+    var broke: std.ArrayList(u8) = .empty;
+    defer broke.deinit(alloc);
+    for (features) |f| {
+        var compiled = compileSource(f.src) catch {
+            try broke.appendSlice(alloc, f.name);
+            try broke.appendSlice(alloc, ": did not compile\n");
+            continue;
+        };
+        defer compiled.deinit();
+        if (!compiled.hasErrors()) continue;
+        try broke.appendSlice(alloc, f.name);
+        for (compiled.diagnostics) |d| {
+            if (d.severity != .fatal) continue;
+            try broke.appendSlice(alloc, ": ");
+            try broke.appendSlice(alloc, d.code);
+            break;
+        }
+        try broke.append(alloc, '\n');
+    }
+    try std.testing.expectEqualStrings("", broke.items);
+}
