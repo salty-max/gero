@@ -18,13 +18,13 @@ pub const CheckedProgram = struct {
     /// mean the type couldn't be inferred.
     expr_types: std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type),
     /// Whole-program variadic facts keyed by `def` name (§4.6.2):
-    /// element type + distinct call-site arities. Codegen emits one
-    /// specialization per arity. Backed by `type_arena`.
+    /// element type and smallest call-site arity. Backed by
+    /// `type_arena`.
     variadics: std.StringHashMapUnmanaged(VariadicInfo),
     /// Variadic arities each module's own call sites asked for, keyed
-    /// `"module\x00def"`. `variadics` above is the union taken at the
-    /// link step; this is the per-module breakdown a build cache keys
-    /// on, so touching one module doesn't invalidate the rest.
+    /// `"module\x00def"`. The link step unions these to decide which
+    /// specializations to emit; keeping the breakdown per module means
+    /// touching one module doesn't invalidate the rest.
     module_variadic_arities: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)),
     /// Type of every named binding, keyed by the start offset of its
     /// declaring identifier. Codegen has the initializer's type from
@@ -58,11 +58,11 @@ pub const CheckedProgram = struct {
         return (self.variadics.get(name) orelse return null).elem;
     }
 
-    /// Distinct call-site arities of variadic `def` `name` (empty when
-    /// it isn't a called variadic def). One codegen specialization each.
-    pub fn variadicArities(self: *const CheckedProgram, name: []const u8) []const u32 {
-        const info = self.variadics.get(name) orelse return &.{};
-        return info.arities.items;
+    /// Iterate the per-module arity sets recorded for variadic `def`
+    /// `name` — one set per module that calls it. The link step unions
+    /// these to decide which specializations to emit.
+    pub fn moduleArities(self: *const CheckedProgram, name: []const u8) ModuleArities {
+        return .{ .inner = self.module_variadic_arities.iterator(), .name = name };
     }
 };
 
@@ -270,17 +270,36 @@ const calls = @import("typecheck/calls.zig");
 
 const T = annotations.T;
 
+/// Each module's own arity set for one variadic `def`. Modules are
+/// visited in hash order, so callers that need determinism sort the
+/// union rather than relying on iteration order.
+pub const ModuleArities = struct {
+    inner: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)).Iterator,
+    name: []const u8,
+
+    /// Next module's arity set, or `null` when every module is visited.
+    pub fn next(self: *ModuleArities) ?[]const u32 {
+        while (self.inner.next()) |entry| {
+            // Keys are `"module\x00def"`; match the def half.
+            const key = entry.key_ptr.*;
+            const sep = std.mem.indexOfScalar(u8, key, 0) orelse continue;
+            if (!std.mem.eql(u8, key[sep + 1 ..], self.name)) continue;
+            return entry.value_ptr.items;
+        }
+        return null;
+    }
+};
+
 /// Whole-program variadic facts for one variadic `def` (§4.6.2): the
-/// unified element type `T` across its call sites, the *smallest* arity
-/// seen, and the set of distinct arities. The body type-checks once
-/// against `args: (T, …, T)` of `min_arity` — an index valid only for a
-/// larger call is rejected, since the smallest call cannot supply it.
-/// Codegen emits one specialization per entry of `arities`. `min_arity`
-/// is null until the first call site is recorded.
+/// unified element type `T` across its call sites and the *smallest*
+/// arity seen. The body type-checks once against `args: (T, …, T)` of
+/// `min_arity` — an index valid only for a larger call is rejected,
+/// since the smallest call cannot supply it. `min_arity` is null until
+/// the first call site is recorded. Which specializations to emit is a
+/// link-time question, answered by unioning `moduleArities`.
 pub const VariadicInfo = struct {
     elem: ?*const types.Type = null,
     min_arity: ?u32 = null,
-    arities: std.ArrayListUnmanaged(u32) = .empty,
 };
 
 /// A variadic method whose body is deferred until call sites pin its

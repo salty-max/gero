@@ -224,7 +224,7 @@ fn emitVariadicMethod(self: *Emitter, method: *const ast.DefDecl, cname: []const
     const elem = self.checked.variadicElem(base);
     const last = method.params[method.params.len - 1];
     const param_name = self.source[last.name.start..last.name.end];
-    for (self.checked.variadicArities(base)) |arity| {
+    for (try variadic.arities(self, base)) |arity| {
         // @as: a call-site arity is frame-bounded well under u16.
         const n: u16 = @intCast(arity);
         if (n > 0 and elem == null) continue;

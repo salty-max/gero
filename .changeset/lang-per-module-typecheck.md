@@ -19,7 +19,16 @@ checks. A module's view holds declarations — signatures — so a body
 edit is invisible across a module boundary. That is the property a
 per-module build cache needs.
 
-Variadic call sites now also record which module asked for each
-arity. `CheckedProgram.module_variadic_arities` carries the
-breakdown; the program-wide union stays the input to specialization,
-taken once every module is walked.
+Variadic call sites now record which module asked for each arity, and
+specializations are emitted from the union of those sets at link time
+rather than from a set accumulated program-wide during type-checking.
+No module's specialization set depends on its dependents'.
+`CheckedProgram.moduleArities` replaces `variadicArities`, and
+`VariadicInfo` drops its `arities` field — the union is derived where
+it is used instead of stored twice.
+
+Codegen is also relocatable. Emission used to fold a buffer base into
+the bytes as it wrote them, so a module's output depended on where it
+sat; it now names positions — `CodeRef` for a symbol, `Relocation` for
+a deferred address slot — and a link phase resolves them once the bases
+are fixed. Emitted output is unchanged.
