@@ -555,6 +555,31 @@ gero build --target=vm            # explicit target override
 - Takes no positional args — entry comes from the manifest.
   Single-file use is what `gero asm` covers.
 
+**Incremental builds (`.gr` only):** a build records what it
+learned under `<build.out>/.cache/` — one entry per module, plus
+the relocatable code each one lowered to. The cache sits beside
+the per-profile output dirs rather than inside one, so switching
+profiles doesn't discard the other's record.
+
+A later build compares each module against that record:
+
+- Every module unchanged, artifact still present → nothing to do.
+  The build reports `<path> (unchanged)` and stops after reading
+  the sources.
+- A module's own text changed → it is re-checked and re-lowered.
+- A module's *interface* changed — anything it exports, function
+  and method bodies excluded — → everything that transitively
+  imports it is redone too.
+- A module's *body* changed but its interface did not → its
+  dependents keep their cached code. Nothing they could have
+  relied on moved.
+
+Anything that makes the record untrustworthy — missing, corrupt,
+written by a different compiler version, or built for a different
+entry point or `--optimize` mode — is treated as no cache at all,
+and the build runs in full. Deleting `<build.out>/.cache/` is
+always safe.
+
 **Exit:** 0 on success; 1 on host IO / missing manifest; 2 on
 usage (unknown target, positional); 3 on manifest parse error or
 asm pipeline error.
