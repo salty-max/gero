@@ -43,6 +43,7 @@ const cg_destructure = @import("lang/codegen/destructure.zig");
 const cg_vec_builtin = @import("lang/codegen/vec_builtin.zig");
 const cg_str_builtin = @import("lang/codegen/str_builtin.zig");
 const cg_variadic = @import("lang/codegen/variadic.zig");
+const cg_objfile = @import("lang/codegen/objfile.zig");
 const cg_inline_asm = @import("lang/codegen/inline_asm.zig");
 const cg_do_expr = @import("lang/codegen/do_expr.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
@@ -152,6 +153,13 @@ pub const Compiled = codegen_mod.Compiled;
 
 /// One symbol's relocatable code — the unit a build cache stores.
 pub const Fragment = codegen_mod.Fragment;
+
+/// Encode fragments for the build cache.
+pub const encodeFragments = cg_objfile.encode;
+
+/// Decode fragments written by `encodeFragments`.
+pub const decodeFragments = cg_objfile.decode;
+
 /// Codegen options (`entry_name`, `debug_symbols`, `optimize`).
 pub const CompileOptions = codegen_mod.Options;
 /// Build-mode selector for `CompileOptions.optimize`.
