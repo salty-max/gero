@@ -23,11 +23,11 @@ pub const interp_buffer_size: u16 = 64;
 /// One interned string literal — emitted as a null-terminated
 /// byte run at the end of the base image. Multiple call sites
 /// that reference the same byte content share one entry; the
-/// `address` field carries the resolved RAM address after the
-/// pool emits.
+/// `ref` field carries its position in the pool, which the link
+/// step resolves to an address.
 pub const InternedString = struct {
     bytes: []const u8,
-    address: u16,
+    ref: codegen.CodeRef,
 };
 
 /// Forward reference to a string literal — recorded when an
@@ -55,7 +55,7 @@ pub fn emitStringPool(self: *Emitter) !void {
     defer self.current_bank = saved_bank;
 
     for (self.strings.items) |*s| {
-        s.address = codegen.offsetToAddr(codegen.code_base, try self.currentOffset());
+        s.ref = .{ .bank = null, .offset = try self.currentOffset() };
         for (s.bytes) |b| try self.emitByte(b);
         try self.emitByte(0);
     }
@@ -65,7 +65,7 @@ pub fn emitStringPool(self: *Emitter) !void {
 /// resolved string address.
 pub fn patchStrings(self: *Emitter) !void {
     for (self.string_patches.items) |p| {
-        const addr = self.strings.items[p.string_id].address;
+        const addr = self.strings.items[p.string_id].ref.addr();
         const buf: []u8 = if (p.bank) |b|
             if (self.banks.getPtr(b)) |bl| bl.items else continue
         else
@@ -85,7 +85,7 @@ pub fn internString(self: *Emitter, bytes: []const u8) !usize {
         if (std.mem.eql(u8, s.bytes, bytes)) return i;
     }
     const owned = try self.arena.dupe(u8, bytes);
-    try self.strings.append(self.allocator, .{ .bytes = owned, .address = 0 });
+    try self.strings.append(self.allocator, .{ .bytes = owned, .ref = .{ .bank = null, .offset = 0 } });
     return self.strings.items.len - 1;
 }
 

@@ -228,6 +228,10 @@ pub const internal = struct {
         pub const Emitter = codegen_mod.Emitter;
         /// Unresolved `call addr` site.
         pub const CallPatch = codegen_mod.CallPatch;
+        /// A symbol's buffer-relative position, resolved at link.
+        pub const CodeRef = codegen_mod.CodeRef;
+        /// A deferred address write, resolved at link.
+        pub const Relocation = codegen_mod.Relocation;
         /// One lexical block tracked at codegen time (owns LIFO `defer` list).
         pub const Block = codegen_mod.Block;
         /// One enclosing loop tracked while emitting the body.

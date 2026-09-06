@@ -350,9 +350,13 @@ pub fn emitRepeatStmt(self: *Emitter, rs: ast.RepeatStmt) !void {
     try self.emitCondBranch(rs.cond);
     // Falsy cond → loop back to top; truthy → fall through to exit.
     try self.emitByte(Op.jeq_addr);
-    // @as: usize → u16; per-buffer offset stays ≤ 64 KiB.
-    const top_in_buffer: u16 = @intCast(top_offset);
-    try self.emitU16Le(self.currentBufferBase() +% top_in_buffer);
+    const slot = try self.currentOffset();
+    try self.emitU16Le(0); // resolved at link
+    try self.relocations.append(self.allocator, .{
+        .bank = self.current_bank,
+        .patch_offset = slot,
+        .target_offset = top_offset,
+    });
 
     const exit_offset = try self.currentOffset();
     var frame = self.loop_stack.pop().?;

@@ -514,8 +514,8 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
     }
 
     const dup_label = try self.arena.dupe(u8, li.label);
-    const addr = codegen_mod.offsetToAddr(codegen_mod.code_base, try self.currentOffset());
-    try self.fn_addresses.put(self.arena, dup_label, addr);
+    const ref: codegen_mod.CodeRef = .{ .bank = null, .offset = try self.currentOffset() };
+    try self.fn_addresses.put(self.arena, dup_label, ref);
 
     // env_ptr is the hidden first param at fp+4. Register it
     // under the synthetic name "__env" so capture loads can
@@ -682,7 +682,7 @@ pub fn emitClosureCall(
 /// `emitLambdaBodies` so each label has a known address.
 pub fn patchLambdaSlots(self: *Emitter) !void {
     for (self.lambda_patches.items) |p| {
-        const addr = self.fn_addresses.get(p.label) orelse 0;
+        const addr = if (self.fn_addresses.get(p.label)) |r| r.addr() else 0;
         const buf: []u8 = if (p.bank) |b|
             if (self.banks.getPtr(b)) |bl| bl.items else continue
         else

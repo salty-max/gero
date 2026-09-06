@@ -129,13 +129,8 @@ pub fn emitInlineCall(self: *Emitter, callee: *const ast.DefDecl, c: ast.CallExp
     // The return value rides `acu` for the caller — matches the
     // regular-call ABI.
     const end_offset = try self.currentOffset();
-    const end_addr: u16 = self.codeOffsetToAddress(end_offset);
     if (self.inline_returns) |*returns| {
-        const buf: []u8 = self.currentBufferMut();
-        for (returns.items) |patch| {
-            buf[patch] = @intCast(end_addr & 0xFF);
-            buf[patch + 1] = @intCast((end_addr >> 8) & 0xFF);
-        }
+        for (returns.items) |patch| try isa.patchJumpTo(self, patch, end_offset);
         returns.deinit(self.allocator);
     }
 

@@ -8616,3 +8616,25 @@ test "codegen/modules: an importer sees only what its own imports export" {
     );
     try fx.expectRuns("main.gr", "4\n");
 }
+
+// ---------- relocatable emission ----------
+
+test "CodeRef: a base-buffer symbol resolves against the code base" {
+    const ref: gero.lang.internal.codegen.CodeRef = .{ .bank = null, .offset = 0x10 };
+    try std.testing.expectEqual(gero.lang.codegen.code_base + 0x10, ref.addr());
+}
+
+test "CodeRef: a banked symbol resolves against the bank window" {
+    const base: gero.lang.internal.codegen.CodeRef = .{ .bank = null, .offset = 0x20 };
+    const banked: gero.lang.internal.codegen.CodeRef = .{ .bank = 3, .offset = 0x20 };
+    // Same offset in different buffers must not name the same address.
+    try std.testing.expect(base.addr() != banked.addr());
+}
+
+test "CodeRef: an offset past the address space clamps rather than truncating" {
+    // An over-large image still records positions; resolution saturates
+    // so the overflow diagnostic reports instead of wrapping to a
+    // plausible-looking low address.
+    const ref: gero.lang.internal.codegen.CodeRef = .{ .bank = null, .offset = 0x1_0000 };
+    try std.testing.expectEqual(@as(u16, 0xFFFF), ref.addr());
+}

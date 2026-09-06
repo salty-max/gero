@@ -89,9 +89,8 @@ pub fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, 
     }
 
     const dup_name = try self.arena.dupe(u8, label);
-    const base = if (bank_target) |_| bank_window_base else codegen.code_base;
-    const addr = codegen.offsetToAddr(base, try self.currentOffset());
-    try self.fn_addresses.put(self.arena, dup_name, addr);
+    const ref: codegen.CodeRef = .{ .bank = bank_target, .offset = try self.currentOffset() };
+    try self.fn_addresses.put(self.arena, dup_name, ref);
 
     // Bind params to positive fp-relative offsets. `call` leaves the
     // stack as [low] ret_ip, old_fp, arg_N-1 … arg_0 [high], so param 0
@@ -245,7 +244,7 @@ fn emitIvtInit(self: *Emitter) !void {
 pub fn patchCalls(self: *Emitter) !void {
     for (self.call_patches.items) |p| {
         const target_addr: u16 = switch (p.target) {
-            .fn_name => |name| self.fn_addresses.get(name) orelse {
+            .fn_name => |name| (self.fn_addresses.get(name) orelse {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena,
                     "codegen: call target `{s}` is not a known top-level def",
@@ -258,8 +257,8 @@ pub fn patchCalls(self: *Emitter) !void {
                     .span = p.span,
                 });
                 continue;
-            },
-            .trampoline => self.trampoline_addr orelse continue,
+            }).addr(),
+            .trampoline => (self.trampoline_addr orelse continue).addr(),
         };
         // Resolve which buffer holds this patch — base or a bank list.
         const buf: []u8 = if (p.bank) |b|

@@ -42,7 +42,7 @@ pub const ClassLayout = struct {
     /// `null` for root classes. Drives `super.method` direct call
     /// and `super.field` parent-shadowed access.
     parent_name: ?[]const u8,
-    vtable_addr: ?u16,
+    vtable_ref: ?codegen_mod.CodeRef,
 };
 
 /// Per-field metadata captured at layout time.
@@ -93,7 +93,7 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
         .method_owners = .{},
         .method_order = .empty,
         .parent_name = null,
-        .vtable_addr = null,
+        .vtable_ref = null,
     };
 
     // Inherit from parent — fields + methods seed the layout
@@ -252,7 +252,7 @@ pub fn emitVtables(self: *Emitter) !void {
         const class_name = entry.key_ptr.*;
         const layout = self.class_layouts.getPtr(class_name) orelse continue;
 
-        layout.vtable_addr = codegen_mod.offsetToAddr(codegen_mod.code_base, try self.currentOffset());
+        layout.vtable_ref = .{ .bank = null, .offset = try self.currentOffset() };
 
         // Iterate in slot order — each slot's address comes from
         // the class that actually owns the method (inherited
@@ -260,7 +260,7 @@ pub fn emitVtables(self: *Emitter) !void {
         for (layout.method_order.items) |mname| {
             const owner = layout.method_owners.get(mname) orelse class_name;
             const label = try methodLabel(self, owner, mname);
-            const method_addr = self.fn_addresses.get(label) orelse 0;
+            const method_addr = if (self.fn_addresses.get(label)) |r| r.addr() else 0;
             try self.emitU16Le(method_addr);
         }
     }
@@ -278,7 +278,7 @@ pub fn isClassName(self: *const Emitter, name: []const u8) bool {
 pub fn patchVtableSlots(self: *Emitter) !void {
     for (self.vtable_patches.items) |p| {
         const layout = self.class_layouts.get(p.class_name) orelse continue;
-        const addr = layout.vtable_addr orelse 0;
+        const addr = if (layout.vtable_ref) |r| r.addr() else 0;
         const buf: []u8 = if (p.bank) |b|
             if (self.banks.getPtr(b)) |bl| bl.items else continue
         else
