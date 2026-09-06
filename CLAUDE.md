@@ -211,8 +211,13 @@ didn't write it. Look for:
   a branch is "in case someone wants X later", delete it.
 - **Comments WHAT vs WHY** — every `//` should say WHY, not WHAT.
   Strip any inline that just restates what the next line does.
-- **Function size** — body past ~40 lines or branching on
-  multiple state shapes → split.
+- **Function size** — split a function that does several unrelated
+  things, or branches on multiple state shapes. Length alone isn't
+  the test: straight-line code with one shape (serialization,
+  field-by-field construction) reads fine long, and chopping it into
+  arbitrary halves makes it worse. Ask what the function would be
+  *named* after splitting — if the parts have no honest names, leave
+  it.
 - **Error paths** — every `try` site readable; the caller has a
   sensible response to each error in the set; no unjustified
   `catch unreachable`.
@@ -260,8 +265,8 @@ Never a third "LGTM with footnotes" shape.
 
 ### Structure
 
-- **One concern per file.** Split early. Function body past ~40
-  lines, or branching on multiple state shapes → split.
+- **One concern per file.** Split early. A function doing several
+  unrelated things, or branching on multiple state shapes → split.
 - **No hidden state.** Modules are pure functions of their inputs
   (or transparent state machines documented at the boundary).
   Never close over module-level mutable state; never read globals.
