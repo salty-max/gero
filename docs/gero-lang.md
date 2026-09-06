@@ -98,7 +98,7 @@ The compiler doesn't enforce — convention only.
 | Negative | `-1` | `int` (unary minus operator) |
 
 No floating-point literals — gero VM is integer-only. For fractions
-use the `fixed` type (8.8 fixed-point — see §3.3).
+use the `fixed` type (16.16 fixed-point — see §3.3).
 
 The lexer disambiguates `$FE40` (hex literal) from `$(expr)` (string
 interpolation, §3.2.2) by lookahead: digit / hex-letter after `$` →
@@ -303,33 +303,49 @@ let hex  = str.format("addr={0:04X}", ptr)
 
 ### 3.3 Fixed-point type
 
-`fixed` — 8.8 fixed-point (16-bit storage, 8 bits integer + 8 bits
-fraction). Range ±127.99…, precision 1/256.
+`fixed` — 16.16 fixed-point (32-bit storage, 16 bits integer + 16 bits
+fraction). Range ±32767.99998, precision 1/65536.
 
 ```
-let v: fixed = 1.5    -- compiles to $0180
-let dx: fixed = 0.125 -- compiles to $0020
+let v: fixed = 1.5      -- compiles to $0001_8000
+let dx: fixed = 0.125   -- compiles to $0000_2000
+let x: fixed = 1000.25  -- the integer part spans a screen
 ```
 
 Standard arithmetic operators work transparently:
 
-- `+` / `-` compile to plain `add` / `sub` (binary point is
-  preserved by alignment, no scaling needed)
-- `*` compiles to `mul` followed by `shr 8` to renormalize the
-  binary point
-- `/` compiles to `shl 8` followed by `div`
+- `+` / `-` compile to `add` on the low half and `adc` on the high,
+  the binary point preserved by alignment
+- `*` compiles to a call to a runtime helper that forms the four
+  16×16 partial products and keeps the middle 32 bits of the 64-bit
+  result — roughly twenty instructions
+- `/` compiles to a call to a restoring-division helper: 48
+  shift-and-subtract steps, since `(a << 16) / b` is a 48-bit
+  numerator over a 32-bit divisor and the ISA's `divs` divides 32 by
+  16. Division is the expensive operation on this machine; keep it
+  out of per-frame loops
+- comparison reduces to the sign of the difference, because a
+  two-word subtract leaves `Z` describing only the high half
+- dividing by zero raises the divide-by-zero fault (vector `$03`),
+  as integer division does
 
-The user never sees the scaling. Cycle count is the same as a
-hypothetical native fixed-point op (a hardware multiplier doesn't
-care about the binary point — the work is identical).
+A live `fixed` occupies two registers and four bytes in memory, low
+half at the lower address. The user never sees the scaling.
+
+**Why 16.16 rather than 8.8.** A fractional type has to span the
+coordinate space it is used in. On a 320×240 display an 8.8 value —
+±127.99 — cannot hold a sprite's x position, so every coordinate would
+live in `i16` with scaling by hand at each boundary. 16.16 is the
+format PICO-8, the Genesis Sonic games and early Doom all used, for
+the same reason.
+
+Integers stay 16-bit: `i16` / `u16` / `u8` are what pixel coordinates,
+tile indices and counters want, and they cost half the storage.
 
 For clamping at fixed-point boundaries (e.g. don't let HP go
 negative or exceed `MAX_HP`), use `math.clamp(value, lo, hi)`
 from stdlib — compiles to `cmp` + branch sequence. The ISA has
 no native saturating ops (deliberate; see ISA §5.4.1).
-
-This is the canonical answer for "I need fractions" — same trick
-PICO-8, Sonic, early Doom used.
 
 ### 3.4 Compound types
 
@@ -2456,10 +2472,10 @@ fixed-point multiply scaling.
 | `math.abs(x: T) -> T` | `T ∈ {i16, u16, fixed}`. Unsigned `abs` is the identity. |
 | `math.min(a: T, b: T) -> T` / `math.max(a: T, b: T) -> T` | `T ∈ {i16, u16, fixed}`. |
 | `math.clamp(x: T, lo: T, hi: T) -> T` | `min(max(x, lo), hi)`. |
-| `math.wrap_add` / `wrap_sub` / `wrap_mul`, all `(a: T, b: T) -> T` | Wrap on overflow (skip the debug trap). `T ∈ {i16, u16, fixed}`; `fixed` mul is Q8.8. |
+| `math.wrap_add` / `wrap_sub` / `wrap_mul`, all `(a: T, b: T) -> T` | Wrap on overflow (skip the debug trap). `T ∈ {i16, u16, fixed}`; `fixed` mul is Q16.16. |
 | `math.sat_add` / `sat_sub` / `sat_mul`, all `(a: T, b: T) -> T` | Clamp to `T`'s bounds on overflow. `T ∈ {i16, u16}` (saturation targets a type's range, which `fixed` doesn't share). |
-| `math.sqrt_fixed(x: fixed) -> fixed` | Q8.8 square root; `x ≤ 0` returns `0`. |
-| `math.fixed_sin(deg: i16) -> fixed` | Sine of an angle in degrees, Q8.8 in `[-1.0, 1.0]`. Bhaskara I approximation (~1% error); range-reduces any `i16` angle. |
+| `math.sqrt_fixed(x: fixed) -> fixed` | Q16.16 square root; `x < 0` returns `0`. Exact for perfect squares, within ~0.3% mid-range. |
+| `math.fixed_sin(deg: i16) -> fixed` | Sine of an angle in degrees, Q16.16 in `[-1.0, 1.0]`. Bhaskara I approximation (~1% error); range-reduces any `i16` angle. |
 | `math.rng() -> u16` | Next value of a deterministic 16-bit Galois LFSR (maximal period; lazily seeded). |
 
 All `math.*` functions are usable inside `bake` bodies (§3.8) — the

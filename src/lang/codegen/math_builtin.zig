@@ -83,26 +83,31 @@ fn emitRng(self: *Emitter, c: ast.CallExpr) !void {
     try isa.movRegToAddr(self, Reg.acu, rng_state_addr); // persist; acu is the result
 }
 
-/// `sqrt_fixed(x: fixed) -> fixed` — Q8.8 square root. For x > 0 the
-/// result raw = isqrt(x_raw << 8) (since √(x_raw/256)·256 = √(x_raw·256)).
-/// `x_raw << 8` is a 32-bit radicand; computed bit-by-bit by testing each
-/// result bit high→low, squaring the candidate (16×16→32 `mul`), and
-/// keeping the bit when candidate² ≤ radicand (a 32-bit unsigned compare).
-/// x ≤ 0 returns 0. The result is < 4096, so 12 bits suffice.
+/// `sqrt_fixed(x: fixed) -> fixed` — Q16.16 square root.
+///
+/// `√(raw/65536)·65536 = √raw · 256`, so the raw value is its own
+/// radicand and the integer root is scaled by 256 afterwards — which
+/// keeps the radicand inside 32 bits, where a 48-bit one would not fit.
+/// The root is found bit-by-bit high→low, squaring each candidate
+/// (16×16→32 `mul`) and keeping the bit when candidate² ≤ radicand (a
+/// 32-bit unsigned compare). x ≤ 0 returns 0.
+///
+/// The `· 256` means the result carries 8 fractional bits rather than
+/// 16. That is exact for perfect squares and within ~0.3% mid-range,
+/// tightening as x grows.
 fn emitSqrtFixed(self: *Emitter, c: ast.CallExpr) !void {
-    try self.emitExpr(c.args[0]); // acu = x_raw
-    try isa.cmpRegImm(self, Reg.acu, 0);
-    const positive = try isa.emitJumpPlaceholder(self, Op.jgt_addr);
-    try isa.movImmToReg(self, 0, Reg.acu); // x ≤ 0 → 0
+    try self.emitExpr(c.args[0]); // acu:fixed_hi = x_raw
+    try isa.cmpRegImm(self, Emitter.fixed_hi, 0);
+    const nonneg = try isa.emitJumpPlaceholder(self, Op.jge_addr);
+    try isa.movImmToReg(self, 0, Reg.acu); // x < 0 → 0
+    try isa.movImmToReg(self, 0, Emitter.fixed_hi);
     const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
-    try isa.patchJumpTo(self, positive, try self.currentOffset());
-    // Radicand N = x_raw << 8 across (r2 = high, r1 = low).
+    try isa.patchJumpTo(self, nonneg, try self.currentOffset());
+    // The raw value is the radicand N across (r2 = high, r1 = low).
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
-    try isa.shlRegImm(self, Reg.r1, 8); // N_lo = x_raw << 8
-    try isa.shrRegImm(self, Reg.acu, 8); // N_hi = x_raw >> 8 (x > 0 → logical ok)
-    try isa.movRegToReg(self, Reg.acu, Reg.r2);
+    try isa.movRegToReg(self, Emitter.fixed_hi, Reg.r2);
     try isa.movImmToReg(self, 0, Reg.r3); // result accumulator
-    try isa.movImmToReg(self, 2048, Reg.r4); // bit = 2^11 (result < 4096)
+    try isa.movImmToReg(self, 0x8000, Reg.r4); // bit = 2^15 (root < 2^16)
     const loop_start = try self.currentOffset();
     // candidate = result | bit → r5.
     try isa.movRegToReg(self, Reg.r3, Reg.r5);
@@ -132,7 +137,12 @@ fn emitSqrtFixed(self: *Emitter, c: ast.CallExpr) !void {
     try isa.cmpRegImm(self, Reg.r4, 0);
     const back = try isa.emitJumpPlaceholder(self, Op.jne_addr);
     try isa.patchJumpTo(self, back, loop_start);
-    try isa.movRegToReg(self, Reg.r3, Reg.acu); // result → acu
+    // Scale the integer root by 256 into the Q16.16 pair.
+    try isa.movRegToReg(self, Reg.r3, Reg.acu);
+    try isa.movRegToReg(self, Reg.r3, Reg.r1);
+    try isa.shrRegImm(self, Reg.r1, 8); // root is non-negative
+    try isa.shlRegImm(self, Reg.acu, 8);
+    try isa.movRegToReg(self, Reg.r1, Emitter.fixed_hi);
     try isa.patchJumpTo(self, done, try self.currentOffset());
 }
 
@@ -176,16 +186,25 @@ fn emitFixedSin(self: *Emitter, c: ast.CallExpr) !void {
     try isa.subRegFromAcu(self, Reg.r1); // acu = 40500 - prod
     try isa.shrRegImm(self, Reg.acu, 1); // (40500 - prod) / 2 ≤ 20250
     try isa.movRegToReg(self, Reg.acu, Reg.r4); // r4 = den_half
-    // num32 = 512 * prod → acu:r2 (32-bit dividend).
-    try isa.movImmToReg(self, 512, Reg.r2);
-    try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low(512·prod), acu = high
-    try isa.divsRegReg(self, Reg.r4, Reg.r2); // r2 = num32 / den_half = result
+    // num32 = 32768 * prod → acu:r2 (32-bit dividend). Dividing that by
+    // `den_half` yields `65536·prod / (40500-prod)` — a quarter of the
+    // Q16.16 result, which is the largest scale whose quotient still
+    // fits the 16 bits `divs` produces (|sin| ≤ 1 ⇒ quotient ≤ 16384).
+    try isa.movImmToReg(self, 32768, Reg.r2);
+    try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low(32768·prod), acu = high
+    try isa.divsRegReg(self, Reg.r4, Reg.r2); // r2 = quarter-scale result
     try isa.movRegToReg(self, Reg.r2, Reg.acu);
-    // Negate for the [180, 360) half.
+    // Negate for the [180, 360) half, while the value is still one word.
     try isa.cmpRegImm(self, Reg.r6, 0);
     const positive = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     try isa.negReg(self, Reg.acu);
     try isa.patchJumpTo(self, positive, try self.currentOffset());
+    // Widen the quarter-scale word to the Q16.16 pair: `<< 2` spans a
+    // 17-bit range, so the high half carries the top bits and the sign.
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try isa.asrRegImm(self, Reg.r1, 14);
+    try isa.shlRegImm(self, Reg.acu, 2);
+    try isa.movRegToReg(self, Reg.r1, Emitter.fixed_hi);
 }
 
 /// Emit `jge` (signed) / `jcc` (unsigned ≥, i.e. no borrow) after a

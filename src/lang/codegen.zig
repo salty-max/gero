@@ -25,6 +25,7 @@ const vec_builtin = @import("codegen/vec_builtin.zig");
 const variadic = @import("codegen/variadic.zig");
 const inline_asm = @import("codegen/inline_asm.zig");
 const object = @import("codegen/object.zig");
+const fixed_mod = @import("codegen/fixed.zig");
 const stdlib = @import("codegen/stdlib.zig");
 
 /// The asm assembler, re-exported here (one level up from
@@ -299,6 +300,10 @@ pub fn compile(
         .inline_returns = null,
         .inline_depth = 0,
         .trampoline_addr = null,
+        .fixed_mul_addr = null,
+        .fixed_div_addr = null,
+        .needs_fixed_mul = false,
+        .needs_fixed_div = false,
         .call_patches = .empty,
         .relocations = .empty,
         .fragment_spans = .empty,
@@ -539,6 +544,10 @@ pub const CallPatch = struct {
     pub const Target = union(enum) {
         fn_name: []const u8,
         trampoline,
+        /// `__fixed_mul` — the Q16.16 multiply helper (§3.3).
+        fixed_mul,
+        /// `__fixed_div` — the Q16.16 divide helper.
+        fixed_div,
     };
 };
 
@@ -760,6 +769,15 @@ pub const Emitter = struct {
     /// `__call_bank` trampoline address in the base image.
     /// `null` until the trampoline is emitted.
     trampoline_addr: ?CodeRef,
+    /// Address of the emitted `__fixed_mul` helper, once some call site
+    /// has asked for it. `null` when the program has no fixed multiply.
+    fixed_mul_addr: ?CodeRef,
+    /// Address of `__fixed_div`, on the same terms.
+    fixed_div_addr: ?CodeRef,
+    /// Set when a call site records a patch for the matching helper, so
+    /// the finalize pass knows to emit its body.
+    needs_fixed_mul: bool,
+    needs_fixed_div: bool,
     /// Unresolved `call addr` sites — recorded when the callee's
     /// address isn't known yet (forward references). Rewritten at
     /// the end of `emitProgram`.
@@ -970,6 +988,8 @@ pub const Emitter = struct {
         switch (ty.*) {
             .primitive => |p| return switch (p) {
                 .i8, .u8, .bool_, .char => 1,
+                // Q16.16 (§3.3) — two words, low half first.
+                .fixed => fixed_size,
                 else => 2,
             },
             .named => |n| {
@@ -1007,6 +1027,16 @@ pub const Emitter = struct {
     pub const opt_value_ofs: u16 = 2;
     /// Byte size of a scalar `T?` (`{present, value}`).
     pub const opt_scalar_size: u16 = 4;
+
+    /// Storage width of a `fixed` value — Q16.16, two words, low half
+    /// at the lower address (§3.3).
+    pub const fixed_size: u16 = 4;
+
+    /// Register holding the high half of a `fixed` value while it is
+    /// live in registers. The low half rides `acu` like any scalar, so
+    /// code that only moves a value needs no special case; only
+    /// arithmetic, stores, and the call boundary read this.
+    pub const fixed_hi = Reg.r5;
 
     /// Whether an optional with element type `inner` uses the tagged scalar
     /// representation (vs a nullable pointer).
@@ -1528,6 +1558,11 @@ pub const Emitter = struct {
         // cross-bank call site asked for it (saves 10 bytes when
         // the program is entirely un-banked or single-bank).
         if (self.needsTrampoline()) try self.emitCallBankTrampoline();
+
+        // Runtime fixed-point helpers, emitted only when a call site
+        // asked for one — a program with no fixed multiply pays nothing.
+        if (self.needs_fixed_mul) try fixed_mod.emitMulHelper(self);
+        if (self.needs_fixed_div) try fixed_mod.emitDivHelper(self);
 
         // Append the interned string pool to the base image so all
         // recorded `StringPatch`es can resolve to real addresses.
@@ -2100,6 +2135,8 @@ pub const Emitter = struct {
                 {
                     break :blk 1;
                 }
+                // Q16.16 needs two words (§3.3).
+                if (std.mem.eql(u8, name, "fixed")) break :blk fixed_size;
                 // Named struct → sum of field sizes (recursive).
                 // Class names stay at 2 (instance-pointer width).
                 if (self.struct_decls.get(name)) |sd| {
@@ -2366,7 +2403,19 @@ pub const Emitter = struct {
         // §3.4.3). A `&T` reference is `.reference`, not the aggregate, so it
         // stays a 2-byte pointer.
         if (t.* == .tuple or t.* == .array or t.* == .vec) return alignUpU16(self.widthOfTypeAnn(t.*), 2);
+        // A `fixed` is two words (§3.3) — like an aggregate, its slot
+        // spans its full width rather than one register.
+        if (self.widthOfTypeAnn(t.*) == fixed_size and isFixedAnn(self, t.*)) return fixed_size;
         return 2;
+    }
+
+    /// `true` when the annotation names `fixed`. Width alone cannot say
+    /// — a scalar optional is four bytes too.
+    fn isFixedAnn(self: *const Emitter, t: ast.TypeAnn) bool {
+        if (t != .named) return false;
+        const span = t.named.name;
+        if (span.end > self.source.len or span.start >= span.end) return false;
+        return std.mem.eql(u8, "fixed", self.resolveImportAlias(self.source[span.start..span.end]));
     }
 
     /// Element list of a tuple-typed expression, or `null` for a

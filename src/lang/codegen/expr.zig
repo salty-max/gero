@@ -3,6 +3,7 @@ const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
+const fixed = @import("fixed.zig");
 const archive = @import("archive.zig");
 const assert_builtin = @import("assert.zig");
 const diverge_builtin = @import("diverge.zig");
@@ -36,14 +37,15 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
             try isa.movImmToReg(self, v, Reg.acu);
         },
         .fixed_lit => |lit| {
-            // Q8.8 — the parser pre-encodes the value as `int *
-            // 256 + round(frac * 256)`. The low 16 bits are the
-            // canonical bit pattern.
-            // @as: i32 → i16; spec §3.3 pins fixed-point to Q8.8 (i16-shaped).
-            const trimmed: i16 = @truncate(lit.value);
-            // safety: i16 → u16 bit pattern preserved (two's complement).
-            const v: u16 = @bitCast(trimmed);
-            try isa.movImmToReg(self, v, Reg.acu);
+            // Q16.16 (§3.3) — the parser pre-encodes the value as
+            // `int * 65536 + round(frac * 65536)`. A live `fixed`
+            // rides two registers: low half in `acu`, high half in
+            // `fixed_hi`.
+            // safety: i32 → u32 bit pattern preserved (two's complement).
+            const bits: u32 = @bitCast(lit.value);
+            // @as: masking to 16 bits each; both halves fit u16 by construction.
+            try isa.movImmToReg(self, @intCast(bits & 0xFFFF), Reg.acu);
+            try isa.movImmToReg(self, @intCast(bits >> 16), Emitter.fixed_hi);
         },
         .str_lit => |sl| try self.emitStrLitExpr(sl),
         .bool_lit => |b| {
@@ -83,6 +85,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
                     return;
                 }
                 try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
+                try fixed.loadHighFromFrame(self, e, ofs);
                 return;
             }
             if (self.params.get(name)) |ofs| {
@@ -93,6 +96,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
                     return;
                 }
                 try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
+                try fixed.loadHighFromFrame(self, e, ofs);
                 return;
             }
             if (self.captures.get(name)) |slot| {
@@ -104,6 +108,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
             // name, since a same-named local shadows the alias.
             if (self.globals.get(self.resolveImportAlias(name))) |g| {
                 try self.emitGlobalLoad(g);
+                try fixed.loadHighFromAddr(self, e, g.address);
                 return;
             }
             try self.unsupported(i.span, "ident not in current frame");
@@ -403,7 +408,10 @@ pub fn emitIsTest(self: *Emitter, it: ast.IsTestExpr) !void {
 pub fn emitUnary(self: *Emitter, u: ast.UnaryExpr) !void {
     try emitExpr(self, u.operand);
     switch (u.op) {
-        .neg => try isa.negReg(self, Reg.acu),
+        .neg => if (fixed.isFixed(self, u.operand))
+            try fixed.emitNegate(self)
+        else
+            try isa.negReg(self, Reg.acu),
         .bit_not => try isa.notRegOp(self, Reg.acu),
         .log_not => {
             // acu = (acu == 0) ? 1 : 0
@@ -523,9 +531,19 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
         }
     }
 
-    const fixed_op = self.isPrimitiveType(b.lhs, .fixed) and
-        self.isPrimitiveType(b.rhs, .fixed) and
-        (b.op == .mul or b.op == .div);
+    // A `fixed` is two words (Q16.16, §3.3), so its arithmetic runs a
+    // widened form of the stack-machine pattern below.
+    if (fixed.isFixedArith(self, b)) {
+        try fixed.emitBinary(self, b);
+        return;
+    }
+    if (fixed.isFixedCompare(self, b)) {
+        try fixed.emitOperands(self, b);
+        try fixed.emitCompare(self);
+        try materializeBoolFromFlags(self, b.op);
+        return;
+    }
+    const fixed_op = false;
 
     // Per spec §4.2.1, plain `+` / `-` / `*` on integer types trap
     // on overflow in debug builds and wrap in release. The check
@@ -675,6 +693,15 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
 pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
     if (e.* == .binary) {
         const b = e.binary;
+        // A two-word compare sets the flags itself; materialize the
+        // 0/1 and test it so the branch consumes flags either way.
+        if (fixed.isFixedCompare(self, b)) {
+            try fixed.emitOperands(self, b);
+            try fixed.emitCompare(self);
+            try materializeBoolFromFlags(self, b.op);
+            try isa.cmpRegImm(self, Reg.acu, 0);
+            return;
+        }
         switch (b.op) {
             .eq, .neq, .lt, .lte, .gt, .gte => {
                 // A scalar optional vs `nil` — test the `present` tag, then
@@ -1140,6 +1167,10 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
             }
         }
         try emitExpr(self, arg);
+        // A `fixed` arg is two words. Pushing the high half first puts
+        // the low half at the lower address, matching how a `fixed`
+        // sits in a frame slot.
+        if (fixed.isFixed(self, arg)) try isa.pushReg(self, Emitter.fixed_hi);
         try isa.pushReg(self, Reg.acu);
     }
 

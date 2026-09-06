@@ -17,7 +17,8 @@ pub const BakeValue = union(enum) {
     /// 16-bit integer (sign interpretation comes from the binding).
     int_: u16,
     /// Q8.8 fixed-point (same bit layout as runtime `fixed`).
-    fixed_: u16,
+    /// Q16.16 raw bits (§3.3) — two words wide, like the runtime.
+    fixed_: u32,
     /// Boolean.
     bool_: bool,
     /// Unit value.
@@ -591,10 +592,10 @@ const Evaluator = struct {
                 break :blk .{ .int_ = @bitCast(truncated) };
             },
             .fixed_lit => |l| blk: {
-                // @as: same i32 → i16 truncate for the Q8.8 literal.
-                const truncated: i16 = @truncate(l.value);
-                // safety: signed → unsigned bit reinterpret.
-                break :blk .{ .fixed_ = @bitCast(truncated) };
+                // The parser already encodes Q16.16 in an i32.
+                // safety: signed → unsigned reinterpret preserves the bits.
+                const bits: u32 = @bitCast(l.value);
+                break :blk .{ .fixed_ = bits };
             },
             .bool_lit => |l| .{ .bool_ = l.value },
             .char_lit => |l| .{ .byte = l.value },
@@ -800,44 +801,49 @@ const Evaluator = struct {
         };
     }
 
-    fn evalFixedArith(self: *Evaluator, op: ast.BinaryOp, a: u16, c: u16, span: ast.Span) StepError!BakeValue {
+    fn evalFixedArith(self: *Evaluator, op: ast.BinaryOp, a: u32, c: u32, span: ast.Span) StepError!BakeValue {
         return switch (op) {
-            // safety: Q8.8 add / sub align without rescaling.
+            // Q16.16 add / sub align without rescaling.
             .add => .{ .fixed_ = a +% c },
             .sub => .{ .fixed_ = a -% c },
             .mul => blk: {
-                // safety: unsigned → signed bit reinterpret for the Q8.8 multiplicand.
-                const sa_i16: i16 = @bitCast(a);
-                // @as: widen i16 → i32 so the product can hold the full Q16.16 result.
-                const sa: i32 = @as(i32, sa_i16);
+                // safety: unsigned → signed bit reinterpret of the raw pair.
+                const sa_i: i32 = @bitCast(a);
                 // safety: same reinterpret for the multiplier.
-                const sc_i16: i16 = @bitCast(c);
-                // @as: widen i16 → i32 for the wide product.
-                const sc: i32 = @as(i32, sc_i16);
-                const wide: i32 = sa * sc;
-                // safety: shift-right by 8 to renormalize Q8.8 product; truncate the renormalized i32 back to i16.
-                const shifted: i16 = @truncate(wide >> 8);
-                // safety: signed → unsigned bit reinterpret for the storage cell.
-                break :blk .{ .fixed_ = @bitCast(shifted) };
+                const sc_i: i32 = @bitCast(c);
+                // @as: widen both so the Q32.32 product can't overflow.
+                const sa: i64 = @as(i64, sa_i);
+                // @as: widen the multiplier to match.
+                const sc: i64 = @as(i64, sc_i);
+                // The product of two Q16.16 values is Q32.32; its middle
+                // 32 bits are the Q16.16 result, matching the runtime
+                // helper's partial-product sum.
+                const wide: i64 = @divFloor(sa * sc, 65536);
+                // safety: truncate the renormalized product back to 32 bits.
+                const narrowed: i32 = @truncate(wide);
+                // safety: signed → unsigned bit reinterpret for the cell.
+                const bits: u32 = @bitCast(narrowed);
+                break :blk .{ .fixed_ = bits };
             },
             .div => blk: {
                 if (c == 0) {
                     try self.diagFatal(span, "E_BAKE_DIV_BY_ZERO", "bake: fixed-point divide by zero");
                     return error.Fault;
                 }
-                // safety: u16 → i16 reinterpret for the signed dividend.
-                const sa_i16: i16 = @bitCast(a);
-                // @as: widen i16 → i32 so `sa << 8` doesn't lose the high bits.
-                const sa: i32 = @as(i32, sa_i16);
-                // safety: u16 → i16 reinterpret for the divisor.
-                const sc_i16: i16 = @bitCast(c);
-                // @as: widen i16 → i32 to match the pre-scaled dividend.
-                const sc: i32 = @as(i32, sc_i16);
-                const wide: i32 = (sa << 8);
-                // safety: truncating the i32 quotient back to i16 mirrors the runtime `divs` semantics.
-                const q: i16 = @truncate(@divTrunc(wide, sc));
-                // safety: signed → unsigned bit reinterpret for the storage cell.
-                break :blk .{ .fixed_ = @bitCast(q) };
+                // safety: unsigned → signed bit reinterpret of the raw pair.
+                const sa_i: i32 = @bitCast(a);
+                // safety: same reinterpret for the divisor.
+                const sc_i: i32 = @bitCast(c);
+                // @as: widen so `a << 16` keeps every bit.
+                const sa: i64 = @as(i64, sa_i);
+                // @as: widen the divisor to match.
+                const sc: i64 = @as(i64, sc_i);
+                // `(a << 16) / b` — the same quotient the runtime's
+                // restoring division produces.
+                const q: i32 = @truncate(@divTrunc(sa * 65536, sc));
+                // safety: signed → unsigned bit reinterpret for the cell.
+                const bits: u32 = @bitCast(q);
+                break :blk .{ .fixed_ = bits };
             },
             else => {
                 try self.diagFatal(span, "E_BAKE_TYPE", "bake: operator not valid for fixed-point operands (only `+ - * /`)");
@@ -860,10 +866,10 @@ const Evaluator = struct {
             },
             .fixed_ => |x| switch (rhs) {
                 .fixed_ => |y| blk: {
-                    // safety: u16 → i16 reinterpret for Q8.8 ordering.
-                    const xi: i16 = @bitCast(x);
-                    // safety: same reinterpret for the Q8.8 rhs.
-                    const yi: i16 = @bitCast(y);
+                    // safety: u32 → i32 reinterpret for Q16.16 ordering.
+                    const xi: i32 = @bitCast(x);
+                    // safety: same reinterpret for the rhs.
+                    const yi: i32 = @bitCast(y);
                     break :blk std.math.order(xi, yi);
                 },
                 else => return self.orderMismatch(span),
@@ -1070,11 +1076,13 @@ const Evaluator = struct {
             if (lsb == 1) self.rng_state ^= 0xB400;
             return .{ .int_ = self.rng_state };
         }
-        var raw: [3]u16 = .{ 0, 0, 0 };
+        // Wide enough for a Q16.16 operand; the narrower kinds use the
+        // low half and the helpers mask accordingly.
+        var raw: [3]u32 = .{ 0, 0, 0 };
         var arg0_fixed = false;
         for (args, 0..) |a, i| {
             const v = try self.evalExpr(a);
-            const x: u16 = switch (v) {
+            const x: u32 = switch (v) {
                 .int_ => |n| n,
                 .fixed_ => |n| n,
                 .byte => |n| n,
@@ -1085,7 +1093,7 @@ const Evaluator = struct {
         }
         const kind: BakeKind = if (args.len > 0) self.argKindBake(args[0]) else .signed;
         var is_fixed = arg0_fixed;
-        const result: u16 = b: {
+        const result: u32 = b: {
             if (std.mem.eql(u8, name, "abs")) break :b bakeAbs(raw[0], kind);
             if (std.mem.eql(u8, name, "min")) break :b bakeMinMax(raw[0], raw[1], kind, true);
             if (std.mem.eql(u8, name, "max")) break :b bakeMinMax(raw[0], raw[1], kind, false);
@@ -1098,7 +1106,7 @@ const Evaluator = struct {
             if (std.mem.eql(u8, name, "sat_mul")) break :b bakeSat(raw[0], raw[1], kind, .mul);
             if (std.mem.eql(u8, name, "fixed_sin")) {
                 is_fixed = true;
-                break :b bakeFixedSin(raw[0]);
+                break :b bakeFixedSin(@truncate(raw[0]));
             }
             if (std.mem.eql(u8, name, "sqrt_fixed")) {
                 is_fixed = true;
@@ -1107,7 +1115,10 @@ const Evaluator = struct {
             try self.diagFmt(span, "E_BAKE_UNSUPPORTED", "bake: `math.{s}` is not evaluable at compile time", .{name});
             return error.Fault;
         };
-        return if (is_fixed) .{ .fixed_ = result } else .{ .int_ = result };
+        // A `fixed` result keeps both words; an integer one is the low
+        // half, as it was collected.
+        // @as: the narrow kinds never set the high half.
+        return if (is_fixed) .{ .fixed_ = result } else .{ .int_ = @truncate(result) };
     }
 };
 
@@ -1127,31 +1138,52 @@ fn uBits(v: i16) u16 {
     return @bitCast(v);
 }
 
-fn bakeAbs(raw: u16, kind: BakeKind) u16 {
-    if (kind == .unsigned) return raw;
-    return if (sI16(raw) < 0) 0 -% raw else raw; // wrapping negate (matches `neg`)
+/// Signed value of a wide operand, read at its kind's width.
+fn signedAt(raw: u32, kind: BakeKind) i64 {
+    if (kind == .fixed) {
+        // safety: u32 → i32 reinterpret of the Q16.16 pair.
+        const signed: i32 = @bitCast(raw);
+        // @as: widen to the i64 the callers compare in.
+        return @as(i64, signed);
+    }
+    // @as: the narrow kinds occupy the low half.
+    const narrow: u16 = @truncate(raw);
+    return sI16(narrow);
 }
 
-fn bakeMinMax(a: u16, b: u16, kind: BakeKind, want_min: bool) u16 {
-    const a_lt_b = if (kind == .unsigned) a < b else sI16(a) < sI16(b);
+fn bakeAbs(raw: u32, kind: BakeKind) u32 {
+    if (kind == .unsigned) return raw;
+    return if (signedAt(raw, kind) < 0) 0 -% raw else raw; // wrapping negate (matches `neg`)
+}
+
+fn bakeMinMax(a: u32, b: u32, kind: BakeKind, want_min: bool) u32 {
+    const a_lt_b = if (kind == .unsigned) a < b else signedAt(a, kind) < signedAt(b, kind);
     if (want_min) return if (a_lt_b) a else b;
     return if (a_lt_b) b else a;
 }
 
-fn bakeWrapMul(a: u16, b: u16, kind: BakeKind) u16 {
-    if (kind != .fixed) return a *% b; // low 16 bits (signed + unsigned share them)
-    const ai: i32 = sI16(a);
-    const bi: i32 = sI16(b);
-    const shifted: i32 = (ai * bi) >> 8; // Q8.8: drop the fractional byte
-    // @as: keep the low 16 bits (product bits 8..23) as the wrapped result.
-    const lo: i16 = @truncate(shifted);
-    return uBits(lo);
+fn bakeWrapMul(a: u32, b: u32, kind: BakeKind) u32 {
+    if (kind != .fixed) {
+        // @as: the narrow kinds occupy the low half and wrap at 16 bits.
+        const al: u16 = @truncate(a);
+        // @as: same for the right operand.
+        const bl: u16 = @truncate(b);
+        return al *% bl;
+    }
+    const shifted: i64 = @divFloor(signedAt(a, kind) * signedAt(b, kind), 65536);
+    // safety: keep the low 32 bits as the wrapped Q16.16 result.
+    const lo: i32 = @truncate(shifted);
+    // safety: signed → unsigned bit reinterpret for the storage cell.
+    const bits: u32 = @bitCast(lo);
+    return bits;
 }
 
-fn bakeSat(a: u16, b: u16, kind: BakeKind, op: BakeSatOp) u16 {
+fn bakeSat(a: u32, b: u32, kind: BakeKind, op: BakeSatOp) u32 {
     if (kind == .unsigned) {
-        const av: i64 = a;
-        const bv: i64 = b;
+        // @as: the unsigned kind occupies the low half.
+        const av: i64 = @as(u16, @truncate(a));
+        // @as: same for the right operand.
+        const bv: i64 = @as(u16, @truncate(b));
         const r: i64 = switch (op) {
             .add => av + bv,
             .sub => av - bv,
@@ -1162,8 +1194,8 @@ fn bakeSat(a: u16, b: u16, kind: BakeKind, op: BakeSatOp) u16 {
         // @as: clamped to [0, 0xFFFF] above.
         return @intCast(r);
     }
-    const av: i64 = sI16(a);
-    const bv: i64 = sI16(b);
+    const av: i64 = signedAt(a, kind);
+    const bv: i64 = signedAt(b, kind);
     const r: i64 = switch (op) {
         .add => av + bv,
         .sub => av - bv,
@@ -1177,7 +1209,7 @@ fn bakeSat(a: u16, b: u16, kind: BakeKind, op: BakeSatOp) u16 {
 }
 
 /// Bhaskara I sine, identical to the runtime lowering (§5.3).
-fn bakeFixedSin(deg_raw: u16) u16 {
+fn bakeFixedSin(deg_raw: u16) u32 {
     const deg: i32 = sI16(deg_raw);
     var x: i32 = @mod(deg, 360);
     var negate = false;
@@ -1187,33 +1219,48 @@ fn bakeFixedSin(deg_raw: u16) u16 {
     }
     const prod: i32 = x * (180 - x);
     const den: i32 = @divFloor(40500 - prod, 2);
-    var result: i32 = @divTrunc(512 * prod, den);
-    if (negate) result = -result;
-    // @as: |result| ≤ 256, fits i16.
-    const r16: i16 = @intCast(result);
-    return uBits(r16);
+    // Quarter-scale, exactly as the runtime lowering computes it, so a
+    // baked constant equals what the same call produces at run time.
+    var quarter: i32 = @divTrunc(32768 * prod, den);
+    if (negate) quarter = -quarter;
+    // |quarter| ≤ 16384, so scaling by four stays inside i32.
+    const scaled: i32 = quarter * 4;
+    // safety: signed → unsigned reinterpret preserves the bits.
+    const bits: u32 = @bitCast(scaled);
+    return bits;
 }
 
-/// Bit-by-bit Q8.8 square root, identical to the runtime lowering.
-fn bakeSqrtFixed(x_raw: u16) u16 {
-    if (sI16(x_raw) <= 0) return 0;
-    const xw: u32 = x_raw;
-    const n: u32 = xw << 8;
+/// Bit-by-bit Q16.16 square root, identical to the runtime lowering:
+/// the integer root of the raw value, scaled by 256.
+fn bakeSqrtFixed(x_raw: u32) u32 {
+    // safety: u32 → i32 reinterpret to test the sign of the pair.
+    const signed: i32 = @bitCast(x_raw);
+    if (signed < 0) return 0;
     var r: u32 = 0;
-    var bit: u32 = 2048;
+    var bit: u32 = 0x8000;
     while (bit != 0) : (bit >>= 1) {
         const cand = r | bit;
-        if (cand * cand <= n) r = cand;
+        // @as: widen so the square of a 16-bit candidate can't wrap.
+        if (@as(u64, cand) * cand <= x_raw) r = cand;
     }
-    // @as: result < 4096, fits u16.
-    return @intCast(r);
+    return r << 8;
+}
+
+/// Append `value` as four little-endian bytes — the Q16.16 layout,
+/// low half first, matching how a `fixed` sits in memory.
+fn writeLeU32(out: []u8, value: u32) usize {
+    // @as: split into two 16-bit halves; both fit by construction.
+    _ = writeLeU16(out[0..2], @truncate(value & 0xFFFF));
+    _ = writeLeU16(out[2..4], @truncate(value >> 16));
+    return 4;
 }
 
 /// Byte width of a serialized `BakeValue`. Mirrors the runtime
 /// layout (`widthOfTypeAnn`) with aggregate sizes summed.
 pub fn widthOf(v: BakeValue) usize {
     return switch (v) {
-        .int_, .fixed_ => 2,
+        .int_ => 2,
+        .fixed_ => 4,
         .bool_, .byte, .nil_ => 1,
         .str => 2, // a pointer into the interned string pool
         .array => |xs| if (xs.len == 0) 0 else widthOf(xs[0]) * xs.len,
@@ -1268,7 +1315,7 @@ fn serializeAt(
 ) std.mem.Allocator.Error!usize {
     return switch (v) {
         .int_ => |x| writeLeU16(out, x),
-        .fixed_ => |x| writeLeU16(out, x),
+        .fixed_ => |x| writeLeU32(out, x),
         .byte => |x| writeLeU8(out, x),
         .bool_ => |x| writeLeU8(out, if (x) 1 else 0),
         .nil_ => writeLeU8(out, 0),
@@ -1323,10 +1370,9 @@ pub fn literalAsBakeValue(source: []const u8, e: *const ast.Expr) ?BakeValue {
             break :blk .{ .int_ = @bitCast(truncated) };
         },
         .fixed_lit => |l| blk: {
-            // @as: same i32 → i16 truncate for Q8.8 storage.
-            const truncated: i16 = @truncate(l.value);
-            // safety: signed → unsigned bit reinterpret.
-            break :blk .{ .fixed_ = @bitCast(truncated) };
+            // safety: the parser already encodes Q16.16 in an i32.
+            const bits: u32 = @bitCast(l.value);
+            break :blk .{ .fixed_ = bits };
         },
         .bool_lit => |l| .{ .bool_ = l.value },
         .char_lit => |l| .{ .byte = l.value },

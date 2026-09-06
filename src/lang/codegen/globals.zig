@@ -8,6 +8,7 @@ const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
+const fixed = @import("fixed.zig");
 const archive = @import("archive.zig");
 const strings = @import("strings.zig");
 const bake_mod = @import("../bake.zig");
@@ -212,6 +213,7 @@ pub fn emitGlobalInits(self: *Emitter) !void {
         if (g.placement == .addr) continue;
         try self.emitExpr(gi.init);
         try emitGlobalStore(self, Reg.acu, g);
+        try fixed.storeHighToAddr(self, gi.init, g.address);
     }
 }
 

@@ -528,13 +528,14 @@ fn lexInteger(state: *State, negative: bool) !void {
                 frac_digits = frac_digits * 10 + @as(i64, b - '0');
                 divisor *= 10;
             }
-            const frac_byte: i64 = @divTrunc(frac_digits * 256 + @divTrunc(divisor, 2), divisor);
-            // @as: narrow i64 → i32 for the Q8.8 byte; `& 0xFF` bounds it to 0..255.
-            const encoded: i32 = (value << 8) | @as(i32, @intCast(frac_byte & 0xFF));
+            const frac_word: i64 = @divTrunc(frac_digits * 65536 + @divTrunc(divisor, 2), divisor);
+            // @as: narrow i64 → i32 for the Q16.16 fraction; `& 0xFFFF`
+            // bounds it to 0..65535.
+            const frac_i32: i32 = @intCast(frac_word & 0xFFFF);
+            const encoded: i32 = (value << 16) | frac_i32;
             if (negative) {
-                // Two's-complement Q8.8 negation: flip then add 1.
-                // For positive Q8.8 the encoded value fits in u16;
-                // store the negated 16-bit pattern as signed i32.
+                // Two's-complement Q16.16 negation: flip then add 1.
+                // The encoded value is the full 32-bit pattern.
                 const neg: i32 = -encoded;
                 try pushToken(state, .fixed_lit, start, state.index, neg);
             } else {

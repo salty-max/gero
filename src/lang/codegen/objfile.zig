@@ -127,7 +127,7 @@ fn decodeRefs(arena: std.mem.Allocator, r: *Reader) (DecodeError || std.mem.Allo
     const out = try arena.alloc(object.SymbolRef, try r.readU32());
     for (out) |*ref| {
         const tag = try r.readByte();
-        if (tag > @intFromEnum(object.RefKind.vtable)) return error.Malformed;
+        if (tag > @intFromEnum(object.RefKind.fixed_div)) return error.Malformed;
         ref.* = .{
             // safety: bounded against the enum's last tag above.
             .kind = @enumFromInt(tag),

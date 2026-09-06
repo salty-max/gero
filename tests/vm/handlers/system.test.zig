@@ -420,7 +420,7 @@ test "sys 0xFB: print_char writes low byte of acu" {
     try std.testing.expectEqualStrings("B", writer.written());
 }
 
-test "sys 0xFB: print_fixed formats Q8.8 positive value as `int.frac`" {
+test "sys 0xFB: print_fixed formats a Q16.16 positive value as `int.frac`" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     var buf: std.ArrayList(u8) = .empty;
@@ -429,14 +429,15 @@ test "sys 0xFB: print_fixed formats Q8.8 positive value as `int.frac`" {
     defer writer.deinit();
     vm.host = .{ .out = &writer.writer };
 
-    // 1.5 in Q8.8 = 1*256 + 128 = 384 → "1.500".
-    vm.regs.write(.acu, 384);
+    // 1.5 in Q16.16 = 0x0001_8000 → low half in `acu`, high in `r5`.
+    vm.regs.write(.acu, 0x8000);
+    vm.regs.write(.r5, 0x0001);
     loadProgram(&vm, &.{ 0xFB, 0x05 }); // sys print_fixed
     _ = gero.vm.step(&vm);
     try std.testing.expectEqualStrings("1.500", writer.written());
 }
 
-test "sys 0xFB: print_fixed formats Q8.8 negative value with leading `-`" {
+test "sys 0xFB: print_fixed formats a Q16.16 negative value with leading `-`" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     var buf: std.ArrayList(u8) = .empty;
@@ -445,8 +446,9 @@ test "sys 0xFB: print_fixed formats Q8.8 negative value with leading `-`" {
     defer writer.deinit();
     vm.host = .{ .out = &writer.writer };
 
-    // -2.25 in Q8.8 = -(2*256 + 64) = -576 → as u16 = 0xFDC0 → "-2.250".
-    vm.regs.write(.acu, 0xFDC0);
+    // -2.25 in Q16.16 = -0x0002_4000 → 0xFFFD_C000 → "-2.250".
+    vm.regs.write(.acu, 0xC000);
+    vm.regs.write(.r5, 0xFFFD);
     loadProgram(&vm, &.{ 0xFB, 0x05 });
     _ = gero.vm.step(&vm);
     try std.testing.expectEqualStrings("-2.250", writer.written());

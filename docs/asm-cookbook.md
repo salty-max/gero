@@ -276,6 +276,11 @@ and the routine runs whenever the device asserts.
 
 ## 7. Fixed-point arithmetic (Q8.8)
 
+gero-lang's own `fixed` type is Q16.16 (gero-lang §3.3), which spans a
+screen's coordinate range. Q8.8 is still the right choice in hand-written
+asm when a value stays inside ±128 and one register is worth more than
+the extra precision — factors, ratios, trig results.
+
 The VM is 16-bit integer-only — no float opcodes. Q8.8 fixed-point
 gives you fractional math by reserving the low byte for the
 fractional part: a Q8.8 value of `$0180` represents `1.5`

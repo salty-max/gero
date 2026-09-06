@@ -9,6 +9,7 @@ const types = @import("../types.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
+const fixed = @import("fixed.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
 const destructure = @import("destructure.zig");
@@ -225,6 +226,7 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
         } else {
             try self.emitExpr(a.value);
             try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+            try fixed.storeHighToFrame(self, a.value, ofs);
         }
         return;
     }
@@ -235,6 +237,7 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
         } else {
             try self.emitExpr(a.value);
             try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+            try fixed.storeHighToFrame(self, a.value, ofs);
         }
         return;
     }
@@ -248,6 +251,7 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
     if (self.globals.get(name)) |g| {
         try self.emitExpr(a.value);
         try self.emitGlobalStore(Reg.acu, g);
+        try fixed.storeHighToAddr(self, a.value, g.address);
         return;
     }
     try self.unsupported(a.target.span(), "assignment target not in scope");
@@ -436,7 +440,7 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
         return;
     }
 
-    const ofs = try self.allocLocal(dup_name);
+    const ofs = try self.allocLocalSized(dup_name, fixed.scalarSlotWidth(self, d.init, d.type_ann));
     // Promoted bindings live as heap cells — the slot holds the cell
     // pointer instead of the value directly.
     if (lambda.isPromoted(self, name)) {
@@ -446,6 +450,7 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
     if (d.init) |init_expr| {
         try self.emitExpr(init_expr); // result in acu
         try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+        try fixed.storeHighToFrame(self, init_expr, ofs);
     }
     // An uninitialized `let` leaves the slot at whatever the prologue's
     // sub-imm gave it (sp padded downward without zeroing).
@@ -455,9 +460,10 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
 /// scalar `let` (top-level consts are handled as globals instead).
 pub fn emitConstDecl(self: *Emitter, d: ast.ConstDecl) !void {
     const dup_name = try self.arena.dupe(u8, self.source[d.name.start..d.name.end]);
-    const ofs = try self.allocLocal(dup_name);
+    const ofs = try self.allocLocalSized(dup_name, fixed.scalarSlotWidth(self, d.init, d.type_ann));
     try self.emitExpr(d.init);
     try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+    try fixed.storeHighToFrame(self, d.init, ofs);
 }
 
 /// `return [value]` — places the value (scalar in `acu`, struct via the

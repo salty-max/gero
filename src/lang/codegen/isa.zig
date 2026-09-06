@@ -146,6 +146,61 @@ pub fn addRegToAcu(self: *Emitter, reg: u8) !void {
     try self.emitByte(reg);
 }
 
+/// `add src, dst` (0x41) — `dst ← dst + src`. Sets the carry the
+/// matching `adc` consumes.
+pub fn addRegToReg(self: *Emitter, src: u8, dst: u8) !void {
+    try self.emitByte(Op.add_reg_reg);
+    try self.emitByte(src);
+    try self.emitByte(dst);
+}
+
+/// `sub src, dst` (0x44) — `dst ← dst - src`. Sets the borrow the
+/// matching `sbc` consumes.
+pub fn subRegFromReg(self: *Emitter, src: u8, dst: u8) !void {
+    try self.emitByte(Op.sub_reg_reg);
+    try self.emitByte(src);
+    try self.emitByte(dst);
+}
+
+/// `clc` (0xB0) — clear carry. Precedes a `rol` chain so the first
+/// rotate shifts a zero into bit 0.
+pub fn clc(self: *Emitter) !void {
+    try self.emitByte(Op.clc_op);
+}
+
+/// `rol reg, imm8` (0x76) — rotate left through carry: the bit shifted
+/// out becomes C, and the old C becomes bit 0. Chaining one per word
+/// shifts a multi-word value left.
+pub fn rolRegImm(self: *Emitter, reg: u8, imm: u8) !void {
+    try self.emitByte(Op.rol_reg_imm);
+    try self.emitByte(reg);
+    try self.emitByte(imm);
+}
+
+/// `adc imm16, reg` (0x50) — `reg ← reg + imm + C`. Adding zero with
+/// carry is how a borrow propagates into a high half.
+pub fn adcImmToReg(self: *Emitter, imm: u16, reg: u8) !void {
+    try self.emitByte(Op.adc_imm16_reg);
+    try self.emitU16Le(imm);
+    try self.emitByte(reg);
+}
+
+/// `adc src, dst` (0x51) — `dst ← dst + src + C`. The high half of a
+/// two-word add; pair it with `addRegToReg` on the low half.
+pub fn adcRegToReg(self: *Emitter, src: u8, dst: u8) !void {
+    try self.emitByte(Op.adc_reg_reg);
+    try self.emitByte(src);
+    try self.emitByte(dst);
+}
+
+/// `sbc src, dst` (0x53) — `dst ← dst - src - C`. The high half of a
+/// two-word subtract; pair it with `subRegFromReg` on the low half.
+pub fn sbcRegFromReg(self: *Emitter, src: u8, dst: u8) !void {
+    try self.emitByte(Op.sbc_reg_reg);
+    try self.emitByte(src);
+    try self.emitByte(dst);
+}
+
 /// `bcpy dst, src, len` (0x2C) — copy `len` (register) bytes from `[src]`
 /// to `[dst]`. All three operands are registers holding addresses / count.
 pub fn bcpy(self: *Emitter, dst: u8, src: u8, len: u8) !void {

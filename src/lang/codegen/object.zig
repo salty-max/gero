@@ -36,6 +36,10 @@ pub const RefKind = enum {
     lambda,
     /// A constructor's vtable slot, naming a class.
     vtable,
+    /// The Q16.16 multiply helper, whose address the link step sets.
+    fixed_mul,
+    /// The Q16.16 divide helper.
+    fixed_div,
 };
 
 /// An address slot naming something outside this fragment. Names
@@ -147,6 +151,18 @@ fn collectRefs(arena: std.mem.Allocator, emitter: *const Emitter, s: Span) ![]co
                 .name = "",
                 .span = p.span,
             },
+            .fixed_mul => .{
+                .kind = .fixed_mul,
+                .patch_offset = p.code_offset - s.start,
+                .name = "",
+                .span = p.span,
+            },
+            .fixed_div => .{
+                .kind = .fixed_div,
+                .patch_offset = p.code_offset - s.start,
+                .name = "",
+                .span = p.span,
+            },
         });
     }
     for (emitter.lambda_patches.items) |p| {
@@ -254,13 +270,15 @@ fn spliceRelocs(emitter: *Emitter, f: Fragment, base: usize) !void {
 
 fn spliceRefs(emitter: *Emitter, f: Fragment, base: usize) !void {
     for (f.refs) |r| switch (r.kind) {
-        .call, .trampoline => try emitter.call_patches.append(emitter.allocator, .{
+        .call, .trampoline, .fixed_mul, .fixed_div => try emitter.call_patches.append(emitter.allocator, .{
             .bank = f.bank,
             .code_offset = base + r.patch_offset,
-            .target = if (r.kind == .trampoline)
-                .trampoline
-            else
-                .{ .fn_name = try emitter.arena.dupe(u8, r.name) },
+            .target = switch (r.kind) {
+                .trampoline => .trampoline,
+                .fixed_mul => .fixed_mul,
+                .fixed_div => .fixed_div,
+                else => .{ .fn_name = try emitter.arena.dupe(u8, r.name) },
+            },
             .span = r.span,
         }),
         .lambda => try emitter.lambda_patches.append(emitter.allocator, .{

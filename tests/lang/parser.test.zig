@@ -1361,28 +1361,28 @@ test "parse: @addr $FE40 captures the literal arg" {
     try std.testing.expectEqual(@as(i32, 0xFE40), arg.int_lit.value);
 }
 
-test "parse: fixed-point literal 1.5 encodes as Q8.8 0x0180" {
+test "parse: fixed-point literal 1.5 encodes as Q16.16 0x0001_8000" {
     var tree = try parseClean("let v: fixed = 1.5");
     defer tree.deinit();
     const init = tree.program.statements[0].let_decl.init.?;
     try std.testing.expect(init.* == .fixed_lit);
-    try std.testing.expectEqual(@as(i32, 0x0180), init.fixed_lit.value);
+    try std.testing.expectEqual(@as(i32, 0x0001_8000), init.fixed_lit.value);
 }
 
-test "parse: fixed-point literal 0.125 encodes as Q8.8 0x0020" {
+test "parse: fixed-point literal 0.125 encodes as Q16.16 0x0000_2000" {
     var tree = try parseClean("let v: fixed = 0.125");
     defer tree.deinit();
     const init = tree.program.statements[0].let_decl.init.?;
     try std.testing.expect(init.* == .fixed_lit);
-    try std.testing.expectEqual(@as(i32, 0x0020), init.fixed_lit.value);
+    try std.testing.expectEqual(@as(i32, 0x0000_2000), init.fixed_lit.value);
 }
 
-test "parse: fixed-point literal 3.14159 encodes as 0x0324 (rounded)" {
+test "parse: fixed-point literal 3.14159 encodes as 0x0003_243F (rounded)" {
     var tree = try parseClean("const PI: fixed = 3.14159");
     defer tree.deinit();
     const init = tree.program.statements[0].const_decl.init;
     try std.testing.expect(init.* == .fixed_lit);
-    try std.testing.expectEqual(@as(i32, 0x0324), init.fixed_lit.value);
+    try std.testing.expectEqual(@as(i32, 0x0003_243F), init.fixed_lit.value);
 }
 
 test "parse: `1.foo()` parses as int.method, not fixed_lit" {

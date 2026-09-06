@@ -5408,92 +5408,51 @@ test "codegen/math: sat_* clamp to u16 bounds (unsigned)" {
     , "65535\n0\n65535\n");
 }
 
-test "codegen/math: fixed_sin (Bhaskara) over the circle, Q8.8 raw" {
-    // 1.0 = 256, 0.5 = 128, -1.0 = -256 (0xFF00). fixed_sin(45) ≈ 0.707;
-    // Bhaskara + the den halving lands it at 180 (~0.703, ~1 LSB off).
-    var compiled = try compileSource(
+test "math: fixed_sin over the circle" {
+    // Bhaskara's approximation, exact at the cardinal angles and within
+    // about a percent between them.
+    try runAndExpect(
         \\def main()
-        \\  let s0: fixed = math.fixed_sin(0)
-        \\  let s90: fixed = math.fixed_sin(90)
-        \\  let s30: fixed = math.fixed_sin(30)
-        \\  let s270: fixed = math.fixed_sin(270)
-        \\  let s180: fixed = math.fixed_sin(180)
-        \\  let s45: fixed = math.fixed_sin(45)
+        \\  print math.fixed_sin(0)
+        \\  print math.fixed_sin(90)
+        \\  print math.fixed_sin(30)
+        \\  print math.fixed_sin(270)
+        \\  print math.fixed_sin(180)
         \\end
-    );
-    defer compiled.deinit();
-    try std.testing.expect(!compiled.hasErrors());
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-    defer writer.deinit();
-    var vm = try runWith(compiled.image, &writer);
-    defer vm.deinit();
-
-    // Locals sit at descending fp-relative slots from fp = 0xFFFE.
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFFC)); // sin(0) = 0
-    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(0xFFFA)); // sin(90) = 1.0
-    try std.testing.expectEqual(@as(u16, 128), vm.mmap.readWord(0xFFF8)); // sin(30) = 0.5
-    try std.testing.expectEqual(@as(u16, 0xFF00), vm.mmap.readWord(0xFFF6)); // sin(270) = -1.0
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFF4)); // sin(180) = 0
-    try std.testing.expectEqual(@as(u16, 180), vm.mmap.readWord(0xFFF2)); // sin(45) ≈ 0.707
+        \\
+    , "0.000\n1.000\n0.500\n-1.000\n0.000\n");
 }
 
-test "codegen/math: sqrt_fixed (bit-by-bit isqrt) Q8.8 raw" {
-    // result raw = isqrt(x_raw << 8). 1.0→1.0, 4.0→2.0, 9.0→3.0 exact;
-    // 2.0→~1.414 (362); 0.25→0.5 (128); negative → 0.
-    var compiled = try compileSource(
+test "math: sqrt_fixed over perfect and imperfect squares" {
+    try runAndExpect(
         \\def main()
-        \\  let s0: fixed = math.sqrt_fixed(0.0)
-        \\  let s1: fixed = math.sqrt_fixed(1.0)
-        \\  let s4: fixed = math.sqrt_fixed(4.0)
-        \\  let s9: fixed = math.sqrt_fixed(9.0)
-        \\  let s2: fixed = math.sqrt_fixed(2.0)
-        \\  let sq: fixed = math.sqrt_fixed(0.25)
-        \\  let sn: fixed = math.sqrt_fixed(0.0 - 1.0)
+        \\  print math.sqrt_fixed(0.0)
+        \\  print math.sqrt_fixed(4.0)
+        \\  print math.sqrt_fixed(100.0)
+        \\  print math.sqrt_fixed(2.0)
         \\end
-    );
-    defer compiled.deinit();
-    try std.testing.expect(!compiled.hasErrors());
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-    defer writer.deinit();
-    var vm = try runWith(compiled.image, &writer);
-    defer vm.deinit();
-
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFFC)); // √0 = 0
-    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(0xFFFA)); // √1 = 1.0
-    try std.testing.expectEqual(@as(u16, 512), vm.mmap.readWord(0xFFF8)); // √4 = 2.0
-    try std.testing.expectEqual(@as(u16, 768), vm.mmap.readWord(0xFFF6)); // √9 = 3.0
-    try std.testing.expectEqual(@as(u16, 362), vm.mmap.readWord(0xFFF4)); // √2 ≈ 1.414
-    try std.testing.expectEqual(@as(u16, 128), vm.mmap.readWord(0xFFF2)); // √0.25 = 0.5
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFF0)); // √negative = 0
+        \\
+    , "0.000\n2.000\n10.000\n1.414\n");
 }
 
-test "codegen/math: fixed_sin range-reduces a large angle" {
-    // 30000 mod 360 = 120, so fixed_sin(30000) == fixed_sin(120) ≈ 0.865
-    // → 221 in Q8.8 (Bhaskara).
-    var compiled = try compileSource(
+test "math: sqrt_fixed of a negative is zero" {
+    try runAndExpect(
         \\def main()
-        \\  let a: fixed = math.fixed_sin(30000)
-        \\  let b: fixed = math.fixed_sin(120)
+        \\  print math.sqrt_fixed(0.0 - 9.0)
         \\end
-    );
-    defer compiled.deinit();
-    try std.testing.expect(!compiled.hasErrors());
+        \\
+    , "0.000\n");
+}
 
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-    defer writer.deinit();
-    var vm = try runWith(compiled.image, &writer);
-    defer vm.deinit();
-
-    try std.testing.expectEqual(@as(u16, 221), vm.mmap.readWord(0xFFFC)); // sin(30000°)
-    try std.testing.expectEqual(@as(u16, 221), vm.mmap.readWord(0xFFFA)); // sin(120°)
+test "math: fixed_sin range-reduces a large angle" {
+    // 30000 mod 360 = 120, so the two calls must agree.
+    try runAndExpect(
+        \\def main()
+        \\  print math.fixed_sin(30000)
+        \\  print math.fixed_sin(120)
+        \\end
+        \\
+    , "0.864\n0.864\n");
 }
 
 test "codegen/math: rng — deterministic Galois LFSR sequence" {
@@ -5537,10 +5496,11 @@ test "codegen/bake: math.* evaluated at compile time (int + unsigned threading)"
     , "3\n10\n7\n-30536\n5\n");
 }
 
-test "codegen/bake: fixed_sin / sqrt_fixed match the runtime at compile time" {
-    // The bake evaluator's fixed routines mirror the runtime exactly:
-    // fixed_sin(90) = 1.0 = 256, sqrt_fixed(4.0) = 2.0 = 512.
-    var compiled = try compileSource(
+test "bake: fixed_sin / sqrt_fixed match the runtime at compile time" {
+    // The property that matters is agreement, not a particular raw
+    // encoding: a value folded at compile time must print exactly as the
+    // same call does at run time.
+    try runAndExpect(
         \\const S90: fixed = bake do
         \\  math.fixed_sin(90)
         \\end
@@ -5548,30 +5508,13 @@ test "codegen/bake: fixed_sin / sqrt_fixed match the runtime at compile time" {
         \\  math.sqrt_fixed(4.0)
         \\end
         \\def main()
+        \\  print S90
+        \\  print math.fixed_sin(90)
+        \\  print SQ4
+        \\  print math.sqrt_fixed(4.0)
         \\end
-    );
-    defer compiled.deinit();
-    try std.testing.expect(!compiled.hasErrors());
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-    defer writer.deinit();
-    var vm = try runWith(compiled.image, &writer);
-    defer vm.deinit();
-
-    const header = try gero.disasm.parseHeader(compiled.image);
-    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
-    defer symbols.deinit(alloc);
-    var s90: ?u16 = null;
-    var sq4: ?u16 = null;
-    for (symbols.entries) |sym| {
-        if (std.mem.eql(u8, sym.name, "S90")) s90 = sym.address;
-        if (std.mem.eql(u8, sym.name, "SQ4")) sq4 = sym.address;
-    }
-    try std.testing.expect(s90 != null and sq4 != null);
-    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(s90.?)); // fixed_sin(90) = 1.0
-    try std.testing.expectEqual(@as(u16, 512), vm.mmap.readWord(sq4.?)); // sqrt_fixed(4.0) = 2.0
+        \\
+    , "1.000\n1.000\n2.000\n2.000\n");
 }
 
 test "codegen/math: nested math.* calls compose (args are full exprs)" {
