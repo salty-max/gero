@@ -3458,3 +3458,36 @@ test "typecheck: `@private` on a class member is still accepted" {
         \\end
     );
 }
+
+test "arityRequests: every recorded variadic call site is reported" {
+    const src =
+        \\def first(args: ...) -> i16
+        \\  return args.0
+        \\end
+        \\def main()
+        \\  print first(1)
+        \\  print first(1, 2, 3)
+        \\end
+        \\
+    ;
+    var stream = try gero.lang.tokenize(alloc, src);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, src, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, src, &tree.program);
+    defer checked.deinit();
+
+    const reqs = try checked.arityRequests(alloc);
+    defer alloc.free(reqs);
+
+    // A build cache stores these so a later run can seed the requests of
+    // modules it skips; both call-site arities have to survive.
+    var saw_one = false;
+    var saw_three = false;
+    for (reqs) |r| {
+        if (!std.mem.eql(u8, r.name, "first")) continue;
+        if (r.arity == 1) saw_one = true;
+        if (r.arity == 3) saw_three = true;
+    }
+    try std.testing.expect(saw_one and saw_three);
+}
