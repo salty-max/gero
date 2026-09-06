@@ -1221,12 +1221,23 @@ to a `let` initialized from a `bake` result copies the bytes into a
 mutable location:
 
 ```
-const READONLY_TABLE = bake make_sin_table()      -- in ROM
-let scratch_table = bake make_sin_table()         -- copied to mutable slot
+-- in ROM
+const READONLY_TABLE = bake do
+  make_sin_table()
+end
+
+-- copied to a mutable slot
+let scratch_table = bake do
+  make_sin_table()
+end
 
 READONLY_TABLE[0] = 1   -- COMPILE ERROR: bake result is const
 scratch_table[0] = 1    -- OK
 ```
+
+In expression position `bake` always prefixes a `do` block, and the
+block spans lines — so calling a `bake def` at compile time is the
+form above rather than `bake make_sin_table()`.
 
 The `bake` keyword cannot be combined with `@cold`, `@inline`,
 `@interrupt`, `@bank`, or `@no_capture` — those describe runtime
