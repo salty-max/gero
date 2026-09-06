@@ -287,6 +287,16 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-line-editor",
         .root_module = line_editor_mod,
     });
+    const gr_diagnostics_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/gr_diagnostics.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    gr_diagnostics_mod.addImport("gero", gero_mod);
+    const gr_diagnostics_test = b.addTest(.{
+        .name = "test-cli-gr-diagnostics",
+        .root_module = gr_diagnostics_mod,
+    });
 
     // ----- Format ----------------------------------------------------------
 
@@ -341,6 +351,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(compile_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(repl_test).step);
     test_step.dependOn(&b.addRunArtifact(line_editor_test).step);
+    test_step.dependOn(&b.addRunArtifact(gr_diagnostics_test).step);
     for (test_files) |rel| {
         const t = makeTest(b, gero_mod, examples_opts, rel, target, optimize);
         test_step.dependOn(&b.addRunArtifact(t).step);
