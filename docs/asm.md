@@ -426,6 +426,22 @@ mov $80, r1            ; 0x1A — zero-page load
 The assembler rejects invalid combinations (`mov &addr, &addr` has
 no opcode) at assembly time with `E003`.
 
+**Host calls.** Two mnemonics reach outside the program:
+
+```asm
+sys $02                ; 0xFB — VM syscall, numbers in isa.md §5.13.1
+int $10                ; 0xFC — software interrupt, vector defined by the host
+```
+
+`sys` dispatches to a fixed handler in the VM — printing, the
+`format_*_to_buf` family, `alloc`, `trap`. Its operand is a syscall
+number from ISA §5.13.1, and an unknown one raises the invalid-opcode
+fault at run time rather than being rejected here.
+
+`int` raises an interrupt vector, which the embedding host defines; the
+gero-lang layer uses `int $05` for a software-raised arithmetic
+overflow, and a fantasy-console host maps its own.
+
 ### 2.4 Operand order convention
 
 Every binary instruction reads as **`<op> src, dst`** — the first

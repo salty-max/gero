@@ -190,6 +190,7 @@ const shapes: []const Shape = &.{
     .{ .mnemonic = "nop", .kinds = &.{}, .opcode = 0xC1 },
 
     // 0xFX — system
+    .{ .mnemonic = "sys", .kinds = &.{.imm8}, .opcode = 0xFB },
     .{ .mnemonic = "int", .kinds = &.{.imm8}, .opcode = 0xFC },
     .{ .mnemonic = "rti", .kinds = &.{}, .opcode = 0xFD },
     .{ .mnemonic = "brk", .kinds = &.{}, .opcode = 0xFE },
