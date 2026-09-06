@@ -77,11 +77,44 @@ fn emitCmp(self: *Emitter, recv: *const ast.Expr, other: *const ast.Expr) error{
 /// contiguously on the stack, allocate a fresh heap buffer, and run the
 /// `format_runtime` syscall to fill it from the runtime-parsed `fmt`. The
 /// allocated buffer's base is left in `acu` (a `str` result).
+/// Lower `str.format_into(dst, fmt, args...)` — the allocation-free form.
+/// Writes into the caller's buffer at `dst` and leaves the byte count
+/// (excluding the terminator) in `acu`.
+///
+/// The heap never reclaims (§5.4), so this is the form a per-frame
+/// caller wants: a cart formatting its score every frame through
+/// `str.format` exhausts the heap in seconds, while this writes into a
+/// buffer the cart owns and reuses.
+pub fn emitFormatInto(
+    self: *Emitter,
+    dst: *const ast.Expr,
+    fmt: *const ast.Expr,
+    args: []const *ast.Expr,
+) error{OutOfMemory}!void {
+    return emitFormatCommon(self, dst, fmt, args);
+}
+
+/// Lower `str.format(fmt, args...)` (§3.2.2) — lay the `args` words out
+/// contiguously on the stack, allocate a fresh heap buffer, and run the
+/// `format_runtime` syscall to fill it from the runtime-parsed `fmt`. The
+/// allocated buffer's base is left in `acu` (a `str` result).
 pub fn emitFormat(self: *Emitter, fmt: *const ast.Expr, args: []const *ast.Expr) error{OutOfMemory}!void {
+    return emitFormatCommon(self, null, fmt, args);
+}
+
+/// Shared lowering. With `dst` the buffer comes from the caller and the
+/// result is the byte count; without it a buffer is allocated and the
+/// result is its base — the only difference between the two forms.
+fn emitFormatCommon(
+    self: *Emitter,
+    dst: ?*const ast.Expr,
+    fmt: *const ast.Expr,
+    args: []const *ast.Expr,
+) error{OutOfMemory}!void {
     // `format(fmt, args)` with a single tuple argument forwards that
     // tuple's elements positionally (§3.2.2) — the variadic `args` slot
     // is the spelled case. Re-lay its elements as words and format those.
-    if (args.len == 1) if (self.tupleElemsOf(args[0])) |elems| {
+    if (dst == null and args.len == 1) if (self.tupleElemsOf(args[0])) |elems| {
         try emitFormatForward(self, fmt, args[0], elems);
         return;
     };
@@ -102,9 +135,14 @@ pub fn emitFormat(self: *Emitter, fmt: *const ast.Expr, args: []const *ast.Expr)
         try isa.movRegToRegOffset(self, Reg.acu, Reg.sp, @intCast(k * 2));
     }
 
-    // Allocate the output buffer; park its base (the result) above all else.
-    try isa.movImmToReg(self, strings.interp_buffer_size, Reg.acu);
-    try isa.sys(self, Sys.alloc); // acu = buffer base
+    // Park the buffer base above all else. `format_into` takes it from
+    // the caller; `format` allocates one.
+    if (dst) |d| {
+        try self.emitExpr(d); // acu = caller's buffer address
+    } else {
+        try isa.movImmToReg(self, strings.interp_buffer_size, Reg.acu);
+        try isa.sys(self, Sys.alloc); // acu = buffer base
+    }
     try isa.pushReg(self, Reg.acu); // [sp] = buffer base
 
     // Stack now: [sp+0] buffer base | [sp+2 .. sp+2+N*2) args | [sp+2+N*2] fmt.
@@ -117,8 +155,16 @@ pub fn emitFormat(self: *Emitter, fmt: *const ast.Expr, args: []const *ast.Expr)
     try isa.sys(self, Sys.format_runtime);
     try isa.sys(self, Sys.format_terminate_buf);
 
-    // Result = the buffer base; drop buffer base + args + fmt.
-    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.acu);
+    // `format` yields the buffer base; `format_into` yields how many
+    // bytes it wrote, which the syscall left as the advance in `r1`.
+    if (dst == null) {
+        try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.acu);
+    } else {
+        try isa.movRegToReg(self, Reg.r1, Reg.acu);
+        try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r2);
+        try isa.subRegFromAcu(self, Reg.r2); // acu = cursor - base
+        try isa.subImmFromReg(self, 1, Reg.acu); // less the terminator
+    }
     // @as: 2 (buffer) + N*2 (args) + 2 (fmt), bounded under 127.
     try isa.addImmToReg(self, @intCast(2 + n * 2 + 2), Reg.sp);
 }
