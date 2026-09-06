@@ -613,9 +613,20 @@ When an interrupt fires (and is not masked — see §6.4):
 4. Continue dispatch.
 
 Only `ip`, `fp`, and `flg` are saved. General-purpose registers
-(`acu`, `r1`–`r6`) are **not** preserved — a handler must save and
-restore any it clobbers (6502 `pha`/`pla` discipline). The gero-lang
-compiler does this automatically for `@interrupt` handlers.
+(`acu`, `r1`–`r6`) and the bank selector `mb` are **not** preserved — a
+handler must save and restore any it clobbers (6502 `pha`/`pla`
+discipline).
+
+`mb` matters as much as the general registers in a banked program: a
+handler that selects a bank returns with a different 16 KB mapped
+through `0xC000..0xFEFF`, so the interrupted code resumes reading the
+wrong memory. The cross-bank call trampoline (§3.2) restores `mb` on
+its own, so a plain call into a banked def is safe; an explicit switch
+is not.
+
+The gero-lang compiler does this automatically for `@interrupt`
+handlers — the general registers always, and `mb` whenever the program
+declares banked defs.
 
 ### 6.3 Exit sequence (`rti`)
 
