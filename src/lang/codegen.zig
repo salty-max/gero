@@ -1930,7 +1930,7 @@ pub const Emitter = struct {
     /// `true` when any top-level def carries `@bank N`. Cross-bank
     /// calls are then possible, so the entry prologue seeds the
     /// save-stack pointer.
-    fn hasBankedDefs(self: *const Emitter) bool {
+    pub fn hasBankedDefs(self: *const Emitter) bool {
         var it = self.fn_banks.valueIterator();
         while (it.next()) |b| if (b.* != null) return true;
         return false;
@@ -1959,10 +1959,20 @@ pub const Emitter = struct {
     /// so a handler must preserve every GP register it might clobber for
     /// the interrupted code to resume intact. Push them, then give the
     /// handler its own frame (`fp = sp`) so its locals don't alias the
-    /// interrupted frame. `mb` is left alone — a handler never changes it
-    /// except via the cross-bank trampoline, which restores it. Emit
-    /// before the frame reserve.
+    /// interrupted frame. Emit before the frame reserve.
+    ///
+    /// `mb` is saved too, whenever the program has banked defs. Interrupt
+    /// entry (ISA §6.2) preserves only `ip` / `fp` / `flg`, so a handler
+    /// that selects a bank — `bank.switch_to`, or anything reading banked
+    /// data — would otherwise return with a different 16 KB mapped and
+    /// leave the interrupted code reading the wrong memory. The
+    /// cross-bank trampoline restores `mb` on its own, so a plain
+    /// `@bank` call was already safe; an explicit switch was not.
+    ///
+    /// An unbanked program pays nothing: with `bank_count == 0` the
+    /// window is plain RAM and `mb` has no addressing effect (ISA §3.2).
     pub fn emitIsrPrologue(self: *Emitter) !void {
+        if (self.hasBankedDefs()) try isa.pushReg(self, Reg.mb);
         for (isr_saved_regs) |r| try isa.pushReg(self, r);
         try isa.movRegToReg(self, Reg.sp, Reg.fp);
     }
@@ -1977,6 +1987,8 @@ pub const Emitter = struct {
             i -= 1;
             try isa.popReg(self, isr_saved_regs[i]);
         }
+        // `mb` was pushed first, so it comes off last.
+        if (self.hasBankedDefs()) try isa.popReg(self, Reg.mb);
         try self.emitByte(Op.rti_op);
     }
 

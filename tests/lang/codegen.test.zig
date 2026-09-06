@@ -8720,3 +8720,53 @@ test "str.format_into: the byte count excludes the terminator" {
         \\
     , "1\n7\n");
 }
+
+test "interrupt: a handler's bank switch does not leak to the interrupted code" {
+    // Interrupt entry preserves only ip / fp / flg (ISA §6.2), so a
+    // handler that selects a bank would otherwise return with a
+    // different 16 KB mapped and leave the mainline reading the wrong
+    // memory. gtx-16 fires a vblank every frame, which makes this
+    // certain to surface in a banked cart.
+    try runAndExpect(
+        \\use bank
+        \\use mem
+        \\@bank 1
+        \\def in_bank() -> i16
+        \\  return 1
+        \\end
+        \\@interrupt $20
+        \\def on_int()
+        \\  bank.switch_to(1)
+        \\end
+        \\def main()
+        \\  bank.switch_to(0)
+        \\  mem.write_u16($C000, 111)
+        \\  asm "int $20"
+        \\  print mem.read_u16($C000)
+        \\  print bank.current()
+        \\end
+        \\
+    , "111\n0\n");
+}
+
+test "interrupt: an unbanked handler saves no bank register" {
+    // `mb` has no addressing effect when `bank_count == 0` (ISA §3.2),
+    // so an unbanked program must not pay for the save.
+    var compiled = try compileSource(
+        \\@interrupt $20
+        \\def on_int()
+        \\  print 1
+        \\end
+        \\def main()
+        \\  asm "int $20"
+        \\end
+        \\
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    // `push mb` / `pop mb` would be a `0x31` / `0x32` naming register
+    // `0x0C`; neither pair appears.
+    try std.testing.expectEqual(@as(usize, 0), countByteSeq(compiled.image, &.{ 0x31, 0x0C }));
+    try std.testing.expectEqual(@as(usize, 0), countByteSeq(compiled.image, &.{ 0x32, 0x0C }));
+}
