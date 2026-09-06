@@ -85,6 +85,45 @@ pub const Host = struct {
 
 /// The VM. Owns the register file, the memory mapper, and an
 /// optional bank pool backing the `0xC000..0xFEFF` window.
+/// A captured VM state: everything execution can change, and nothing
+/// the host owns.
+///
+/// Registers, RAM, banks and the scalar bookkeeping are copied.
+/// The mapped-device registry and the host hooks deliberately are not —
+/// a device is a live host object, so copying the registry would leave
+/// two VMs writing through the same peripherals and either `deinit`
+/// freeing what both point at. Devices stay mapped across a restore;
+/// only what the program can change comes back.
+pub const Snapshot = struct {
+    regs: Registers,
+    /// Raw RAM behind the mapper, captured without routing through
+    /// devices — a device's state belongs to the host, not the program.
+    ram: []u8,
+    /// Bank pool contents, or `null` for an unbanked program.
+    banks: ?[]u8,
+    bank_count: u8,
+    sram_bank_count: u8,
+    cycles: u64,
+    last_fault: ?dispatch_mod.Vector,
+    heap_cursor: u16,
+    allocator: std.mem.Allocator,
+
+    /// Release the captured buffers.
+    pub fn deinit(self: *Snapshot) void {
+        self.allocator.free(self.ram);
+        if (self.banks) |b| self.allocator.free(b);
+    }
+};
+
+/// Why a snapshot could not be restored into a VM.
+pub const RestoreError = error{
+    /// The snapshot's bank pool doesn't match the VM's — a banked
+    /// snapshot into an unbanked VM, or a different bank count.
+    BankShapeMismatch,
+};
+
+/// The VM. Owns the register file, the memory mapper, and an
+/// optional bank pool backing the `0xC000..0xFEFF` window.
 pub const VM = struct {
     regs: Registers,
     mmap: MemoryMapper,
@@ -121,6 +160,51 @@ pub const VM = struct {
         };
         vm.bootInitRegisters();
         return vm;
+    }
+
+    /// Capture registers, RAM, banks and the scalar bookkeeping.
+    /// Mapped devices and the host hooks are left out — see `Snapshot`.
+    ///
+    /// ```
+    /// var snap = try vm.snapshot(allocator);
+    /// defer snap.deinit();
+    /// ```
+    pub fn snapshot(self: *const VM, allocator: std.mem.Allocator) std.mem.Allocator.Error!Snapshot {
+        const ram = try allocator.dupe(u8, &self.mmap.mem.bytes);
+        errdefer allocator.free(ram);
+        const banks: ?[]u8 = if (self.banks) |b| try allocator.dupe(u8, b.data) else null;
+        return .{
+            .regs = self.regs,
+            .ram = ram,
+            .banks = banks,
+            .bank_count = if (self.banks) |b| b.bank_count else 0,
+            .sram_bank_count = if (self.banks) |b| b.sram_bank_count else 0,
+            .cycles = self.cycles,
+            .last_fault = self.last_fault,
+            .heap_cursor = self.heap_cursor,
+            .allocator = allocator,
+        };
+    }
+
+    /// Load `snap` back into this VM. The mapped devices and host hooks
+    /// are untouched, so a peripheral written before the snapshot is
+    /// still mapped and still the same object afterwards.
+    ///
+    /// The snapshot keeps its buffers — restoring twice is fine, and the
+    /// caller still owns the `deinit`.
+    pub fn restore(self: *VM, snap: Snapshot) RestoreError!void {
+        if (self.banks) |*b| {
+            const src = snap.banks orelse return error.BankShapeMismatch;
+            if (b.bank_count != snap.bank_count or b.data.len != src.len) return error.BankShapeMismatch;
+            @memcpy(b.data, src);
+        } else if (snap.banks != null) {
+            return error.BankShapeMismatch;
+        }
+        @memcpy(&self.mmap.mem.bytes, snap.ram);
+        self.regs = snap.regs;
+        self.cycles = snap.cycles;
+        self.last_fault = snap.last_fault;
+        self.heap_cursor = snap.heap_cursor;
     }
 
     /// Release VM-owned resources (device registry + banks).
