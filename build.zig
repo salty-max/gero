@@ -221,6 +221,72 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-footer",
         .root_module = footer_mod,
     });
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_mod.addImport("gero", gero_mod);
+    bench_mod.addOptions("build_options", cli_options);
+    const bench_test = b.addTest(.{
+        .name = "test-cli-bench",
+        .root_module = bench_mod,
+    });
+    const gr_runner_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/gr_runner.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    gr_runner_mod.addImport("gero", gero_mod);
+    gr_runner_mod.addOptions("build_options", cli_options);
+    const gr_runner_test = b.addTest(.{
+        .name = "test-cli-gr-runner",
+        .root_module = gr_runner_mod,
+    });
+    const build_cache_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/build_cache.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    build_cache_mod.addImport("gero", gero_mod);
+    build_cache_mod.addOptions("build_options", cli_options);
+    const build_cache_test = b.addTest(.{
+        .name = "test-cli-build-cache",
+        .root_module = build_cache_mod,
+    });
+    const compile_cli_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/compile.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    compile_cli_mod.addImport("gero", gero_mod);
+    compile_cli_mod.addOptions("build_options", cli_options);
+    const compile_cli_test = b.addTest(.{
+        .name = "test-cli-compile",
+        .root_module = compile_cli_mod,
+    });
+    const repl_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/repl.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    repl_mod.addImport("gero", gero_mod);
+    repl_mod.addOptions("build_options", cli_options);
+    const repl_test = b.addTest(.{
+        .name = "test-cli-repl",
+        .root_module = repl_mod,
+    });
+    const line_editor_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/line_editor.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    line_editor_mod.addImport("gero", gero_mod);
+    line_editor_mod.addOptions("build_options", cli_options);
+    const line_editor_test = b.addTest(.{
+        .name = "test-cli-line-editor",
+        .root_module = line_editor_mod,
+    });
 
     // ----- Format ----------------------------------------------------------
 
@@ -269,6 +335,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(build_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(diagnostics_test).step);
     test_step.dependOn(&b.addRunArtifact(footer_test).step);
+    test_step.dependOn(&b.addRunArtifact(bench_test).step);
+    test_step.dependOn(&b.addRunArtifact(gr_runner_test).step);
+    test_step.dependOn(&b.addRunArtifact(build_cache_test).step);
+    test_step.dependOn(&b.addRunArtifact(compile_cli_test).step);
+    test_step.dependOn(&b.addRunArtifact(repl_test).step);
+    test_step.dependOn(&b.addRunArtifact(line_editor_test).step);
     for (test_files) |rel| {
         const t = makeTest(b, gero_mod, examples_opts, rel, target, optimize);
         test_step.dependOn(&b.addRunArtifact(t).step);
