@@ -99,7 +99,7 @@ fn faultName(vector: ?gero.vm.Vector) []const u8 {
         .invalid_opcode => "invalid-opcode",
         .invalid_register => "invalid-register",
         .div_by_zero => "divide-by-zero",
-        .heap_exhausted => "heap-exhausted",
+        .heap_exhausted => "heap-exhausted (the heap never reclaims — reuse a buffer instead of allocating in a loop)",
         .arith_overflow => "arithmetic-overflow",
         .trap => "trap (panic / failed assertion)",
         _ => "unknown",
