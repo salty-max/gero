@@ -106,6 +106,39 @@ const StringPatch = strings.StringPatch;
 
 // ---------- public surface ----------
 
+/// A deferred address write. Emission records where an address goes
+/// and which buffer-relative offset it names; the link step turns that
+/// into an absolute address once every buffer's base is fixed. Keeping
+/// this out of emission is what makes a module's code position-
+/// independent — the bytes don't change when something ahead of them
+/// grows.
+pub const Relocation = struct {
+    /// Bank holding the patch site, or `null` for the base image.
+    bank: ?u8,
+    /// Byte offset of the 2-byte address slot within that buffer.
+    patch_offset: usize,
+    /// Offset the slot should name, within the same buffer.
+    target_offset: usize,
+};
+
+/// Where a symbol lives, named independently of its run-time
+/// address: the buffer that holds it and the byte offset within it.
+/// Emission records symbols this way and the link step resolves them,
+/// so a definition's recorded position doesn't depend on where its
+/// buffer eventually sits.
+pub const CodeRef = struct {
+    /// Bank holding the symbol, or `null` for the base image.
+    bank: ?u8,
+    /// Byte offset of the symbol within that buffer. Kept wide so an
+    /// over-large image still records positions; `addr` clamps.
+    offset: usize,
+
+    /// Run-time address of this symbol.
+    pub fn addr(self: CodeRef) u16 {
+        return offsetToAddr(if (self.bank) |_| bank_window_base else code_base, self.offset);
+    }
+};
+
 /// One string pointer inside a baked global: the absolute image
 /// offset of its 2-byte slot, and the interned string whose resolved
 /// address goes there.
@@ -248,6 +281,7 @@ pub fn compile(
         .inline_depth = 0,
         .trampoline_addr = null,
         .call_patches = .empty,
+        .relocations = .empty,
         .globals = .{},
         .data_cursor = data_base,
         .zp_cursor = 0,
@@ -287,6 +321,7 @@ pub fn compile(
     };
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
+    defer emitter.relocations.deinit(allocator);
     defer emitter.bake_inits.deinit(allocator);
     defer emitter.bake_str_patches.deinit(allocator);
     defer emitter.global_inits.deinit(allocator);
@@ -363,7 +398,7 @@ pub fn compile(
     // The string pool laid out during `emitProgram`, so a baked
     // `str`'s pointer slot can now take its real address.
     for (emitter.bake_str_patches.items) |p| {
-        const addr = emitter.strings.items[p.string_id].address;
+        const addr = emitter.strings.items[p.string_id].ref.addr();
         // safety: u16 → 2 LE bytes; byte-mask casts.
         base_image[p.image_offset] = @intCast(addr & 0xFF);
         base_image[p.image_offset + 1] = @intCast(addr >> 8);
@@ -647,7 +682,7 @@ pub const Emitter = struct {
     inline_ret_tuple_slot: i8,
     /// `def` name → absolute address. Banked defs live in the
     /// bank window; un-banked defs live in the base image.
-    fn_addresses: std.StringHashMapUnmanaged(u16),
+    fn_addresses: std.StringHashMapUnmanaged(CodeRef),
     /// `def` name → bank index (or `null` for the base image).
     /// Populated pre-emission so `emitCall` picks direct vs
     /// trampoline.
@@ -696,11 +731,13 @@ pub const Emitter = struct {
     inline_depth: u8,
     /// `__call_bank` trampoline address in the base image.
     /// `null` until the trampoline is emitted.
-    trampoline_addr: ?u16,
+    trampoline_addr: ?CodeRef,
     /// Unresolved `call addr` sites — recorded when the callee's
     /// address isn't known yet (forward references). Rewritten at
     /// the end of `emitProgram`.
     call_patches: std.ArrayList(CallPatch),
+    /// Address writes deferred to the link step. See `Relocation`.
+    relocations: std.ArrayList(Relocation),
     /// Top-level `let` / `const` globals + their pinned addresses.
     /// Populated by a pre-pass over `program.statements`; consulted
     /// by ident loads + assignments. See `Global` for the per-
@@ -834,13 +871,6 @@ pub const Emitter = struct {
         // safety: u16 → 2 LE bytes; both casts are byte-mask, no truncation.
         try self.emitByte(@intCast(value & 0xFF));
         try self.emitByte(@intCast(value >> 8));
-    }
-
-    /// Base address of the current code buffer in VM memory.
-    /// Used to turn a buffer-local offset into a `jmp` target.
-    pub fn currentBufferBase(self: *const Emitter) u16 {
-        if (self.current_bank) |_| return bank_window_base;
-        return code_base;
     }
 
     // ---------- frame management ----------
@@ -1481,8 +1511,33 @@ pub const Emitter = struct {
         // their addresses live in `fn_addresses` by now.
         try lambda.patchLambdaSlots(self);
 
+        // ---- link ----
+        //
+        // Every address the emitted code names is written here, once
+        // each buffer's base is fixed: intra-buffer jumps, calls
+        // (including cross-module ones, resolved through the
+        // module-qualified symbols), and string-pool pointers.
+        try self.resolveRelocations();
         try self.patchCalls();
         try self.patchStrings();
+    }
+
+    /// Write every deferred address. Emission recorded where each
+    /// address goes and which offset it names; only here is the
+    /// buffer's base known, which is what keeps the emitted bytes
+    /// independent of where the buffer ends up.
+    fn resolveRelocations(self: *Emitter) !void {
+        for (self.relocations.items) |r| {
+            const buf: []u8 = if (r.bank) |b|
+                if (self.banks.getPtr(b)) |bl| bl.items else continue
+            else
+                self.code.items;
+            const target: CodeRef = .{ .bank = r.bank, .offset = r.target_offset };
+            const addr = target.addr();
+            // safety: u16 → 2 LE bytes; both casts are byte-masks.
+            buf[r.patch_offset] = @intCast(addr & 0xFF);
+            buf[r.patch_offset + 1] = @intCast(addr >> 8);
+        }
     }
 
     /// Delegated to `codegen/strings.zig`.
@@ -1888,8 +1943,8 @@ pub const Emitter = struct {
         defer self.current_bank = saved_bank;
         // `__bank_return` emits first so its address is a known immediate
         // for the `__call_bank` continuation push.
-        const bank_return_addr = try self.emitBankReturn();
-        try self.emitCallBankEntry(bank_return_addr);
+        const bank_return = try self.emitBankReturn();
+        try self.emitCallBankEntry(bank_return);
     }
 
     /// Emit `__bank_return` — the continuation the callee returns to.
@@ -1897,8 +1952,8 @@ pub const Emitter = struct {
     /// Pops the save-stack under a mask, restores the caller's bank, and
     /// returns via `rti` (atomic flg-restore + jump). Returns its own
     /// address for the entry half to push as the callee's return-ip.
-    fn emitBankReturn(self: *Emitter) !u16 {
-        const bank_return_addr = offsetToAddr(code_base, self.code.items.len);
+    fn emitBankReturn(self: *Emitter) !CodeRef {
+        const bank_return: CodeRef = .{ .bank = null, .offset = self.code.items.len };
         try isa.movRegToReg(self, Reg.flg, Reg.r6); // save flg (incl. I bit)
         try isa.sei(self);
         try isa.movAddrToReg(self, bank_save_ptr, Reg.r4);
@@ -1914,16 +1969,16 @@ pub const Emitter = struct {
         try isa.pushReg(self, Reg.fp); // caller fp (rti re-sets it; unchanged)
         try isa.pushReg(self, Reg.r6); // saved flg
         try self.emitByte(Op.rti_op);
-        return bank_return_addr;
+        return bank_return;
     }
 
     /// Emit `__call_bank` — the entry callers target (records
     /// `trampoline_addr`). Pops its own return frame + the stack-passed
     /// target, parks (caller mb, caller return-ip) on the save-stack,
     /// then rebuilds the callee's frame below arg0 and enters via `rti`.
-    /// `bank_return_addr` becomes the callee's return-ip.
-    fn emitCallBankEntry(self: *Emitter, bank_return_addr: u16) !void {
-        self.trampoline_addr = offsetToAddr(code_base, self.code.items.len);
+    /// `bank_return` becomes the callee's return-ip.
+    fn emitCallBankEntry(self: *Emitter, bank_return: CodeRef) !void {
+        self.trampoline_addr = .{ .bank = null, .offset = self.code.items.len };
         // Mask before touching the save-stack: r3 (caller return-ip) +
         // r4 (save-sp) must survive the read-modify-write, and an
         // interrupt clobbers all general registers.
@@ -1945,7 +2000,7 @@ pub const Emitter = struct {
         // __bank_return) become its (old_fp, return-ip), so its `ret`
         // lands in __bank_return and it reads arg0 at [fp+4].
         try isa.pushReg(self, Reg.fp); // callee [fp+2] = old fp
-        try isa.pushImm16(self, bank_return_addr); // callee [fp+0] = return-ip
+        try isa.pushImm16(self, bank_return.addr()); // callee [fp+0] = return-ip
         try isa.movRegToReg(self, Reg.sp, Reg.fp); // callee fp = sp
         // Enter via `rti`: target address rides the stack (not a
         // register) across the atomic flg-restore + jump.
@@ -2452,7 +2507,7 @@ pub const Emitter = struct {
             const name = entry.key_ptr.*;
             if (std.mem.startsWith(u8, name, "__lambda_")) continue;
             if (std.mem.startsWith(u8, name, "__class_vtable_")) continue;
-            try appendDebugSymbol(self.allocator, &out, entry.value_ptr.*, 0, name);
+            try appendDebugSymbol(self.allocator, &out, entry.value_ptr.addr(), 0, name);
             count += 1;
         }
 
@@ -2465,12 +2520,6 @@ pub const Emitter = struct {
 
         archive.writeU16Le(out.items[0..2], count);
         return out.toOwnedSlice(self.allocator);
-    }
-
-    /// Resolve a code-buffer offset to its run-time address.
-    /// Picks `bank_window_base` or `code_base` from `current_bank`.
-    pub fn codeOffsetToAddress(self: *const Emitter, offset: usize) u16 {
-        return offsetToAddr(if (self.current_bank != null) bank_window_base else code_base, offset);
     }
 
     /// Mutable view into the active code buffer. Used for emit-

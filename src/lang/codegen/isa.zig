@@ -293,18 +293,26 @@ pub fn emitJumpPlaceholder(self: *Emitter, op: u8) !usize {
 /// `patch_offset`. `target_offset` is a byte offset inside the
 /// current code buffer.
 pub fn patchJumpTo(self: *Emitter, patch_offset: usize, target_offset: usize) !void {
-    const buf = try self.currentCode();
-    const target_addr = codegen.offsetToAddr(self.currentBufferBase(), target_offset);
-    // safety: u16 → 2 LE bytes; both casts are byte-masks.
-    buf.items[patch_offset] = @intCast(target_addr & 0xFF);
-    buf.items[patch_offset + 1] = @intCast(target_addr >> 8);
+    // Recorded rather than written: the buffer's base is a link-step
+    // quantity, so the emitted bytes stay position-independent.
+    try self.relocations.append(self.allocator, .{
+        .bank = self.current_bank,
+        .patch_offset = patch_offset,
+        .target_offset = target_offset,
+    });
 }
 
 /// Emit an unconditional jump to a known target offset within
 /// the current buffer. Used for loop back-edges.
 pub fn emitJumpBack(self: *Emitter, target_offset: usize) !void {
     try self.emitByte(Op.jmp_addr);
-    try self.emitU16Le(codegen.offsetToAddr(self.currentBufferBase(), target_offset));
+    const slot = try self.currentOffset();
+    try self.emitU16Le(0); // resolved at link
+    try self.relocations.append(self.allocator, .{
+        .bank = self.current_bank,
+        .patch_offset = slot,
+        .target_offset = target_offset,
+    });
 }
 
 /// `jmp reg` (0x91) — indirect jump via the register's value.
