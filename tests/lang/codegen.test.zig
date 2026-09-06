@@ -8770,3 +8770,103 @@ test "interrupt: an unbanked handler saves no bank register" {
     try std.testing.expectEqual(@as(usize, 0), countByteSeq(compiled.image, &.{ 0x31, 0x0C }));
     try std.testing.expectEqual(@as(usize, 0), countByteSeq(compiled.image, &.{ 0x32, 0x0C }));
 }
+
+test "stdlib: every documented call lowers" {
+    // The gate against spec drift: the stdlib is the surface a user
+    // learns, so a documented call that fails to compile is worse than
+    // ordinary staleness. If a §3.4.3 / §5.3 entry stops lowering, this
+    // fails; if an entry is added to the spec, add it here.
+    var compiled = try compileSource(
+        \\use math
+        \\use str
+        \\use mem
+        \\use bank
+        \\
+        \\def main()
+        \\  -- §3.4.3 Vec
+        \\  let a: Vec(i16) = Vec.new()
+        \\  let b: Vec(i16) = Vec.with_capacity(4)
+        \\  let v: Vec(i16) = Vec.from([1, 2, 3])
+        \\  v.push(4)
+        \\  let popped = v.pop()
+        \\  v.pop()
+        \\  print v.len()
+        \\  print v.cap()
+        \\  print v.at(0)
+        \\  let got = v.get(0)
+        \\  v.set(0, 9)
+        \\  print v[0]
+        \\  v[0] = 8
+        \\  let s = v.slice(0, 2)
+        \\  for x in v
+        \\    print x
+        \\  end
+        \\  v.clear()
+        \\  print a.len() + b.len() + s.len()
+        \\
+        \\  -- §3.2.1 str
+        \\  let text: str = "hi"
+        \\  print text.len
+        \\  print text.at(0)
+        \\  print text.cmp("ho")
+        \\  let joined: str = "a" + "b"
+        \\  print joined
+        \\
+        \\  -- §5.3.2 math
+        \\  print math.abs(0 - 5)
+        \\  print math.min(1, 2)
+        \\  print math.max(1, 2)
+        \\  print math.clamp(5, 0, 3)
+        \\  print math.rng()
+        \\  print math.wrap_add(1, 2)
+        \\  print math.wrap_sub(2, 1)
+        \\  print math.wrap_mul(2, 3)
+        \\  print math.sat_add(1, 2)
+        \\  print math.sat_sub(2, 1)
+        \\  print math.sat_mul(2, 3)
+        \\  print math.sqrt_fixed(4.0)
+        \\  print math.fixed_sin(90)
+        \\
+        \\  -- §5.3.1 mem
+        \\  let cell: i16 = 1
+        \\  print mem.addr_of(cell)
+        \\  mem.poke($200, 1)
+        \\  print mem.peek($200)
+        \\  mem.write_u8($200, 1)
+        \\  mem.write_u16($202, 1)
+        \\  mem.write_i8($204, 1)
+        \\  mem.write_i16($206, 1)
+        \\  print mem.read_u8($200)
+        \\  print mem.read_u16($202)
+        \\  print mem.read_i8($204)
+        \\  print mem.read_i16($206)
+        \\  mem.memcpy($300, $200, 4)
+        \\  mem.memset($300, 0, 4)
+        \\
+        \\  -- §5.3.3 bank
+        \\  bank.switch_to(0)
+        \\  print bank.current()
+        \\
+        \\  -- §5.4 formatting
+        \\  let buf: [u8; 32] = [0; 32]
+        \\  print str.format("{0}", 1)
+        \\  print str.format_into(mem.addr_of(buf), "{0}", 1)
+        \\end
+        \\
+    );
+    defer compiled.deinit();
+
+    // Name the offending call in the failure rather than only that one
+    // exists — a bare "has errors" tells you nothing about which entry
+    // drifted.
+    var broke: std.ArrayList(u8) = .empty;
+    defer broke.deinit(alloc);
+    for (compiled.diagnostics) |d| {
+        if (d.severity != .fatal) continue;
+        try broke.appendSlice(alloc, d.code);
+        try broke.appendSlice(alloc, ": ");
+        try broke.appendSlice(alloc, d.message);
+        try broke.append(alloc, '\n');
+    }
+    try std.testing.expectEqualStrings("", broke.items);
+}
