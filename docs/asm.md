@@ -124,11 +124,13 @@ Parentheses override precedence (`&[(@p + 2) * 4]`).
 Examples:
 
 ```asm
-const FLAGS    = (1 << 0) | (1 << 2) | (1 << 5)     ; 0x25
-const MASK_LOW = $FF00 >> 8                          ; 0x00FF
-const HALF_W   = SCREEN_W / 2                        ; SCREEN_W = $0100 -> $0080
-const PADDED   = (SIZE + 7) & ~7                     ; round up to nearest 8
-const SIGNED   = -$0001                              ; 0xFFFF
+const SIZE     = $0010
+const SCREEN_W = $0100
+const FLAGS    = ($01 << $00) | ($01 << $02) | ($01 << $05)  ; $25
+const MASK_LOW = $FF00 >> $08                                ; $00FF
+const HALF_W   = SCREEN_W / $02                              ; SCREEN_W = $0100 -> $0080
+const PADDED   = (SIZE + $07) & ~$07                         ; round up to the next 8
+const SIGNED   = -$0001                                      ; $FFFF
 ```
 
 Operators are **compile-time only** — they fold constants before
@@ -200,7 +202,7 @@ Nine directives:
 const VECTOR_KEYDOWN = $0020         ; software-int vector for keydown
 const SCREEN_W       = $0100         ; 256
 const VRAM_BASE      = &8000         ; address constant
-const FLAGS_ALL      = (1 << 8) - 1  ; full operator set
+const FLAGS_ALL      = ($01 << $08) - $01  ; full operator set
 ```
 
 Constants are pure substitution — no runtime cost.
@@ -281,6 +283,7 @@ field.
 #### `org`
 
 ```asm
+; fragment: handlers `on_keydown` / `on_timer` are defined below.
 org $1000               ; IVT lives here per ISA §3.1
 data16 ivt_keydown = @on_keydown
 data16 ivt_timer   = @on_timer
@@ -308,6 +311,7 @@ Rules:
 #### `include`
 
 ```asm
+; fragment: names files that only exist in a real project tree.
 include "graphics.gas"
 include "sound.gas"
 include "level1.gas"
@@ -386,6 +390,7 @@ endif
 ```
 
 ```asm
+; fragment: names files that only exist in a real project tree.
 ; main.gas
 include "hardware.gas"
 include "sprite.gas"        ; itself includes hardware.gas — no
@@ -419,9 +424,13 @@ mov [r1], r2           ; 0x15 — indirect load
 mov r1, [r2]           ; 0x16 — indirect store
 mov [&2620 + r1], r2   ; 0x17 — indexed: mem[2620 + r1] -> r2
 mov $42, [r1]          ; 0x18 — Imm16 -> ptr
-mov r1, $80            ; 0x19 — zero-page store
-mov $80, r1            ; 0x1A — zero-page load
+mov r1, &80            ; 0x19 — zero-page store (small `&` → ZP)
+mov &80, r1            ; 0x1A — zero-page load
 ```
+
+Zero page is not a separate syntax: write the address with `&` and the
+assembler downgrades any `&XX` whose value fits `0..0xFF` to the
+one-byte `ZP` encoding (`0x19` / `0x1A`), saving a byte per access.
 
 The assembler rejects invalid combinations (`mov &addr, &addr` has
 no opcode) at assembly time with `E003`.
@@ -540,8 +549,9 @@ Compile-time arithmetic and indexed addressing share one syntax:
 square brackets containing an expression. Two forms:
 
 ```asm
+; fragment: `player` and `struct Player` are declared under Casts below.
 ; (a) compile-time-only address expression — no register involved
-mov &[@player + 2], acu              ; load player.mp into acu
+mov &[@player + $02], acu            ; load player.mp into acu
 mov acu, &[@player + Player.mp]      ; same, with a struct-cast offset
 
 ; (b) indexed addressing — at most one register addend, opcode 0x17
@@ -657,6 +667,7 @@ src/
 ```
 
 ```asm
+; fragment: the bank bodies are elided.
 ; main.gas
 
 main:
@@ -679,6 +690,7 @@ jmp. Either write the pair by hand or use the `bank_call` /
 bank automatically:
 
 ```asm
+; fragment: `render_sprite` lives in the banked file above.
 ; By hand — bank must match the target's actual location.
 mov $01, mb
 call render_sprite
@@ -740,9 +752,9 @@ cast, operators):
 ```asm
 ; ----- compile-time constants -----
 const SCREEN_W = $0100
-const BUF_LEN  = SCREEN_W / 4              ; division
-const MASK_LO  = $FFFF & ($FF00 >> 8)      ; bitwise + shift
-const FLAGS    = (1 << 0) | (1 << 5)       ; bitfield
+const BUF_LEN  = SCREEN_W / $04            ; division
+const MASK_LO  = $FFFF & ($FF00 >> $08)    ; bitwise + shift
+const FLAGS    = ($01 << $00) | ($01 << $05)  ; bitfield
 
 ; ----- struct layout -----
 struct Player {
@@ -765,7 +777,7 @@ start:
   ; index into banner via runtime register
   mov $00, r1
 banner_loop:
-  mov [&banner + r1], r2     ; r2 <- banner[r1]
+  mov [@banner + r1], r2     ; r2 <- banner[r1]
   cmp r2, $00                ; null terminator?
   jeq end
   ; ... emit r2 to stdout via host syscall here
