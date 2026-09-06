@@ -440,7 +440,6 @@ fn recordVariadic(
     if (gop.value_ptr.min_arity) |lo| {
         if (arity < lo) gop.value_ptr.min_arity = arity;
     } else gop.value_ptr.min_arity = arity;
-    try addArity(self, &gop.value_ptr.arities, arity);
     const e = elem orelse return;
     if (gop.value_ptr.elem) |existing| {
         if (!relations.assignable(e.*, existing.*) or !relations.assignable(existing.*, e.*)) {
@@ -456,13 +455,6 @@ fn recordVariadic(
     } else {
         gop.value_ptr.elem = e;
     }
-}
-
-/// Add `arity` to a variadic def's distinct-arity set (deduped). The
-/// set drives one codegen specialization per arity (§4.6.2).
-fn addArity(self: *Checker, set: *std.ArrayListUnmanaged(u32), arity: u32) WalkError!void {
-    for (set.items) |a| if (a == arity) return;
-    try set.append(self.arena, arity);
 }
 
 /// Bake-context call rule (§3.8): only `bake def` functions may be

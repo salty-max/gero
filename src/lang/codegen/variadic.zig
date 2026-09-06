@@ -39,6 +39,25 @@ pub fn label(self: *Emitter, name: []const u8, arity: u16) ![]const u8 {
     return std.fmt.allocPrint(self.arena, "{s}${d}", .{ name, arity });
 }
 
+/// Distinct arities every module's call sites asked of variadic `name`,
+/// unioned and sorted. This is the link step's answer to which
+/// specializations exist: each module records only what its own calls
+/// need, so no module's set depends on its dependents'.
+pub fn arities(self: *Emitter, name: []const u8) ![]const u32 {
+    var out: std.ArrayListUnmanaged(u32) = .empty;
+    var per_module = self.checked.moduleArities(name);
+    while (per_module.next()) |set| {
+        for (set) |a| {
+            for (out.items) |seen| {
+                if (seen == a) break;
+            } else try out.append(self.arena, a);
+        }
+    }
+    // Hash order isn't stable, so sort to keep emission deterministic.
+    std.mem.sort(u32, out.items, {}, std.sort.asc(u32));
+    return out.items;
+}
+
 /// Emit every variadic def's per-arity specializations. Each `name$N`
 /// runs the shared body with `current_variadic` set so its `args.N` /
 /// forwarding lower against `N` word-strided slots. A variadic def with
@@ -52,7 +71,7 @@ pub fn emitSpecializations(self: *Emitter, program: *const ast.Program) !void {
             const elem = self.checked.variadicElem(name);
             const last = dd.params[dd.params.len - 1];
             const param_name = self.source[last.name.start..last.name.end];
-            for (self.checked.variadicArities(name)) |arity| {
+            for (try arities(self, name)) |arity| {
                 // @as: a call-site arity fits the i8 frame budget well
                 // under u16 (frame ≤ 127 bytes ⇒ ≤ 61 word slots).
                 const n: u16 = @intCast(arity);

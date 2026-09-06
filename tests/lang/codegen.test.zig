@@ -8638,3 +8638,33 @@ test "CodeRef: an offset past the address space clamps rather than truncating" {
     const ref: gero.lang.internal.codegen.CodeRef = .{ .bank = null, .offset = 0x1_0000 };
     try std.testing.expectEqual(@as(u16, 0xFFFF), ref.addr());
 }
+
+test "variadic: arities from different modules each get a specialization" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("sum.gr",
+        \\def first(args: ...) -> i16
+        \\  return args.0
+        \\end
+        \\
+    );
+    // Two modules call the same variadic at different arities. The
+    // specializations exist only if the link step unions both modules'
+    // requests — neither module's set names the other's arity.
+    try fx.write("mid.gr",
+        \\use "./sum"
+        \\def from_mid() -> i16
+        \\  return first(1, 2, 3)
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use "./mid"
+        \\def main()
+        \\  print from_mid()
+        \\  print first(9)
+        \\end
+        \\
+    );
+    try fx.expectRuns("main.gr", "1\n9\n");
+}
