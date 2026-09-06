@@ -598,7 +598,7 @@ Reserved vectors:
 | `0x04` | Heap exhausted (`sys alloc` with cursor + size colliding with the stack, exceeding the heap budget, or `heap_base = 0`). |
 | `0x05` | Arithmetic overflow. VM raises this on `div` / `divs` when the quotient exceeds 16 bits. Languages targeting gero may also software-raise it (via `int 5`) when their own overflow checks fire — gero-lang does so for `+` / `-` / `*` in debug builds. |
 | `0x06` | Program-initiated trap. Raised by `sys trap` when a program gives up deliberately — gero-lang emits it after a failed `test.assert_*`, `panic`, `unreachable`, or `todo` has printed its message. Distinct from `hlt` so a host can tell a program that gave up from one that finished. |
-| `0x06..0x1F` | Reserved (host-defined). |
+| `0x07..0x1F` | Reserved (host-defined). gtx-16 uses `0x07` for its vblank IRQ. |
 | `0x20..0x3F` | Software interrupts (`int N`). |
 
 ### 6.2 Entry sequence
