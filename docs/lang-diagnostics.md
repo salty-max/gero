@@ -1014,11 +1014,9 @@ Rules:
 
 ## 10. Editor integration (LSP)
 
-The JSON output is the contract; an LSP server bridges it to
-editors. The `gero lsp` command (planned in #204) reads the JSON
-report and emits LSP `Diagnostic` notifications — the inline-lint
-squiggles, hover summaries, and quick-fix actions every editor
-expects.
+`gero lsp` serves these diagnostics to any LSP-aware editor. The
+JSON report below is the same contract in file form, for tools
+that would rather shell out than speak a protocol.
 
 LSP `Diagnostic` mapping:
 
@@ -1027,23 +1025,16 @@ LSP `Diagnostic` mapping:
 | `range` | The diagnostic's `span` resolved to LSP positions |
 | `severity` | `error`/`warning`/`note` → 1/2/3 |
 | `code` | `E_*` registry code |
-| `message` | The human-readable summary + help line |
-| `relatedInformation[]` | The `notes[]` array, each mapped to an LSP `DiagnosticRelatedInformation` |
+| `message` | The human-readable summary |
+| `source` | Always `"gero"` |
 
-What editor integration unlocks once `gero lsp` lands:
+The `notes[]` array is not mapped to `relatedInformation[]`, and
+fixable diagnostics are not offered as `CodeAction`s. Both need
+the server to resolve a note's span to the file it points at,
+which is the same symbol-table exposure that gates hover and
+go-to-definition — see [`lsp.md` §6](lsp.md).
 
-- Inline squiggles under exact spans, updated on every keystroke.
-- Hover popups showing the full diagnostic including `help:` and
-  `note:` lines.
-- "Quick fix" actions for diagnostics that carry a single
-  unambiguous fix (e.g. `E_SYNTAX_HEX_PREFIX` → "replace `0x` with
-  `$`"). The diagnostic emitter marks fixable diagnostics with a
-  `"fix"` field; the LSP server translates to LSP `CodeAction`.
-- "Go to declaration" / "find references" — separate LSP work, not
-  driven by diagnostics, but the symbol resolution that the
-  typechecker performs feeds it too.
-
-Until `gero lsp` ships, editor integration is one of:
+Without a language server, editor integration is one of:
 
 1. Run `gero check --format=json` on save, parse the output in a
    VS Code task / Vim quickfix.

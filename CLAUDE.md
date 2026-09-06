@@ -32,6 +32,7 @@ guess from the codebase shape when the spec defines them.
 | [`gero-lang.md`](docs/gero-lang.md) | High-level language spec — types, statements, expressions, classes (§6), annotations (§3.7), the works. The lang compiler targets the ISA. |
 | [`lang-diagnostics.md`](docs/lang-diagnostics.md) | Diagnostic shape + every error code the parser / typecheck / codegen can emit. The contract for E\_-codes. |
 | [`cli.md`](docs/cli.md) | `gero` CLI — subcommands (`gero check` / `compile` / `disasm` / `asm` / etc.), flags, exit codes. |
+| [`lsp.md`](docs/lsp.md) | `gero lsp` — protocol scope, document sync, capabilities, per-editor wiring. |
 | [`tooling.md`](docs/tooling.md) | Project setup — installing the CLI, wiring editors, CI integration. |
 | [`asm-cookbook.md`](docs/asm-cookbook.md) | Working asm recipes — boot, IVT, banks, syscalls, etc. Reference for "how do I do X in asm?". |
 | [`gtx-16.md`](docs/gtx-16.md) | Fantasy-console spec — consumes Gero as its CPU/VM. Out-of-repo, but the contract lives here. |

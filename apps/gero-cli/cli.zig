@@ -16,6 +16,7 @@ pub const Command = enum {
     disasm,
     info,
     repl,
+    lsp,
 };
 
 /// `--optimize` values per `cli.md` §2.
@@ -147,6 +148,7 @@ fn commandFromStr(s: []const u8) ?Command {
     if (std.mem.eql(u8, s, "disasm")) return .disasm;
     if (std.mem.eql(u8, s, "info")) return .info;
     if (std.mem.eql(u8, s, "repl")) return .repl;
+    if (std.mem.eql(u8, s, "lsp")) return .lsp;
     return null;
 }
 
@@ -165,6 +167,7 @@ pub fn commandName(cmd: Command) []const u8 {
         .disasm => "disasm",
         .info => "info",
         .repl => "repl",
+        .lsp => "lsp",
     };
 }
 
@@ -183,6 +186,7 @@ fn commandSummary(cmd: Command) []const u8 {
         .disasm => "Disassemble a .gx into asm",
         .info => "Print the .gx file header",
         .repl => "Interactive gero-lang prompt",
+        .lsp => "Serve diagnostics + formatting over LSP",
     };
 }
 
@@ -191,7 +195,7 @@ fn commandSummary(cmd: Command) []const u8 {
 /// discoverable, but split into a separate "planned" section.
 fn commandIsImplemented(cmd: Command) bool {
     return switch (cmd) {
-        .asm_, .compile, .run, .info, .disasm, .test_, .check, .fmt, .new, .init, .build, .repl, .bench => true,
+        .asm_, .compile, .run, .info, .disasm, .test_, .check, .fmt, .new, .init, .build, .repl, .bench, .lsp => true,
     };
 }
 
@@ -335,6 +339,12 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}cat prog.gas | gero fmt --stdin{s} {s}# editor format-on-save (stdin → stdout){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}cat prog.gr | gero fmt --stdin --lang=gr{s} {s}# format gero-lang from stdin{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
+        .lsp => {
+            try out.print("  {s}gero lsp{s}\n\n", .{ a.cyan, a.reset });
+            try out.print("Speaks the Language Server Protocol over stdin/stdout. Editors\nspawn it; there is nothing useful to run by hand.\n\n", .{});
+            try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
+            try out.print("  {s}gero lsp{s}                        {s}# what an editor's LSP client runs{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+        },
         .new => {
             try out.print("  {s}gero new{s} <name> [--quiet]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
@@ -441,6 +451,7 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .init => &.{ .help, .quiet, .color, .no_color },
         .build => &.{ .help, .target, .quiet, .verbose, .color, .no_color },
         .repl => &.{ .help, .color, .no_color },
+        .lsp => &.{ .help, .color, .no_color },
         .compile => &.{ .help, .out, .optimize, .quiet, .verbose, .color, .no_color },
         .bench => &.{ .help, .iter, .quiet, .color, .no_color },
     };
