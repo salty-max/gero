@@ -21,6 +21,7 @@ const Rule = enum {
     docs,
     unused,
     mirror,
+    unregistered_tests,
     testing_allocator,
 
     /// Short name the bash scripts use in their reports.
@@ -32,6 +33,7 @@ const Rule = enum {
             .docs => "docs",
             .unused => "unused",
             .mirror => "mirror",
+            .unregistered_tests => "unregistered-tests",
             .testing_allocator => "testing-allocator",
         };
     }
@@ -79,6 +81,9 @@ pub fn main(init: std.process.Init) !u8 {
         try collectZigTree(io, alloc, &files, "src");
         try collectZigTree(io, alloc, &files, "apps");
         try collectZigTree(io, alloc, &files, "tests");
+        // The build script itself, so the unregistered-tests rule can
+        // see which modules are wired as test roots.
+        addOneFile(io, alloc, &files, "build.zig") catch {};
     }
 
     var violations: std.ArrayList(Violation) = .empty;
@@ -99,6 +104,7 @@ pub fn main(init: std.process.Init) !u8 {
     if (!per_file_mode) {
         try checkUnused(alloc, files.items, &violations);
         try checkMirror(alloc, files.items, &violations);
+        try checkUnregisteredTests(alloc, files.items, &violations);
     }
 
     // Print rule-by-rule so callers can `| grep [strict]` etc., and so
@@ -650,6 +656,46 @@ fn parsePubName(line: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Every `apps/**/*.zig` holding a `test` block must be registered as a
+/// test root in `build.zig`. CLI modules keep their tests inline rather
+/// than in a `tests/` mirror, so an unregistered one compiles, ships,
+/// and never runs — the failure this catches is a test that silently
+/// does nothing.
+fn checkUnregisteredTests(
+    alloc: std.mem.Allocator,
+    files: []const File,
+    violations: *std.ArrayList(Violation),
+) !void {
+    var build_src: ?[]const u8 = null;
+    for (files) |f| {
+        if (std.mem.eql(u8, f.path, "build.zig")) build_src = f.content;
+    }
+    const build = build_src orelse return;
+
+    for (files) |f| {
+        if (!std.mem.startsWith(u8, f.path, "apps/")) continue;
+        if (!hasTestBlock(f)) continue;
+        // `b.path("<path>")` is how a test root is named.
+        const needle = try std.fmt.allocPrint(alloc, "b.path(\"{s}\")", .{f.path});
+        if (std.mem.indexOf(u8, build, needle) != null) continue;
+        const msg = try std.fmt.allocPrint(
+            alloc,
+            "  inline tests never run: {s} is not a test root in build.zig",
+            .{f.path},
+        );
+        try violations.append(alloc, .{ .file = f.path, .line = 0, .message = msg, .rule = .unregistered_tests });
+    }
+}
+
+/// `true` when the file declares at least one test.
+fn hasTestBlock(f: File) bool {
+    for (f.lines) |line| {
+        const t = std.mem.trimStart(u8, line, " ");
+        if (std.mem.startsWith(u8, t, "test \"")) return true;
+    }
+    return false;
+}
+
 // ---------- mirror (cross-file) ----------
 
 fn checkMirror(
@@ -713,7 +759,7 @@ fn isMirrorExempt(path: []const u8) bool {
 /// allocator → unused → mirror. Returns the exit code (1 on any
 /// violation).
 fn emitReport(out: *std.Io.Writer, violations: []const Violation) !u8 {
-    const rule_order = [_]Rule{ .strict, .naming, .imports, .docs, .testing_allocator, .unused, .mirror };
+    const rule_order = [_]Rule{ .strict, .naming, .imports, .docs, .testing_allocator, .unused, .mirror, .unregistered_tests };
     var any: bool = false;
     for (rule_order) |rule| {
         var count: u32 = 0;
@@ -746,6 +792,10 @@ fn emitFooter(out: *std.Io.Writer, rule: Rule, count: u32) !void {
         ),
         .docs => try out.print(
             "❌ {d} public declaration(s) lack a /// doc comment.\n   Add a one-line /// description directly above the declaration,\n   or allowlist with '// allow-strict: <reason>' if the symbol is\n   not part of the consumer-facing API.\n   See CLAUDE.md \"Doc Comments\".\n\n",
+            .{count},
+        ),
+        .unregistered_tests => try out.print(
+            "❌ {d} module(s) whose inline tests never run.\n   A CLI module keeps its tests inline, so it must be registered as a\n   test root in build.zig — otherwise the tests compile and are never\n   executed.\n   See CLAUDE.md \"Tests\".\n\n",
             .{count},
         ),
         .testing_allocator => try out.print(

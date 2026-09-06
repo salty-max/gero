@@ -317,6 +317,10 @@ Never a third "LGTM with footnotes" shape.
 - One spec per source file (mirror layout — full rule in
   `docs/development.md` — lint-enforced).
 - Naming: `<file>.test.zig`, `test "<symbol>: <behavior>" { ... }`.
+- **`apps/` keeps its tests inline**, not in a `tests/` mirror — so a
+  module holding a `test` block must also be registered as a test root
+  in `build.zig`. An unregistered one compiles and never runs, which is
+  worse than having no test at all. Lint-enforced.
 - Shared helpers in `tests/util.zig` — don't reinvent per-spec.
 - No snapshot tests.
 - Coverage isn't a target; **failure paths are.** Happy +  at
