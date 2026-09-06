@@ -2343,7 +2343,7 @@ solves one concrete need:
 |--------|------|
 | `math` | `abs`, `min`, `max`, `clamp`, `sqrt_fixed`, fixed-point helpers, `rng()` |
 | `mem`  | typed peek / poke / memcpy / memset / `addr_of` — see §5.3.1 |
-| `str`  | `len`, `at`, `cmp`, `concat` (allocated), `format(fmt, args)` |
+| `str`  | `len`, `at`, `cmp`, `format(fmt, args)` (allocates), `format_into(dst, fmt, args)` (does not — §5.4) |
 | `bank` | `switch_to(N)`, `current()` — bank manipulation |
 | `test` | `assert_eq(a, b)`, `assert_ne(a, b)` — used in `@test` functions |
 
@@ -2487,6 +2487,69 @@ Used in `@test` functions (§3.7.5).
 
 Host-specific modules (`input`, `display`, `audio` for gtx-16) live
 outside the gero stdlib — gtx-16 ships its own header modules.
+
+---
+
+### 5.4 Memory lifetime
+
+**The heap never reclaims.** `sys alloc` bumps a cursor; there is no
+`free` and no collector. Everything allocated stays allocated until the
+program exits, and when the cursor meets the stack the VM raises the
+heap-exhausted fault (vector `$04`).
+
+This is a deliberate consequence of targeting a 16-bit machine with no
+runtime, and it makes one habit fatal: **allocating inside a loop that
+runs every frame.**
+
+What allocates:
+
+| Construct | Allocates |
+|---|---|
+| `str.format(fmt, args)` | the returned string |
+| `let s = "$(x) …"` — interpolation bound to a name | the built string |
+| `Vec(T)` growth past its capacity | the new backing store |
+| a closure that mutates a captured binding (§4.7.2) | the promoted slot |
+
+What does not:
+
+| Construct | Why |
+|---|---|
+| `log "$(x) …"` | each piece goes straight to the host writer |
+| `str.format_into(dst, fmt, args)` | writes into a buffer you own |
+| `Vec` push within its existing capacity | the store is already there |
+| a closure that only reads its captures | captured by value |
+
+#### 5.4.1 Formatting every frame
+
+A cart that draws its score is the common case, and the allocating form
+does not survive it — roughly 700 short formatted strings exhaust the
+default heap, about twelve seconds at 60 fps. Format into a buffer you
+own instead:
+
+```
+def draw_score(score: i16)
+  let buf: [u8; 64] = [0; 64]
+  let dst = mem.addr_of(buf)
+  let n = str.format_into(dst, "score {0}", score)
+  -- `dst` now holds `n` bytes plus a terminator, ready for any
+  -- consumer that takes a null-terminated address.
+end
+```
+
+`str.format_into(dst, fmt, args…) -> u16` returns the byte count
+written, excluding the terminator. Sizing the buffer is the caller's
+job: as with the allocating form, an over-long fill runs past the end.
+
+#### 5.4.2 Collections that outlive a frame
+
+Reserve once and reuse. `Vec.with_capacity(n)` allocates the backing
+store up front, and pushes within that capacity never allocate again;
+`Vec.clear` resets the length without releasing the store, so a pool
+refilled each frame allocates exactly once for the life of the program.
+
+Growing past the reserved capacity allocates a new store and abandons
+the old one, so a `Vec` that grows without bound in a game loop is the
+collection form of the same mistake.
 
 ---
 
