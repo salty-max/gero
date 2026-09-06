@@ -204,6 +204,11 @@ pub const Options = struct {
     /// `false` for validation-only (e.g. `gero check`), where a library
     /// file with no `main` still has its bodies lowered + checked.
     require_entry: bool = true,
+    /// Fragments from a previous build this one may reuse. A def whose
+    /// label matches one is spliced rather than lowered; the caller is
+    /// responsible for only offering fragments still valid for this
+    /// source (see the build cache's staleness check).
+    cached_fragments: []const Fragment = &.{},
     /// Return each symbol's relocatable code on `Compiled.fragments`.
     /// Off by default — only a caching build needs it, and extracting
     /// copies every emitted byte.
@@ -297,6 +302,7 @@ pub fn compile(
         .call_patches = .empty,
         .relocations = .empty,
         .fragment_spans = .empty,
+        .cached_fragments = opts.cached_fragments,
         .globals = .{},
         .data_cursor = data_base,
         .zp_cursor = 0,
@@ -762,6 +768,9 @@ pub const Emitter = struct {
     relocations: std.ArrayList(Relocation),
     /// Byte range each emitted symbol occupied, in emission order.
     fragment_spans: std.ArrayList(FragmentSpan),
+    /// Fragments this build may splice instead of lowering. Empty for
+    /// a full build.
+    cached_fragments: []const Fragment,
     /// Top-level `let` / `const` globals + their pinned addresses.
     /// Populated by a pre-pass over `program.statements`; consulted
     /// by ident loads + assignments. See `Global` for the per-
@@ -1575,7 +1584,7 @@ pub const Emitter = struct {
     }
 
     /// Delegated to `codegen/strings.zig`.
-    fn internString(self: *Emitter, bytes: []const u8) !usize {
+    pub fn internString(self: *Emitter, bytes: []const u8) !usize {
         return strings.internString(self, bytes);
     }
 
@@ -1785,14 +1794,28 @@ pub const Emitter = struct {
     /// Module id owning a fused-source offset, or `0` without a graph.
     /// Record the byte range `label`'s emission occupied, so the
     /// build cache can reuse it without re-emitting the body.
-    pub fn noteFragment(self: *Emitter, label: []const u8, def_span: ast.Span, bank: ?u8, start: usize, end: usize) !void {
+    pub fn noteFragment(self: *Emitter, label: []const u8, module: u16, bank: ?u8, start: usize, end: usize) !void {
         try self.fragment_spans.append(self.allocator, .{
             .symbol = label,
-            .module = self.moduleOf(def_span.start),
+            .module = module,
             .bank = bank,
             .start = start,
             .end = end,
         });
+    }
+
+    /// Module owning `span`, as a `SourceMap` file id.
+    pub fn moduleOfSpan(self: *const Emitter, span: ast.Span) u16 {
+        return self.moduleOf(span.start);
+    }
+
+    /// The cached fragment for `label`, or `null` when this build must
+    /// lower the body itself.
+    pub fn cachedFragment(self: *const Emitter, label: []const u8) ?Fragment {
+        for (self.cached_fragments) |f| {
+            if (std.mem.eql(u8, f.symbol, label)) return f;
+        }
+        return null;
     }
 
     fn moduleOf(self: *const Emitter, offset: u32) u16 {
