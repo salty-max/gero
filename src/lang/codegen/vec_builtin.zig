@@ -268,6 +268,24 @@ fn storeOptional(self: *Emitter, dest_ofs: i16, present: u16, value_reg: u8) err
     try class.emitWordStoreAtOffset(self, Reg.r1, codegen.Emitter.opt_value_ofs, Reg.r2);
 }
 
+/// Lower `v.pop()` in statement position, where the returned `T?` has
+/// nowhere to go. Only the removal is observable, so this drops the
+/// last element without materializing the optional — which is what
+/// makes a `Vec` usable as a pool, the allocation pattern §5.4 points
+/// carts toward.
+///
+/// Popping an empty `Vec` is a no-op, matching the `nil` the expression
+/// form returns.
+fn emitPopDiscarding(self: *Emitter, recv: *const ast.Expr) error{OutOfMemory}!void {
+    try headerAddr(self, recv, Reg.r1);
+    try class.emitWordLoadAtOffset(self, Reg.r1, len_ofs, Reg.r2); // r2 = len
+    try isa.cmpRegImm(self, Reg.r2, 0);
+    const empty = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    try isa.subImmFromReg(self, 1, Reg.r2);
+    try class.emitWordStoreAtOffset(self, Reg.r1, len_ofs, Reg.r2);
+    try isa.patchJumpTo(self, empty, try self.currentOffset());
+}
+
 // ---- instance methods — receiver evaluates to the header's base address ----
 
 /// Lower `recv.<method>(args)` for a Vec receiver of element type `elem`.
@@ -299,6 +317,10 @@ pub fn emitMethod(self: *Emitter, recv: *const ast.Expr, method: []const u8, arg
     }
     if (std.mem.eql(u8, method, "push")) {
         try emitPush(self, recv, args[0], ew);
+        return;
+    }
+    if (std.mem.eql(u8, method, "pop")) {
+        try emitPopDiscarding(self, recv);
         return;
     }
     if (std.mem.eql(u8, method, "slice")) {
