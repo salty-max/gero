@@ -121,10 +121,8 @@ pub const SyscallId = enum(u8) {
     print_char = 0x03,
     /// Writes a single `\n` byte to `host.out`. No args.
     print_newline = 0x04,
-    /// `acu` = Q8.8 fixed-point value. Formats as
-    /// `<int>.<3-digit-frac>` decimal — e.g. value `384`
-    /// (1.5 in Q8.8) prints `1.500`. Negative values get a
-    /// leading `-`.
+    /// `acu` / `r5` = low / high words of a Q16.16 value. Formats as
+    /// `<int>.<3-digit-frac>` decimal. Negative values get a leading `-`.
     print_fixed = 0x05,
     /// `acu` = unsigned 16-bit value, formatted as decimal into
     /// `host.out`. (`print_int` is the signed counterpart.)
@@ -149,7 +147,7 @@ pub const SyscallId = enum(u8) {
     /// `acu` = char value (low byte). `r1` = dst cursor. Writes
     /// the low byte to `[r1]`, advances `r1` by 1.
     format_char_to_buf = 0x12,
-    /// `acu` = Q8.8 value. `r1` = dst cursor. Appends the same
+    /// `acu` / `r5` = a Q16.16 value. `r1` = dst cursor. Appends the same
     /// `<int>.<3-digit-frac>` formatting as `print_fixed`.
     format_fixed_to_buf = 0x13,
     /// `r1` = dst cursor. Writes a single null byte at `[r1]`
@@ -330,7 +328,11 @@ fn formatSpecToBuf(vm: *VM) !void {
     const std = @import("std");
     var buf: [80]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try formatValueTo(vm, &w, vm.regs.read(.acu), vm.regs.read(.r2), vm.regs.read(.r3));
+    const params = vm.regs.read(.r3);
+    // Only `fixed` owns the high word; other format types must ignore
+    // whatever an earlier expression left in r5.
+    const value: u32 = if (params & 0x7 == 7) fixedOperand(vm) else vm.regs.read(.acu);
+    try formatValueTo(vm, &w, value, vm.regs.read(.r2), params);
     for (w.buffered()) |b| writeBufByte(vm, b);
 }
 
@@ -339,7 +341,10 @@ fn formatSpecToBuf(vm: *VM) !void {
 /// runtime `format`'s per-placeholder formatting. Numeric types render
 /// through the host writer's radix formatter; `str` / `char` / `fixed`
 /// align a byte run. For the `str` type `value` is the byte pointer.
-fn formatValueTo(vm: *VM, w: *@import("std").Io.Writer, value: u16, r2: u16, r3: u16) !void {
+///
+/// `value` is 32 bits wide because a `fixed` is Q16.16; every other type
+/// reads only its low half.
+fn formatValueTo(vm: *VM, w: *@import("std").Io.Writer, value: u32, r2: u16, r3: u16) !void {
     const std = @import("std");
     // safety: each field is masked into its byte/bit width before the cast.
     const width: u8 = @truncate(r2);
@@ -372,8 +377,12 @@ fn formatValueTo(vm: *VM, w: *@import("std").Io.Writer, value: u16, r2: u16, r3:
             // with no sign. A negative value keeps its `-`; zero-padding is
             // sign-aware (`-` then zero-padded magnitude), since the host
             // writer would otherwise pad ahead of the sign (`0-42`).
-            // safety: `value` holds the i16 bit pattern for a signed decimal.
-            const sv: i16 = @bitCast(value);
+            // Non-`fixed` types are one word wide; narrow before the
+            // sign split so the bit pattern is the i16 the caller meant.
+            // @as: u32 → u16, discarding a high half no other type sets.
+            const low: u16 = @truncate(value);
+            // safety: `low` holds the i16 bit pattern for a signed decimal.
+            const sv: i16 = @bitCast(low);
             if (signed and sv < 0) {
                 // @as: widen i16 → i32 so negating -32768 can't overflow; the magnitude fits u16.
                 const mag: u16 = @intCast(-@as(i32, sv));
@@ -384,7 +393,7 @@ fn formatValueTo(vm: *VM, w: *@import("std").Io.Writer, value: u16, r2: u16, r3:
                     try w.printInt(sv, 10, .lower, opts);
                 }
             } else {
-                try w.printInt(value, 10, .lower, opts);
+                try w.printInt(low, 10, .lower, opts);
             }
         },
         1 => try w.printInt(value, 16, .lower, opts),
@@ -400,7 +409,8 @@ fn formatValueTo(vm: *VM, w: *@import("std").Io.Writer, value: u16, r2: u16, r3:
             // `str`: bytes at `[value]`, truncated to `precision` (max length).
             var tmp: [80]u8 = undefined;
             var n: usize = 0;
-            var src: u16 = value;
+            // @as: a `str` value is a byte pointer — one word.
+            var src: u16 = @truncate(value);
             const max: usize = if (has_prec) @min(precision, tmp.len) else tmp.len;
             while (n < max) {
                 const b = vm.readByte(src);
@@ -412,11 +422,13 @@ fn formatValueTo(vm: *VM, w: *@import("std").Io.Writer, value: u16, r2: u16, r3:
             try w.alignBufferOptions(tmp[0..n], opts);
         },
         else => {
-            // `fixed` (7): render the Q8.8 form, then apply width / align.
-            var tmp: [16]u8 = undefined;
+            // `fixed` (7): render the Q16.16 form, then apply width / align.
+            var tmp: [80]u8 = undefined;
             var tw: std.Io.Writer = .fixed(&tmp);
-            try writeFixedValueTo(&tw, value);
-            try w.alignBufferOptions(tw.buffered(), opts);
+            try writeFixedValueTo(&tw, value, if (has_prec) precision else 3);
+            var align_opts = opts;
+            align_opts.precision = null;
+            try w.alignBufferOptions(tw.buffered(), align_opts);
         },
     }
 }
@@ -476,7 +488,16 @@ fn formatRuntime(vm: *VM) !void {
                 }
                 if (vm.readByte(j) == '}') j +%= 1;
                 if (have_digit and n < count) {
-                    const value: u16 = vm.readWord(args_base +% n *% 2);
+                    // A `fixed` arg occupies two words (Q16.16); every
+                    // other element type is one.
+                    const is_fixed = elem_ftype == 7;
+                    const stride: u16 = if (is_fixed) 4 else 2;
+                    const at = args_base +% n *% stride;
+                    // @as: widen each word before combining the halves.
+                    const w_lo: u32 = @as(u32, vm.readWord(at));
+                    // @as: the high half only exists for a `fixed`.
+                    const w_hi: u32 = if (is_fixed) @as(u32, vm.readWord(at +% 2)) else 0;
+                    const value: u32 = w_lo | (w_hi << 16);
                     const params = packSpecRuntime(spec[0..spec_len], elem_ftype, elem_signed);
                     var tmp: [80]u8 = undefined;
                     var w: std.Io.Writer = .fixed(&tmp);
@@ -582,33 +603,50 @@ fn formatTerminateBuf(vm: *VM) void {
     writeBufByte(vm, 0);
 }
 
-/// Q8.8 → `<int>.<3-digit-frac>` decimal. Shared between
+/// Q16.16 → `<int>.<3-digit-frac>` decimal. Shared between
 /// `print_fixed` (writes through to host.out) and
 /// `format_fixed_to_buf` (writes to VM memory at `r1`) — the
 /// formatting math is identical; only the sink differs.
 fn writeFixedTo(vm: *VM, writer: *@import("std").Io.Writer) !void {
-    return writeFixedValueTo(writer, vm.regs.read(.acu));
+    return writeFixedValueTo(writer, fixedOperand(vm), 3);
 }
 
-/// Render the Q8.8 value `raw` as `<int>.<3-digit-frac>` to `writer`.
-fn writeFixedValueTo(writer: *@import("std").Io.Writer, raw_bits: u16) !void {
-    // safety: Q8.8 is a u16 — bit-cast to i16 for sign + magnitude split.
-    const raw: i16 = @bitCast(raw_bits);
+/// Render the Q16.16 value `raw` with exactly `precision` fractional digits.
+fn writeFixedValueTo(writer: *@import("std").Io.Writer, raw_bits: u32, precision: u8) !void {
+    // safety: Q16.16 is a u32 — bit-cast to i32 for the sign + magnitude split.
+    const raw: i32 = @bitCast(raw_bits);
     if (raw < 0) try writer.writeByte('-');
-    // @as: widen i16 → i32 so negating the minimum value (-32768) doesn't overflow.
-    const widened_neg: i32 = -@as(i32, raw);
-    // safety: i16 bit pattern → u16 of the same width preserves the bits (used only on the positive branch).
-    const positive_u16: u16 = @bitCast(raw);
-    const abs: u16 = if (raw < 0)
-        // @as: i32 → u16; the magnitude of an i16 fits a u16 by 1 bit of headroom.
+    // @as: widen i32 → i64 so negating the minimum value doesn't overflow.
+    const widened_neg: i64 = -@as(i64, raw);
+    // safety: i32 bit pattern → u32 of the same width preserves the bits (positive branch only).
+    const positive_u32: u32 = @bitCast(raw);
+    const abs: u32 = if (raw < 0)
+        // @as: i64 → u32; the magnitude of an i32 fits a u32 with a bit of headroom.
         @intCast(widened_neg)
     else
-        positive_u16;
-    const int_part: u16 = abs >> 8;
-    const frac_part: u16 = abs & 0xFF;
-    // @as: widen u16 → u32 so the *1000 multiplication doesn't overflow.
-    const frac_thousandths: u32 = @as(u32, frac_part) * 1000 / 256;
-    try writer.print("{d}.{d:0>3}", .{ int_part, frac_thousandths });
+        positive_u32;
+    const int_part: u32 = abs >> 16;
+    try writer.print("{d}", .{int_part});
+    if (precision == 0) return;
+    try writer.writeByte('.');
+    var remainder: u32 = abs & 0xFFFF;
+    var digit: u8 = 0;
+    while (digit < precision) : (digit += 1) {
+        remainder *= 10;
+        try writer.writeByte(@intCast('0' + remainder / 65536));
+        remainder %= 65536;
+    }
+}
+
+/// The Q16.16 value a `fixed` syscall reads: low half in `acu`, high
+/// half in `r5` (ISA §5.13.1). One convention wherever a `fixed` is
+/// live, so codegen never has to spill the pair to pass it.
+fn fixedOperand(vm: *VM) u32 {
+    // @as: widen the low half before combining.
+    const low: u32 = @as(u32, vm.regs.read(.acu));
+    // @as: and the high half.
+    const high: u32 = @as(u32, vm.regs.read(.r5));
+    return low | (high << 16);
 }
 
 fn printFixed(vm: *VM, writer: *@import("std").Io.Writer) !void {

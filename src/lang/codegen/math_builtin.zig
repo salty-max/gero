@@ -10,6 +10,7 @@ const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
+const fixed = @import("fixed.zig");
 const types = @import("../types.zig");
 
 const Emitter = codegen.Emitter;
@@ -26,8 +27,8 @@ const rng_seed: u16 = 0xACE1;
 const rng_taps: u16 = 0xB400;
 
 /// How an operand's type drives the lowering: `u16`/`u8` need unsigned
-/// comparison; `fixed` needs Q8.8 multiply scaling; everything else is
-/// treated as signed (`i16`/`i8`/`fixed` all compare as signed i16).
+/// comparison; `fixed` uses a signed Q16.16 register pair; everything
+/// else is treated as a signed integer.
 const Kind = enum { signed, unsigned, fixed };
 
 fn argKind(self: *Emitter, e: *const ast.Expr) Kind {
@@ -83,26 +84,31 @@ fn emitRng(self: *Emitter, c: ast.CallExpr) !void {
     try isa.movRegToAddr(self, Reg.acu, rng_state_addr); // persist; acu is the result
 }
 
-/// `sqrt_fixed(x: fixed) -> fixed` — Q8.8 square root. For x > 0 the
-/// result raw = isqrt(x_raw << 8) (since √(x_raw/256)·256 = √(x_raw·256)).
-/// `x_raw << 8` is a 32-bit radicand; computed bit-by-bit by testing each
-/// result bit high→low, squaring the candidate (16×16→32 `mul`), and
-/// keeping the bit when candidate² ≤ radicand (a 32-bit unsigned compare).
-/// x ≤ 0 returns 0. The result is < 4096, so 12 bits suffice.
+/// `sqrt_fixed(x: fixed) -> fixed` — Q16.16 square root.
+///
+/// `√(raw/65536)·65536 = √raw · 256`, so the raw value is its own
+/// radicand and the integer root is scaled by 256 afterwards — which
+/// keeps the radicand inside 32 bits, where a 48-bit one would not fit.
+/// The root is found bit-by-bit high→low, squaring each candidate
+/// (16×16→32 `mul`) and keeping the bit when candidate² ≤ radicand (a
+/// 32-bit unsigned compare). x ≤ 0 returns 0.
+///
+/// The `· 256` means the result carries 8 fractional bits rather than
+/// 16. That is exact for perfect squares and within ~0.3% mid-range,
+/// tightening as x grows.
 fn emitSqrtFixed(self: *Emitter, c: ast.CallExpr) !void {
-    try self.emitExpr(c.args[0]); // acu = x_raw
-    try isa.cmpRegImm(self, Reg.acu, 0);
-    const positive = try isa.emitJumpPlaceholder(self, Op.jgt_addr);
-    try isa.movImmToReg(self, 0, Reg.acu); // x ≤ 0 → 0
+    try self.emitExpr(c.args[0]); // acu:fixed_hi = x_raw
+    try isa.cmpRegImm(self, Emitter.fixed_hi, 0);
+    const nonneg = try isa.emitJumpPlaceholder(self, Op.jge_addr);
+    try isa.movImmToReg(self, 0, Reg.acu); // x < 0 → 0
+    try isa.movImmToReg(self, 0, Emitter.fixed_hi);
     const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
-    try isa.patchJumpTo(self, positive, try self.currentOffset());
-    // Radicand N = x_raw << 8 across (r2 = high, r1 = low).
+    try isa.patchJumpTo(self, nonneg, try self.currentOffset());
+    // The raw value is the radicand N across (r2 = high, r1 = low).
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
-    try isa.shlRegImm(self, Reg.r1, 8); // N_lo = x_raw << 8
-    try isa.shrRegImm(self, Reg.acu, 8); // N_hi = x_raw >> 8 (x > 0 → logical ok)
-    try isa.movRegToReg(self, Reg.acu, Reg.r2);
+    try isa.movRegToReg(self, Emitter.fixed_hi, Reg.r2);
     try isa.movImmToReg(self, 0, Reg.r3); // result accumulator
-    try isa.movImmToReg(self, 2048, Reg.r4); // bit = 2^11 (result < 4096)
+    try isa.movImmToReg(self, 0x8000, Reg.r4); // bit = 2^15 (root < 2^16)
     const loop_start = try self.currentOffset();
     // candidate = result | bit → r5.
     try isa.movRegToReg(self, Reg.r3, Reg.r5);
@@ -132,18 +138,23 @@ fn emitSqrtFixed(self: *Emitter, c: ast.CallExpr) !void {
     try isa.cmpRegImm(self, Reg.r4, 0);
     const back = try isa.emitJumpPlaceholder(self, Op.jne_addr);
     try isa.patchJumpTo(self, back, loop_start);
-    try isa.movRegToReg(self, Reg.r3, Reg.acu); // result → acu
+    // Scale the integer root by 256 into the Q16.16 pair.
+    try isa.movRegToReg(self, Reg.r3, Reg.acu);
+    try isa.movRegToReg(self, Reg.r3, Reg.r1);
+    try isa.shrRegImm(self, Reg.r1, 8); // root is non-negative
+    try isa.shlRegImm(self, Reg.acu, 8);
+    try isa.movRegToReg(self, Reg.r1, Emitter.fixed_hi);
     try isa.patchJumpTo(self, done, try self.currentOffset());
 }
 
-/// `fixed_sin(deg: i16) -> fixed` — sine of an angle in degrees, Q8.8.
+/// `fixed_sin(deg: i16) -> fixed` — sine of an angle in degrees, Q16.16.
 /// Reduces `deg` mod 360 into `[0, 360)`, folds `[180, 360)` to a
 /// negated `[0, 180)`, then Bhaskara I on `[0, 180]`:
 ///   sin(x°) ≈ 4x(180-x) / (40500 - x(180-x))
-/// In Q8.8 that is `(512·prod) / ((40500-prod) >> 1)` with
-/// `prod = x(180-x)` — the denominator exceeds i16 before the `>>1`, and
-/// the halving keeps signed `divs` (a positive 32-bit / positive i16)
-/// valid. Accurate to ~1% (a few Q8.8 LSB).
+/// The rational approximation is evaluated with integer intermediates and
+/// scaled into Q16.16 at the end. The denominator exceeds i16 before the
+/// final halving, so the rearranged form keeps signed `divs` valid.
+/// Accurate to about 1%.
 fn emitFixedSin(self: *Emitter, c: ast.CallExpr) !void {
     try self.emitExpr(c.args[0]); // acu = deg
     // deg mod 360 → remainder in acu (sign of deg). Sign-extend deg into
@@ -176,16 +187,25 @@ fn emitFixedSin(self: *Emitter, c: ast.CallExpr) !void {
     try isa.subRegFromAcu(self, Reg.r1); // acu = 40500 - prod
     try isa.shrRegImm(self, Reg.acu, 1); // (40500 - prod) / 2 ≤ 20250
     try isa.movRegToReg(self, Reg.acu, Reg.r4); // r4 = den_half
-    // num32 = 512 * prod → acu:r2 (32-bit dividend).
-    try isa.movImmToReg(self, 512, Reg.r2);
-    try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low(512·prod), acu = high
-    try isa.divsRegReg(self, Reg.r4, Reg.r2); // r2 = num32 / den_half = result
+    // num32 = 32768 * prod → acu:r2 (32-bit dividend). Dividing that by
+    // `den_half` yields `65536·prod / (40500-prod)` — a quarter of the
+    // Q16.16 result, which is the largest scale whose quotient still
+    // fits the 16 bits `divs` produces (|sin| ≤ 1 ⇒ quotient ≤ 16384).
+    try isa.movImmToReg(self, 32768, Reg.r2);
+    try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low(32768·prod), acu = high
+    try isa.divsRegReg(self, Reg.r4, Reg.r2); // r2 = quarter-scale result
     try isa.movRegToReg(self, Reg.r2, Reg.acu);
-    // Negate for the [180, 360) half.
+    // Negate for the [180, 360) half, while the value is still one word.
     try isa.cmpRegImm(self, Reg.r6, 0);
     const positive = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     try isa.negReg(self, Reg.acu);
     try isa.patchJumpTo(self, positive, try self.currentOffset());
+    // Widen the quarter-scale word to the Q16.16 pair: `<< 2` spans a
+    // 17-bit range, so the high half carries the top bits and the sign.
+    try isa.movRegToReg(self, Reg.acu, Reg.r1);
+    try isa.asrRegImm(self, Reg.r1, 14);
+    try isa.shlRegImm(self, Reg.acu, 2);
+    try isa.movRegToReg(self, Reg.r1, Emitter.fixed_hi);
 }
 
 /// Emit `jge` (signed) / `jcc` (unsigned ≥, i.e. no borrow) after a
@@ -216,10 +236,15 @@ fn maxStep(self: *Emitter, r_a: u8, kind: Kind) !void {
 fn emitAbs(self: *Emitter, c: ast.CallExpr) !void {
     try self.emitExpr(c.args[0]); // acu = x
     // Unsigned values are already non-negative — abs is the identity.
-    if (argKind(self, c.args[0]) == .unsigned) return;
-    try isa.cmpRegImm(self, Reg.acu, 0);
+    const kind = argKind(self, c.args[0]);
+    if (kind == .unsigned) return;
+    try isa.cmpRegImm(self, if (kind == .fixed) Emitter.fixed_hi else Reg.acu, 0);
     const skip = try isa.emitJumpPlaceholder(self, Op.jge_addr);
-    try isa.negReg(self, Reg.acu);
+    if (kind == .fixed) {
+        try fixed.emitNegate(self);
+    } else {
+        try isa.negReg(self, Reg.acu);
+    }
     try isa.patchJumpTo(self, skip, try self.currentOffset());
 }
 
@@ -227,6 +252,7 @@ const MinMax = enum { min, max };
 
 fn emitMinMax(self: *Emitter, c: ast.CallExpr, which: MinMax) !void {
     const kind = argKind(self, c.args[0]);
+    if (kind == .fixed) return emitFixedMinMax(self, c.args[0], c.args[1], which);
     try self.emitExpr(c.args[0]); // a
     try isa.pushReg(self, Reg.acu);
     try self.emitExpr(c.args[1]); // acu = b
@@ -237,10 +263,37 @@ fn emitMinMax(self: *Emitter, c: ast.CallExpr, which: MinMax) !void {
     }
 }
 
+/// Select the smaller or larger of two fixed values without narrowing
+/// either half to the VM's native word.
+fn emitFixedMinMax(self: *Emitter, a: *const ast.Expr, b: *const ast.Expr, which: MinMax) !void {
+    try self.emitExpr(a);
+    try isa.pushReg(self, Emitter.fixed_hi);
+    try isa.pushReg(self, Reg.acu);
+    try self.emitExpr(b);
+    try isa.pushReg(self, Emitter.fixed_hi);
+    try isa.pushReg(self, Reg.acu);
+
+    try fixed.loadPairAt(self, Reg.sp, 4); // lhs
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // rhs low
+    try isa.movRegOffsetToReg(self, Reg.sp, 2, Reg.r2); // rhs high
+    try fixed.emitCompare(self);
+    const take_a = try isa.emitJumpPlaceholder(self, switch (which) {
+        .min => Op.jlt_addr,
+        .max => Op.jge_addr,
+    });
+    try fixed.loadPairAt(self, Reg.sp, 0); // b
+    const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, take_a, try self.currentOffset());
+    try fixed.loadPairAt(self, Reg.sp, 4); // a
+    try isa.patchJumpTo(self, done, try self.currentOffset());
+    try isa.addImmToReg(self, 8, Reg.sp);
+}
+
 /// `clamp(x, lo, hi)` = `min(max(x, lo), hi)`. Evaluate all three, then
 /// `max` against `lo` and `min` against `hi` in registers.
 fn emitClamp(self: *Emitter, c: ast.CallExpr) !void {
     const kind = argKind(self, c.args[0]);
+    if (kind == .fixed) return emitFixedClamp(self, c.args[0], c.args[1], c.args[2]);
     try self.emitExpr(c.args[0]); // x
     try isa.pushReg(self, Reg.acu);
     try self.emitExpr(c.args[1]); // lo
@@ -254,11 +307,58 @@ fn emitClamp(self: *Emitter, c: ast.CallExpr) !void {
     try maxStep(self, Reg.r2, kind);
 }
 
+/// Clamp a fixed value while retaining both words of all three operands.
+fn emitFixedClamp(self: *Emitter, x: *const ast.Expr, lo_expr: *const ast.Expr, hi_expr: *const ast.Expr) !void {
+    try self.emitExpr(x);
+    try isa.pushReg(self, Emitter.fixed_hi);
+    try isa.pushReg(self, Reg.acu);
+    try self.emitExpr(lo_expr);
+    try isa.pushReg(self, Emitter.fixed_hi);
+    try isa.pushReg(self, Reg.acu);
+    try self.emitExpr(hi_expr);
+    try isa.pushReg(self, Emitter.fixed_hi);
+    try isa.pushReg(self, Reg.acu);
+
+    // candidate = min(x, hi), stored over the parked hi pair.
+    try fixed.loadPairAt(self, Reg.sp, 8); // x
+    try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // hi low
+    try isa.movRegOffsetToReg(self, Reg.sp, 2, Reg.r2); // hi high
+    try fixed.emitCompare(self);
+    const take_x = try isa.emitJumpPlaceholder(self, Op.jle_addr);
+    try fixed.loadPairAt(self, Reg.sp, 0); // hi
+    const have_min = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, take_x, try self.currentOffset());
+    try fixed.loadPairAt(self, Reg.sp, 8); // x
+    try isa.patchJumpTo(self, have_min, try self.currentOffset());
+    try fixed.storePairAt(self, Reg.sp, 0, Reg.acu, Emitter.fixed_hi);
+
+    // result = max(candidate, lo).
+    try fixed.loadPairAt(self, Reg.sp, 0); // candidate
+    try isa.movRegOffsetToReg(self, Reg.sp, 4, Reg.r1); // lo low
+    try isa.movRegOffsetToReg(self, Reg.sp, 6, Reg.r2); // lo high
+    try fixed.emitCompare(self);
+    const take_candidate = try isa.emitJumpPlaceholder(self, Op.jge_addr);
+    try fixed.loadPairAt(self, Reg.sp, 4); // lo
+    const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, take_candidate, try self.currentOffset());
+    try fixed.loadPairAt(self, Reg.sp, 0); // candidate
+    try isa.patchJumpTo(self, done, try self.currentOffset());
+    try isa.addImmToReg(self, 12, Reg.sp);
+}
+
 const AddSub = enum { add, sub };
 
 /// `wrap_add` / `wrap_sub` — plain add/sub, no overflow trap (the op
 /// wraps). Subtraction needs `a` in `acu`, so it pushes `b` first.
 fn emitWrapAddSub(self: *Emitter, c: ast.CallExpr, op: AddSub) !void {
+    if (argKind(self, c.args[0]) == .fixed) {
+        return fixed.emitBinary(self, .{
+            .op = if (op == .add) .add else .sub,
+            .lhs = c.args[0],
+            .rhs = c.args[1],
+            .span = c.span,
+        });
+    }
     switch (op) {
         .add => {
             try self.emitExpr(c.args[0]); // a
@@ -278,9 +378,17 @@ fn emitWrapAddSub(self: *Emitter, c: ast.CallExpr, op: AddSub) !void {
 }
 
 /// `wrap_mul` — low-16 product for ints (signed + unsigned share the
-/// low half); Q8.8 scaling for `fixed`. No overflow trap.
+/// low half); Q16.16 multiplication for `fixed`. No overflow trap.
 fn emitWrapMul(self: *Emitter, c: ast.CallExpr) !void {
     const kind = argKind(self, c.args[0]);
+    if (kind == .fixed) {
+        return fixed.emitBinary(self, .{
+            .op = .mul,
+            .lhs = c.args[0],
+            .rhs = c.args[1],
+            .span = c.span,
+        });
+    }
     try self.emitExpr(c.args[0]); // a
     try isa.pushReg(self, Reg.acu);
     try self.emitExpr(c.args[1]); // acu = b
@@ -288,17 +396,8 @@ fn emitWrapMul(self: *Emitter, c: ast.CallExpr) !void {
     // `mul`/`muls` land the low half in the dst reg and the high half in
     // acu, so land the product in r2 to avoid clobbering it.
     try isa.movRegToReg(self, Reg.acu, Reg.r2);
-    if (kind == .fixed) {
-        try isa.mulsRegReg(self, Reg.r1, Reg.r2); // signed Q8.8 product
-        // Q8.8 result = (acu << 8) | (r2 >> 8) — bits 8..23 of the 32-bit
-        // product straddling acu:r2 (ISA §5.4.1; magnitude > 127.99 wraps).
-        try isa.shrRegImm(self, Reg.r2, 8);
-        try isa.shlRegImm(self, Reg.acu, 8);
-        try isa.orRegReg(self, Reg.acu, Reg.r2);
-    } else {
-        try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low(a*b)
-        try isa.movRegToReg(self, Reg.r2, Reg.acu);
-    }
+    try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low(a*b)
+    try isa.movRegToReg(self, Reg.r2, Reg.acu);
 }
 
 const SatOp = enum { add, sub, mul };

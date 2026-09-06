@@ -9,6 +9,7 @@ const types = @import("../types.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
+const fixed = @import("fixed.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
 const destructure = @import("destructure.zig");
@@ -125,11 +126,15 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
         }
         const info = self.tupleElemInfo(elems, ti.index);
         try self.emitExpr(a.value); // value → stash on stack
+        if (fixed.isFixedType(elems[ti.index])) try isa.pushReg(self, Emitter.fixed_hi);
         try isa.pushReg(self, Reg.acu);
         try self.emitExpr(ti.receiver); // acu = tuple base address
         try isa.movRegToReg(self, Reg.acu, Reg.r1);
         try isa.popReg(self, Reg.r2);
-        if (info.width == 1) {
+        if (fixed.isFixedType(elems[ti.index])) {
+            try isa.popReg(self, Reg.r3);
+            try fixed.storePairAt(self, Reg.r1, info.offset, Reg.r2, Reg.r3);
+        } else if (info.width == 1) {
             try class.emitByteStoreAtOffset(self, Reg.r1, info.offset, Reg.r2);
         } else {
             try class.emitWordStoreAtOffset(self, Reg.r1, info.offset, Reg.r2);
@@ -153,23 +158,35 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
                 if (ix.index.* == .int_lit) {
                     // Constant index — fixed offset (typechecker bounds-checked).
                     try self.emitExpr(a.value);
+                    if (fixed.isFixedType(info.elem)) try isa.pushReg(self, Emitter.fixed_hi);
                     try isa.pushReg(self, Reg.acu);
                     try self.emitExpr(ix.receiver); // acu = array base
                     try isa.movRegToReg(self, Reg.acu, Reg.r1);
                     try isa.popReg(self, Reg.r2); // r2 = value
                     // @as: const index × elem_width within the (≤127-byte) array.
                     const offset: u16 = @intCast(@as(i32, ix.index.int_lit.value) * info.elem_width);
-                    try storeArrayElem(self, Reg.r1, offset, info, Reg.r2);
+                    if (fixed.isFixedType(info.elem)) {
+                        try isa.popReg(self, Reg.r3);
+                        try fixed.storePairAt(self, Reg.r1, offset, Reg.r2, Reg.r3);
+                    } else {
+                        try storeArrayElem(self, Reg.r1, offset, info, Reg.r2);
+                    }
                 } else {
                     // Runtime index — eval the value first, then the
                     // bounds-trapped element address (which parks the array
                     // base, leaving the value safely below it on the stack).
                     try self.emitExpr(a.value);
+                    if (fixed.isFixedType(info.elem)) try isa.pushReg(self, Emitter.fixed_hi);
                     try isa.pushReg(self, Reg.acu); // [parked] value
                     try value_struct.emitIndexAddr(self, ix, info); // acu = element address
                     try isa.movRegToReg(self, Reg.acu, Reg.r1);
                     try isa.popReg(self, Reg.r2); // r2 = value
-                    try storeArrayElem(self, Reg.r1, 0, info, Reg.r2);
+                    if (fixed.isFixedType(info.elem)) {
+                        try isa.popReg(self, Reg.r3);
+                        try fixed.storePairAt(self, Reg.r1, 0, Reg.r2, Reg.r3);
+                    } else {
+                        try storeArrayElem(self, Reg.r1, 0, info, Reg.r2);
+                    }
                 }
             },
             // Aggregate element — materialize the value straight into the
@@ -221,20 +238,22 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
         // A promoted local stores through its cell pointer; a plain one
         // writes the value word into its slot.
         if (lambda.isPromoted(self, name)) {
-            try lambda.emitPromotedAssign(self, ofs, a.value);
+            try lambda.emitPromotedAssign(self, ofs, a.value, fixed.isFixed(self, a.target));
         } else {
             try self.emitExpr(a.value);
             try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+            try fixed.storeHighToFrame(self, a.target, ofs);
         }
         return;
     }
     if (self.params.get(name)) |ofs| {
         // A captured-and-promoted param writes through its cell pointer.
         if (lambda.isPromoted(self, name)) {
-            try lambda.emitPromotedAssign(self, ofs, a.value);
+            try lambda.emitPromotedAssign(self, ofs, a.value, fixed.isFixed(self, a.target));
         } else {
             try self.emitExpr(a.value);
             try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+            try fixed.storeHighToFrame(self, a.target, ofs);
         }
         return;
     }
@@ -248,6 +267,7 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
     if (self.globals.get(name)) |g| {
         try self.emitExpr(a.value);
         try self.emitGlobalStore(Reg.acu, g);
+        try fixed.storeHighToAddr(self, a.target, g.address);
         return;
     }
     try self.unsupported(a.target.span(), "assignment target not in scope");
@@ -266,7 +286,10 @@ fn storeArrayElem(self: *Emitter, base: u8, offset: u16, info: codegen.Emitter.A
 /// reuses the assignment path.
 pub fn emitIncDec(self: *Emitter, id: ast.IncDecStmt) !void {
     const one = try self.arena.create(ast.Expr);
-    one.* = .{ .int_lit = .{ .value = 1, .span = id.span } };
+    one.* = if (fixed.isFixed(self, id.target))
+        .{ .fixed_lit = .{ .value = 1 << 16, .span = id.span } }
+    else
+        .{ .int_lit = .{ .value = 1, .span = id.span } };
     const rhs = try self.arena.create(ast.Expr);
     rhs.* = .{ .binary = .{
         .op = if (id.inc) .add else .sub,
@@ -436,16 +459,32 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
         return;
     }
 
-    const ofs = try self.allocLocal(dup_name);
+    const ofs = try self.allocLocalSized(dup_name, fixed.scalarSlotWidth(self, d.init, d.type_ann));
     // Promoted bindings live as heap cells — the slot holds the cell
     // pointer instead of the value directly.
     if (lambda.isPromoted(self, name)) {
+        const promoted_fixed = if (d.init) |e|
+            fixed.isFixed(self, e)
+        else if (d.type_ann) |t|
+            self.isPrimitiveTypeAnn(t.*, "fixed")
+        else
+            false;
+        if (promoted_fixed) {
+            if (d.init) |init_expr| {
+                try self.emitExpr(init_expr);
+                try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+                try isa.movRegToRegOffset(self, Emitter.fixed_hi, Reg.fp, ofs +| 2);
+            }
+            try lambda.emitPromoteAggregate(self, ofs, Emitter.fixed_size);
+            return;
+        }
         try lambda.emitPromotedLetInit(self, d.init, ofs);
         return;
     }
     if (d.init) |init_expr| {
         try self.emitExpr(init_expr); // result in acu
         try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+        try fixed.storeHighToFrame(self, init_expr, ofs);
     }
     // An uninitialized `let` leaves the slot at whatever the prologue's
     // sub-imm gave it (sp padded downward without zeroing).
@@ -455,9 +494,10 @@ pub fn emitLetDecl(self: *Emitter, d: ast.LetDecl) !void {
 /// scalar `let` (top-level consts are handled as globals instead).
 pub fn emitConstDecl(self: *Emitter, d: ast.ConstDecl) !void {
     const dup_name = try self.arena.dupe(u8, self.source[d.name.start..d.name.end]);
-    const ofs = try self.allocLocal(dup_name);
+    const ofs = try self.allocLocalSized(dup_name, fixed.scalarSlotWidth(self, d.init, d.type_ann));
     try self.emitExpr(d.init);
     try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+    try fixed.storeHighToFrame(self, d.init, ofs);
 }
 
 /// `return [value]` — places the value (scalar in `acu`, struct via the
@@ -513,7 +553,7 @@ pub fn emitReturnStmt(self: *Emitter, r: ast.ReturnStmt) !void {
         } else if (self.current_ret_scalar_opt) |inner| {
             // Scalar `T?` return: materialize {present, value} into the
             // caller's sret buffer, then leave that buffer's address in acu
-            // (the 4-byte optional *is* an address, like a struct return).
+            // (the optional value itself lives there, like a struct return).
             try vec_builtin.emitScalarOptIntoSret(self, v, inner, self.sret_param_ofs);
             try isa.movRegToReg(self, Reg.fp, Reg.acu);
             if (self.sret_param_ofs > 0) try isa.addImmToReg(self, @intCast(self.sret_param_ofs), Reg.acu);
@@ -849,7 +889,7 @@ fn emitPrintField(self: *Emitter, t: ast.TypeAnn, fo: u16, sink: Sink) error{Out
         try class.emitByteLoadAtOffset(self, Reg.r1, fo, Reg.acu);
         try sinkEmit(self, sink, .char);
     } else if (isPrimNamed(self, t, "fixed")) {
-        try class.emitWordLoadAtOffset(self, Reg.r1, fo, Reg.acu);
+        try fixed.loadPairAt(self, Reg.r1, fo);
         try sinkEmit(self, sink, .fixed);
     } else if (isPrimNamed(self, t, "str")) {
         try class.emitWordLoadAtOffset(self, Reg.r1, fo, Reg.acu);

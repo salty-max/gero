@@ -12,6 +12,7 @@ const isa = @import("isa.zig");
 const expr_emit = @import("expr.zig");
 const value_struct = @import("value_struct.zig");
 const lambda = @import("lambda.zig");
+const fixed = @import("fixed.zig");
 const disasm_decoder = codegen.disasm_decoder;
 
 const Emitter = codegen.Emitter;
@@ -44,8 +45,7 @@ pub fn emitInlineCall(self: *Emitter, callee: *const ast.DefDecl, c: ast.CallExp
     const bindings = try self.arena.alloc(Binding, callee.params.len);
     for (callee.params, c.args, bindings) |p, arg, *b| {
         const dup = try self.arena.dupe(u8, self.source[p.name.start..p.name.end]);
-        // A struct param binds to a full-width local materialized by
-        // value; a scalar param to a single word.
+        // Each parameter binds to a local with its representation width.
         if (self.argStructName(arg)) |sname| {
             const ofs = self.reserveFrameSlot(self.structSlotWidth(sname));
             try value_struct.emitInto(self, arg, sname, ofs);
@@ -53,6 +53,12 @@ pub fn emitInlineCall(self: *Emitter, callee: *const ast.DefDecl, c: ast.CallExp
         } else if (self.tupleElemsOf(arg)) |elems| {
             const ofs = self.reserveFrameSlot(self.tupleSlotWidth(elems));
             try value_struct.emitTupleInto(self, arg, elems, ofs);
+            b.* = .{ .name = dup, .ofs = ofs };
+        } else if (fixed.isFixed(self, arg)) {
+            try expr_emit.emitExpr(self, arg);
+            const ofs = self.reserveFrameSlot(Emitter.fixed_size);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+            try isa.movRegToRegOffset(self, Emitter.fixed_hi, Reg.fp, ofs + 2);
             b.* = .{ .name = dup, .ofs = ofs };
         } else {
             try expr_emit.emitExpr(self, arg);

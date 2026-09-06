@@ -7,6 +7,7 @@ const codegen_mod = @import("../codegen.zig");
 const value_struct = @import("value_struct.zig");
 const vec_builtin = @import("vec_builtin.zig");
 const variadic = @import("variadic.zig");
+const fixed = @import("fixed.zig");
 const def_emit = @import("def.zig");
 const archive = @import("archive.zig");
 
@@ -49,6 +50,8 @@ pub const ClassLayout = struct {
 pub const FieldInfo = struct {
     offset: u16,
     width: u8,
+    /// Whether this scalar field occupies the Q16.16 register pair.
+    is_fixed: bool = false,
     /// Set when the field is itself a struct value (stored inline in
     /// the instance) — names that struct so field access recurses into
     /// it rather than loading a scalar word.
@@ -140,6 +143,7 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
         try layout.field_offsets.put(self.arena, dup_f, .{
             .offset = layout.instance_size,
             .width = width,
+            .is_fixed = if (field.type_ann) |t| self.isPrimitiveTypeAnn(t.*, "fixed") else false,
             .struct_name = struct_name,
         });
         layout.instance_size += width;
@@ -177,8 +181,9 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
         } else if (rt.* == .tuple) {
             const w = archive.alignUpU16(self.widthOfTypeAnn(rt.*), 2);
             if (w > self.global_sret_scratch) self.global_sret_scratch = w;
-        } else if (try self.scalarOptReturnInner(rt.*)) |_| {
-            if (Emitter.opt_scalar_size > self.global_sret_scratch) self.global_sret_scratch = Emitter.opt_scalar_size;
+        } else if (try self.scalarOptReturnInner(rt.*)) |inner| {
+            const w = self.scalarOptionalWidth(inner);
+            if (w > self.global_sret_scratch) self.global_sret_scratch = w;
         }
     }
 
@@ -315,7 +320,7 @@ fn methodRetTuple(self: *Emitter, class_name: []const u8, method_name: []const u
 }
 
 /// `true` when `class_name`.`method_name` returns a scalar `T?` (the
-/// 4-byte `{present, value}` rides the sret convention like a struct).
+/// tagged `{present, value}` rides the sret convention like a struct).
 fn methodRetScalarOpt(self: *Emitter, class_name: []const u8, method_name: []const u8) error{OutOfMemory}!bool {
     const rt = methodRetTypeAnn(self, class_name, method_name) orelse return false;
     return (try self.scalarOptReturnInner(rt.*)) != null;
@@ -379,6 +384,12 @@ fn pushSretAndArgs(self: *Emitter, args: []const *const ast.Expr, sret: bool) !u
             }
         }
         try self.emitExpr(args[i]);
+        if (fixed.isFixed(self, args[i])) {
+            try isa.pushReg(self, Emitter.fixed_hi);
+            try isa.pushReg(self, Reg.acu);
+            total += Emitter.fixed_size;
+            continue;
+        }
         try isa.pushReg(self, Reg.acu);
         total += 2;
     }
@@ -552,6 +563,7 @@ pub fn emitFieldLoad(
         try emitByteLoadAtOffset(self, Reg.r1, field.offset, Reg.acu);
     } else {
         try emitWordLoadAtOffset(self, Reg.r1, field.offset, Reg.acu);
+        if (field.is_fixed) try emitWordLoadAtOffset(self, Reg.r1, field.offset + 2, Emitter.fixed_hi);
     }
 }
 
@@ -591,6 +603,7 @@ pub fn emitFieldStore(
     }
 
     try self.emitExpr(value);
+    if (field.is_fixed) try isa.pushReg(self, Emitter.fixed_hi);
     try isa.pushReg(self, Reg.acu);
     try emitInstancePtr(self, recv);
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
@@ -599,6 +612,10 @@ pub fn emitFieldStore(
         try emitByteStoreAtOffset(self, Reg.r1, field.offset, Reg.r2);
     } else {
         try emitWordStoreAtOffset(self, Reg.r1, field.offset, Reg.r2);
+        if (field.is_fixed) {
+            try isa.popReg(self, Reg.r3);
+            try emitWordStoreAtOffset(self, Reg.r1, field.offset + 2, Reg.r3);
+        }
     }
 }
 
@@ -693,9 +710,9 @@ pub fn variadicMethodArity(self: *Emitter, method: *const ast.DefDecl, n_args: u
     const params = method.params;
     const has_self = params.len > 0 and std.mem.eql(u8, self.source[params[0].name.start..params[0].name.end], "self");
     const skip: usize = if (has_self) 1 else 0;
-    const fixed: usize = if (params.len > skip) params.len - skip - 1 else 0;
+    const fixed_count: usize = if (params.len > skip) params.len - skip - 1 else 0;
     // @as: arity is frame-bounded; clamp to keep the narrowing safe.
-    return @intCast(if (n_args > fixed) n_args - fixed else 0);
+    return @intCast(if (n_args > fixed_count) n_args - fixed_count else 0);
 }
 
 /// Static-dispatch a variadic method call to `Owner.method$arity`
@@ -844,6 +861,7 @@ pub fn emitSuperFieldLoad(
         try emitByteLoadAtOffset(self, Reg.r1, field.offset, Reg.acu);
     } else {
         try emitWordLoadAtOffset(self, Reg.r1, field.offset, Reg.acu);
+        if (field.is_fixed) try emitWordLoadAtOffset(self, Reg.r1, field.offset + 2, Emitter.fixed_hi);
     }
 }
 

@@ -124,7 +124,7 @@ The primitive types fit in a short table:
 | `bool` | `true` or `false` | 1 byte |
 | `char` | one ASCII character such as `'A'` | 1 byte |
 | `str` | a reference to text | 2 bytes plus the text |
-| `fixed` | a number with a fractional part | 2 bytes |
+| `fixed` | a signed Q16.16 number with a fractional part | 4 bytes |
 
 Signed types can represent negative values. Unsigned types spend the same
 number of bits on a larger non-negative range. `i16` is a good default while
@@ -160,9 +160,9 @@ text. The characters in `"Ryu"` occupy their own bytes in the image. The
 `$(name)` inside the larger string asks Gero to insert the value of `name`.
 
 The VM has no floating-point instructions, so Gero has no `float` or `double`
-type. It provides `fixed`, a small fixed-point number, for values such as
-movement speeds and damage multipliers. We will use it in chapter 9, after the
-fight gives us a real fractional calculation to make.
+type. It provides `fixed`, a deterministic fixed-point number, for values such
+as movement speeds and damage multipliers. We will use it in chapter 9, after
+the fight gives us a real fractional calculation to make.
 
 ## The fighter's first state
 

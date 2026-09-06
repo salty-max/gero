@@ -230,6 +230,28 @@ test "splice: a build from cached fragments matches one that lowered them" {
     try std.testing.expectEqualSlices(u8, r.full.image, r.cached.image);
 }
 
+test "splice: cached fixed arithmetic retains its runtime helpers" {
+    const src =
+        \\def scaled(value: fixed, factor: fixed) -> fixed
+        \\  return value * factor
+        \\end
+        \\def ratio(value: fixed, divisor: fixed) -> fixed
+        \\  return value / divisor
+        \\end
+        \\def main()
+        \\  print scaled(200.5, 3.25)
+        \\  print ratio(200.5, 3.25)
+        \\end
+        \\
+    ;
+    var r = try compileTwice(src);
+    defer r.full.deinit();
+    defer r.cached.deinit();
+    try std.testing.expect(!r.full.hasErrors());
+    try std.testing.expect(!r.cached.hasErrors());
+    try std.testing.expectEqualSlices(u8, r.full.image, r.cached.image);
+}
+
 test "splice: a program with strings and closures round-trips" {
     var r = try compileTwice(
         \\def greet(n: i16) -> str

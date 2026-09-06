@@ -25,6 +25,7 @@ const CaptureTypes = std.StringHashMapUnmanaged(*const Type);
 /// by value like a scalar.
 pub fn isInlineAggregateType(self: *const Emitter, ty: *const Type) bool {
     return switch (ty.*) {
+        .primitive => |p| p == .fixed,
         .named => |n| self.struct_decls.contains(n.name),
         .array, .tuple, .vec => true,
         .optional => |inner| codegen_mod.Emitter.isScalarOptional(inner),
@@ -289,19 +290,25 @@ pub fn capturedType(self: *const Emitter, name: []const u8) ?*const Type {
 }
 
 /// Read a promoted local: load cell pointer from slot, then deref.
-pub fn emitPromotedIdentLoad(self: *Emitter, slot_ofs: i8) !void {
+pub fn emitPromotedIdentLoad(self: *Emitter, slot_ofs: i8, is_fixed: bool) !void {
     try isa.movRegOffsetToReg(self, Reg.fp, slot_ofs, Reg.r1);
     try cellLoad(self, Reg.r1, Reg.acu);
+    if (is_fixed) try emitWordLoadAtOffset(self, Reg.r1, 2, Emitter.fixed_hi);
 }
 
 /// Write a promoted local: evaluate value into acu, push, load
 /// the cell pointer, deref-write.
-pub fn emitPromotedAssign(self: *Emitter, slot_ofs: i8, value: *const ast.Expr) !void {
+pub fn emitPromotedAssign(self: *Emitter, slot_ofs: i8, value: *const ast.Expr, is_fixed: bool) !void {
     try self.emitExpr(value);
+    if (is_fixed) try isa.pushReg(self, Emitter.fixed_hi);
     try isa.pushReg(self, Reg.acu);
     try isa.movRegOffsetToReg(self, Reg.fp, slot_ofs, Reg.r1);
     try isa.popReg(self, Reg.r2);
     try cellStore(self, Reg.r1, Reg.r2);
+    if (is_fixed) {
+        try isa.popReg(self, Reg.r2);
+        try emitWordStoreAtOffset(self, Reg.r1, 2, Reg.r2);
+    }
 }
 
 fn cellLoad(self: *Emitter, ptr_reg: u8, dst: u8) !void {
@@ -522,13 +529,21 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
     // reach it.
     try self.params.put(self.arena, "__env", 4);
 
-    // User params follow env_ptr — offsets shift by 2.
-    for (lambda.params, 0..) |p, i| {
+    // User params follow env_ptr. Their storage widths determine the
+    // next offset, so a Q16.16 parameter reserves both words.
+    var param_offset: i32 = 6;
+    for (lambda.params) |p| {
         const p_name = self.source[p.name.start..p.name.end];
         const dup_p = try self.arena.dupe(u8, p_name);
-        // @as: u8 frame index → i8 fp-offset.
-        const offset: i8 = @intCast(6 + 2 * @as(i32, @intCast(i)));
+        const is_fixed = if (p.type_ann) |ann| self.isPrimitiveTypeAnn(ann.*, "fixed") else false;
+        // @as: the fixed pair's second word is exactly two bytes after the first.
+        const last_direct_offset = param_offset + if (is_fixed) @as(i32, 2) else 0;
+        const offset: i8 = if (last_direct_offset > 127) blk: {
+            self.frame_overflow = true;
+            break :blk 6;
+        } else @intCast(param_offset);
         try self.params.put(self.arena, dup_p, offset);
+        param_offset += self.paramWidthAligned(p);
     }
 
     // Register the captures so emitIdent / emitAssign in the
@@ -554,6 +569,7 @@ fn emitOneLambdaBody(self: *Emitter, li: LambdaInfo) !void {
             .env_offset = offset,
             .is_cell = promoted_in_parent and !is_aggregate,
             .is_aggregate = is_aggregate,
+            .is_fixed = if (li.capture_types.get(cap)) |ty| ty.* == .primitive and ty.primitive == .fixed else false,
         });
     }
     const saved_captures = self.captures;
@@ -600,6 +616,8 @@ pub const CaptureSlot = struct {
     /// capture, the shared promoted buffer for a mutated one), so the
     /// body reads the pointer directly — one load, never a cell deref.
     is_aggregate: bool,
+    /// `true` when the aggregate pointer addresses a four-byte Q16.16 value.
+    is_fixed: bool,
 };
 
 /// Load env_ptr from `[fp + 4]` into `dst` — used by capture
@@ -613,6 +631,12 @@ fn loadEnvPtr(self: *Emitter, dst: u8) !void {
 pub fn emitCaptureLoad(self: *Emitter, slot: CaptureSlot) !void {
     try loadEnvPtr(self, Reg.r1);
     try emitWordLoadAtOffset(self, Reg.r1, slot.env_offset, Reg.acu);
+    if (slot.is_fixed) {
+        try isa.movRegToReg(self, Reg.acu, Reg.r1);
+        try cellLoad(self, Reg.r1, Reg.acu);
+        try emitWordLoadAtOffset(self, Reg.r1, 2, Emitter.fixed_hi);
+        return;
+    }
     if (slot.is_cell) {
         try isa.movRegToReg(self, Reg.acu, Reg.r1);
         try cellLoad(self, Reg.r1, Reg.acu);
@@ -625,6 +649,18 @@ pub fn emitCaptureLoad(self: *Emitter, slot: CaptureSlot) !void {
 /// invisible to anyone else and is forbidden by the typechecker's
 /// @no_capture enforcement in tracked defs).
 pub fn emitCaptureStore(self: *Emitter, slot: CaptureSlot, value: *const ast.Expr) !void {
+    if (slot.is_fixed) {
+        try self.emitExpr(value);
+        try isa.pushReg(self, Emitter.fixed_hi);
+        try isa.pushReg(self, Reg.acu);
+        try loadEnvPtr(self, Reg.r1);
+        try emitWordLoadAtOffset(self, Reg.r1, slot.env_offset, Reg.r1);
+        try isa.popReg(self, Reg.r2);
+        try cellStore(self, Reg.r1, Reg.r2);
+        try isa.popReg(self, Reg.r2);
+        try emitWordStoreAtOffset(self, Reg.r1, 2, Reg.r2);
+        return;
+    }
     if (!slot.is_cell) {
         try self.diagFatal(.{ .start = 0, .end = 0 }, "E_CODEGEN_NONPROMOTED_CAPTURE_WRITE", "codegen: write to non-promoted captured binding (analysis bug — should have promoted it)");
         return;
@@ -663,6 +699,7 @@ pub fn emitClosureCall(
         try self.emitExpr(c.args[i]);
         try isa.popReg(self, Reg.r3);
         try isa.popReg(self, Reg.r1);
+        if (self.isPrimitiveType(c.args[i], .fixed)) try isa.pushReg(self, Emitter.fixed_hi);
         try isa.pushReg(self, Reg.acu);
     }
 
@@ -673,7 +710,8 @@ pub fn emitClosureCall(
     try self.emitByte(Reg.r3);
 
     // @as: widen usize args.len to u16 — practical method arity caps well below 32k.
-    const drop_bytes: u16 = 2 + @as(u16, @intCast(c.args.len * 2));
+    var drop_bytes: u16 = 2;
+    for (c.args) |arg| drop_bytes += if (self.isPrimitiveType(arg, .fixed)) Emitter.fixed_size else 2;
     try isa.addImmToReg(self, drop_bytes, Reg.sp);
 }
 

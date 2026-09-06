@@ -128,7 +128,7 @@ The compiler doesn't enforce — convention only.
 | Negative | `-1` | `int` (unary minus operator) |
 
 No floating-point literals — gero VM is integer-only. For fractions
-use the `fixed` type (8.8 fixed-point — see §3.3).
+use the `fixed` type (16.16 fixed-point — see §3.3).
 
 The lexer disambiguates `$FE40` (hex literal) from `$(expr)` (string
 interpolation, §3.2.2) by lookahead: digit / hex-letter after `$` →
@@ -226,7 +226,7 @@ same width, the integer / `fixed` boundary — is an explicit `as`
 | `i16` (alias `int`) | 2 bytes | -32768..32767 | |
 | `u16` (alias `uint`) | 2 bytes | 0..65535 | |
 | `char` | 1 byte | 0..255 | ASCII byte; `'A'` is `$41` — §2.5.1 |
-| `fixed` | 2 bytes | ±127.99…, step 1/256 | 8.8 fixed-point — §3.3 |
+| `fixed` | 4 bytes | -32768.0..32767.99998…, step 1/65536 | Q16.16 fixed-point — §3.3 |
 | `bool` | 1 byte | `false`=0, `true`=1 | |
 | `str` | 2 bytes | — | pointer to null-terminated bytes — §3.2 |
 
@@ -345,60 +345,62 @@ let hex  = str.format("addr={0:04X}", ptr)
 
 ### 3.3 Fixed-point type
 
-`fixed` — 8.8 fixed-point (16-bit storage, 8 bits integer + 8 bits
-fraction). Range ±127.99…, precision 1/256.
+`fixed` represents signed fractional numbers in Q16.16 form. It occupies four
+bytes: a signed 16-bit whole-number half and a 16-bit fractional half. Its
+range is `-32768.0` through `32767.9999847412109375`, in steps of `1/65536`.
 
 ```gero
-let v: fixed = 1.5    -- compiles to $0180
-let dx: fixed = 0.125 -- compiles to $0020
+let v: fixed = 1.5      -- encoded as $0001_8000
+let dx: fixed = 0.125   -- encoded as $0000_2000
+let x: fixed = 1000.25  -- encoded as $03E8_4000
 ```
 
-Standard arithmetic operators work transparently:
+A literal is rounded to the nearest representable value. For example, `0.1`
+cannot be represented exactly in binary and becomes `0.100006103515625`.
+Printed values use three fractional decimal digits unless a format precision
+requests another width.
 
-- `+` / `-` compile to plain `add` / `sub` (binary point is
-  preserved by alignment, no scaling needed)
-- `*` compiles to `mul` followed by `shr 8` to renormalize the
-  binary point
-- `/` compiles to `shl 8` followed by `div`
+A live `fixed` uses `acu` for its low word and `r5` for its high word. In
+memory, the low word is stored at the lower address. The compiler manages the
+pair automatically, including locals, globals, fields, arguments, and return
+values.
 
-The user never sees the scaling. Cycle count is the same as a
-hypothetical native fixed-point op (a hardware multiplier doesn't
-care about the binary point — the work is identical).
+The arithmetic operators preserve the Q16.16 scale:
 
-For clamping at fixed-point boundaries (e.g. don't let HP go
-negative or exceed `MAX_HP`), use `math.clamp(value, lo, hi)`
-from stdlib — compiles to `cmp` + branch sequence. The ISA has
-no native saturating ops (deliberate; see ISA §5.4.1).
+- `+` and `-` operate on the low word, then propagate carry or borrow through
+  the high word.
+- `*` forms four 16-by-16-bit partial products and retains the middle 32 bits
+  of the full product.
+- `/` computes `(a << 16) / b` with 48 restoring-division steps. Division by
+  zero raises fault vector `$03`.
+- Comparisons use signed 32-bit ordering across both words.
 
-**Why 8.8 on this machine.** A `fixed` fits one 16-bit register, so
-`+` and `-` are a single instruction and `*` is a multiply plus a
-shift. A wider format would spill to two registers, turn every add
-into an add-with-carry pair, and need a runtime helper for multiply
-and divide.
+Arithmetic wraps when a result leaves the Q16.16 range. Division is much more
+expensive than addition, subtraction, or multiplication, so programs should
+precompute constant ratios and keep division out of per-frame loops where the
+cost matters.
 
-It is also the split 8- and 16-bit console games used for movement:
-one byte of whole units, one of fraction, with the fraction
-accumulating until it carries into the whole.
-
-**Working past ±127.99.** The range is the trade. A position that
-spans more than 128 units lives in `i16` whole units alongside a
-`fixed` (or `u8`) subpixel accumulator, and the accumulator's carry
-advances the integer part:
+The four-byte range lets a fractional value represent positions across a game
+world directly:
 
 ```gero
-let x: i16 = 200        -- whole units
-let sub: fixed = 0.0    -- subpixel remainder
-
-sub = sub + 0.35
-while sub >= 1.0
-  sub = sub - 1.0
-  x = x + 1
-end
+let x: fixed = 200.8
+let velocity: fixed = 0.35
+x = x + velocity
 ```
 
-`fixed` on its own is the right type for what stays inside the range —
-velocities, ratios, scale factors, and the `[-1.0, 1.0]` results
-`math.fixed_sin` returns.
+Use `fixed` for positions with subpixel movement, velocities, ratios, scale
+factors, and other values that need deterministic fractions. Use `i16`, `u16`,
+or `u8` for whole-number coordinates, tile indices, counters, and compact data;
+those types occupy one or two bytes and use the VM's native integer operations.
+
+Conversions are explicit. Converting an integer to `fixed` places the integer
+in the whole-number half. Converting `fixed` to an integer discards the
+fractional half and rounds toward zero.
+
+For clamping at fixed-point boundaries, use `math.clamp(value, lo, hi)` from
+the standard library. The compiler lowers it to comparisons and branches; the
+ISA has no native saturating instructions (see ISA §5.4.1).
 
 ### 3.4 Compound types
 
@@ -812,8 +814,8 @@ boundary — use `as` to force the conversion:
 let small: u8 = (raw & $FF) as u8
 let wide:  i16 = byte_count as i16
 let pixel: u8 = palette[i] as u8
-let dx:    fixed = velocity as fixed     -- top byte = velocity, frac = 0
-let vx:    i16 = (player.vx_fixed) as i16  -- truncate frac toward zero
+let dx:    fixed = velocity as fixed       -- apply the Q16.16 scale
+let vx:    i16 = (player.vx_fixed) as i16  -- discard 16 fractional bits
 ```
 
 **Conversion rules:**
@@ -825,8 +827,8 @@ let vx:    i16 = (player.vx_fixed) as i16  -- truncate frac toward zero
 | Unsigned wider (`u8` → `u16`) | Zero extension. |
 | `bool` → integer | `false=0`, `true=1`. |
 | Integer → `bool` | `0 → false`, anything-else → `true`. |
-| `fixed` → integer | Round toward zero — truncate the fractional byte. |
-| Integer → `fixed` | Top byte = integer value, fraction byte = 0. |
+| `fixed` → integer | Round toward zero — discard the 16 fractional bits. |
+| Integer → `fixed` | Apply the Q16.16 scale; the fractional half is zero. |
 | `u8` ↔ char | No-op — same byte, just the type changes. |
 
 **Not supported** (no syntax to express, compile error):
@@ -2500,7 +2502,7 @@ reference can't say which is meant and is rejected
 ```gero
 -- file: math.gr
 
-const PI_FIXED = $0324      -- π ≈ 3.14159 in 8.8 fixed
+const PI_FIXED: fixed = 3.14159
 
 def abs(x: i16) -> i16
   if x < 0
@@ -2659,10 +2661,10 @@ fixed-point multiply scaling.
 | `math.abs(x: T) -> T` | `T ∈ {i16, u16, fixed}`. Unsigned `abs` is the identity. |
 | `math.min(a: T, b: T) -> T` / `math.max(a: T, b: T) -> T` | `T ∈ {i16, u16, fixed}`. |
 | `math.clamp(x: T, lo: T, hi: T) -> T` | `min(max(x, lo), hi)`. |
-| `math.wrap_add` / `wrap_sub` / `wrap_mul`, all `(a: T, b: T) -> T` | Wrap on overflow (skip the debug trap). `T ∈ {i16, u16, fixed}`; `fixed` mul is Q8.8. |
+| `math.wrap_add` / `wrap_sub` / `wrap_mul`, all `(a: T, b: T) -> T` | Wrap on overflow (skip the debug trap). `T ∈ {i16, u16, fixed}`; `fixed` mul is Q16.16. |
 | `math.sat_add` / `sat_sub` / `sat_mul`, all `(a: T, b: T) -> T` | Clamp to `T`'s bounds on overflow. `T ∈ {i16, u16}` (saturation targets a type's range, which `fixed` doesn't share). |
-| `math.sqrt_fixed(x: fixed) -> fixed` | Q8.8 square root; `x ≤ 0` returns `0`. |
-| `math.fixed_sin(deg: i16) -> fixed` | Sine of an angle in degrees, Q8.8 in `[-1.0, 1.0]`. Bhaskara I approximation (~1% error); range-reduces any `i16` angle. |
+| `math.sqrt_fixed(x: fixed) -> fixed` | Q16.16 square root; `x < 0` returns `0`. Exact for perfect squares, within ~0.3% mid-range. |
+| `math.fixed_sin(deg: i16) -> fixed` | Sine of an angle in degrees, Q16.16 in `[-1.0, 1.0]`. Bhaskara I approximation (~1% error); range-reduces any `i16` angle. |
 | `math.rng() -> u16` | Next value of a deterministic 16-bit Galois LFSR (maximal period; lazily seeded). |
 
 All `math.*` functions are usable inside `bake` bodies (§3.8) — the
@@ -3072,7 +3074,7 @@ and the compiler simple; the absence isn't a missing feature.
   `match`; every argument is written at the call site.
 - **Block comments.** `--` to EOL is the only comment syntax —
   matches the asm `;` family in spirit (no `--[[ ... ]]`).
-- **Decimal floats.** The VM is integer-only; `fixed` (Q8.8) covers
+- **Decimal floats.** The VM is integer-only; `fixed` (Q16.16) covers
   the fractional arithmetic gtx-16 carts actually need.
 - **`Option<T>` / `Result<T, E>` enums.** Pointer-like types use
   `T?` + `nil`; fallible operations use multi-return tuples

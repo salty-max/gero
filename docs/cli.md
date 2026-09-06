@@ -269,7 +269,7 @@ gero info game.gx
 file:        game.gx
 size:        24536 bytes
 magic:       GERO
-version:     0x0004
+version:     0x0200
 entry:       0x1200
 image:       12345 bytes
 banks:       4 × 16 KB

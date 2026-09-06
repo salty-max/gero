@@ -14,6 +14,7 @@ const isa = @import("isa.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
 const overflow = @import("overflow.zig");
+const fixed = @import("fixed.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -139,8 +140,8 @@ pub fn emitSliceInto(self: *Emitter, recv: *const ast.Expr, a: *const ast.Expr, 
 
 /// Materialize `recv.pop()` — a `T?` — into the frame slot at `dest_ofs`:
 /// when `len > 0`, `{present: 1, value: buf[len-1]}` and `len -= 1`; else
-/// `{present: 0, value: 0}`. Scalar element types only (the 4-byte tagged
-/// optional); pointer-element pop awaits the pointer-optional path.
+/// `{present: 0, value: 0}`. Scalar element types only (the tagged
+/// representation); pointer-element pop awaits the pointer-optional path.
 pub fn emitPopInto(self: *Emitter, recv: *const ast.Expr, elem: *const Type, dest_ofs: i16) error{OutOfMemory}!void {
     const ew = self.widthOfType(elem);
     try headerAddr(self, recv, Reg.acu);
@@ -159,12 +160,12 @@ pub fn emitPopInto(self: *Emitter, recv: *const ast.Expr, elem: *const Type, des
     try isa.addRegToAcu(self, Reg.r1); // acu = &buf[index]
     try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = element addr
     try loadElem(self, Reg.r1, elem); // acu = popped value
-    try storeOptional(self, dest_ofs, 1, Reg.acu);
+    try storeOptional(self, dest_ofs, 1, Reg.acu, elem);
     const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
     // Empty: {present: 0, value: 0}.
     try isa.patchJumpTo(self, empty, try self.currentOffset());
     try isa.movImmToReg(self, 0, Reg.acu);
-    try storeOptional(self, dest_ofs, 0, Reg.acu);
+    try storeOptional(self, dest_ofs, 0, Reg.acu, elem);
     try isa.patchJumpTo(self, done, try self.currentOffset());
     try isa.addImmToReg(self, 2, Reg.sp); // drop vec header addr
 }
@@ -188,11 +189,11 @@ pub fn emitGetInto(self: *Emitter, recv: *const ast.Expr, idx: *const ast.Expr, 
     try isa.addRegToAcu(self, Reg.r1); // acu = &buf[index]
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
     try loadElem(self, Reg.r1, elem); // acu = value
-    try storeOptional(self, dest_ofs, 1, Reg.acu);
+    try storeOptional(self, dest_ofs, 1, Reg.acu, elem);
     const done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
     try isa.patchJumpTo(self, absent, try self.currentOffset());
     try isa.movImmToReg(self, 0, Reg.acu);
-    try storeOptional(self, dest_ofs, 0, Reg.acu);
+    try storeOptional(self, dest_ofs, 0, Reg.acu, elem);
     try isa.patchJumpTo(self, done, try self.currentOffset());
     try isa.addImmToReg(self, 4, Reg.sp); // drop index + header
 }
@@ -213,7 +214,7 @@ pub fn emitOptionalInto(self: *Emitter, src: *const ast.Expr, inner: *const Type
     if (src.* == .nil_lit) {
         try isa.movImmToReg(self, 0, Reg.acu);
         if (codegen.Emitter.isScalarOptional(inner)) {
-            try storeOptional(self, dest_ofs, 0, Reg.acu);
+            try storeOptional(self, dest_ofs, 0, Reg.acu, inner);
         } else {
             try frameAddr(self, dest_ofs, Reg.r1);
             try class.emitWordStoreAtOffset(self, Reg.r1, 0, Reg.acu);
@@ -229,18 +230,18 @@ pub fn emitOptionalInto(self: *Emitter, src: *const ast.Expr, inner: *const Type
         try class.emitWordStoreAtOffset(self, Reg.r1, 0, Reg.acu);
         return;
     }
-    // A scalar `T?`. An already-optional source byte-copies its 4-byte
-    // `{present, value}` from the address it evaluates to; a present inner
+    // A scalar `T?`. An already-optional source byte-copies its tagged
+    // value from the address it evaluates to; a present inner
     // value wraps to `{present: 1, value}`.
     const src_ty = self.typeOf(src);
     if (src_ty != null and src_ty.?.* == .optional) {
         try self.emitExpr(src); // acu = source optional address
         try isa.movRegToReg(self, Reg.acu, Reg.r1);
         try frameAddr(self, dest_ofs, Reg.r2);
-        try value_struct.copyBytes(self, Reg.r1, Reg.r2, codegen.Emitter.opt_scalar_size);
+        try value_struct.copyBytes(self, Reg.r1, Reg.r2, self.scalarOptionalWidth(inner));
     } else {
         try self.emitExpr(src); // acu = present inner value
-        try storeOptional(self, dest_ofs, 1, Reg.acu);
+        try storeOptional(self, dest_ofs, 1, Reg.acu, inner);
     }
 }
 
@@ -249,23 +250,26 @@ pub fn emitOptionalInto(self: *Emitter, src: *const ast.Expr, inner: *const Type
 /// a temp slot, then copy it through the sret pointer. `inner` is the
 /// optional's element type. Caller leaves the buffer address in `acu`.
 pub fn emitScalarOptIntoSret(self: *Emitter, src: *const ast.Expr, inner: *const Type, sret_ptr_ofs: i16) error{OutOfMemory}!void {
-    const tmp = try self.allocLocalSized("\x00__retopt", codegen.Emitter.opt_scalar_size);
+    const width = self.scalarOptionalWidth(inner);
+    const tmp = try self.allocLocalSized("\x00__retopt", width);
     try emitOptionalInto(self, src, inner, tmp);
     try isa.movRegToReg(self, Reg.fp, Reg.r2);
     if (sret_ptr_ofs > 0) try isa.addImmToReg(self, @intCast(sret_ptr_ofs), Reg.r2);
     try isa.movRegOffsetToReg(self, Reg.r2, 0, Reg.r2); // r2 = sret dest pointer
     try frameAddr(self, tmp, Reg.r1); // r1 = &temp
-    try value_struct.copyBytes(self, Reg.r1, Reg.r2, codegen.Emitter.opt_scalar_size);
+    try value_struct.copyBytes(self, Reg.r1, Reg.r2, width);
 }
 
-/// Store a scalar optional `{present, value}` into the 4-byte slot at
+/// Store a scalar optional `{present, value}` into its frame slot at
 /// `[fp + dest_ofs]` (`value` ignored when `present == 0`).
-fn storeOptional(self: *Emitter, dest_ofs: i16, present: u16, value_reg: u8) error{OutOfMemory}!void {
+fn storeOptional(self: *Emitter, dest_ofs: i16, present: u16, value_reg: u8, inner: *const Type) error{OutOfMemory}!void {
     try isa.movRegToReg(self, value_reg, Reg.r2); // r2 = value (before frameAddr clobbers regs)
+    if (fixed.isFixedType(inner)) try isa.movRegToReg(self, Emitter.fixed_hi, Reg.r3);
     try frameAddr(self, dest_ofs, Reg.r1); // r1 = optional header addr
     try isa.movImmToReg(self, present, Reg.acu);
     try class.emitWordStoreAtOffset(self, Reg.r1, codegen.Emitter.opt_present_ofs, Reg.acu);
     try class.emitWordStoreAtOffset(self, Reg.r1, codegen.Emitter.opt_value_ofs, Reg.r2);
+    if (fixed.isFixedType(inner)) try class.emitWordStoreAtOffset(self, Reg.r1, codegen.Emitter.opt_value_ofs + 2, Reg.r3);
 }
 
 /// Lower `v.pop()` in statement position, where the returned `T?` has
@@ -290,7 +294,6 @@ fn emitPopDiscarding(self: *Emitter, recv: *const ast.Expr) error{OutOfMemory}!v
 
 /// Lower `recv.<method>(args)` for a Vec receiver of element type `elem`.
 pub fn emitMethod(self: *Emitter, recv: *const ast.Expr, method: []const u8, args: []const *ast.Expr, elem: *const Type) error{OutOfMemory}!void {
-    const ew = self.widthOfType(elem);
     if (std.mem.eql(u8, method, "len")) {
         try headerAddr(self, recv, Reg.r1);
         try class.emitWordLoadAtOffset(self, Reg.r1, len_ofs, Reg.acu);
@@ -316,7 +319,7 @@ pub fn emitMethod(self: *Emitter, recv: *const ast.Expr, method: []const u8, arg
         return;
     }
     if (std.mem.eql(u8, method, "push")) {
-        try emitPush(self, recv, args[0], ew);
+        try emitPush(self, recv, args[0], elem);
         return;
     }
     if (std.mem.eql(u8, method, "pop")) {
@@ -357,15 +360,24 @@ pub fn emitIndexLoad(self: *Emitter, recv: *const ast.Expr, idx: *const ast.Expr
 pub fn emitIndexStore(self: *Emitter, recv: *const ast.Expr, idx: *const ast.Expr, val: *const ast.Expr, elem: *const Type) error{OutOfMemory}!void {
     const ew = self.widthOfType(elem);
     try self.emitExpr(val); // acu = value
+    if (fixed.isFixedType(elem)) try isa.pushReg(self, Emitter.fixed_hi);
     try isa.pushReg(self, Reg.acu); // [sp] = value
     try emitElemAddr(self, recv, idx, ew); // acu = &elem (balances its own stack)
     try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = &elem
     try isa.popReg(self, Reg.r2); // r2 = value
-    try storeElem(self, Reg.r1, ew, Reg.r2);
+    if (fixed.isFixedType(elem)) {
+        try isa.popReg(self, Reg.r3);
+        try fixed.storePairAt(self, Reg.r1, 0, Reg.r2, Reg.r3);
+    } else {
+        try storeElem(self, Reg.r1, ew, Reg.r2);
+    }
 }
 
-fn emitPush(self: *Emitter, recv: *const ast.Expr, val_expr: *const ast.Expr, ew: u16) error{OutOfMemory}!void {
+fn emitPush(self: *Emitter, recv: *const ast.Expr, val_expr: *const ast.Expr, elem: *const Type) error{OutOfMemory}!void {
+    const ew = self.widthOfType(elem);
+    const fixed_elem = fixed.isFixedType(elem);
     try self.emitExpr(val_expr); // acu = value
+    if (fixed_elem) try isa.pushReg(self, Emitter.fixed_hi);
     try isa.pushReg(self, Reg.acu); // value → [sp+2] after the header push
     try headerAddr(self, recv, Reg.acu);
     try isa.pushReg(self, Reg.acu); // [sp] = header addr
@@ -386,13 +398,18 @@ fn emitPush(self: *Emitter, recv: *const ast.Expr, val_expr: *const ast.Expr, ew
     try isa.addRegToAcu(self, Reg.r2); // acu = &slot
     try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = &slot
     try isa.movRegOffsetToReg(self, Reg.sp, 2, Reg.r2); // r2 = value
-    try storeElem(self, Reg.r1, ew, Reg.r2);
+    if (fixed_elem) {
+        try isa.movRegOffsetToReg(self, Reg.sp, 4, Reg.r3);
+        try fixed.storePairAt(self, Reg.r1, 0, Reg.r2, Reg.r3);
+    } else {
+        try storeElem(self, Reg.r1, ew, Reg.r2);
+    }
     // len += 1.
     try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1);
     try class.emitWordLoadAtOffset(self, Reg.r1, len_ofs, Reg.r2);
     try isa.addImmToReg(self, 1, Reg.r2);
     try class.emitWordStoreAtOffset(self, Reg.r1, len_ofs, Reg.r2);
-    try isa.addImmToReg(self, 4, Reg.sp); // drop header + value
+    try isa.addImmToReg(self, if (fixed_elem) 6 else 4, Reg.sp); // drop header + value
 }
 
 /// Grow the Vec whose header address is at `[sp + 0]`: new_cap =
@@ -436,7 +453,9 @@ fn emitGrow(self: *Emitter, ew: u16) error{OutOfMemory}!void {
 // ---- shared element load / store ----
 
 fn loadElem(self: *Emitter, addr_reg: u8, elem: *const Type) error{OutOfMemory}!void {
-    if (self.widthOfType(elem) == 1) {
+    if (fixed.isFixedType(elem)) {
+        try fixed.loadPairAt(self, addr_reg, 0);
+    } else if (self.widthOfType(elem) == 1) {
         try class.emitByteLoadAtOffset(self, addr_reg, 0, Reg.acu);
         if (elem.* == .primitive and elem.primitive == .i8) try isa.signExtendByte(self, Reg.acu);
     } else {
