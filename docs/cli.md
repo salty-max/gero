@@ -665,7 +665,8 @@ goes to stderr.
 Two capabilities: diagnostics (identical to what `gero check`
 reports) and formatting (identical to what `gero fmt` writes),
 for both `.gas` and `.gr`. Buffers the editor holds unsaved are
-read from memory, so editing a library reddens its importers
+read from memory, and changing one re-checks every open document
+that imports it — so editing a library reddens its importers
 without a save.
 
 **Exit**: `0` on `shutdown` + `exit`, or when the client closes
