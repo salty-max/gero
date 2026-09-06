@@ -303,8 +303,10 @@ runs as fast as the host allows between vblanks — no artificial
 cap. A cart that doesn't finish its frame's work before the next
 vblank just drops frames; the host displays the fps drop.
 
-A vblank IRQ fires on each frame transition (vector `0x06` per ISA
-§6).
+A vblank IRQ fires on each frame transition (vector `0x07`, from the
+host-defined range in ISA §6.1). Vectors `0x00..0x06` are ISA faults —
+`0x06` is the program-initiated trap `sys trap` raises, which a cart
+must be able to tell apart from a frame boundary.
 
 ---
 

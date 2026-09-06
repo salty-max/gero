@@ -1011,7 +1011,7 @@ Module-level visibility is controlled by the `local` keyword
 | `@interrupt N` | `def` | Bind this function as the handler for vector `N` (gero ISA §6.1). The compiler makes the handler transparent to the interrupted code: interrupt entry preserves only `ip`/`fp`/`flg` (ISA §6.2), so the compiler saves + restores the general-purpose registers around the body and gives the handler its own stack frame. It emits the `rti` epilogue automatically and writes the function address into `mem[$1000 + 2 * N]` at boot. The function body must take no parameters and return nothing. |
 
 ```
-@interrupt $06              -- vblank
+@interrupt $07              -- vblank (gtx-16)
 def on_vblank()
   frame_count += 1
 end

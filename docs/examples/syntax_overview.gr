@@ -295,7 +295,7 @@ end
 -- §3.7.4  @interrupt — hardware handler binding
 ------------------------------------------------------------
 -- vblank vector (gtx-16)
-@interrupt($06)
+@interrupt($07)
 def on_vblank()
   -- 60Hz tick — keep tight
   frame_count += 1
