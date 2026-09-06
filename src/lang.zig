@@ -149,6 +149,9 @@ pub const render = render_mod;
 
 /// Codegen output: `.gx` image + diagnostics.
 pub const Compiled = codegen_mod.Compiled;
+
+/// One symbol's relocatable code — the unit a build cache stores.
+pub const Fragment = codegen_mod.Fragment;
 /// Codegen options (`entry_name`, `debug_symbols`, `optimize`).
 pub const CompileOptions = codegen_mod.Options;
 /// Build-mode selector for `CompileOptions.optimize`.

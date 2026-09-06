@@ -10,6 +10,7 @@ const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const archive = @import("archive.zig");
 const lambda = @import("lambda.zig");
+const object = @import("object.zig");
 const globals = @import("globals.zig");
 
 const Emitter = codegen.Emitter;
@@ -86,6 +87,13 @@ pub fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, 
         self.current_ret_scalar_opt = saved_ret_scalar_opt;
         self.sret_param_ofs = saved_sret_param;
         self.sret_scratch_ofs = saved_sret_scratch;
+    }
+
+    // A fragment from a previous build carries this body's bytes and
+    // every reference leaving them, so splicing it is equivalent to
+    // lowering — and skips the work this cache exists to avoid.
+    if (self.cachedFragment(label)) |cached| {
+        return object.splice(self, cached);
     }
 
     const frag_start = blk: {
@@ -234,7 +242,7 @@ pub fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, 
         defer self.current_bank = saved;
         break :blk try self.currentOffset();
     };
-    try self.noteFragment(dup_name, def.span, bank_target, frag_start, frag_end);
+    try self.noteFragment(dup_name, self.moduleOfSpan(def.span), bank_target, frag_start, frag_end);
 }
 
 /// Write each `@interrupt N` handler's address into its IVT slot. The
