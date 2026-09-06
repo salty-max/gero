@@ -24,6 +24,7 @@ const isa = @import("codegen/isa.zig");
 const vec_builtin = @import("codegen/vec_builtin.zig");
 const variadic = @import("codegen/variadic.zig");
 const inline_asm = @import("codegen/inline_asm.zig");
+const object = @import("codegen/object.zig");
 const stdlib = @import("codegen/stdlib.zig");
 
 /// The asm assembler, re-exported here (one level up from
@@ -121,6 +122,12 @@ pub const Relocation = struct {
     target_offset: usize,
 };
 
+/// One symbol's relocatable code, sliced out of the emitted buffers.
+pub const Fragment = object.Fragment;
+
+/// Byte range one symbol's emission occupied.
+pub const FragmentSpan = object.Span;
+
 /// Where a symbol lives, named independently of its run-time
 /// address: the buffer that holds it and the byte offset within it.
 /// Emission records symbols this way and the link step resolves them,
@@ -159,6 +166,9 @@ pub const Compiled = struct {
     /// Full `.gx` archive. Pass to `gero.vm.parseGx`.
     image: []u8,
     diagnostics: []Diagnostic,
+    /// Per-symbol relocatable code, empty unless `Options.emit_fragments`
+    /// asked for it. Backed by `diag_arena`.
+    fragments: []const Fragment = &.{},
     diag_arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
 
@@ -194,6 +204,10 @@ pub const Options = struct {
     /// `false` for validation-only (e.g. `gero check`), where a library
     /// file with no `main` still has its bodies lowered + checked.
     require_entry: bool = true,
+    /// Return each symbol's relocatable code on `Compiled.fragments`.
+    /// Off by default — only a caching build needs it, and extracting
+    /// copies every emitted byte.
+    emit_fragments: bool = false,
     /// `use X as Y from "./mod"` quoted-path aliases (`Y` → `X`) from
     /// the fuser, or `null` for a single-file build.
     import_aliases: ?*const std.StringHashMapUnmanaged([]const u8) = null,
@@ -282,6 +296,7 @@ pub fn compile(
         .trampoline_addr = null,
         .call_patches = .empty,
         .relocations = .empty,
+        .fragment_spans = .empty,
         .globals = .{},
         .data_cursor = data_base,
         .zp_cursor = 0,
@@ -322,6 +337,7 @@ pub fn compile(
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
     defer emitter.relocations.deinit(allocator);
+    defer emitter.fragment_spans.deinit(allocator);
     defer emitter.bake_inits.deinit(allocator);
     defer emitter.bake_str_patches.deinit(allocator);
     defer emitter.global_inits.deinit(allocator);
@@ -419,8 +435,14 @@ pub fn compile(
     const image = try buildArchive(allocator, base_image, code_base, heap_base, &emitter.banks, debug_blob);
     allocator.free(base_image);
 
+    const fragments: []const Fragment = if (opts.emit_fragments)
+        try object.extract(diag_arena.allocator(), &emitter)
+    else
+        &.{};
+
     return .{
         .image = image,
+        .fragments = fragments,
         .diagnostics = try diagnostics.toOwnedSlice(allocator),
         .diag_arena = diag_arena,
         .allocator = allocator,
@@ -738,6 +760,8 @@ pub const Emitter = struct {
     call_patches: std.ArrayList(CallPatch),
     /// Address writes deferred to the link step. See `Relocation`.
     relocations: std.ArrayList(Relocation),
+    /// Byte range each emitted symbol occupied, in emission order.
+    fragment_spans: std.ArrayList(FragmentSpan),
     /// Top-level `let` / `const` globals + their pinned addresses.
     /// Populated by a pre-pass over `program.statements`; consulted
     /// by ident loads + assignments. See `Global` for the per-
@@ -1759,6 +1783,18 @@ pub const Emitter = struct {
     }
 
     /// Module id owning a fused-source offset, or `0` without a graph.
+    /// Record the byte range `label`'s emission occupied, so the
+    /// build cache can reuse it without re-emitting the body.
+    pub fn noteFragment(self: *Emitter, label: []const u8, def_span: ast.Span, bank: ?u8, start: usize, end: usize) !void {
+        try self.fragment_spans.append(self.allocator, .{
+            .symbol = label,
+            .module = self.moduleOf(def_span.start),
+            .bank = bank,
+            .start = start,
+            .end = end,
+        });
+    }
+
     fn moduleOf(self: *const Emitter, offset: u32) u16 {
         const g = self.graph orelse return 0;
         return g.source_map.fileIdAt(offset) orelse 0;

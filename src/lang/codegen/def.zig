@@ -88,6 +88,13 @@ pub fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, 
         self.sret_scratch_ofs = saved_sret_scratch;
     }
 
+    const frag_start = blk: {
+        const saved = self.current_bank;
+        self.current_bank = bank_target;
+        defer self.current_bank = saved;
+        break :blk try self.currentOffset();
+    };
+
     const dup_name = try self.arena.dupe(u8, label);
     const ref: codegen.CodeRef = .{ .bank = bank_target, .offset = try self.currentOffset() };
     try self.fn_addresses.put(self.arena, dup_name, ref);
@@ -218,6 +225,16 @@ pub fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, 
     // adjacent to the parent so their call sites + closure-creation
     // patches resolve normally.
     try lambda.emitLambdaBodies(self, def);
+
+    // The range covers the lambda bodies too — they emit alongside the
+    // parent, so a cached fragment carries everything the def brought in.
+    const frag_end = blk: {
+        const saved = self.current_bank;
+        self.current_bank = bank_target;
+        defer self.current_bank = saved;
+        break :blk try self.currentOffset();
+    };
+    try self.noteFragment(dup_name, def.span, bank_target, frag_start, frag_end);
 }
 
 /// Write each `@interrupt N` handler's address into its IVT slot. The
