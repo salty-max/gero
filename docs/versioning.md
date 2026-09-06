@@ -16,7 +16,7 @@ They are unrelated, and conflating them is the first mistake to avoid.
 | | Where | Means |
 |---|---|---|
 | **Package version** | `build.zig.zon` (`0.2.0` today) | The Zig package. Follows normal semver for the *library API* — `gero.vm.step`, `gero.lang.compile`, and so on. |
-| **Format version** | `.gx` header bytes `0x04..0x05` (`0x0100` today) | The bytecode container and the ISA it encodes. High byte major, low byte minor. |
+| **Format version** | `.gx` header bytes `0x04..0x05` (`0x0200` today) | The bytecode container and the ISA it encodes. High byte major, low byte minor. |
 
 A release can bump one and not the other. Renaming a public Zig
 function is a package break and no format change at all; adding an
@@ -169,15 +169,22 @@ tolerated — it is expected to run correctly, which is exactly the
 burden §3 places on every additive change. A change that an older VM
 would accept and mishandle is not additive, whatever it looks like.
 
-Verified rather than asserted: a `1.9` file runs on a `1.0` build and a
-`1.0` file runs on a `1.9` one, while a `0.4` file is refused with
-`built for .gx format 0.4, but this build speaks 1.0 — the majors
+Verified rather than asserted: a `2.9` file runs on a `2.0` build and a
+`2.0` file runs on a `2.9` one, while a `1.0` file is refused with
+`built for .gx format 1.0, but this build speaks 2.0 — the majors
 differ, so it would not run correctly`.
+
+### Format major 2
+
+The current execution model uses format major **2**. Its `fixed` values are
+Q16.16 pairs, including the operand shape of the fixed formatting syscalls.
+Files from another major are refused because their register contract is not
+interchangeable with this one.
 
 ### Format major 1
 
-The format is at major **1**. It reached it once, for one reason worth
-recording because the shape recurs.
+Format major **1** established the memory map that major 2 retains. It reached
+that number for one reason worth recording because the shape recurs.
 
 Major 0 was never "unstable" — it meant no breaking change had been
 needed, and the minor reached 4 through four additive ones. The break
@@ -203,7 +210,7 @@ accept a file and do the wrong thing requires a major bump, and a major
 bump is a deliberate, documented event rather than a side effect.
 
 This is a promise about the format, and it does not wait on a package
-version. `gero` is at `0.2.0` and the format is at `1.0`; §1 explains
+version. `gero` is at `0.2.0` and the format is at `2.0`; §1 explains
 why those are different numbers and why neither implies the other.
 
 What enforces it, rather than merely intending it:

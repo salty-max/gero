@@ -20,6 +20,7 @@ const strings = @import("strings.zig");
 const overflow = @import("overflow.zig");
 const destructure = @import("destructure.zig");
 const do_expr = @import("do_expr.zig");
+const fixed = @import("fixed.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -293,7 +294,11 @@ fn emitTupleIntoDest(self: *Emitter, src: *const ast.Expr, elems: []const *const
                     try self.emitExpr(elem);
                     try isa.movRegToReg(self, Reg.acu, Reg.r2);
                     try destAddrToReg(self, elem_dest, Reg.r1);
-                    try storeWidth(self, Reg.r1, info.width, Reg.r2);
+                    if (fixed.isFixedType(elems[i])) {
+                        try fixed.storePairAt(self, Reg.r1, 0, Reg.r2, Emitter.fixed_hi);
+                    } else {
+                        try storeWidth(self, Reg.r1, info.width, Reg.r2);
+                    }
                 },
             }
         }
@@ -317,7 +322,9 @@ pub fn emitTupleElemLoad(self: *Emitter, elems: []const *const types.Type, index
         return;
     }
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
-    if (info.width == 1) {
+    if (fixed.isFixedType(elems[index])) {
+        try fixed.loadPairAt(self, Reg.r1, info.offset);
+    } else if (info.width == 1) {
         try class.emitByteLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
         if (info.signed_byte) try isa.signExtendByte(self, Reg.acu);
     } else {
@@ -383,7 +390,11 @@ fn emitElemInto(self: *Emitter, e: *const ast.Expr, elem: *const types.Type, des
             try self.emitExpr(e);
             try isa.movRegToReg(self, Reg.acu, Reg.r2);
             try destAddrToReg(self, dest, Reg.r1);
-            try storeWidth(self, Reg.r1, self.widthOfType(elem), Reg.r2);
+            if (fixed.isFixedType(elem)) {
+                try fixed.storePairAt(self, Reg.r1, 0, Reg.r2, Emitter.fixed_hi);
+            } else {
+                try storeWidth(self, Reg.r1, self.widthOfType(elem), Reg.r2);
+            }
         },
     }
 }
@@ -408,11 +419,16 @@ fn emitArrayRepeat(self: *Emitter, lr: ast.ListRepeatLit, elem: *const types.Typ
             // Otherwise evaluate the value once and replicate the register.
             try self.emitExpr(lr.value);
             try isa.movRegToReg(self, Reg.acu, Reg.r3); // r3 = value (preserved)
+            if (fixed.isFixedType(elem)) try isa.movRegToReg(self, Emitter.fixed_hi, Reg.r4);
             var i: u32 = 0;
             while (i < count) : (i += 1) {
                 // @as: i*elem_width ≤ the frame cap.
                 try destAddrToReg(self, dest.at(@intCast(i * ew)), Reg.r1);
-                try storeWidth(self, Reg.r1, ew, Reg.r3);
+                if (fixed.isFixedType(elem)) {
+                    try fixed.storePairAt(self, Reg.r1, 0, Reg.r3, Reg.r4);
+                } else {
+                    try storeWidth(self, Reg.r1, ew, Reg.r3);
+                }
             }
         },
         // An aggregate value is constructed once into slot 0, then its
@@ -519,7 +535,11 @@ fn emitLitInto(self: *Emitter, sl: ast.StructLit, sname: []const u8, dest: Dest)
             try self.emitExpr(value);
             try isa.movRegToReg(self, Reg.acu, Reg.r2);
             try destAddrToReg(self, field_dest, Reg.r1);
-            try storeWidth(self, Reg.r1, info.width, Reg.r2);
+            if (info.is_fixed) {
+                try fixed.storePairAt(self, Reg.r1, 0, Reg.r2, Emitter.fixed_hi);
+            } else {
+                try storeWidth(self, Reg.r1, info.width, Reg.r2);
+            }
         }
     }
 }
@@ -536,7 +556,9 @@ pub fn emitFieldLoad(self: *Emitter, sname: []const u8, field_name: []const u8) 
         return;
     }
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
-    if (info.width == 1) {
+    if (info.is_fixed) {
+        try fixed.loadPairAt(self, Reg.r1, info.offset);
+    } else if (info.width == 1) {
         try class.emitByteLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
         // A signed byte field (`i8`) sign-extends; `u8` / `bool` / `char`
         // stay zero-extended.
@@ -572,11 +594,17 @@ pub fn emitFieldStore(self: *Emitter, recv: *const ast.Expr, sname: []const u8, 
     }
     // Scalar field — evaluate the value, then store it as a word/byte.
     try self.emitExpr(value);
+    if (info.is_fixed) try isa.pushReg(self, Emitter.fixed_hi);
     try isa.pushReg(self, Reg.acu);
     try self.emitExpr(recv);
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
     try isa.popReg(self, Reg.r2);
-    try class_storeAt(self, Reg.r1, info.offset, info.width, Reg.r2);
+    if (info.is_fixed) {
+        try isa.popReg(self, Reg.r3);
+        try fixed.storePairAt(self, Reg.r1, info.offset, Reg.r2, Reg.r3);
+    } else {
+        try class_storeAt(self, Reg.r1, info.offset, info.width, Reg.r2);
+    }
 }
 
 /// Compare two struct operands of type `sname` for structural equality,
@@ -758,7 +786,20 @@ fn emitEnumFieldEq(self: *Emitter, t: ast.TypeAnn, lhs_at: i8, rhs_at: i8, field
         try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
         return;
     }
-    // Scalar / `char` / `fixed` / `bool` / payload-free enum tag / `&T` /
+    if (self.isPrimitiveTypeAnn(t, "fixed")) {
+        try isa.movRegOffsetToReg(self, Reg.sp, lhs_at, Reg.r1);
+        try fixed.loadPairAt(self, Reg.r1, field_off);
+        try isa.movRegToReg(self, Reg.acu, Reg.r3);
+        try isa.movRegToReg(self, Emitter.fixed_hi, Reg.r4);
+        try isa.movRegOffsetToReg(self, Reg.sp, rhs_at, Reg.r1);
+        try fixed.loadPairAt(self, Reg.r1, field_off);
+        try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+        try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+        try isa.cmpRegReg(self, Emitter.fixed_hi, Reg.r4);
+        try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+        return;
+    }
+    // Scalar / `char` / `bool` / payload-free enum tag / `&T` /
     // class — compare the stored word or byte (value or pointer identity).
     const fw = self.widthOfTypeAnn(t);
     try isa.movRegOffsetToReg(self, Reg.sp, lhs_at, Reg.r1);
@@ -1029,6 +1070,8 @@ fn emitTupleFieldwiseEq(self: *Emitter, elems: []const *const types.Type, lhs_of
                     try class.emitByteLoadAtOffset(self, Reg.sp, rhs_off + eo, Reg.r3);
                     try isa.cmpRegReg(self, Reg.acu, Reg.r3);
                     try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+                } else if (fixed.isFixedType(et)) {
+                    try emitSlotBytesEq(self, lhs_off + eo, rhs_off + eo, Emitter.fixed_size, patches);
                 } else {
                     try class.emitWordLoadAtOffset(self, Reg.sp, lhs_off + eo, Reg.acu);
                     try class.emitWordLoadAtOffset(self, Reg.sp, rhs_off + eo, Reg.r3);

@@ -52,6 +52,18 @@ pub const Op = struct {
     /// `mul dst, src` — dst ← dst * src (32-bit unsigned product;
     /// high half lands in acu, sets V/C when `high != 0`).
     pub const mul_reg_reg: u8 = 0x47;
+    /// `add src, dst` — dst ← dst + src (ISA §5.4).
+    pub const add_reg_reg: u8 = 0x41;
+    /// `sub src, dst` — dst ← dst - src.
+    pub const sub_reg_reg: u8 = 0x44;
+    /// `adc imm16, reg` — reg ← reg + imm + C.
+    pub const adc_imm16_reg: u8 = 0x50;
+    /// `adc src, dst` — dst ← dst + src + C. The high half of a
+    /// multi-word add (ISA §5.4.1).
+    pub const adc_reg_reg: u8 = 0x51;
+    /// `sbc src, dst` — dst ← dst - src - C. The high half of a
+    /// multi-word subtract.
+    pub const sbc_reg_reg: u8 = 0x53;
     /// `neg reg` — reg ← -reg.
     pub const neg_reg: u8 = 0x4A;
     /// `divs dst, src` — dst ← dst / src (signed).
@@ -95,6 +107,12 @@ pub const Op = struct {
     pub const jeq_addr: u8 = 0x92;
     /// `jne addr` — jump on Z = 0.
     pub const jne_addr: u8 = 0x93;
+    /// `jcs addr` — jump on C = 1 (a borrow occurred on the last `sub`).
+    pub const jcs_addr: u8 = 0x99;
+    /// `clc` — clear carry, so a following `rol` shifts a zero in.
+    pub const clc_op: u8 = 0xB0;
+    /// `rol reg, imm8` — rotate left through carry.
+    pub const rol_reg_imm: u8 = 0x76;
     /// `jlt addr` — signed less-than.
     pub const jlt_addr: u8 = 0x94;
     /// `jle addr` — signed ≤.

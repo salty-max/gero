@@ -26,10 +26,9 @@ pub const Token = struct {
         /// implementation); otherwise emitted as `.minus`.
         int_lit,
         /// Fixed-point literal — decimal with fractional part
-        /// (`1.5`, `0.125`, `3.14159`). Pre-encoded as Q8.8 in the
-        /// `value` field: top byte is the integer part, bottom byte
-        /// is `round(frac * 256)`. `1.5` → `$0180`, `0.125` →
-        /// `$0020`. Negative form via the unary minus operator,
+        /// (`1.5`, `0.125`, `3.14159`). Pre-encoded as signed Q16.16
+        /// in the `value` field. `1.5` → `$00018000`, `0.125` →
+        /// `$00002000`. Negative form via the unary minus operator,
         /// not the literal itself.
         fixed_lit,
         /// `@`-prefixed annotation marker. `start` covers the
@@ -511,34 +510,40 @@ fn lexInteger(state: *State, negative: bool) !void {
         // Fractional part — `1.5`, `0.125`, etc. Only triggered
         // when a digit follows the `.`; `1.foo()` stays as
         // `int_lit(1)` + `.dot` + `ident(foo)`. The fraction is
-        // converted to Q8.8 by `frac_digits * 256 / 10^N` with a
+        // converted to Q16.16 by `frac_digits * 65536 / 10^N` with a
         // round-nearest add of `10^N / 2`.
         const has_fraction = state.index + 1 < state.source.len and
             state.source[state.index] == '.' and
             isDigit(state.source[state.index + 1]);
         if (has_fraction) {
             state.index += 1; // consume `.`
-            var frac_digits: i64 = 0;
-            var divisor: i64 = 1;
+            var frac_digits: u128 = 0;
+            var divisor: u128 = 1;
+            var kept_digits: u8 = 0;
             while (state.index < state.source.len) : (state.index += 1) {
                 const b = state.source[state.index];
                 if (b == '_') continue;
                 if (!isDigit(b)) break;
-                // @as: widen u8 digit (0..9) → i64 so the running fraction stays wide.
-                frac_digits = frac_digits * 10 + @as(i64, b - '0');
-                divisor *= 10;
+                // Every Q16.16 rounding boundary has a terminating decimal
+                // with at most 17 places. Keeping 18 places therefore decides
+                // which side of a boundary the literal lies on; later digits
+                // cannot change the rounded word.
+                if (kept_digits < 18) {
+                    // @as: widen a decimal digit into the bounded accumulator.
+                    frac_digits = frac_digits * 10 + @as(u128, b - '0');
+                    divisor *= 10;
+                    kept_digits += 1;
+                }
             }
-            const frac_byte: i64 = @divTrunc(frac_digits * 256 + @divTrunc(divisor, 2), divisor);
-            // @as: narrow i64 → i32 for the Q8.8 byte; `& 0xFF` bounds it to 0..255.
-            const encoded: i32 = (value << 8) | @as(i32, @intCast(frac_byte & 0xFF));
-            if (negative) {
-                // Two's-complement Q8.8 negation: flip then add 1.
-                // For positive Q8.8 the encoded value fits in u16;
-                // store the negated 16-bit pattern as signed i32.
-                const neg: i32 = -encoded;
-                try pushToken(state, .fixed_lit, start, state.index, neg);
+            const frac_word: u128 = (frac_digits * 65536 + divisor / 2) / divisor;
+            // @as: widening keeps the complete Q16.16 magnitude available for the range check.
+            const magnitude = @as(i64, value) * 65536 + @as(i64, @intCast(frac_word));
+            const encoded = if (negative) -magnitude else magnitude;
+            if (encoded < std.math.minInt(i32) or encoded > std.math.maxInt(i32)) {
+                try pushError(state, start, "fixed literal is outside the Q16.16 range", "E_SYNTAX_MALFORMED_LITERAL");
+                try pushToken(state, .fixed_lit, start, state.index, 0);
             } else {
-                try pushToken(state, .fixed_lit, start, state.index, encoded);
+                try pushToken(state, .fixed_lit, start, state.index, @intCast(encoded));
             }
             return;
         }

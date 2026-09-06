@@ -13,6 +13,7 @@ const class = @import("class.zig");
 const strings = @import("strings.zig");
 const variadic = @import("variadic.zig");
 const overflow = @import("overflow.zig");
+const fixed = @import("fixed.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -73,7 +74,7 @@ fn emitCmp(self: *Emitter, recv: *const ast.Expr, other: *const ast.Expr) error{
     try strings.emitStrCmp(self, Reg.r1, Reg.r2); // acu = ordering
 }
 
-/// Lower `str.format(fmt, args...)` (§3.2.2) — lay the `args` words out
+/// Lower `str.format(fmt, args...)` (§3.2.2) — lay the arguments out
 /// contiguously on the stack, allocate a fresh heap buffer, and run the
 /// `format_runtime` syscall to fill it from the runtime-parsed `fmt`. The
 /// allocated buffer's base is left in `acu` (a `str` result).
@@ -94,7 +95,7 @@ pub fn emitFormatInto(
     return emitFormatCommon(self, dst, fmt, args);
 }
 
-/// Lower `str.format(fmt, args...)` (§3.2.2) — lay the `args` words out
+/// Lower `str.format(fmt, args...)` (§3.2.2) — lay the arguments out
 /// contiguously on the stack, allocate a fresh heap buffer, and run the
 /// `format_runtime` syscall to fill it from the runtime-parsed `fmt`. The
 /// allocated buffer's base is left in `acu` (a `str` result).
@@ -122,17 +123,20 @@ fn emitFormatCommon(
     // under 62 args (2 + N*2 ≤ 127).
     const n: u16 = @intCast(args.len);
     const desc = elemDescriptor(self, if (args.len > 0) args[0] else null);
+    const stride: u16 = if (args.len > 0 and fixed.isFixed(self, args[0])) Emitter.fixed_size else 2;
+    const args_bytes = n * stride;
 
     // fmt pointer parked just above the args region.
     try self.emitExpr(fmt); // acu = fmt pointer
     try isa.pushReg(self, Reg.acu); // [sp] = fmt
 
-    // Reserve the args region (N words) and fill it left-to-right.
-    if (n > 0) try isa.subImmFromReg(self, n * 2, Reg.sp);
+    // Reserve the argument region and fill it left-to-right.
+    if (args_bytes > 0) try isa.subImmFromReg(self, args_bytes, Reg.sp);
     for (args, 0..) |arg, k| {
         try self.emitExpr(arg); // acu = arg value (sp-neutral)
-        // @as: k*2 within the reserved args region fits i8.
-        try isa.movRegToRegOffset(self, Reg.acu, Reg.sp, @intCast(k * 2));
+        const offset: u16 = @intCast(k * stride);
+        try isa.movRegToRegOffset(self, Reg.acu, Reg.sp, @intCast(offset));
+        if (stride == Emitter.fixed_size) try isa.movRegToRegOffset(self, Emitter.fixed_hi, Reg.sp, @intCast(offset + 2));
     }
 
     // Park the buffer base above all else. `format_into` takes it from
@@ -145,10 +149,9 @@ fn emitFormatCommon(
     }
     try isa.pushReg(self, Reg.acu); // [sp] = buffer base
 
-    // Stack now: [sp+0] buffer base | [sp+2 .. sp+2+N*2) args | [sp+2+N*2] fmt.
+    // Stack now: [sp+0] buffer base | arguments | fmt.
     try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // r1 = cursor = buffer base
-    // @as: fmt offset = 2 (buffer) + N*2 (args), bounded under 127.
-    try isa.movRegOffsetToReg(self, Reg.sp, @intCast(2 + n * 2), Reg.acu); // acu = fmt ptr
+    try isa.movRegOffsetToReg(self, Reg.sp, @intCast(2 + args_bytes), Reg.acu); // acu = fmt ptr
     try isa.movRegToReg(self, Reg.sp, Reg.r2);
     try isa.addImmToReg(self, 2, Reg.r2); // r2 = args base = sp + 2
     try isa.movImmToReg(self, n | desc, Reg.r3); // count | element descriptor
@@ -165,28 +168,27 @@ fn emitFormatCommon(
         try isa.subRegFromAcu(self, Reg.r2); // acu = cursor - base
         try isa.subImmFromReg(self, 1, Reg.acu); // less the terminator
     }
-    // @as: 2 (buffer) + N*2 (args) + 2 (fmt), bounded under 127.
-    try isa.addImmToReg(self, @intCast(2 + n * 2 + 2), Reg.sp);
+    try isa.addImmToReg(self, @intCast(2 + args_bytes + 2), Reg.sp);
 }
 
 /// Forward a single tuple argument to `format` (§3.2.2) — re-lay its `N`
-/// elements as `N` contiguous words, then run `format_runtime` over them.
-/// The variadic `args` slot is word-strided (each vararg pushed whole),
-/// so its elements read at `k * 2`; a plain tuple value is byte-packed,
-/// so each element reads at its inline offset.
+/// elements contiguously, then run `format_runtime` over them.
 fn emitFormatForward(self: *Emitter, fmt: *const ast.Expr, tuple: *const ast.Expr, elems: []const *const types.Type) error{OutOfMemory}!void {
-    const word_strided = variadic.isArgsForward(self, tuple);
+    const args_forward = variadic.isArgsForward(self, tuple);
     // The forwarded count is this specialization's arity (§4.6.2), not
     // the body's `args` type — that type is the whole-program *minimum*
     // arity, pinned for sound `args.N` indexing, which may be smaller.
     // A plain tuple value uses its own element count.
     // @as: count is frame-bounded — the i8 offsets below cap it under 62
     // (4 + N*2 ≤ 127).
-    const n: u16 = if (word_strided) self.current_variadic.?.arity else @intCast(elems.len);
-    const elem_ty: ?*const types.Type = if (word_strided)
+    const n: u16 = if (args_forward) self.current_variadic.?.arity else @intCast(elems.len);
+    const elem_ty: ?*const types.Type = if (args_forward)
         self.current_variadic.?.elem
     else if (elems.len > 0) elems[0] else null;
     const desc = if (elem_ty) |t| elemDescriptorForType(t) else 0;
+    // @as: two bytes is the VM's minimum aligned argument width.
+    const stride: u16 = if (elem_ty) |t| @max(@as(u16, 2), self.widthOfType(t)) else 2;
+    const args_bytes = n * stride;
 
     // Park fmt, then the tuple base, above the args region.
     try self.emitExpr(fmt); // acu = fmt pointer
@@ -194,26 +196,33 @@ fn emitFormatForward(self: *Emitter, fmt: *const ast.Expr, tuple: *const ast.Exp
     try self.emitAddrOf(tuple); // acu = tuple base address
     try isa.pushReg(self, Reg.acu); // [sp] = tuple base, [sp+2] = fmt
 
-    // Reserve the args region (N words) and fill it from the tuple.
-    if (n > 0) try isa.subImmFromReg(self, n * 2, Reg.sp);
+    // Reserve the args region and fill it from the tuple.
+    if (args_bytes > 0) try isa.subImmFromReg(self, args_bytes, Reg.sp);
     var k: u16 = 0;
     while (k < n) : (k += 1) {
-        // @as: tuple base sits just above the N-word region; the reload
-        // offset N*2 stays within the i8 stack window.
-        try isa.movRegOffsetToReg(self, Reg.sp, @intCast(n * 2), Reg.r1); // r1 = tuple base
-        if (word_strided) {
-            try class.emitWordLoadAtOffset(self, Reg.r1, k * 2, Reg.acu);
+        // @as: tuple base sits just above the argument region; the reload
+        // offset stays within the i8 stack window.
+        try isa.movRegOffsetToReg(self, Reg.sp, @intCast(args_bytes), Reg.r1); // r1 = tuple base
+        if (args_forward) {
+            if (elem_ty != null and fixed.isFixedType(elem_ty.?)) {
+                try fixed.loadPairAt(self, Reg.r1, k * stride);
+            } else {
+                try class.emitWordLoadAtOffset(self, Reg.r1, k * stride, Reg.acu);
+            }
         } else {
             const info = self.tupleElemInfo(elems, @intCast(k));
-            if (info.width == 1) {
+            if (fixed.isFixedType(elems[k])) {
+                try fixed.loadPairAt(self, Reg.r1, info.offset);
+            } else if (info.width == 1) {
                 try class.emitByteLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
                 if (info.signed_byte) try isa.signExtendByte(self, Reg.acu);
             } else {
                 try class.emitWordLoadAtOffset(self, Reg.r1, info.offset, Reg.acu);
             }
         }
-        // @as: k*2 within the reserved args region fits i8.
-        try isa.movRegToRegOffset(self, Reg.acu, Reg.sp, @intCast(k * 2));
+        const offset = k * stride;
+        try isa.movRegToRegOffset(self, Reg.acu, Reg.sp, @intCast(offset));
+        if (elem_ty != null and fixed.isFixedType(elem_ty.?)) try isa.movRegToRegOffset(self, Emitter.fixed_hi, Reg.sp, @intCast(offset + 2));
     }
 
     // Allocate the output buffer; park its base (the result) on top.
@@ -221,10 +230,9 @@ fn emitFormatForward(self: *Emitter, fmt: *const ast.Expr, tuple: *const ast.Exp
     try isa.sys(self, Sys.alloc); // acu = buffer base
     try isa.pushReg(self, Reg.acu); // [sp] = buffer base
 
-    // Stack: [sp] buf | [sp+2 .. +2+N*2) args | [sp+2+N*2] base | [sp+4+N*2] fmt.
+    // Stack: [sp] buffer | arguments | tuple base | format string.
     try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1); // r1 = cursor = buffer base
-    // @as: fmt offset = 4 (buffer + base) + N*2, bounded under 127.
-    try isa.movRegOffsetToReg(self, Reg.sp, @intCast(4 + n * 2), Reg.acu); // acu = fmt ptr
+    try isa.movRegOffsetToReg(self, Reg.sp, @intCast(4 + args_bytes), Reg.acu); // acu = fmt ptr
     try isa.movRegToReg(self, Reg.sp, Reg.r2);
     try isa.addImmToReg(self, 2, Reg.r2); // r2 = args base = sp + 2
     try isa.movImmToReg(self, n | desc, Reg.r3); // count | element descriptor
@@ -233,8 +241,7 @@ fn emitFormatForward(self: *Emitter, fmt: *const ast.Expr, tuple: *const ast.Exp
 
     // Result = the buffer base; drop buffer + args + base + fmt.
     try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.acu);
-    // @as: 2 (buffer) + N*2 (args) + 2 (base) + 2 (fmt), bounded under 127.
-    try isa.addImmToReg(self, @intCast(6 + n * 2), Reg.sp);
+    try isa.addImmToReg(self, @intCast(6 + args_bytes), Reg.sp);
 }
 
 /// The `format_runtime` `r3` element descriptor (default type + signed bit)

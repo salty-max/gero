@@ -24,7 +24,7 @@ bottom of the section.
 4. [Banking — `mb` register](#4-banking--mb-register)
 5. [SRAM persistence](#5-sram-persistence)
 6. [IRQ handler skeleton](#6-irq-handler-skeleton)
-7. [Fixed-point arithmetic (Q8.8)](#7-fixed-point-arithmetic-q88)
+7. [Fixed-point arithmetic (Q16.16)](#7-fixed-point-arithmetic-q1616)
 8. [Include guards](#8-include-guards)
 9. [Heap allocation](#9-heap-allocation)
 
@@ -275,36 +275,45 @@ and the routine runs whenever the device asserts.
 
 ---
 
-## 7. Fixed-point arithmetic (Q8.8)
+## 7. Fixed-point arithmetic (Q16.16)
 
-The VM is 16-bit integer-only — no float opcodes. Q8.8 fixed-point
-gives you fractional math by reserving the low byte for the
-fractional part: a Q8.8 value of `$0180` represents `1.5`
-(`1 * 256 + 128`). Multiplication needs a `shr 8` to bring the
-product back into the Q8.8 range (since `Qm.n × Qm.n → Q(2m).(2n)`).
+The VM is integer-only, so Gero represents fractional values as signed Q16.16
+integers. The low word contains 16 fractional bits and the high word contains
+the signed whole-number half. `$0001_8000` represents `1.5` because the raw
+32-bit value is `1.5 * 65536`.
+
+Addition and subtraction do not change the scale. Apply the operation to the
+low words, then use `adc` or `sbc` to carry into the high words:
 
 ```asm
-; fixed.gas — multiply 1.5 × 2.0 in Q8.8.
-
-const PRINT = $10
+; fixed.gas — add 0.35 to a position of 200.8.
+; r2:r1 and r4:r3 are high:low Q16.16 pairs.
 
 main:
-  mov $0180, r1              ; 1.5 in Q8.8 ($0180 = 384 = 1*256 + 128)
-  mov $0200, r2              ; 2.0 in Q8.8 ($0200 = 512)
-  mul r1, r2                 ; r2 = r1 * r2 = $30000 (low 16: $0000, high in acu)
-  ; for an in-range product we just need the low word + a single shr:
-  shr r2, $08                ; r2 = $0300 = 3.0 in Q8.8 (low byte zeroed)
+  mov $CCCD, r1              ; 200.8 low word
+  mov $00C8, r2              ; 200.8 high word
+  mov $599A, r3              ; 0.35 low word
+  mov $0000, r4              ; 0.35 high word
+
+  add r3, r1                 ; add fractional halves, setting carry
+  adc r4, r2                 ; add whole halves and the carry
   hlt
 ```
 
-**Expected**: VM halts cleanly with `r2 = $0300` (= 3.0 in Q8.8).
-Use `gero info` after `gero asm fixed.gas` to confirm the image
-shape; for live verification add `int PRINT` lines that emit
-selected bytes of `r2`.
+**Expected**: the VM halts with `r2:r1 = $00C9_2667`, approximately
+`201.15`.
 
-The same trick works for division (Q8.8 quotient = `(num << 8) / den`),
-addition / subtraction (no scaling needed), and angle math via a
-Q1.15 sin/cos lookup table in `data16`.
+Multiplication needs the middle 32 bits of a signed 64-bit product. Split each
+operand into two words, form four 16-by-16-bit partial products, add them with
+carry, and keep bits 16 through 47. Division computes `(numerator << 16) /
+denominator`, which needs a multiword division loop. The Gero compiler emits
+shared helpers for both operations; `docs/isa.md` §5.4.1 describes their
+register convention and cost.
+
+For hand-written assembly, a smaller Q format can still be useful when its
+range and precision fit the data. Write the format beside the value: `$4000`
+means `0.5` in Q1.15, but it means `64.0` in Q8.8. The bits do not carry their
+scale on their own.
 
 ---
 

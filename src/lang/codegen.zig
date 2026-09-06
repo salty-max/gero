@@ -27,6 +27,7 @@ const vec_builtin = @import("codegen/vec_builtin.zig");
 const variadic = @import("codegen/variadic.zig");
 const inline_asm = @import("codegen/inline_asm.zig");
 const object = @import("codegen/object.zig");
+const fixed_mod = @import("codegen/fixed.zig");
 const stdlib = @import("codegen/stdlib.zig");
 
 /// The asm assembler, re-exported here (one level up from
@@ -321,6 +322,10 @@ pub fn compile(
         .inline_returns = null,
         .inline_depth = 0,
         .trampoline_addr = null,
+        .fixed_mul_addr = null,
+        .fixed_div_addr = null,
+        .needs_fixed_mul = false,
+        .needs_fixed_div = false,
         .call_patches = .empty,
         .relocations = .empty,
         .fragment_spans = .empty,
@@ -563,6 +568,10 @@ pub const CallPatch = struct {
     pub const Target = union(enum) {
         fn_name: []const u8,
         trampoline,
+        /// `__fixed_mul` — the Q16.16 multiply helper (§3.3).
+        fixed_mul,
+        /// `__fixed_div` — the Q16.16 divide helper.
+        fixed_div,
     };
 };
 
@@ -705,7 +714,7 @@ pub const Emitter = struct {
     /// into the caller's sret buffer.
     current_ret_array: ?ArrayRet,
     /// Element type of a scalar `T?` return for the def currently being
-    /// emitted, or `null`. A scalar optional is a 4-byte `{present, value}`
+    /// emitted, or `null`. A scalar optional is a tagged `{present, value}`
     /// that rides the sret convention like a struct; `return` materializes
     /// it into the caller's sret buffer. A pointer-like `T?` returns its
     /// nullable word in `acu`, so it stays `null` here.
@@ -754,7 +763,7 @@ pub const Emitter = struct {
     /// Defs whose return type is a fixed array. They ride the same sret
     /// convention as struct / tuple returns.
     fn_ret_array: std.StringHashMapUnmanaged(void),
-    /// `def` names that return a scalar `T?` by value — the 4-byte
+    /// `def` names that return a scalar `T?` by value — the tagged
     /// `{present, value}` rides the same sret convention as a struct
     /// (a set: the element type is read from the call/return expression).
     fn_ret_scalar_opt: std.StringHashMapUnmanaged(void),
@@ -784,6 +793,15 @@ pub const Emitter = struct {
     /// `__call_bank` trampoline address in the base image.
     /// `null` until the trampoline is emitted.
     trampoline_addr: ?CodeRef,
+    /// Address of the emitted `__fixed_mul` helper, once some call site
+    /// has asked for it. `null` when the program has no fixed multiply.
+    fixed_mul_addr: ?CodeRef,
+    /// Address of `__fixed_div`, on the same terms.
+    fixed_div_addr: ?CodeRef,
+    /// Set when a call site records a patch for the matching helper, so
+    /// the finalize pass knows to emit its body.
+    needs_fixed_mul: bool,
+    needs_fixed_div: bool,
     /// Unresolved `call addr` sites — recorded when the callee's
     /// address isn't known yet (forward references). Rewritten at
     /// the end of `emitProgram`.
@@ -997,6 +1015,8 @@ pub const Emitter = struct {
         switch (ty.*) {
             .primitive => |p| return switch (p) {
                 .i8, .u8, .bool_, .char => 1,
+                // Q16.16 (§3.3) — two words, low half first.
+                .fixed => fixed_size,
                 else => 2,
             },
             .named => |n| {
@@ -1019,21 +1039,36 @@ pub const Emitter = struct {
             // A `Vec(T)` value is a 6-byte `(ptr, len, cap)` header (§3.4.3),
             // stored inline like a struct; its backing buffer is on the heap.
             .vec => return vec_builtin.header_size,
-            // A scalar `T?` is a 4-byte `{present, value}` header; a
+            // A scalar `T?` is a tagged `{present, value}` value; a
             // pointer-like `T?` is a single nullable-pointer word.
-            .optional => |inner| return if (isScalarOptional(inner)) opt_scalar_size else 2,
+            .optional => |inner| return if (isScalarOptional(inner)) self.scalarOptionalWidth(inner) else 2,
             else => return 2,
         }
     }
 
-    /// Optional-value layout. A scalar `T?` is a tagged 4-byte
-    /// `{present, value}` header (present @0, value @2); a pointer-like `T?`
-    /// is a single nullable-pointer word (0 = nil).
+    /// Optional-value layout. A scalar `T?` is a tagged
+    /// `{present, value}` value (present @0, value @2); a pointer-like
+    /// `T?` is a single nullable-pointer word (0 = nil).
     pub const opt_present_ofs: u16 = 0;
     /// Byte offset of the value word in a scalar `T?`.
     pub const opt_value_ofs: u16 = 2;
-    /// Byte size of a scalar `T?` (`{present, value}`).
-    pub const opt_scalar_size: u16 = 4;
+    /// Byte size of `fixed?` (`{present, low, high}`).
+    pub const opt_fixed_size: u16 = 6;
+
+    /// Byte size of a tagged optional whose payload is stored inline.
+    pub fn scalarOptionalWidth(self: *const Emitter, inner: *const Type) u16 {
+        return opt_value_ofs + alignUpU16(self.widthOfType(inner), 2);
+    }
+
+    /// Storage width of a `fixed` value — Q16.16, two words, low half
+    /// at the lower address (§3.3).
+    pub const fixed_size: u16 = 4;
+
+    /// Register holding the high half of a `fixed` value while it is
+    /// live in registers. The low half rides `acu` like any scalar, so
+    /// code that only moves a value needs no special case; only
+    /// arithmetic, stores, and the call boundary read this.
+    pub const fixed_hi = Reg.r5;
 
     /// Whether an optional with element type `inner` uses the tagged scalar
     /// representation (vs a nullable pointer).
@@ -1045,7 +1080,7 @@ pub const Emitter = struct {
     }
 
     /// Inner type of a scalar-optional-typed expression (peeling a
-    /// reference), or `null` — the 4-byte `{present, value}` form only.
+    /// reference), or `null` — the tagged `{present, value}` form only.
     pub fn scalarOptionalElemOf(self: *const Emitter, e: *const ast.Expr) ?*const Type {
         const t = self.typeOf(e) orelse return null;
         const inner = if (t.* == .reference) t.reference else t;
@@ -1132,8 +1167,8 @@ pub const Emitter = struct {
     }
 
     /// Bytes of frame space the body could need so the prologue can
-    /// `sub frame_bytes, sp`. A scalar local is 2 bytes; a struct
-    /// local takes its full (2-aligned) width. Reserves space for
+    /// `sub frame_bytes, sp`. A local uses its type's storage width; a
+    /// struct local takes its full (2-aligned) width. Reserves space for
     /// every arm of control-flow forms.
     pub fn countFrameBytes(self: *const Emitter, body: []const ast.Statement) usize {
         return self.countFrameBytesDepth(body, 0);
@@ -1156,7 +1191,7 @@ pub const Emitter = struct {
         // Locals + nested-body bytes the statement reserves directly...
         const own: usize = switch (stmt) {
             .let_decl => |d| self.letFrameBytes(d),
-            .const_decl => 2,
+            .const_decl => |d| alignUpU16(fixed_mod.scalarSlotWidth(self, d.init, d.type_ann), 2),
             .block => |b| self.countFrameBytesDepth(b.body, depth),
             .if_stmt => |is_| blk: {
                 var n: usize = 0;
@@ -1185,7 +1220,7 @@ pub const Emitter = struct {
                 // for a tuple / struct, else a word); each arm's binders
                 // then alias it or load from behind its pointer.
                 const scrut_ty = self.typeOf(ms.scrutinee);
-                var n: usize = if (scrut_ty != null and self.isInlineAggregateType(scrut_ty.?))
+                var n: usize = if (scrut_ty != null and (self.isInlineAggregateType(scrut_ty.?) or (scrut_ty.?.* == .primitive and scrut_ty.?.primitive == .fixed)))
                     alignUpU16(self.widthOfType(scrut_ty.?), 2)
                 else
                     2;
@@ -1231,7 +1266,7 @@ pub const Emitter = struct {
             .primitive => |p| if (p == .str) 2 + 2 else 0,
             // Iterator: the hidden instance pointer + the `T?` result slot
             // (the loop variable aliases that slot's value region).
-            .named => 2 + opt_scalar_size,
+            .named => 2 + opt_fixed_size,
             else => 0,
         };
     }
@@ -1241,7 +1276,7 @@ pub const Emitter = struct {
     /// an aggregate element (struct / array / tuple).
     fn loopVarBytes(self: *const Emitter, elem: *const Type) usize {
         return switch (self.arrayElemKindOf(elem)) {
-            .scalar => 2,
+            .scalar => if (elem.* == .primitive and elem.primitive == .fixed) fixed_size else 2,
             else => alignUpU16(self.widthOfType(elem), 2),
         };
     }
@@ -1313,7 +1348,7 @@ pub const Emitter = struct {
                 // materialized into a slot once, and each arm reserves
                 // its pattern binders and body locals in THIS frame.
                 const scrut_ty = self.typeOf(me.scrutinee);
-                var n: usize = if (scrut_ty != null and self.isInlineAggregateType(scrut_ty.?))
+                var n: usize = if (scrut_ty != null and (self.isInlineAggregateType(scrut_ty.?) or (scrut_ty.?.* == .primitive and scrut_ty.?.primitive == .fixed)))
                     alignUpU16(self.widthOfType(scrut_ty.?), 2)
                 else
                     2;
@@ -1405,6 +1440,8 @@ pub const Emitter = struct {
                 n += self.structSlotWidth(sname)
             else if (self.tupleElemsOf(arg)) |elems|
                 n += self.tupleSlotWidth(elems)
+            else if (fixed_mod.isFixed(self, arg))
+                n += fixed_size
             else
                 n += 2;
         }
@@ -1450,19 +1487,21 @@ pub const Emitter = struct {
     /// else a word) plus a slot per enum-payload binder. Inline
     /// tuple / struct binders alias the scrutinee slot, costing nothing.
     fn destructureFrameBytes(self: *const Emitter, pat: *const ast.Pattern, ty: ?*const Type) usize {
-        const scrut: usize = if (ty != null and self.isInlineAggregateType(ty.?))
-            alignUpU16(self.widthOfType(ty.?), 2)
+        const scrut: usize = if (ty) |t|
+            if (self.isInlineAggregateType(t) or fixed_mod.isFixedType(t) or
+                (t.* == .optional and isScalarOptional(t.optional)))
+                alignUpU16(self.widthOfType(t), 2)
+            else
+                2
         else
             2;
         return scrut + self.ownSlotBinderBytes(pat, false);
     }
 
-    /// Frame bytes an `if let` / `while let` head reserves: a 2-byte slot
-    /// for a bare-ident binder, else the full destructure footprint
-    /// (scrutinee slot + payload binders) against the scrutinee's type.
+    /// Frame bytes an `if let` / `while let` head reserves.
     fn letArmFrameBytes(self: *const Emitter, pat: *const ast.Pattern, let_expr: ?*const ast.Expr) usize {
-        if (pat.* == .ident) return 2;
         const ty = if (let_expr) |e| self.typeOf(e) else null;
+        if (pat.* == .ident and ty != null and ty.?.* != .optional) return alignUpU16(self.widthOfType(ty.?), 2);
         return self.destructureFrameBytes(pat, ty);
     }
 
@@ -1499,6 +1538,10 @@ pub const Emitter = struct {
                     if (pann) |ann| if (self.structNameOfTypeAnn(ann) != null or ann == .tuple or ann == .array) {
                         n += alignUpU16(self.widthOfTypeAnn(ann), 2);
                         n += self.ownSlotBinderBytes(a, false);
+                        continue;
+                    };
+                    if (pann) |ann| if (a.* == .ident and self.isPrimitiveTypeAnn(ann, "fixed")) {
+                        n += fixed_size;
                         continue;
                     };
                     n += self.ownSlotBinderBytes(a, true);
@@ -1581,6 +1624,11 @@ pub const Emitter = struct {
         // cross-bank call site asked for it (saves 10 bytes when
         // the program is entirely un-banked or single-bank).
         if (self.needsTrampoline()) try self.emitCallBankTrampoline();
+
+        // Runtime fixed-point helpers, emitted only when a call site
+        // asked for one — a program with no fixed multiply pays nothing.
+        if (self.needs_fixed_mul) try fixed_mod.emitMulHelper(self);
+        if (self.needs_fixed_div) try fixed_mod.emitDivHelper(self);
 
         // Append the interned string pool to the base image so all
         // recorded `StringPatch`es can resolve to real addresses.
@@ -1963,9 +2011,10 @@ pub const Emitter = struct {
                     if (w > self.global_sret_scratch) self.global_sret_scratch = w;
                 };
                 // A scalar-`T?`-returning def shares the sret scratch too.
-                if (dd.ret_type) |rt| if (try self.scalarOptReturnInner(rt.*)) |_| {
+                if (dd.ret_type) |rt| if (try self.scalarOptReturnInner(rt.*)) |inner| {
                     try self.fn_ret_scalar_opt.put(self.arena, dup, {});
-                    if (opt_scalar_size > self.global_sret_scratch) self.global_sret_scratch = opt_scalar_size;
+                    const w = self.scalarOptionalWidth(inner);
+                    if (w > self.global_sret_scratch) self.global_sret_scratch = w;
                 };
                 if (noreturn_marked) try self.noreturn_defs.put(self.arena, dup, {});
                 if (inline_marked) try self.inline_defs.put(self.arena, dup, dd);
@@ -2090,6 +2139,7 @@ pub const Emitter = struct {
     /// address for the entry half to push as the callee's return-ip.
     fn emitBankReturn(self: *Emitter) !CodeRef {
         const bank_return: CodeRef = .{ .bank = null, .offset = self.code.items.len };
+        try isa.movRegToReg(self, Reg.r5, Reg.r2); // preserve a fixed return's high word
         try isa.movRegToReg(self, Reg.flg, Reg.r6); // save flg (incl. I bit)
         try isa.sei(self);
         try isa.movAddrToReg(self, bank_save_ptr, Reg.r4);
@@ -2098,6 +2148,7 @@ pub const Emitter = struct {
         try isa.addImmToReg(self, bank_save_slot_bytes, Reg.r4);
         try isa.movRegToAddr(self, Reg.r4, bank_save_ptr);
         try isa.movRegToReg(self, Reg.r5, Reg.mb); // restore caller bank
+        try isa.movRegToReg(self, Reg.r2, Reg.r5); // restore the return high word
         // `rti` pops flg, then fp, then return-ip — push them reversed
         // (return-ip deepest, saved flg on top); `rti` restores the
         // interrupt state and jumps to the caller in one step.
@@ -2177,6 +2228,8 @@ pub const Emitter = struct {
                 {
                     break :blk 1;
                 }
+                // Q16.16 needs two words (§3.3).
+                if (std.mem.eql(u8, name, "fixed")) break :blk fixed_size;
                 // Named struct → sum of field sizes (recursive).
                 // Class names stay at 2 (instance-pointer width).
                 if (self.struct_decls.get(name)) |sd| {
@@ -2206,10 +2259,10 @@ pub const Emitter = struct {
             },
             // A `Vec(T)` value is a 6-byte inline header (§3.4.3).
             .vec => vec_builtin.header_size,
-            // Scalar `T?` → 4-byte tagged header; pointer-like → word.
+            // Scalar `T?` uses a tagged value; pointer-like uses one word.
             .nullable => |o| blk: {
                 const inner = (self.typeAnnToType(o.inner.*) catch null) orelse break :blk 2;
-                break :blk if (isScalarOptional(inner)) opt_scalar_size else 2;
+                break :blk if (isScalarOptional(inner)) self.scalarOptionalWidth(inner) else 2;
             },
             else => 2,
         };
@@ -2392,6 +2445,7 @@ pub const Emitter = struct {
         width: u16,
         struct_name: ?[]const u8,
         signed_byte: bool = false,
+        is_fixed: bool = false,
         is_tuple: bool = false,
         is_array: bool = false,
 
@@ -2416,6 +2470,7 @@ pub const Emitter = struct {
                     .width = w,
                     .struct_name = self.structNameOfTypeAnn(f.type_ann.*),
                     .signed_byte = self.isPrimitiveTypeAnn(f.type_ann.*, "i8"),
+                    .is_fixed = self.isPrimitiveTypeAnn(f.type_ann.*, "fixed"),
                     .is_tuple = f.type_ann.* == .tuple,
                     .is_array = f.type_ann.* == .array,
                 };
@@ -2482,6 +2537,9 @@ pub const Emitter = struct {
         // §3.4.3). A `&T` reference is `.reference`, not the aggregate, so it
         // stays a 2-byte pointer.
         if (t.* == .tuple or t.* == .array or t.* == .vec) return alignUpU16(self.widthOfTypeAnn(t.*), 2);
+        // A `fixed` is two words (§3.3) — like an aggregate, its slot
+        // spans its full width rather than one register.
+        if (self.widthOfTypeAnn(t.*) == fixed_size and isFixedAnn(self, t.*)) return fixed_size;
         return 2;
     }
 
@@ -2495,6 +2553,15 @@ pub const Emitter = struct {
         const inner = if (ty.* == .reference) ty.reference else ty;
         if (inner.* != .array) return null;
         return .{ .elem = inner.array.elem, .count = inner.array.len };
+    }
+
+    /// `true` when the annotation names `fixed`. Width alone cannot
+    /// distinguish every type.
+    fn isFixedAnn(self: *const Emitter, t: ast.TypeAnn) bool {
+        if (t != .named) return false;
+        const span = t.named.name;
+        if (span.end > self.source.len or span.start >= span.end) return false;
+        return std.mem.eql(u8, "fixed", self.resolveImportAlias(self.source[span.start..span.end]));
     }
 
     /// Element list of a tuple-typed expression, or `null` for a

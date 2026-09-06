@@ -1,10 +1,12 @@
 # 9. Numbers that are not integers
 
 Ken's attacks currently remove ten hit points. Suppose Ryu's armor blocks one
-quarter of each hit. “One quarter” is a fraction, and the machine only has
-integer arithmetic.
+quarter of each hit. “One quarter” is a fraction, and so far every number in
+the fight has been an integer.
 
-This is the problem fixed-point numbers solve.
+This chapter introduces fixed-point numbers. Along the way, we will separate a
+number's meaning from its representation, decide where rounding belongs in a
+program, and look at the cost of arithmetic on a small machine.
 
 ## Why integer division loses information
 
@@ -18,34 +20,48 @@ def main()
 end
 ```
 
-The program keeps 75 percent of the attack and prints 7. The multiplication
-happens before division, but the final division still discards the remainder.
-The exact intermediate answer, 7.5, cannot be stored in an integer.
+This prints `7`. Multiplication happens before division, which preserves more
+information than `power / 100 * 75`, but the final division must still produce
+an integer. It discards the remainder of 750 divided by 100.
 
-Sometimes that truncation is exactly the rule a game wants. The weakness is
-that `75` and `100` carry no unit: a reader must infer that they encode a
-percentage, and every calculation must choose a scale consistently.
+That may be the rule a game wants. The harder problem is that `75` and `100`
+do not say what they mean. They might be percentages, cents, frames, or map
+units. Every calculation has to remember the same unwritten scale.
 
-## Fixed point stores an implied fraction
+A type can make the scale part of the program.
 
-A `fixed` value uses the same 16 bits as an `i16`, but interprets them
-differently. Eight bits hold the whole-number part and eight hold fractions in
-steps of 1/256.
+## Fixed point gives an integer a scale
+
+A `fixed` value is a signed 32-bit integer interpreted with 16 fractional
+bits. This representation is called **Q16.16**: 16 bits describe whole units
+and 16 bits describe fractions of a unit.
+
+The scale is 65,536. To encode `1.5`, the compiler stores
+`1.5 * 65,536`, which is 98,304. The binary point is implied by the type; it
+does not occupy a separate field in memory.
 
 ```gero
 def main()
   let half: fixed = 0.5
   let one_and_half: fixed = 1.5
+  let world_x: fixed = 200.8
+
   print half
   print one_and_half
+  print world_x
 end
 ```
 
-`1.5` is stored as the integer 384. Dividing 384 by the fixed scale, 256,
-gives 1.5. The binary point is implied; it is not stored separately.
+The program prints:
 
-Gero applies that scale when it multiplies and divides, so source code uses the
-ordinary arithmetic operators:
+```text
+0.500
+1.500
+200.800
+```
+
+Gero manages the scale when it performs arithmetic, so the source code uses
+the same operators as other numeric types:
 
 ```gero
 def main()
@@ -56,18 +72,20 @@ def main()
 end
 ```
 
-The program prints `7.500`. The expression follows the rule directly: keep one
-minus the blocked fraction, then multiply power by it.
+This prints `7.500`. The expression mirrors the rule: subtract the blocked
+fraction from one, then multiply the attack power by what remains.
 
-## Converting is a decision
+## Types describe which operations make sense
 
-Hit points are integers in our fight, so fractional damage must eventually
-become an integer. A cast with `as` makes that boundary visible:
+An `i16` and a `fixed` value can both contain the bit pattern for a small
+whole number, but they give those bits different meanings. Gero therefore
+requires an explicit cast at the boundary between them.
 
 ```gero
 def reduced_damage(power: i16, blocked: fixed) -> i16
   let remaining: fixed = 1.0 - blocked
-  return ((power as fixed) * remaining) as i16
+  let scaled_power: fixed = power as fixed
+  return (scaled_power * remaining) as i16
 end
 
 def main()
@@ -75,17 +93,39 @@ def main()
 end
 ```
 
-The first cast turns 10 into the fixed value `10.0`. The multiplication
-produces `7.5`. The final cast converts back to `i16` by truncating toward
-zero, so the function returns 7.
+`power as fixed` applies the Q16.16 scale, turning the integer `10` into
+`10.0`. The multiplication produces `7.5`. The final cast rounds toward zero,
+so the function returns the integer `7`.
 
-This is useful even though the final answer is an integer. The types expose
-where the fraction exists and the cast records where the program deliberately
-discards it.
+That final cast is a policy decision. If every hit is converted separately,
+two attacks that each calculate to `7.5` deal 14 integer hit points. If the
+game accumulates damage as `fixed` and converts only after both attacks, they
+deal 15. Neither rule is universally correct. Keeping the cast visible makes
+the chosen rule reviewable.
 
-## Precision and range are finite
+## Range and precision share a bit budget
 
-Fixed point is predictable, not exact for every decimal:
+Q16.16 can represent values from `-32768.0` through approximately
+`32767.99998`. Adjacent values differ by `1 / 65536`, or approximately
+`0.00001526`.
+
+This is enough range for a position to cross a large game map while retaining
+subpixel movement:
+
+```gero
+def main()
+  let x: fixed = 200.8
+  let velocity: fixed = 0.35
+  x += velocity
+  print x
+end
+```
+
+The result prints as `201.150`. The stored result is close to 201.15; the
+default formatter shows three digits after the decimal point.
+
+Finite precision means that many decimal fractions have no exact binary
+representation. The compiler stores the nearest Q16.16 value:
 
 ```gero
 def main()
@@ -94,38 +134,77 @@ def main()
 end
 ```
 
-The output is `0.101`. One tenth is not a whole number of 1/256 steps, so the
-compiler stores the nearest representable value. Repeated calculations can
-accumulate that small difference.
+This prints `0.100`, while the stored value is approximately
+`0.1000061`. Printing fewer digits can hide a small representation error; it
+does not remove it. Repeated calculations can accumulate such differences.
 
-The other trade is range. An 8.8 `fixed` value covers roughly -128 through
-127.996. A world position that can reach 500 does not fit. A common design is
-to keep whole units in an `i16` and use a fixed value only for the sub-unit
-remainder:
+The same limit exists in every finite numeric representation. Integer cents
+cannot represent half a cent, and binary floating point cannot represent every
+decimal fraction either. Choose a representation whose step size and range
+fit the rules of the program.
+
+## Overflow and operation order still matter
+
+Arithmetic wraps if a result leaves the `fixed` range. A calculation can
+overflow in an intermediate step even when a rearranged formula would produce
+an in-range answer. Multiplication and division can also discard low
+fractional bits when they restore the Q16.16 scale.
+
+These facts make operation order part of program design:
+
+- Multiply before dividing when that preserves a useful remainder and the
+  product stays in range.
+- Divide first when it prevents an overflowing product and the lost precision
+  is acceptable.
+- Keep units consistent. A position, a velocity per frame, and a duration in
+  frames can combine; a raw palette index cannot become a distance merely
+  because both use numbers.
+- Test values near zero and near the largest magnitude the program permits.
+
+Names help carry those decisions:
 
 ```gero
-def main()
-  let x: i16 = 200
-  let sub: fixed = 0.8
-
-  sub += 0.35
-  while sub >= 1.0
-    sub -= 1.0
-    x += 1
-  end
-
-  print x
-  print sub
-end
+let distance_px: fixed = 1200.0
+let duration_frames: fixed = 40.0
+let speed_px_per_frame = distance_px / duration_frames
 ```
 
-The whole position becomes 201 and the remainder prints as approximately
-`0.152`. The representation is small and deterministic; the program chooses
-how to handle its limits.
+The compiler checks types. Names explain units to people.
 
-Use `fixed` when the value is naturally a small fraction, scale, velocity, or
-ratio. Use an integer with a named unit when exact counting or a wider range is
-more important.
+## Arithmetic has a machine cost
+
+The VM has 16-bit registers, so a `fixed` value occupies a pair of words.
+Addition and subtraction operate on the low word and carry into the high word.
+Comparisons inspect both words. Multiplication combines several 16-bit partial
+products.
+
+General division does considerably more work: it computes a 32-bit quotient
+with a software loop. The compiler replaces division by an exact power-of-two
+constant, such as `value / 2.0` or `value / 0.5`, with shifts while preserving
+rounding toward zero.
+
+The benchmark in `examples/lang/fight/tests/fixed_bench.gr` records the cycle
+count of one small expression in each benchmark body:
+
+| Benchmark | VM cycles |
+|---|---:|
+| addition | 20 |
+| multiplication | 60 |
+| general division | 635 |
+| division by `2.0` | 18 |
+| comparison | 34 |
+| fixed-argument identity call | 15 |
+
+These counts include loading the local operands and leaving the benchmark
+function, so use them to compare these particular bodies rather than as a
+price attached to one opcode. The important shape is clear: general division
+costs about thirty times as much as addition, while division by `2.0` takes the
+short shift path.
+
+This leads to a useful performance rule: calculate constant ratios during
+setup when possible, then multiply inside a per-frame loop. Measure before
+making a less readable transformation, and keep general `fixed` division out
+of a hot loop when the cycle budget is already tight.
 
 ## Armor changes the fight
 
@@ -147,8 +226,8 @@ if ken.alive()
 end
 ```
 
-Ken now deals 7 damage instead of 10. Ryu reaches the potion one turn later
-and survives long enough to finish the fight:
+Ken deals 7 damage per attack. Ryu reaches the potion one turn later and
+survives long enough to finish the fight:
 
 ```text
 turn 1: Ken has 28 hp
@@ -160,16 +239,16 @@ turn 5: Ken has 0 hp
 Ryu wins with 8 hp
 ```
 
-The new type did not merely change a notation. It let us state an armor rule,
-choose where fractional information is discarded, and change the outcome of
-the program.
+The type lets the program state the armor rule directly. The casts show where
+fractional information begins and where the game deliberately discards it.
 
 ## What you learned
 
-Fixed-point numbers store fractions by giving an integer an implied scale.
-They make small ratios cheap and deterministic, but their precision and range
-are limited. Conversions between integers and fixed point mark decisions about
-where fractions begin and end.
+A fixed-point number stores an integer together with an implied scale. Gero's
+Q16.16 `fixed` type uses four bytes, covers roughly -32,768 through 32,768,
+and represents fractions in steps of 1/65,536. Its arithmetic is deterministic,
+but precision, range, overflow, rounding policy, and operation cost remain
+choices the programmer must understand.
 
 ---
 

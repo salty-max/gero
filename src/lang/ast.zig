@@ -294,8 +294,7 @@ pub const StructPatternField = struct {
 pub const Expr = union(enum) {
     int_lit: IntLitExpr,
     /// Fixed-point literal — `1.5`, `0.125`, etc. The lexer
-    /// pre-encodes the value as Q8.8 (top byte integer, bottom byte
-    /// `round(frac * 256)`).
+    /// pre-encodes the value as signed Q16.16.
     fixed_lit: FixedLitExpr,
     bool_lit: BoolLitExpr,
     nil_lit: SpanOnly,
@@ -422,8 +421,7 @@ pub const IntLitExpr = struct {
     span: Span,
 };
 
-/// Fixed-point literal. `value` is the pre-encoded Q8.8 (high
-/// byte integer part, low byte `round(frac * 256)`).
+/// Fixed-point literal. `value` is the pre-encoded signed Q16.16 value.
 pub const FixedLitExpr = struct {
     value: i32,
     span: Span,

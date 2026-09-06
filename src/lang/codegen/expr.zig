@@ -3,6 +3,7 @@ const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
+const fixed = @import("fixed.zig");
 const archive = @import("archive.zig");
 const assert_builtin = @import("assert.zig");
 const diverge_builtin = @import("diverge.zig");
@@ -38,14 +39,15 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
             try isa.movImmToReg(self, v, Reg.acu);
         },
         .fixed_lit => |lit| {
-            // Q8.8 — the parser pre-encodes the value as `int *
-            // 256 + round(frac * 256)`. The low 16 bits are the
-            // canonical bit pattern.
-            // @as: i32 → i16; spec §3.3 pins fixed-point to Q8.8 (i16-shaped).
-            const trimmed: i16 = @truncate(lit.value);
-            // safety: i16 → u16 bit pattern preserved (two's complement).
-            const v: u16 = @bitCast(trimmed);
-            try isa.movImmToReg(self, v, Reg.acu);
+            // Q16.16 (§3.3) — the parser pre-encodes the value as
+            // `int * 65536 + round(frac * 65536)`. A live `fixed`
+            // rides two registers: low half in `acu`, high half in
+            // `fixed_hi`.
+            // safety: i32 → u32 bit pattern preserved (two's complement).
+            const bits: u32 = @bitCast(lit.value);
+            // @as: masking to 16 bits each; both halves fit u16 by construction.
+            try isa.movImmToReg(self, @intCast(bits & 0xFFFF), Reg.acu);
+            try isa.movImmToReg(self, @intCast(bits >> 16), Emitter.fixed_hi);
         },
         .str_lit => |sl| try self.emitStrLitExpr(sl),
         .bool_lit => |b| {
@@ -58,8 +60,8 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .ident => |i| {
             // A struct- / tuple- / array- / Vec- / scalar-optional-typed
             // binding evaluates to its base address — inline aggregates
-            // (incl. the 6-byte Vec header + the 4-byte `{present, value}`
-            // optional) are addressed in place, not loaded as a word. But a
+            // (including Vec headers and tagged scalar optionals) are
+            // addressed in place, not loaded as a word. But a
             // `&T` reference to such an aggregate holds a POINTER to it: its
             // base is the pointer VALUE in the slot, so fall through to the
             // word-load tail (one deref, mirroring `class.emitInstancePtr`).
@@ -81,20 +83,22 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
                 // Promoted bindings live as heap cells — the slot
                 // holds the cell pointer; deref to get the value.
                 if (lambda.isPromoted(self, name)) {
-                    try lambda.emitPromotedIdentLoad(self, ofs);
+                    try lambda.emitPromotedIdentLoad(self, ofs, fixed.isFixed(self, e));
                     return;
                 }
                 try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
+                try fixed.loadHighFromFrame(self, e, ofs);
                 return;
             }
             if (self.params.get(name)) |ofs| {
                 // A param captured-and-promoted holds a cell pointer in
                 // its slot (seeded at entry); deref like a promoted local.
                 if (lambda.isPromoted(self, name)) {
-                    try lambda.emitPromotedIdentLoad(self, ofs);
+                    try lambda.emitPromotedIdentLoad(self, ofs, fixed.isFixed(self, e));
                     return;
                 }
                 try isa.movRegOffsetToReg(self, Reg.fp, ofs, Reg.acu);
+                try fixed.loadHighFromFrame(self, e, ofs);
                 return;
             }
             if (self.captures.get(name)) |slot| {
@@ -106,6 +110,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
             // name, since a same-named local shadows the alias.
             if (self.globals.get(self.resolveImportAlias(name))) |g| {
                 try self.emitGlobalLoad(g);
+                try fixed.loadHighFromAddr(self, e, g.address);
                 return;
             }
             try self.unsupported(i.span, "ident not in current frame");
@@ -139,13 +144,46 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .lambda => |l| try lambda.emitLambdaExpr(self, l, e),
         .is_test => |it| try emitIsTest(self, it),
         .ref_of => |r| try self.emitAddrOf(r.inner),
-        .cast => |c| try emitExpr(self, c.inner), // same-width primitives share a bit pattern, so the cast is a no-op
+        .cast => |c| try emitCast(self, c, e),
         .sizeof => |s| try isa.movImmToReg(self, self.widthOfTypeAnn(s.type_ann.*), Reg.acu),
         .do_expr => |de| try do_expr.emitScalar(self, de),
         .if_expr => |ie| try if_expr.emitScalar(self, ie),
         .match_expr => |me| try match_expr.emitScalar(self, me),
         else => try self.unsupported(e.span(), "this expression form"),
     }
+}
+
+/// Lower an explicit primitive conversion. Integer-to-integer casts keep
+/// their register bit pattern; conversions across the `fixed` boundary
+/// apply or remove the Q16.16 scale.
+fn emitCast(self: *Emitter, c: ast.CastExpr, whole: *const ast.Expr) EmitError!void {
+    const source = self.typeOf(c.inner);
+    const target = self.typeOf(whole);
+    const source_fixed = if (source) |t| fixed.isFixedType(t) else false;
+    const target_fixed = if (target) |t| fixed.isFixedType(t) else false;
+
+    try emitExpr(self, c.inner);
+    if (source_fixed == target_fixed) return;
+
+    if (target_fixed) {
+        // raw(integer as fixed) = integer << 16.
+        try isa.movRegToReg(self, Reg.acu, Emitter.fixed_hi);
+        try isa.movImmToReg(self, 0, Reg.acu);
+        return;
+    }
+
+    // The high word is floor(value) for negative non-integers. Casts round
+    // toward zero, so add one when a negative value has fractional bits.
+    try isa.movRegToReg(self, Reg.acu, Reg.r3);
+    try isa.movRegToReg(self, Emitter.fixed_hi, Reg.acu);
+    try isa.cmpRegImm(self, Emitter.fixed_hi, 0);
+    const done_nonnegative = try isa.emitJumpPlaceholder(self, Op.jge_addr);
+    try isa.cmpRegImm(self, Reg.r3, 0);
+    const done_integral = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    try isa.addImmToReg(self, 1, Reg.acu);
+    const done = try self.currentOffset();
+    try isa.patchJumpTo(self, done_nonnegative, done);
+    try isa.patchJumpTo(self, done_integral, done);
 }
 
 /// Discard-context evaluation: evaluate for side effects and
@@ -200,7 +238,9 @@ pub fn emitEnumConstruct(
             try emitExpr(self, arg); // acu = scalar value / pointer
             try isa.movRegToReg(self, Reg.acu, Reg.r2);
             try isa.movRegOffsetToReg(self, Reg.sp, 0, Reg.r1);
-            if (self.widthOfTypeAnn(ann) == 1) {
+            if (self.isPrimitiveTypeAnn(ann, "fixed")) {
+                try fixed.storePairAt(self, Reg.r1, ofs, Reg.r2, Emitter.fixed_hi);
+            } else if (self.widthOfTypeAnn(ann) == 1) {
                 try class.emitByteStoreAtOffset(self, Reg.r1, ofs, Reg.r2);
             } else {
                 try class.emitWordStoreAtOffset(self, Reg.r1, ofs, Reg.r2);
@@ -335,7 +375,9 @@ fn emitIndexExpr(self: *Emitter, ix: ast.IndexExpr) !void {
 fn emitArrayElem(self: *Emitter, base: u8, offset: u16, info: codegen.Emitter.ArrayInfo) !void {
     switch (self.arrayElemKindOf(info.elem)) {
         .scalar => {
-            if (info.elem_width == 1) {
+            if (fixed.isFixedType(info.elem)) {
+                try fixed.loadPairAt(self, base, offset);
+            } else if (info.elem_width == 1) {
                 try class.emitByteLoadAtOffset(self, base, offset, Reg.acu);
                 if (info.signed_byte) try isa.signExtendByte(self, Reg.acu);
             } else {
@@ -407,7 +449,10 @@ pub fn emitIsTest(self: *Emitter, it: ast.IsTestExpr) !void {
 pub fn emitUnary(self: *Emitter, u: ast.UnaryExpr) !void {
     try emitExpr(self, u.operand);
     switch (u.op) {
-        .neg => try isa.negReg(self, Reg.acu),
+        .neg => if (fixed.isFixed(self, u.operand))
+            try fixed.emitNegate(self)
+        else
+            try isa.negReg(self, Reg.acu),
         .bit_not => try isa.notRegOp(self, Reg.acu),
         .log_not => {
             // acu = (acu == 0) ? 1 : 0
@@ -444,7 +489,7 @@ fn payloadEnumComparison(self: *Emitter, b: ast.BinaryExpr) ?*const ast.EnumDecl
 /// Lower a binary infix expression. Short-circuit operators
 /// (`and`, `or`) take a separate path so the RHS isn't always
 /// evaluated. Comparison ops materialize a `0` / `1` in `acu`.
-/// Fixed-point `*` / `/` get a Q8.8 scaling tail per ISA §5.4.1.
+/// Q16.16 arithmetic and comparison use the two-word path in `fixed.zig`.
 /// When `b` is `<scalar optional> == nil` / `!= nil`, the scalar-optional
 /// operand and its inner type, else `null`. The optional must be the
 /// scalar (`{present, value}`) form; pointer optionals compare as a word.
@@ -550,10 +595,18 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
         }
     }
 
-    const fixed_op = self.isPrimitiveType(b.lhs, .fixed) and
-        self.isPrimitiveType(b.rhs, .fixed) and
-        (b.op == .mul or b.op == .div);
-
+    // A `fixed` is two words (Q16.16, §3.3), so its arithmetic runs a
+    // widened form of the stack-machine pattern below.
+    if (fixed.isFixedArith(self, b)) {
+        try fixed.emitBinary(self, b);
+        return;
+    }
+    if (fixed.isFixedCompare(self, b)) {
+        try fixed.emitOperands(self, b);
+        try fixed.emitCompare(self);
+        try materializeBoolFromFlags(self, b.op);
+        return;
+    }
     // Per spec §4.2.1, plain `+` / `-` / `*` on integer types trap
     // on overflow in debug builds and wrap in release. The check
     // is emitted after the ALU op so the V / C flags reflect the
@@ -561,7 +614,7 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
     // (ISA §5.4.1).
     const lhs_ty = self.typeOf(b.lhs);
     const rhs_ty = self.typeOf(b.rhs);
-    const integer_arith = !fixed_op and overflow.isIntegerArith(lhs_ty) and overflow.isIntegerArith(rhs_ty) and
+    const integer_arith = overflow.isIntegerArith(lhs_ty) and overflow.isIntegerArith(rhs_ty) and
         (b.op == .add or b.op == .sub or b.op == .mul);
     const signedness = overflow.signednessOf(lhs_ty);
 
@@ -601,49 +654,20 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
             } else {
                 try isa.mulRegReg(self, Reg.r1, Reg.r2);
             }
-            if (fixed_op) {
-                // Q8.8 * Q8.8 — the conceptual Q16.16 product
-                // straddles acu:r2 (acu = high half, r2 = low
-                // half). The Q8.8 result is bits 8..23 of that
-                // 32-bit value: `acu (high << 8) | (r2 unsigned
-                // >> 8)`. ISA §5.4.1 — products whose real
-                // magnitude exceeds 127.99… wrap silently
-                // because the result no longer fits in 16 bits.
-                try isa.shrRegImm(self, Reg.r2, 8);
-                try isa.shlRegImm(self, Reg.acu, 8);
-                try isa.orRegReg(self, Reg.acu, Reg.r2);
-            } else {
-                // Integer mul — drop the high half. `mov` doesn't
-                // touch flags, so the V/C set by the mul op above
-                // are still live for the overflow check below.
-                try isa.movRegToReg(self, Reg.r2, Reg.acu);
-            }
+            // Integer mul drops the high half. `mov` doesn't touch
+            // flags, so the V/C set by the mul op above are still live
+            // for the overflow check below.
+            try isa.movRegToReg(self, Reg.r2, Reg.acu);
             if (integer_arith) try overflow.emitOverflowTrap(self, signedness);
         },
         .div => {
-            if (fixed_op) {
-                // Q8.8 / Q8.8 — scale the dividend up by 2^8
-                // before the signed divide so the quotient lands
-                // back in Q8.8. The 24-bit pre-shifted dividend
-                // straddles acu:r2:
-                //   r2  = acu << 8           (low half)
-                //   acu = acu >>arith 8      (sign-extended top byte)
-                // Then `divs r1, r2` performs the 32÷16 signed
-                // divide and the quotient ends up in r2.
-                try isa.movRegToReg(self, Reg.acu, Reg.r2);
-                try isa.shlRegImm(self, Reg.r2, 8); // r2 = lhs << 8 (low)
-                try isa.asrRegImm(self, Reg.acu, 8); // acu = lhs >>a 8 (high)
-                try isa.divsRegReg(self, Reg.r1, Reg.r2);
-                try isa.movRegToReg(self, Reg.r2, Reg.acu);
-            } else {
-                // Signed 32÷16 divide. Dividend lives in acu:dst
-                // (high:low); the dividend is assumed to fit in
-                // 16 bits — sign-extension is not yet emitted.
-                try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = low half
-                try isa.movImmToReg(self, 0, Reg.acu); // high half = 0
-                try isa.divsRegReg(self, Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
-                try isa.movRegToReg(self, Reg.r2, Reg.acu);
-            }
+            // Signed 32÷16 divide. Dividend lives in acu:dst
+            // (high:low); the dividend is assumed to fit in
+            // 16 bits — sign-extension is not yet emitted.
+            try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = low half
+            try isa.movImmToReg(self, 0, Reg.acu); // high half = 0
+            try isa.divsRegReg(self, Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
+            try isa.movRegToReg(self, Reg.r2, Reg.acu);
         },
         .mod => {
             // Same divs pattern as `div`, but keep `acu` (the
@@ -702,6 +726,15 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
 pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
     if (e.* == .binary) {
         const b = e.binary;
+        // A two-word compare sets the flags itself; materialize the
+        // 0/1 and test it so the branch consumes flags either way.
+        if (fixed.isFixedCompare(self, b)) {
+            try fixed.emitOperands(self, b);
+            try fixed.emitCompare(self);
+            try materializeBoolFromFlags(self, b.op);
+            try isa.cmpRegImm(self, Reg.acu, 0);
+            return;
+        }
         switch (b.op) {
             .eq, .neq, .lt, .lte, .gt, .gte => {
                 // A scalar optional vs `nil` — test the `present` tag, then
@@ -1193,6 +1226,10 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
             }
         }
         try emitExpr(self, arg);
+        // A `fixed` arg is two words. Pushing the high half first puts
+        // the low half at the lower address, matching how a `fixed`
+        // sits in a frame slot.
+        if (fixed.isFixed(self, arg)) try isa.pushReg(self, Emitter.fixed_hi);
         try isa.pushReg(self, Reg.acu);
     }
 
@@ -1251,10 +1288,18 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         const pushed_sret = returns_struct or returns_tuple or returns_scalar_opt or returns_array;
         var drop_bytes: u16 = if (pushed_sret) 2 else 0;
         for (c.args) |a| {
-            if (self.argStructName(a)) |sname| {
+            if (self.isReferenceArg(a)) {
+                drop_bytes += 2;
+            } else if (self.argStructName(a)) |sname| {
                 drop_bytes += self.structSlotWidth(sname);
             } else if (self.tupleElemsOf(a)) |elems| {
                 drop_bytes += self.tupleSlotWidth(elems);
+            } else if (self.arrayInfoOf(a)) |info| {
+                drop_bytes += self.arraySlotWidth(info.elem, info.count);
+            } else if (vec_builtin.elemOf(self, a) != null) {
+                drop_bytes += vec_builtin.header_size;
+            } else if (fixed.isFixed(self, a)) {
+                drop_bytes += Emitter.fixed_size;
             } else {
                 drop_bytes += 2; // one 16-bit word per scalar arg
             }

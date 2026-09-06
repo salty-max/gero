@@ -11,7 +11,7 @@ pub const magic = "GROB";
 /// written by a different version is discarded rather than decoded,
 /// so an older build's fragments can never be spliced into a newer
 /// compiler's image.
-pub const format_version: u16 = 2;
+pub const format_version: u16 = 3;
 
 /// A fragment file that could not be decoded. Every variant means the
 /// same thing to a caller — treat the cache entry as a miss.
@@ -145,7 +145,7 @@ fn decodeRefs(arena: std.mem.Allocator, r: *Reader) (DecodeError || std.mem.Allo
     const out = try arena.alloc(object.SymbolRef, try r.readU32());
     for (out) |*ref| {
         const tag = try r.readByte();
-        if (tag > @intFromEnum(object.RefKind.vtable)) return error.Malformed;
+        if (tag > @intFromEnum(object.RefKind.fixed_div)) return error.Malformed;
         ref.* = .{
             // safety: bounded against the enum's last tag above.
             .kind = @enumFromInt(tag),
