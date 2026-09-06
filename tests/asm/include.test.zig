@@ -387,3 +387,46 @@ test "include: formatPretty with ansi style emits ANSI escapes" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[1;31m") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[0m") != null);
 }
+
+test "resolveIncludesOverlaid: an overlaid file is read instead of the one on disk" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    // The two versions differ only in the body, so the marker found
+    // in the fused source says which one was read.
+    try fx.write("shared.gas", "target:\n  mov $11, r1\n  hlt\n");
+    try fx.write("main.gas", "include \"shared.gas\"\nstart:\n  jmp @target\n");
+
+    const shared_path = try fx.pathOf("shared.gas");
+    defer alloc.free(shared_path);
+    const main_path = try fx.pathOf("main.gas");
+    defer alloc.free(main_path);
+
+    var overlay: gero.asm_.Overlay = .{};
+    defer overlay.deinit(alloc);
+    try overlay.put(alloc, shared_path, "target:\n  mov $22, r1\n  hlt\n");
+
+    var fused = try gero.asm_.resolveIncludesOverlaid(std.testing.io, alloc, main_path, &overlay);
+    defer fused.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, fused.source, "$22") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fused.source, "$11") == null);
+}
+
+test "resolveIncludesOverlaid: a file absent from the overlay still comes from disk" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("shared.gas", "target:\n  mov $11, r1\n  hlt\n");
+    try fx.write("main.gas", "include \"shared.gas\"\nstart:\n  jmp @target\n");
+
+    const main_path = try fx.pathOf("main.gas");
+    defer alloc.free(main_path);
+
+    var overlay: gero.asm_.Overlay = .{};
+    defer overlay.deinit(alloc);
+    try overlay.put(alloc, "/nowhere/unrelated.gas", "noise:\n  hlt\n");
+
+    var fused = try gero.asm_.resolveIncludesOverlaid(std.testing.io, alloc, main_path, &overlay);
+    defer fused.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, fused.source, "$11") != null);
+}

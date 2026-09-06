@@ -245,6 +245,11 @@ pub const FusedSource = struct {
 /// `ctx.errors`; this set is for hard failures (OOM, I/O).
 pub const ResolveError = Dir.RealPathFileAllocError || Dir.ReadFileAllocError;
 
+/// Unsaved buffer contents, keyed by canonical absolute path. Same
+/// type as `gero.lang.Overlay`, so a tool holding one map of editor
+/// buffers can drive both resolvers with it.
+pub const Overlay = std.StringHashMapUnmanaged([]const u8);
+
 const Context = struct {
     io: Io,
     allocator: std.mem.Allocator,
@@ -254,6 +259,7 @@ const Context = struct {
     /// Canonical paths currently being resolved — cycle detection.
     /// Strings reference paths owned by `source_map.files`.
     in_progress: *std.ArrayList([]const u8),
+    overlay: ?*const Overlay,
 };
 
 /// Walk the include graph from `root_path` and produce a single
@@ -263,6 +269,19 @@ pub fn resolveIncludes(
     io: Io,
     allocator: std.mem.Allocator,
     root_path: []const u8,
+) ResolveError!FusedSource {
+    return resolveIncludesOverlaid(io, allocator, root_path, null);
+}
+
+/// `resolveIncludes`, reading any file listed in `overlay` from memory
+/// instead of disk. Everything else is identical, so a server
+/// answering about unsaved edits and `gero check` answering about the
+/// saved tree run the same resolution.
+pub fn resolveIncludesOverlaid(
+    io: Io,
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    overlay: ?*const Overlay,
 ) ResolveError!FusedSource {
     var fused: std.ArrayList(u8) = .empty;
     errdefer fused.deinit(allocator);
@@ -287,6 +306,7 @@ pub fn resolveIncludes(
         .source_map = &source_map,
         .errors = &errors,
         .in_progress = &in_progress,
+        .overlay = overlay,
     };
 
     try resolveOne(&ctx, root_path, null, 0, 0);
@@ -297,6 +317,16 @@ pub fn resolveIncludes(
         .errors = try errors.toOwnedSlice(allocator),
         .allocator = allocator,
     };
+}
+
+/// This file's text: the editor's unsaved buffer when one is
+/// overlaid, otherwise what is on disk. Always allocator-owned, since
+/// `SourceMap.intern` takes ownership either way.
+fn readContent(ctx: *Context, canonical: []const u8) ResolveError![]u8 {
+    if (ctx.overlay) |ov| {
+        if (ov.get(canonical)) |buffered| return ctx.allocator.dupe(u8, buffered);
+    }
+    return Dir.cwd().readFileAlloc(ctx.io, canonical, ctx.allocator, Io.Limit.limited(max_file_size));
 }
 
 fn resolveOne(
@@ -360,7 +390,7 @@ fn resolveOne(
     }
 
     // Read content; ownership of (canonical, content) transfers to source_map.intern.
-    const content = Dir.cwd().readFileAlloc(ctx.io, canonical, ctx.allocator, Io.Limit.limited(max_file_size)) catch |err| {
+    const content = readContent(ctx, canonical) catch |err| {
         ctx.allocator.free(canonical);
         return err;
     };

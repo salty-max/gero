@@ -32,6 +32,12 @@ pub const ErrorCode = include.ErrorCode;
 pub const FusedSource = include.FusedSource;
 /// Walk the include graph; return one fused source string.
 pub const resolveIncludes = include.resolveIncludes;
+/// `resolveIncludes` reading overlaid buffers instead of disk for the
+/// files an editor holds unsaved.
+pub const resolveIncludesOverlaid = include.resolveIncludesOverlaid;
+/// Unsaved buffer contents keyed by canonical path, for
+/// `resolveIncludesOverlaid`. Same type as `gero.lang.Overlay`.
+pub const Overlay = include.Overlay;
 /// Format a `Diagnostic` as `<path>:<line>:<col>: [Exxx] <msg>`.
 pub const formatDiagnostic = include.formatDiagnostic;
 /// Pretty-format a `Diagnostic` with a caret-style snippet.

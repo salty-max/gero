@@ -268,3 +268,69 @@ test "resolveUseImports: a diamond records an edge for each importer" {
     // resolution can see it from either.
     try std.testing.expectEqual(@as(usize, 4), fused.imports.len);
 }
+
+test "resolveUseImportsOverlaid: an overlaid file is read instead of the one on disk" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    // The two versions differ only in the body, so the marker found
+    // in the fused source says which one was read.
+    try fx.write("lib.gr", "def helper() -> i16\n  return 111\nend\n");
+    try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend\n");
+
+    const lib_path = try fx.pathOf("lib.gr");
+    defer alloc.free(lib_path);
+    const main_path = try fx.pathOf("main.gr");
+    defer alloc.free(main_path);
+
+    var overlay: gero.lang.Overlay = .{};
+    defer overlay.deinit(alloc);
+    try overlay.put(alloc, lib_path, "def helper() -> i16\n  return 222\nend\n");
+
+    var fused = try gero.lang.resolveUseImportsOverlaid(std.testing.io, alloc, main_path, &overlay);
+    defer fused.deinit();
+
+    try std.testing.expect(!fused.hasErrors());
+    // The buffer's text is what the program sees, so an editor's
+    // unsaved edit reaches the importer's type-check.
+    try std.testing.expectEqual(@as(usize, 1), occurrences(fused.source, "return 222"));
+    try std.testing.expectEqual(@as(usize, 0), occurrences(fused.source, "return 111"));
+}
+
+test "resolveUseImportsOverlaid: the entry file itself can be overlaid" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
+    try fx.write("main.gr", "def main()\n  print 0\nend\n");
+
+    const main_path = try fx.pathOf("main.gr");
+    defer alloc.free(main_path);
+
+    // The buffer adds a `use` the saved file does not have; resolution
+    // must follow the buffer's import, not the file's.
+    var overlay: gero.lang.Overlay = .{};
+    defer overlay.deinit(alloc);
+    try overlay.put(alloc, main_path, "use \"./lib\"\ndef main()\n  print helper()\nend\n");
+
+    var fused = try gero.lang.resolveUseImportsOverlaid(std.testing.io, alloc, main_path, &overlay);
+    defer fused.deinit();
+
+    try std.testing.expect(!fused.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), occurrences(fused.source, "def helper"));
+}
+
+test "resolveUseImportsOverlaid: a null overlay resolves exactly as `resolveUseImports`" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
+    try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend\n");
+
+    const main_path = try fx.pathOf("main.gr");
+    defer alloc.free(main_path);
+
+    var plain = try gero.lang.resolveUseImports(std.testing.io, alloc, main_path);
+    defer plain.deinit();
+    var overlaid = try gero.lang.resolveUseImportsOverlaid(std.testing.io, alloc, main_path, null);
+    defer overlaid.deinit();
+
+    try std.testing.expectEqualStrings(plain.source, overlaid.source);
+}
