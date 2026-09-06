@@ -328,8 +328,35 @@ negative or exceed `MAX_HP`), use `math.clamp(value, lo, hi)`
 from stdlib — compiles to `cmp` + branch sequence. The ISA has
 no native saturating ops (deliberate; see ISA §5.4.1).
 
-This is the canonical answer for "I need fractions" — same trick
-PICO-8, Sonic, early Doom used.
+**Why 8.8 on this machine.** A `fixed` fits one 16-bit register, so
+`+` and `-` are a single instruction and `*` is a multiply plus a
+shift. A wider format would spill to two registers, turn every add
+into an add-with-carry pair, and need a runtime helper for multiply
+and divide.
+
+It is also the split 8- and 16-bit console games used for movement:
+one byte of whole units, one of fraction, with the fraction
+accumulating until it carries into the whole.
+
+**Working past ±127.99.** The range is the trade. A position that
+spans more than 128 units lives in `i16` whole units alongside a
+`fixed` (or `u8`) subpixel accumulator, and the accumulator's carry
+advances the integer part:
+
+```
+let x: i16 = 200        -- whole units
+let sub: fixed = 0.0    -- subpixel remainder
+
+sub = sub + 0.35
+while sub >= 1.0
+  sub = sub - 1.0
+  x = x + 1
+end
+```
+
+`fixed` on its own is the right type for what stays inside the range —
+velocities, ratios, scale factors, and the `[-1.0, 1.0]` results
+`math.fixed_sin` returns.
 
 ### 3.4 Compound types
 
