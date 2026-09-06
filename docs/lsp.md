@@ -213,6 +213,14 @@ one, and it is the work that gates all six features at once. Until
 that lands, the server would have to re-derive bindings from the AST
 in a second, independently-wrong implementation.
 
-Syntax highlighting is out of scope for a different reason: the
-tree-sitter grammars in `editors/` already do it, and they do it
-without a running server.
+Syntax highlighting is out of scope for a different reason: it needs
+no running server, and a grammar does it better. For `.gas` that
+grammar exists — [`tree-sitter-gero-asm`](https://github.com/salty-max/tree-sitter-gero-asm),
+consumed by the Neovim / Helix / Zed setups in
+[`tooling.md`](tooling.md).
+
+**There is no grammar for `.gr` yet.** A gero-lang buffer in an
+LSP-aware editor gets diagnostics and formatting from this server, and
+no colour. Semantic tokens would be one way to close that from the
+server side, but they share the symbol-table blocker above, and a
+grammar remains the better answer for highlighting.

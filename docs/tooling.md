@@ -75,6 +75,11 @@ Three editor families covered today: VS Code, Neovim / Helix /
 Zed (tree-sitter consumers), and "anything else" (TextMate /
 syntax-only).
 
+Coverage is not uniform across the two languages. Highlighting is
+`.gas`-only — the grammar and the extensions target the assembler.
+Diagnostics and formatting cover both, through the language server
+(§2.5). So a `.gr` buffer today is colourless but fully checked.
+
 ### 2.1 VS Code
 
 The extension ships a TextMate grammar + language config (file
