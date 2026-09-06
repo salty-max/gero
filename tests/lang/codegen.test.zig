@@ -8668,3 +8668,55 @@ test "variadic: arities from different modules each get a specialization" {
     );
     try fx.expectRuns("main.gr", "1\n9\n");
 }
+
+// ---------- allocation-free formatting ----------
+
+test "str.format_into: writes the formatted bytes into the caller's buffer" {
+    try runAndExpect(
+        \\use str
+        \\use mem
+        \\def main()
+        \\  let buf: [u8; 64] = [0; 64]
+        \\  let dst = mem.addr_of(buf)
+        \\  let n = str.format_into(dst, "score {0}", 42)
+        \\  print n
+        \\  print mem.read_u8(dst) as char
+        \\  print mem.read_u8(dst + n)
+        \\end
+        \\
+    , "8\ns\n0\n");
+}
+
+test "str.format_into: formatting in a loop does not consume the heap" {
+    // The allocating `str.format` exhausts the default heap in roughly
+    // 700 calls; a per-frame caller needs a form that never allocates.
+    try runAndExpect(
+        \\use str
+        \\use mem
+        \\def main()
+        \\  let buf: [u8; 64] = [0; 64]
+        \\  let dst = mem.addr_of(buf)
+        \\  let i = 0
+        \\  while i < 5000
+        \\    let n = str.format_into(dst, "score {0}", i)
+        \\    i = i + 1
+        \\  end
+        \\  print "done"
+        \\end
+        \\
+    , "done\n");
+}
+
+test "str.format_into: the byte count excludes the terminator" {
+    try runAndExpect(
+        \\use str
+        \\use mem
+        \\def main()
+        \\  let buf: [u8; 32] = [0; 32]
+        \\  let dst = mem.addr_of(buf)
+        \\  print str.format_into(dst, "{0}", 7)
+        \\  print str.format_into(dst, "ab{0}cd", 100)
+        \\end
+        \\
+    , "1\n7\n");
+}
