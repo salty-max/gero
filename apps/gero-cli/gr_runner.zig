@@ -95,7 +95,15 @@ pub fn discover(
             continue;
         }
 
-        const entries = try collectEntries(arena, fused.source, &tree.program, annotation, path, pattern);
+        // Only this file's own annotated defs. The parse covers its
+        // whole `use` graph, and collecting from that would run an
+        // imported module's tests once per file that reaches it — the
+        // spec says each module's are run once (cli.md §3.4).
+        var own: []const gero.lang.ast.Statement = &.{};
+        for (tree.modules) |m| {
+            if (m.file_id == fused.entry_module) own = m.tree.program.statements;
+        }
+        const entries = try collectEntries(arena, fused.source, own, annotation, path, pattern);
         if (entries.len == 0) {
             checked.deinit();
             tree.deinit();
@@ -120,18 +128,18 @@ pub fn discover(
     return out.toOwnedSlice(arena);
 }
 
-/// Top-level defs carrying `@<annotation>`, in declaration order so
-/// the runner's output is stable across runs.
+/// Defs in `statements` carrying `@<annotation>`, in declaration order
+/// so the runner's output is stable across runs.
 fn collectEntries(
     arena: std.mem.Allocator,
     source: []const u8,
-    program: *const gero.lang.ast.Program,
+    statements: []const gero.lang.ast.Statement,
     annotation: []const u8,
     file: []const u8,
     pattern: ?[]const u8,
 ) ![]Entry {
     var list: std.ArrayList(Entry) = .empty;
-    for (program.statements) |stmt| switch (stmt) {
+    for (statements) |stmt| switch (stmt) {
         .def_decl => |dd| {
             if (!hasAnnotation(source, dd.annotations, annotation)) continue;
             const name = source[dd.name.start..dd.name.end];
@@ -216,4 +224,52 @@ pub fn run(
         }
     }
     return .{ .outcome = .timeout, .fault = null, .cycles = vm.cycles };
+}
+
+// ---------- tests ----------
+
+test "discover: an imported module's tests are not collected twice" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "util.gr",
+        .data =
+        \\def double(n: i16) -> i16
+        \\  return n * 2
+        \\end
+        \\@test
+        \\def test_double()
+        \\  test.assert_eq(double(21), 42)
+        \\end
+        \\
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "main.gr",
+        .data =
+        \\use "./util"
+        \\def main()
+        \\  print double(21)
+        \\end
+        \\
+        ,
+    });
+
+    const util_path = try tmp.dir.realPathFileAlloc(std.testing.io, "util.gr", arena);
+    const main_path = try tmp.dir.realPathFileAlloc(std.testing.io, "main.gr", arena);
+
+    var term: term_mod.Term = .{ .color = false, .quiet = true };
+    // Both files are under `[test].include`, and `main.gr` reaches
+    // `util.gr` through its `use` graph. Collecting from the fused
+    // program would find the test once per file that reaches it.
+    const modules = try discover(std.testing.io, arena, &term, "gero test", &.{ main_path, util_path }, "test", null);
+    defer for (modules) |m| m.deinit();
+
+    var total: usize = 0;
+    for (modules) |m| total += m.entries.len;
+    try std.testing.expectEqual(@as(usize, 1), total);
 }
