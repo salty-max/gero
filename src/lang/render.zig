@@ -98,41 +98,6 @@ pub fn prettyOne(
     for (file.diagnostics) |d| try writeDiagnosticFull(writer, file.path, file.source, d, style);
 }
 
-/// Render diagnostics as one JSON object per line — `ndjson`
-/// shape, easy to parse from editors / CI scripts.
-///
-/// Schema per line:
-/// ```
-/// { "path": "...", "line": 12, "col": 18, "end_line": 12,
-///   "end_col": 25, "severity": "error", "code": "E_TYPE_MISMATCH",
-///   "message": "...", "help": "..." }
-/// ```
-pub fn json(
-    writer: *std.Io.Writer,
-    files: []const FileDiagnostics,
-) !void {
-    for (files) |f| {
-        for (f.diagnostics) |d| {
-            const start_lc = lineColAt(f.source, d.span.start);
-            const end_lc = lineColAt(f.source, d.span.end);
-            try writer.writeAll("{\"path\":");
-            try writeJsonString(writer, f.path);
-            try writer.print(",\"line\":{d},\"col\":{d},\"end_line\":{d},\"end_col\":{d}", .{ start_lc.line, start_lc.col, end_lc.line, end_lc.col });
-            try writer.writeAll(",\"severity\":\"");
-            try writer.writeAll(severityName(d.severity));
-            try writer.writeAll("\",\"code\":");
-            try writeJsonString(writer, d.code);
-            try writer.writeAll(",\"message\":");
-            try writeJsonString(writer, d.message);
-            if (d.help) |h| {
-                try writer.writeAll(",\"help\":");
-                try writeJsonString(writer, h);
-            }
-            try writer.writeAll("}\n");
-        }
-    }
-}
-
 // ---------- one diagnostic ----------
 
 fn writeDiagnosticFull(

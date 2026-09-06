@@ -427,6 +427,16 @@ summary, no footer). Stderr stays reserved for host I/O failures
       "code": "E004",
       "message": "undefined symbol",
       "note": "did you mean `foo_bar`?"
+    },
+    {
+      "file": "src/main.gr",
+      "line": 4,
+      "column": 9,
+      "end_line": 4,
+      "end_col": 24,
+      "severity": "warning",
+      "code": "W_DEAD_TEST",
+      "message": "unreachable test"
     }
   ],
   "files_checked": 4,
@@ -434,9 +444,15 @@ summary, no footer). Stderr stays reserved for host I/O failures
 }
 ```
 
+- Both front-ends report into the same `diagnostics` array, so a
+  consumer parses stdout once whichever produced the report.
+- `severity` is `error`, `warning`, or `note`.
 - `code` is omitted for plain syntax errors that don't map to an
   E-code.
 - `note` is omitted when absent.
+- `end_line` / `end_col` mark where the offending span ends, so an
+  editor can underline it. Present on `.gr` diagnostics, which carry
+  a range; absent on `.gas` ones, which carry a point.
 - Exit codes are unchanged from `human` mode (0 / 4 / 1 / 2) —
   editors can branch on the code, then `JSON.parse(stdout)` for
   the diagnostic list.
