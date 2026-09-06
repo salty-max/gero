@@ -15,15 +15,6 @@ fn renderPretty(file: FileDiagnostics) ![]u8 {
     return writer.toOwnedSlice();
 }
 
-fn renderJson(files: []const FileDiagnostics) ![]u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(alloc);
-    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-    defer writer.deinit();
-    try gero.lang.render.json(&writer.writer, files);
-    return writer.toOwnedSlice();
-}
-
 test "render: lineColAt computes 1-based (line, col)" {
     const src = "abc\ndef\nghi";
     try std.testing.expectEqual(@as(usize, 1), gero.lang.render.lineColAt(src, 0).line);
@@ -81,28 +72,6 @@ test "render: pretty includes help block when provided" {
     const out = try renderPretty(file);
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "help: use `let x: u8 = 0` instead") != null);
-}
-
-test "render: json emits one object per diagnostic" {
-    const source = "let x: i16 = \"hi\"";
-    const d = Diagnostic{
-        .severity = .fatal,
-        .code = "E_TYPE_MISMATCH",
-        .message = "type mismatch",
-        .span = .{ .start = 13, .end = 17 },
-    };
-    const file: FileDiagnostics = .{
-        .path = "src/foo.gr",
-        .source = source,
-        .diagnostics = &.{d},
-    };
-    const out = try renderJson(&.{file});
-    defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"path\":\"src/foo.gr\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"code\":\"E_TYPE_MISMATCH\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"line\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"col\":14") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"severity\":\"error\"") != null);
 }
 
 test "render: severity warning emits `warning:` prefix" {

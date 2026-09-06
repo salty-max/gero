@@ -180,15 +180,11 @@ pub fn execute(
             .read_error => {}, // surfaced via read_errors list instead
             .from_pipeline => |pf| try pipeline_failures.append(arena, pf),
         };
-        try diagnostics.printJsonReport(stdout, pipeline_failures.items, read_errors.items, files.items.len, fail);
-        // Append lang diagnostics as ndjson lines on the same
-        // stdout — consumers parse line-by-line. Includes warning-
-        // only files so editors render the squiggles regardless.
-        if (gr_files.items.len > 0) {
-            var lang_files: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
-            for (gr_files.items) |gf| try appendAttributed(arena, &lang_files, gf);
-            try gero.lang.render.json(stdout, lang_files.items);
-        }
+        // Warning-only files are included too, so an editor still gets
+        // the squiggles for a file that passed.
+        var lang_files: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
+        for (gr_files.items) |gf| try appendAttributed(arena, &lang_files, gf);
+        try diagnostics.printJsonReport(stdout, pipeline_failures.items, lang_files.items, read_errors.items, files.items.len, fail);
         return if (fail > 0) 4 else 0;
     }
 

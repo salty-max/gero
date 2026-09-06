@@ -167,6 +167,7 @@ pub const Location = struct {
 pub fn printJsonReport(
     stdout: *std.Io.Writer,
     failures: []const FileFailure,
+    lang_files: []const gero.lang.render.FileDiagnostics,
     read_errors: []const ReadErrorEntry,
     files_checked: usize,
     files_failed: usize,
@@ -182,6 +183,12 @@ pub fn printJsonReport(
     for (failures) |f| {
         for (f.parse_errors) |d| try writeDiagnosticJson(&jw, f.source_map, d);
         for (f.codegen_errors) |d| try writeDiagnosticJson(&jw, f.source_map, d);
+    }
+    // `.gr` diagnostics share the array rather than trailing the object
+    // as separate lines: `--format=json` is one object so an editor can
+    // `JSON.parse(stdout)` whichever front-end produced the report.
+    for (lang_files) |f| {
+        for (f.diagnostics) |d| try writeLangDiagnosticJson(&jw, f, d);
     }
     for (read_errors) |re| {
         try jw.beginObject();
@@ -215,6 +222,46 @@ pub const ReadErrorEntry = struct {
     path: []const u8,
     message: []const u8,
 };
+
+/// Emit one gero-lang diagnostic in the same shape as an asm one.
+/// Carries `end_line` / `end_col` too — a `.gr` span is a range, and
+/// an editor needs both ends to underline it.
+fn writeLangDiagnosticJson(
+    jw: *std.json.Stringify,
+    file: gero.lang.render.FileDiagnostics,
+    d: gero.lang.Diagnostic,
+) !void {
+    const start = gero.lang.render.lineColAt(file.source, d.span.start);
+    const end = gero.lang.render.lineColAt(file.source, d.span.end);
+    try jw.beginObject();
+
+    try jw.objectField("file");
+    try jw.write(file.path);
+    try jw.objectField("line");
+    try jw.write(start.line);
+    try jw.objectField("column");
+    try jw.write(start.col);
+    try jw.objectField("end_line");
+    try jw.write(end.line);
+    try jw.objectField("end_col");
+    try jw.write(end.col);
+    try jw.objectField("severity");
+    try jw.write(switch (d.severity) {
+        .fatal => "error",
+        .warning => "warning",
+        .note => "note",
+    });
+    try jw.objectField("code");
+    try jw.write(d.code);
+    try jw.objectField("message");
+    try jw.write(d.message);
+    if (d.help) |h| {
+        try jw.objectField("note");
+        try jw.write(h);
+    }
+
+    try jw.endObject();
+}
 
 fn writeDiagnosticJson(
     jw: *std.json.Stringify,
@@ -290,7 +337,7 @@ test "diagnostics: lineColIn 1-indexes lines and columns" {
 test "diagnostics: printJsonReport — empty run" {
     var out = std.Io.Writer.Allocating.init(testing.allocator);
     defer out.deinit();
-    try printJsonReport(&out.writer, &.{}, &.{}, 3, 0);
+    try printJsonReport(&out.writer, &.{}, &.{}, &.{}, 3, 0);
     try testing.expectEqualStrings(
         "{\"version\":1,\"diagnostics\":[],\"files_checked\":3,\"files_failed\":0}\n",
         out.written(),
@@ -301,7 +348,7 @@ test "diagnostics: printJsonReport — read-error-only run" {
     var out = std.Io.Writer.Allocating.init(testing.allocator);
     defer out.deinit();
     const errs = [_]ReadErrorEntry{.{ .path = "missing.gas", .message = "cannot read (FileNotFound)" }};
-    try printJsonReport(&out.writer, &.{}, &errs, 1, 1);
+    try printJsonReport(&out.writer, &.{}, &.{}, &errs, 1, 1);
     const expected =
         "{\"version\":1,\"diagnostics\":[{\"file\":\"missing.gas\",\"line\":1,\"column\":1,\"severity\":\"error\"," ++
         "\"message\":\"cannot read (FileNotFound)\"}],\"files_checked\":1,\"files_failed\":1}\n";
@@ -365,4 +412,34 @@ fn mkDiag(index: u32) gero.asm_.Diagnostic {
             .kind = .semantic,
         },
     };
+}
+
+test "printJsonReport: a gero-lang diagnostic lands in the object's array" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    var out = std.Io.Writer.Allocating.fromArrayList(std.testing.allocator, &buf);
+    defer out.deinit();
+
+    const source = "let x: i16 = \"hi\"";
+    const file: gero.lang.render.FileDiagnostics = .{
+        .path = "src/foo.gr",
+        .source = source,
+        .diagnostics = &.{.{
+            .severity = .fatal,
+            .code = "E_TYPE_MISMATCH",
+            .message = "type mismatch",
+            .span = .{ .start = 13, .end = 17 },
+        }},
+    };
+    try printJsonReport(&out.writer, &.{}, &.{file}, &.{}, 1, 1);
+    const text = out.writer.buffered();
+
+    // `--format=json` is one object whatever front-end produced the
+    // report, so an editor can parse stdout in one step (cli.md §3.9).
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, text, "{\"version\":1"));
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"file\":\"src/foo.gr\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"column\":14") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"end_col\":18") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"code\":\"E_TYPE_MISMATCH\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"diagnostics\":[]") == null);
 }
