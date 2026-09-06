@@ -8,6 +8,7 @@ const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
+const fixed = @import("fixed.zig");
 const archive = @import("archive.zig");
 const strings = @import("strings.zig");
 const bake_mod = @import("../bake.zig");
@@ -212,6 +213,7 @@ pub fn emitGlobalInits(self: *Emitter) !void {
         if (g.placement == .addr) continue;
         try self.emitExpr(gi.init);
         try emitGlobalStore(self, Reg.acu, g);
+        try fixed.storeHighToAddr(self, gi.init, g.address);
     }
 }
 
@@ -348,13 +350,21 @@ fn placeGlobal(
 }
 
 /// Storage width of a `let` / `const` global: its annotated type width,
-/// or the widest primitive (2 bytes) when unannotated.
+/// or the inferred initializer width when unannotated.
 fn widthOfLetDecl(self: *const Emitter, d: *const ast.LetDecl) u16 {
-    return if (d.type_ann) |t| self.widthOfTypeAnn(t.*) else 2;
+    if (d.type_ann) |t| return self.widthOfTypeAnn(t.*);
+    if (d.init) |init| if (self.typeOf(init)) |t| {
+        if (fixed.isFixedType(t)) return Emitter.fixed_size;
+    };
+    return 2;
 }
 
 fn widthOfConstDecl(self: *const Emitter, d: *const ast.ConstDecl) u16 {
-    return if (d.type_ann) |t| self.widthOfTypeAnn(t.*) else 2;
+    if (d.type_ann) |t| return self.widthOfTypeAnn(t.*);
+    if (self.typeOf(d.init)) |t| {
+        if (fixed.isFixedType(t)) return Emitter.fixed_size;
+    }
+    return 2;
 }
 
 /// Load `g`'s value into `acu`. The instruction shape depends on the

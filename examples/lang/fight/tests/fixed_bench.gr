@@ -1,0 +1,46 @@
+-- Deterministic VM cycle counts reported by `gero bench --iter=1000`:
+-- add 20, multiply 60, general divide 635, divide by 2.0 18,
+-- compare 34, and a fixed-argument identity call 15.
+def fixed_identity(value: fixed) -> fixed
+  return value
+end
+
+@bench
+def fixed_add()
+  let a: fixed = 200.5
+  let b: fixed = 300.25
+  _ = a + b
+end
+
+@bench
+def fixed_multiply()
+  let a: fixed = 12.5
+  let b: fixed = 3.25
+  _ = a * b
+end
+
+@bench
+def fixed_divide()
+  let numerator: fixed = 200.5
+  let denominator: fixed = 3.25
+  _ = numerator / denominator
+end
+
+@bench
+def fixed_divide_by_two()
+  let value: fixed = 200.5
+  _ = value / 2.0
+end
+
+@bench
+def fixed_compare()
+  let a: fixed = 200.5
+  let b: fixed = 300.25
+  _ = a < b
+end
+
+@bench
+def fixed_call()
+  let value: fixed = 200.5
+  _ = fixed_identity(value)
+end

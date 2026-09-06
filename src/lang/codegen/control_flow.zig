@@ -9,6 +9,7 @@ const destructure = @import("destructure.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
 const vec_builtin = @import("vec_builtin.zig");
+const fixed = @import("fixed.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -68,17 +69,18 @@ pub fn popBlockWithDefers(self: *Emitter) !void {
     popped.defers.deinit(self.allocator);
 }
 
-/// Emit `stmts` in LIFO order, preserving `acu` across the
-/// cleanup sequence (so a `return value` keeps its value visible
-/// to the caller after defers run).
+/// Emit `stmts` in LIFO order, preserving the scalar return registers
+/// across the cleanup sequence so a return value survives its defers.
 pub fn emitDefersLifo(self: *Emitter, stmts: []const *const ast.Statement) !void {
     if (stmts.len == 0) return;
     try isa.pushReg(self, Reg.acu);
+    try isa.pushReg(self, Emitter.fixed_hi);
     var i = stmts.len;
     while (i > 0) {
         i -= 1;
         try self.emitStatement(stmts[i].*);
     }
+    try isa.popReg(self, Emitter.fixed_hi);
     try isa.popReg(self, Reg.acu);
 }
 
@@ -208,8 +210,10 @@ pub fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
             try self.emitExpr(expr);
             const name = self.source[id.name.start..id.name.end];
             const dup = try self.arena.dupe(u8, name);
-            const ofs = try self.allocLocal(dup);
+            const is_fixed = fixed.isFixed(self, expr);
+            const ofs = if (is_fixed) try self.allocLocalSized(dup, Emitter.fixed_size) else try self.allocLocal(dup);
             try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+            if (is_fixed) try isa.movRegToRegOffset(self, Emitter.fixed_hi, Reg.fp, ofs + 2);
             if (arm.let_guard) |g| {
                 try self.emitExpr(g);
                 try isa.cmpRegImm(self, Reg.acu, 0);
@@ -291,8 +295,10 @@ pub fn emitWhileStmt(self: *Emitter, ws: ast.WhileStmt) !void {
                 try self.emitExpr(ws.let_expr.?);
                 const name = self.source[id.name.start..id.name.end];
                 const dup = try self.arena.dupe(u8, name);
-                const ofs = try self.allocLocal(dup);
+                const is_fixed = fixed.isFixed(self, ws.let_expr.?);
+                const ofs = if (is_fixed) try self.allocLocalSized(dup, Emitter.fixed_size) else try self.allocLocal(dup);
                 try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, ofs);
+                if (is_fixed) try isa.movRegToRegOffset(self, Emitter.fixed_hi, Reg.fp, ofs + 2);
                 if (ws.let_guard) |g| {
                     try self.emitExpr(g);
                     try isa.cmpRegImm(self, Reg.acu, 0);
@@ -543,7 +549,7 @@ fn emitIndexedBody(self: *Emitter, fs: ast.ForStmt, base_ofs: i8, cnt_ofs: i8, e
     };
     const idx_ofs = try self.allocLocal("\x00__for_i");
     const dup = try self.arena.dupe(u8, self.source[fs.binding.start..fs.binding.end]);
-    const x_ofs = if (scalar) try self.allocLocal(dup) else try self.allocLocalSized(dup, self.widthOfType(elem));
+    const x_ofs = if (scalar and !fixed.isFixedType(elem)) try self.allocLocal(dup) else try self.allocLocalSized(dup, self.widthOfType(elem));
 
     try isa.movImmToReg(self, 0, Reg.acu);
     try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, idx_ofs);
@@ -583,13 +589,18 @@ fn emitElementInto(self: *Emitter, base_ofs: i8, idx_ofs: i8, ew: u16, elem: *co
     try isa.addRegToAcu(self, Reg.r1); // acu = &base[idx]
     try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = element address
     if (scalar) {
-        if (ew == 1) {
+        if (fixed.isFixedType(elem)) {
+            try fixed.loadPairAt(self, Reg.r1, 0);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, x_ofs);
+            try isa.movRegToRegOffset(self, Emitter.fixed_hi, Reg.fp, x_ofs + 2);
+        } else if (ew == 1) {
             try class.emitByteLoadAtOffset(self, Reg.r1, 0, Reg.acu);
             if (elem.* == .primitive and elem.primitive == .i8) try isa.signExtendByte(self, Reg.acu);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, x_ofs);
         } else {
             try class.emitWordLoadAtOffset(self, Reg.r1, 0, Reg.acu);
+            try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, x_ofs);
         }
-        try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, x_ofs);
     } else {
         try frameAddr(self, x_ofs, Reg.r2);
         try value_struct.copyBytes(self, Reg.r1, Reg.r2, self.widthOfType(elem));
@@ -652,10 +663,10 @@ fn emitForIterator(self: *Emitter, fs: ast.ForStmt, class_name: []const u8) !voi
     try isa.movRegOffsetToReg(self, Reg.fp, it_ofs, Reg.acu); // acu = instance ptr
     try class.emitMethodDispatchOnInstance(self, class_name, "next", &.{}, fs.span);
     if (Emitter.isScalarOptional(inner)) {
-        // acu = sret buffer address — copy the 4-byte {present, value}.
+        // acu = sret buffer address — copy the tagged value.
         try isa.movRegToReg(self, Reg.acu, Reg.r1);
         try frameAddr(self, v_ofs, Reg.r2);
-        try value_struct.copyBytes(self, Reg.r1, Reg.r2, Emitter.opt_scalar_size);
+        try value_struct.copyBytes(self, Reg.r1, Reg.r2, self.scalarOptionalWidth(inner));
     } else {
         // acu = the nullable pointer (nil = 0) — store the word.
         try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, v_ofs);

@@ -185,6 +185,22 @@ test "lex: negative literal at operand position is a single token" {
     try std.testing.expectEqual(@as(i32, -42), ts.tokens[3].value);
 }
 
+test "lex: fixed literals cover the Q16.16 endpoints and carry rounded fractions" {
+    var ts = try tokenize("-32768.0 32767.9999847412109375 1.999999");
+    defer ts.deinit();
+    try std.testing.expect(!ts.hasErrors());
+    try std.testing.expectEqual(Token.Kind.fixed_lit, ts.tokens[0].kind);
+    try std.testing.expectEqual(std.math.minInt(i32), ts.tokens[0].value);
+    try std.testing.expectEqual(std.math.maxInt(i32), ts.tokens[1].value);
+    try std.testing.expectEqual(@as(i32, 2 << 16), ts.tokens[2].value);
+}
+
+test "lex: fixed literals outside the Q16.16 range report an error" {
+    var ts = try tokenize("32768.0");
+    defer ts.deinit();
+    try std.testing.expect(ts.hasErrors());
+}
+
 test "lex: `-` after an operand-end token is the binary minus operator" {
     // `a - 1` should lex as ident, minus, int_lit(1) — NOT
     // ident + int_lit(-1).

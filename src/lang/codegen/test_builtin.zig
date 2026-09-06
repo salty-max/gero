@@ -10,6 +10,7 @@ const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
+const fixed = @import("fixed.zig");
 const strings = @import("strings.zig");
 
 const Emitter = codegen.Emitter;
@@ -29,11 +30,16 @@ pub fn emitTestCall(self: *Emitter, name: []const u8, c: ast.CallExpr) !void {
         try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: `test.assert_*` takes two arguments");
         return;
     }
-    try self.emitExpr(c.args[0]); // acu = a
-    try isa.pushReg(self, Reg.acu);
-    try self.emitExpr(c.args[1]); // acu = b
-    try isa.popReg(self, Reg.r1); // r1 = a
-    try isa.cmpRegReg(self, Reg.r1, Reg.acu); // Z set iff a == b
+    if (fixed.isFixed(self, c.args[0])) {
+        try fixed.emitExprOperands(self, c.args[0], c.args[1]);
+        try fixed.emitCompare(self);
+    } else {
+        try self.emitExpr(c.args[0]); // acu = a
+        try isa.pushReg(self, Reg.acu);
+        try self.emitExpr(c.args[1]); // acu = b
+        try isa.popReg(self, Reg.r1); // r1 = a
+        try isa.cmpRegReg(self, Reg.r1, Reg.acu); // Z set iff a == b
+    }
     // assert_eq skips the trap when equal (Z = 1 → jeq); assert_ne skips
     // when not equal (Z = 0 → jne).
     const skip = try isa.emitJumpPlaceholder(self, if (skip_on_equal) Op.jeq_addr else Op.jne_addr);

@@ -383,7 +383,7 @@ fn parseFieldOrMethod(p: *Parser, receiver: *ast.Expr) ParserError!*ast.Expr {
     }
     // `t.0.1` — the lexer folds `0.1` into one `fixed_lit`; split its
     // `N.M` text into two chained tuple-index accesses (nested-tuple
-    // element). The Q8.8-encoded `value` can't recover the indices, so
+    // element). The Q16.16-encoded `value` can't recover the indices, so
     // read the raw digits.
     if (p.check(.fixed_lit)) {
         const tok = p.peek();

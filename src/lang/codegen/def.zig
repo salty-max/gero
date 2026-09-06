@@ -115,23 +115,28 @@ pub fn emitDefWithLabel(self: *Emitter, def: *const ast.DefDecl, kind: DefKind, 
     var param_ofs: i32 = 4;
     for (def.params) |p| {
         const dup_p = try self.arena.dupe(u8, self.source[p.name.start..p.name.end]);
+        const param_width: i32 = if (p.variadic)
+            // @as: the frame-size gate bounds both the aligned width and total byte count.
+            @as(i32, if (self.current_variadic) |v| v.arity * (if (v.elem) |elem| @max(@as(u16, 2), self.widthOfType(elem)) else 2) else 0)
+        else
+            self.paramWidthAligned(p);
         // Params sit at positive fp-offsets, addressed via `[fp + imm8]`
-        // (±127). Past that, flag it (reported below) and bind a
-        // placeholder so we don't panic on the i8 cast.
-        const ofs: i8 = if (param_ofs > 127) blk: {
+        // (±127). A fixed param also needs its high word at offset +2.
+        // Past either limit, flag it (reported below) and bind a placeholder
+        // so we don't panic on the i8 cast.
+        const is_fixed = if (p.type_ann) |ann| self.isPrimitiveTypeAnn(ann.*, "fixed") else false;
+        // @as: the fixed pair's second word is exactly two bytes after the first.
+        const last_direct_ofs = param_ofs + if (is_fixed) @as(i32, 2) else 0;
+        const ofs: i8 = if (last_direct_ofs > 127) blk: {
             self.frame_overflow = true;
             break :blk 4;
         } else @intCast(param_ofs);
         try self.params.put(self.arena, dup_p, ofs);
         // The variadic `args` slot spans this specialization's vararg
-        // count, word-strided (each vararg pushed as a full word). Its
+        // count, using the element's aligned width. Its
         // width sets where a struct-returning variadic's hidden sret
         // pointer lands; the body reads slots via word offsets.
-        param_ofs += if (p.variadic)
-            // @as: vararg count → the slot's word-strided byte width.
-            @as(i32, if (self.current_variadic) |v| v.arity else 0) * 2
-        else
-            self.paramWidthAligned(p);
+        param_ofs += param_width;
     }
 
     // A struct-returning def takes a hidden sret destination pointer
@@ -284,6 +289,8 @@ pub fn patchCalls(self: *Emitter) !void {
                 continue;
             }).addr(),
             .trampoline => (self.trampoline_addr orelse continue).addr(),
+            .fixed_mul => (self.fixed_mul_addr orelse continue).addr(),
+            .fixed_div => (self.fixed_div_addr orelse continue).addr(),
         };
         // Resolve which buffer holds this patch — base or a bank list.
         const buf: []u8 = if (p.bank) |b|

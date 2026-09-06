@@ -382,34 +382,28 @@ vector address is `0x0000`, the VM halts with a host-visible error.
 
 #### 5.4.1 Fixed-point and saturating arithmetic — no native ops
 
-The ISA deliberately has **no native fixed-point** (`fmul`, `fdiv`)
-or **saturating** (`qadd`, `qsub`) ops, despite Gero shipping a
-`fixed` 8.8 type.
+The ISA has no native fixed-point (`fmul`, `fdiv`) or saturating (`qadd`,
+`qsub`) instructions. Gero's `fixed` type uses signed Q16.16 values across a
+pair of 16-bit words, and the compiler builds its operations from the integer
+ISA.
 
-Rationale:
+- Fixed-point addition uses `add` on the low words and `adc` on the high words.
+- Fixed-point subtraction uses `sub` on the low words and `sbc` on the high
+  words.
+- Fixed-point multiplication combines four 16-by-16-bit partial products and
+  keeps bits 16 through 47 of the signed 64-bit product.
+- Fixed-point division computes `(a << 16) / b` with a 48-step restoring
+  division. A zero divisor raises vector `$03`.
+- Signed comparison examines both words; equality combines their differences.
 
-- **Fixed-point add / sub** is identical to integer add / sub —
-  the binary point is preserved by alignment. Use `add` / `sub`.
-- **Fixed-point mul** = `mul` + `shr 8` (renormalize the binary
-  point). 2 ops, ~4 bytes — same cycle count a hypothetical native
-  `fmul` would cost (the multiplier hardware doesn't care about the
-  binary point).
-- **Fixed-point div** = `shl 8` + `div` (pre-scale the dividend).
-  Same trade-off.
-- **Saturating arithmetic** (clamp to ±max instead of wrap) didn't
-  exist on 6502 / Z80 / 8086 / 68000 — it's a post-1990 feature
-  (ARMv6, MMX/SSE). Software-emulate via `cmp` + branch + `mov MAX`
-  (4-6 bytes), or rely on the Gero compiler to lower
-  `clamp(a + b, lo, hi)` patterns to that sequence.
+These sequences keep the machine's 16-bit data path visible. Addition and
+subtraction are compact, multiplication has a moderate software cost, and
+division is expensive enough to avoid in per-frame loops. A live Q16.16 result
+uses `acu` for the low word and `r5` for the high word.
 
-The Gero compiler emits the fixed-point op sequences
-automatically — users write `let x: fixed = a * b` and never see
-the verbose form. Saturating clamps are a stdlib `math.clamp`
-call. No friction at the source level.
-
-If profiling later shows fixed-point or saturating math is a real
-hot path, native ops can be added later as an additive minor
-version bump (existing code keeps working).
+Saturating arithmetic clamps to a type's minimum or maximum instead of
+wrapping. Gero implements `math.clamp` with comparisons, branches, and moves;
+the ISA provides no saturating instruction.
 
 ### 5.5 Arithmetic extensions (`adc`, `sbc`, `muls`) — `0x5X`
 
@@ -588,16 +582,16 @@ silent no-ops. Unknown syscall numbers raise the
 | `0x02`| `print_int`            | `acu` = signed 16-bit value. Written as decimal to `Host.out`. |
 | `0x03`| `print_char`           | low byte of `acu` written directly. |
 | `0x04`| `print_newline`        | writes a single `\n` byte. |
-| `0x05`| `print_fixed`          | `acu` = Q8.8 fixed-point value. Formats as `<int>.<3-digit-frac>` decimal — e.g. value `384` (1.5 in Q8.8) prints `1.500`. Negative values get a leading `-`. |
+| `0x05`| `print_fixed`          | `acu` = low half, `r5` = high half of a Q16.16 fixed-point value. Formats as `<int>.<3-digit-frac>` decimal — e.g. `$0001_8000` (1.5) prints `1.500`. Negative values get a leading `-`. |
 | `0x06`| `print_uint`           | `acu` = unsigned 16-bit value. Written as decimal to `Host.out`. (Unsigned counterpart of `print_int`.) |
 | `0x10`| `format_str_to_buf`    | `acu` = source str address (null-terminated). `r1` = dst cursor. Copies the bytes (excluding the trailing null) from `[acu]` to `[r1]`, then advances `r1` past the copy. |
 | `0x11`| `format_int_to_buf`    | `acu` = i16 value. `r1` = dst cursor. Appends the signed-decimal representation of `acu` at `[r1]`, then advances `r1`. |
 | `0x12`| `format_char_to_buf`   | `acu` = char value (low byte). `r1` = dst cursor. Writes the low byte to `[r1]`, advances `r1` by 1. |
-| `0x13`| `format_fixed_to_buf`  | `acu` = Q8.8 value. `r1` = dst cursor. Appends the same `<int>.<3-digit-frac>` formatting as `print_fixed` at `[r1]`, then advances `r1`. |
+| `0x13`| `format_fixed_to_buf`  | `acu` / `r5` = a Q16.16 value, low half then high. `r1` = dst cursor. Appends the same `<int>.<3-digit-frac>` formatting as `print_fixed` at `[r1]`, then advances `r1`. |
 | `0x14`| `format_terminate_buf` | `r1` = dst cursor. Writes a single null byte at `[r1]` and advances `r1` by 1 (so chained terminators don't stomp the same slot). |
 | `0x15`| `format_uint_to_buf`   | `acu` = u16 value. `r1` = dst cursor. Appends the unsigned-decimal representation of `acu` at `[r1]`, then advances `r1`. (Unsigned counterpart of `format_int_to_buf`.) |
-| `0x17`| `format_runtime`       | `acu` = format string (null-terminated). `r1` = dst cursor. `r2` = base of the `args` words. `r3` = count (bits 0–7) \| element default type (bits 8–10, the `format_spec_to_buf` type codes) \| element-signed (bit 11). Backs `str.format(fmt, args)` (§3.2.2): walks `fmt`, copies literal bytes, and replaces each `{N}` / `{N:spec}` positional placeholder with `args[N]` formatted per the (runtime-parsed) spec (`{{` / `}}` are literal braces). An out-of-range / digit-less placeholder is dropped. |
-| `0x16`| `format_spec_to_buf`   | `acu` = value (or str byte-pointer for the `str` type). `r1` = dst cursor. `r2` = width (bits 0–7) \| fill char (bits 8–15). `r3` = type (bits 0–2: `0` dec, `1` hex-lower, `2` hex-upper, `3` bin, `4` oct, `5` str, `6` char, `7` fixed) \| align (bits 3–4: `0` type-default, `1` left, `2` right, `3` center) \| signed (bit 5) \| zero-pad (bit 6) \| has-precision (bit 7) \| precision (bits 8–15). Appends `acu` formatted per the Gero §3.2.2 format spec at `[r1]`, then advances `r1`. Numeric types render in the requested radix; zero-padding of a negative is sign-aware (`-042`). |
+| `0x17`| `format_runtime`       | `acu` = format string (null-terminated). `r1` = dst cursor. `r2` = base of the `args` words. `r3` = count (bits 0–7) \| element default type (bits 8–10, the `format_spec_to_buf` type codes) \| element-signed (bit 11). A `fixed` element occupies two words in `args`; every other type occupies one. Backs `str.format(fmt, args)` (§3.2.2): walks `fmt`, copies literal bytes, and replaces each `{N}` / `{N:spec}` positional placeholder with `args[N]` formatted per the (runtime-parsed) spec (`{{` / `}}` are literal braces). An out-of-range / digit-less placeholder is dropped. |
+| `0x16`| `format_spec_to_buf`   | `acu` = value (or str byte-pointer for the `str` type; for the `fixed` type `acu` is the low half and `r5` the high). `r1` = dst cursor. `r2` = width (bits 0–7) \| fill char (bits 8–15). `r3` = type (bits 0–2: `0` dec, `1` hex-lower, `2` hex-upper, `3` bin, `4` oct, `5` str, `6` char, `7` fixed) \| align (bits 3–4: `0` type-default, `1` left, `2` right, `3` center) \| signed (bit 5) \| zero-pad (bit 6) \| has-precision (bit 7) \| precision (bits 8–15). Appends the formatted value at `[r1]`, then advances `r1`. Numeric types render in the requested radix; zero-padding of a negative is sign-aware (`-042`). |
 | `0x20`| `alloc`                | bump-allocate `acu` bytes on the heap. On success, sets `acu` to the address of the freshly-allocated block and advances the VM's heap cursor by the requested size. On exhaustion (cursor + size would collide with the stack or fall outside the program's heap region), raises the **heap-exhausted** fault (vector `0x04`). Faults if `heap_base = 0` (program declared no heap). |
 | `0x30`| `trap`                 | Raise the **trap** fault (vector `0x06`). No arguments. A program calls it to give up deliberately — Gero emits it after a failed `test.assert_*`, `panic`, `unreachable`, or `todo` has printed. With no handler installed the VM stops with `halted_on_fault`, which a host can distinguish from the `halted` a clean `hlt` produces. |
 
@@ -704,7 +698,7 @@ metadata.
 | Offset | Field          | Size | Notes |
 |--------|----------------|------|-------|
 | `0x00` | magic          | 4    | `'G' 'E' 'R' 'O'` (`0x47 0x45 0x52 0x4F`) |
-| `0x04` | version        | 2    | u16le format version — major in the high byte, minor in the low. Currently `0x0100`. Every producer stamps this same value: the header describes the file, not which front-end wrote it. |
+| `0x04` | version        | 2    | u16le format version — major in the high byte, minor in the low. Currently `0x0200`. Every producer stamps this same value: the header describes the file, not which front-end wrote it. |
 | `0x06` | flags          | 2    | u16le bitfield (see below) |
 | `0x08` | entry_point    | 2    | u16le address `ip` is set to at boot |
 | `0x0A` | image_size     | 2    | u16le base-image size in bytes (`0..65535`; max 65535-byte image — programs needing more use banks) |
@@ -874,12 +868,12 @@ behave permissively (read `0xFF`, write dropped; stack wraps).
 
 ## 10. Versioning
 
-This document specifies version `0x0100` — format major **1**, minor
+This document specifies version `0x0200` — format major **2**, minor
 **0**. Which concrete edits are additive and which are breaking, with
 worked examples from this repository's own history, is settled in
 [`versioning.md`](versioning.md).
 
-**The format is frozen at 1.0.** From here, a change that would make a
+**The format is frozen at 2.0.** From here, a change that would make a
 VM accept a file and do the wrong thing requires a major bump, and a
 major bump is a deliberate, documented event rather than a side effect
 of a refactor. The promise is about what a `.gx` means; it does not
@@ -892,11 +886,16 @@ Future ISA changes:
   fixing typos, documenting reserved bits) do not bump the version.
 - **Backwards-compatible additions** (new opcodes in unused ranges,
   new flag bits, new vector reservations) bump the **minor** field (low
-  byte): `0x0101` and `0x0100` run on each other.
+  byte): `0x0201` and `0x0200` run on each other.
 - **Breaking changes** (changing existing opcode semantics, changing
   encoding, repurposing a register, moving a region of the memory map)
-  bump the **major** field — a future `0x0200` — and require migration
+  bump the **major** field — a future `0x0300` — and require migration
   tooling.
+
+Major 2 is the execution contract described throughout this document. A
+`fixed` operand is a Q16.16 pair, including at the formatting syscall
+boundary; an executable using a different operand shape belongs to another
+major and is refused.
 
 That last list ends where it does deliberately. Major 1 exists because
 the memory map moved: the bank window, the IO page and the boot stack

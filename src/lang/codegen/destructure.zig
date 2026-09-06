@@ -16,6 +16,7 @@ const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
 const vec_builtin = @import("vec_builtin.zig");
 const pattern = @import("pattern.zig");
+const fixed = @import("fixed.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -45,6 +46,13 @@ pub fn materializeScrutinee(self: *Emitter, expr: *const ast.Expr, ty: ?*const T
             // `isInlineAggregateType` admits only tuple / array / struct.
             else => unreachable,
         }
+        return slot;
+    }
+    if (ty != null and fixed.isFixedType(ty.?)) {
+        try self.emitExpr(expr);
+        const slot = try self.allocLocalSized("\x00__scrut", Emitter.fixed_size);
+        try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, slot);
+        try isa.movRegToRegOffset(self, Emitter.fixed_hi, Reg.fp, slot + 2);
         return slot;
     }
     try self.emitExpr(expr);
@@ -195,8 +203,10 @@ fn bindPayload(self: *Emitter, arg: *const ast.Pattern, scrut_ofs: i8, off: u16,
         .ident => |ip| {
             try loadPayload(self, scrut_ofs, off, fty_ann, Reg.acu);
             const name = try self.arena.dupe(u8, self.source[ip.name.start..ip.name.end]);
-            const slot = try self.allocLocal(name);
+            const is_fixed = self.isPrimitiveTypeAnn(fty_ann, "fixed");
+            const slot = if (is_fixed) try self.allocLocalSized(name, Emitter.fixed_size) else try self.allocLocal(name);
             try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, slot);
+            if (is_fixed) try isa.movRegToRegOffset(self, Emitter.fixed_hi, Reg.fp, slot + 2);
         },
         .variant_pattern => {
             // A nested enum payload — park its pointer in a temp slot + recurse.
@@ -224,7 +234,10 @@ fn copyInlinePayload(self: *Emitter, scrut_ofs: i8, off: u16, w: u16, dest: i8) 
 
 fn loadPayload(self: *Emitter, scrut_ofs: i8, off: u16, fty_ann: ast.TypeAnn, reg: u8) error{OutOfMemory}!void {
     try isa.movRegOffsetToReg(self, Reg.fp, scrut_ofs, Reg.r1); // r1 = slot pointer
-    if (self.widthOfTypeAnn(fty_ann) == 1) {
+    if (self.isPrimitiveTypeAnn(fty_ann, "fixed")) {
+        try fixed.loadPairAt(self, Reg.r1, off);
+        if (reg != Reg.acu) try isa.movRegToReg(self, Reg.acu, reg);
+    } else if (self.widthOfTypeAnn(fty_ann) == 1) {
         try class.emitByteLoadAtOffset(self, Reg.r1, off, reg);
         if (self.isPrimitiveTypeAnn(fty_ann, "i8")) try isa.signExtendByte(self, reg);
     } else {

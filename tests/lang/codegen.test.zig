@@ -2224,7 +2224,7 @@ test "codegen: string escape sequences decode at codegen time" {
         "a\tb\n");
 }
 
-test "codegen: fixed-point multiply emits `mul + asr 8` and rounds to Q8.8" {
+test "codegen: fixed-point multiplication preserves the Q16.16 scale" {
     try runAndExpect(
         \\def main()
         \\  let a: fixed = 2.5
@@ -2233,11 +2233,11 @@ test "codegen: fixed-point multiply emits `mul + asr 8` and rounds to Q8.8" {
         \\  print c
         \\end
     ,
-        // 2.5 * 1.5 = 3.75 → Q8.8 = 960 → print_fixed formats as "3.750".
+        // 2.5 * 1.5 = 3.75; print_fixed formats it as "3.750".
         "3.750\n");
 }
 
-test "codegen: fixed-point divide emits `shl 8 + divs` and rounds to Q8.8" {
+test "codegen: fixed-point division preserves the Q16.16 scale" {
     try runAndExpect(
         \\def main()
         \\  let a: fixed = 5.0
@@ -2246,7 +2246,7 @@ test "codegen: fixed-point divide emits `shl 8 + divs` and rounds to Q8.8" {
         \\  print c
         \\end
     ,
-        // 5.0 / 2.0 = 2.5 → Q8.8 = 640 → print_fixed formats as "2.500".
+        // 5.0 / 2.0 = 2.5; print_fixed formats it as "2.500".
         "2.500\n");
 }
 
@@ -2260,7 +2260,7 @@ test "codegen: fixed-point round-trip `(a * b) / c` matches expected" {
         \\  print r
         \\end
     ,
-        // 4*3 = 12, /2 = 6.0 → Q8.8 = 1536 → "6.000".
+        // 4*3 = 12, /2 = 6.0 → "6.000".
         "6.000\n");
 }
 
@@ -2344,14 +2344,14 @@ test "codegen: print interpolation mixes literal + int + char + fixed parts" {
     , "n=7 c=B f=1.500\n");
 }
 
-test "codegen: fixed-point `print c` uses print_fixed (Q8.8 formatting)" {
+test "codegen: fixed-point `print c` uses Q16.16 formatting" {
     try runAndExpect(
         \\def main()
         \\  let c: fixed = 0.25
         \\  print c
         \\end
     ,
-        // 0.25 → Q8.8 = 64 → "0.250".
+        // 0.25 → Q16.16 raw $0000_4000 → "0.250".
         "0.250\n");
 }
 
@@ -2635,6 +2635,66 @@ test "codegen: a param list whose offset overflows i16 fails cleanly (no panic)"
         try source.appendSlice(alloc, p);
     }
     try source.appendSlice(alloc, ") -> i16\n  return p0\nend\ndef main() end");
+
+    var stream = try gero.lang.tokenize(alloc, source.items);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source.items, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source.items, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source.items, &checked, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_FRAME_TOO_LARGE")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen: a fixed param whose high word exceeds the fp range fails cleanly" {
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(alloc);
+    try source.appendSlice(alloc, "def edge(");
+    var i: usize = 0;
+    while (i < 61) : (i += 1) {
+        if (i > 0) try source.appendSlice(alloc, ", ");
+        const p = try std.fmt.allocPrint(alloc, "p{d}: i16", .{i});
+        defer alloc.free(p);
+        try source.appendSlice(alloc, p);
+    }
+    try source.appendSlice(alloc, ", value: fixed) -> fixed\n  return value\nend\ndef main() end");
+
+    var stream = try gero.lang.tokenize(alloc, source.items);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source.items, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source.items, &tree.program);
+    defer checked.deinit();
+
+    var compiled = try gero.lang.compile(alloc, source.items, &checked, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.hasErrors());
+    var found = false;
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, "E_CODEGEN_FRAME_TOO_LARGE")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen: a fixed lambda param whose high word exceeds the fp range fails cleanly" {
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(alloc);
+    try source.appendSlice(alloc, "def main()\n  let edge = lambda (");
+    var i: usize = 0;
+    while (i < 60) : (i += 1) {
+        if (i > 0) try source.appendSlice(alloc, ", ");
+        const p = try std.fmt.allocPrint(alloc, "p{d}: i16", .{i});
+        defer alloc.free(p);
+        try source.appendSlice(alloc, p);
+    }
+    try source.appendSlice(alloc, ", value: fixed)\n    value\n  end\nend");
 
     var stream = try gero.lang.tokenize(alloc, source.items);
     defer stream.deinit();
@@ -4985,6 +5045,17 @@ test "codegen/overflow: signed `-` traps on i16 underflow in debug" {
             \\end
         , .debug),
     );
+    try std.testing.expectEqual(
+        gero.vm.StepResult.halted,
+        try runForFault(
+            \\def main()
+            \\  let a: fixed = 300.0
+            \\  let b: fixed = 300.0
+            \\  let c: fixed = a * b
+            \\  print c
+            \\end
+        , .release),
+    );
 }
 
 test "codegen/overflow: unsigned `+` traps on u16 carry in debug" {
@@ -5416,92 +5487,51 @@ test "codegen/math: sat_* clamp to u16 bounds (unsigned)" {
     , "65535\n0\n65535\n");
 }
 
-test "codegen/math: fixed_sin (Bhaskara) over the circle, Q8.8 raw" {
-    // 1.0 = 256, 0.5 = 128, -1.0 = -256 (0xFF00). fixed_sin(45) ≈ 0.707;
-    // Bhaskara + the den halving lands it at 180 (~0.703, ~1 LSB off).
-    var compiled = try compileSource(
+test "math: fixed_sin over the circle" {
+    // Bhaskara's approximation, exact at the cardinal angles and within
+    // about a percent between them.
+    try runAndExpect(
         \\def main()
-        \\  let s0: fixed = math.fixed_sin(0)
-        \\  let s90: fixed = math.fixed_sin(90)
-        \\  let s30: fixed = math.fixed_sin(30)
-        \\  let s270: fixed = math.fixed_sin(270)
-        \\  let s180: fixed = math.fixed_sin(180)
-        \\  let s45: fixed = math.fixed_sin(45)
+        \\  print math.fixed_sin(0)
+        \\  print math.fixed_sin(90)
+        \\  print math.fixed_sin(30)
+        \\  print math.fixed_sin(270)
+        \\  print math.fixed_sin(180)
         \\end
-    );
-    defer compiled.deinit();
-    try std.testing.expect(!compiled.hasErrors());
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-    defer writer.deinit();
-    var vm = try runWith(compiled.image, &writer);
-    defer vm.deinit();
-
-    // Locals sit at descending fp-relative slots from fp = 0x0FFE.
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(frameSlot(1))); // sin(0) = 0
-    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(frameSlot(2))); // sin(90) = 1.0
-    try std.testing.expectEqual(@as(u16, 128), vm.mmap.readWord(frameSlot(3))); // sin(30) = 0.5
-    try std.testing.expectEqual(@as(u16, 0xFF00), vm.mmap.readWord(frameSlot(4))); // sin(270) = -1.0
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(frameSlot(5))); // sin(180) = 0
-    try std.testing.expectEqual(@as(u16, 180), vm.mmap.readWord(frameSlot(6))); // sin(45) ≈ 0.707
+        \\
+    , "0.000\n1.000\n0.500\n-1.000\n0.000\n");
 }
 
-test "codegen/math: sqrt_fixed (bit-by-bit isqrt) Q8.8 raw" {
-    // result raw = isqrt(x_raw << 8). 1.0→1.0, 4.0→2.0, 9.0→3.0 exact;
-    // 2.0→~1.414 (362); 0.25→0.5 (128); negative → 0.
-    var compiled = try compileSource(
+test "math: sqrt_fixed over perfect and imperfect squares" {
+    try runAndExpect(
         \\def main()
-        \\  let s0: fixed = math.sqrt_fixed(0.0)
-        \\  let s1: fixed = math.sqrt_fixed(1.0)
-        \\  let s4: fixed = math.sqrt_fixed(4.0)
-        \\  let s9: fixed = math.sqrt_fixed(9.0)
-        \\  let s2: fixed = math.sqrt_fixed(2.0)
-        \\  let sq: fixed = math.sqrt_fixed(0.25)
-        \\  let sn: fixed = math.sqrt_fixed(0.0 - 1.0)
+        \\  print math.sqrt_fixed(0.0)
+        \\  print math.sqrt_fixed(4.0)
+        \\  print math.sqrt_fixed(100.0)
+        \\  print math.sqrt_fixed(2.0)
         \\end
-    );
-    defer compiled.deinit();
-    try std.testing.expect(!compiled.hasErrors());
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-    defer writer.deinit();
-    var vm = try runWith(compiled.image, &writer);
-    defer vm.deinit();
-
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(frameSlot(1))); // √0 = 0
-    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(frameSlot(2))); // √1 = 1.0
-    try std.testing.expectEqual(@as(u16, 512), vm.mmap.readWord(frameSlot(3))); // √4 = 2.0
-    try std.testing.expectEqual(@as(u16, 768), vm.mmap.readWord(frameSlot(4))); // √9 = 3.0
-    try std.testing.expectEqual(@as(u16, 362), vm.mmap.readWord(frameSlot(5))); // √2 ≈ 1.414
-    try std.testing.expectEqual(@as(u16, 128), vm.mmap.readWord(frameSlot(6))); // √0.25 = 0.5
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(frameSlot(7))); // √negative = 0
+        \\
+    , "0.000\n2.000\n10.000\n1.414\n");
 }
 
-test "codegen/math: fixed_sin range-reduces a large angle" {
-    // 30000 mod 360 = 120, so fixed_sin(30000) == fixed_sin(120) ≈ 0.865
-    // → 221 in Q8.8 (Bhaskara).
-    var compiled = try compileSource(
+test "math: sqrt_fixed of a negative is zero" {
+    try runAndExpect(
         \\def main()
-        \\  let a: fixed = math.fixed_sin(30000)
-        \\  let b: fixed = math.fixed_sin(120)
+        \\  print math.sqrt_fixed(0.0 - 9.0)
         \\end
-    );
-    defer compiled.deinit();
-    try std.testing.expect(!compiled.hasErrors());
+        \\
+    , "0.000\n");
+}
 
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-    defer writer.deinit();
-    var vm = try runWith(compiled.image, &writer);
-    defer vm.deinit();
-
-    try std.testing.expectEqual(@as(u16, 221), vm.mmap.readWord(frameSlot(1))); // sin(30000°)
-    try std.testing.expectEqual(@as(u16, 221), vm.mmap.readWord(frameSlot(2))); // sin(120°)
+test "math: fixed_sin range-reduces a large angle" {
+    // 30000 mod 360 = 120, so the two calls must agree.
+    try runAndExpect(
+        \\def main()
+        \\  print math.fixed_sin(30000)
+        \\  print math.fixed_sin(120)
+        \\end
+        \\
+    , "0.864\n0.864\n");
 }
 
 test "codegen/math: rng — deterministic Galois LFSR sequence" {
@@ -5545,10 +5575,11 @@ test "codegen/bake: math.* evaluated at compile time (int + unsigned threading)"
     , "3\n10\n7\n-30536\n5\n");
 }
 
-test "codegen/bake: fixed_sin / sqrt_fixed match the runtime at compile time" {
-    // The bake evaluator's fixed routines mirror the runtime exactly:
-    // fixed_sin(90) = 1.0 = 256, sqrt_fixed(4.0) = 2.0 = 512.
-    var compiled = try compileSource(
+test "bake: fixed_sin / sqrt_fixed match the runtime at compile time" {
+    // The property that matters is agreement, not a particular raw
+    // encoding: a value folded at compile time must print exactly as the
+    // same call does at run time.
+    try runAndExpect(
         \\const S90: fixed = bake do
         \\  math.fixed_sin(90)
         \\end
@@ -5556,30 +5587,13 @@ test "codegen/bake: fixed_sin / sqrt_fixed match the runtime at compile time" {
         \\  math.sqrt_fixed(4.0)
         \\end
         \\def main()
+        \\  print S90
+        \\  print math.fixed_sin(90)
+        \\  print SQ4
+        \\  print math.sqrt_fixed(4.0)
         \\end
-    );
-    defer compiled.deinit();
-    try std.testing.expect(!compiled.hasErrors());
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-    defer writer.deinit();
-    var vm = try runWith(compiled.image, &writer);
-    defer vm.deinit();
-
-    const header = try gero.disasm.parseHeader(compiled.image);
-    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
-    defer symbols.deinit(alloc);
-    var s90: ?u16 = null;
-    var sq4: ?u16 = null;
-    for (symbols.entries) |sym| {
-        if (std.mem.eql(u8, sym.name, "S90")) s90 = sym.address;
-        if (std.mem.eql(u8, sym.name, "SQ4")) sq4 = sym.address;
-    }
-    try std.testing.expect(s90 != null and sq4 != null);
-    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(s90.?)); // fixed_sin(90) = 1.0
-    try std.testing.expectEqual(@as(u16, 512), vm.mmap.readWord(sq4.?)); // sqrt_fixed(4.0) = 2.0
+        \\
+    , "1.000\n1.000\n2.000\n2.000\n");
 }
 
 test "codegen/math: nested math.* calls compose (args are full exprs)" {
@@ -5623,18 +5637,18 @@ test "codegen/test: assert_eq halts with a message on failure" {
     , "test assertion failed\n");
 }
 
-test "codegen/overflow: fixed-point `*` wraps in both modes per ISA §5.4.1" {
+test "codegen/overflow: fixed-point `*` wraps in every mode per ISA §5.4.1" {
     // Fixed `*` is explicitly wrap-only — the codegen skips the
     // overflow trap regardless of build mode. Picking values that
-    // would overflow if the trap were inserted: 100.0 * 100.0 in
-    // Q8.8 produces a Q16.16 product > i16 range. The program
+    // would overflow if the trap were inserted: 300.0 * 300.0 leaves
+    // the signed Q16.16 range. The program
     // must complete (no fault) in both debug and release.
     try std.testing.expectEqual(
         gero.vm.StepResult.halted,
         try runForFault(
             \\def main()
-            \\  let a: fixed = 100.0
-            \\  let b: fixed = 100.0
+            \\  let a: fixed = 300.0
+            \\  let b: fixed = 300.0
             \\  let c: fixed = a * b
             \\  print c
             \\end

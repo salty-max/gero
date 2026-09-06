@@ -4,8 +4,8 @@
 // runtime length field. So codegen emits one specialization per distinct
 // call-site arity under a mangled `name$N` label, all sharing the body,
 // and routes each call to the matching `N`. The `args` block is laid out
-// word-strided (each vararg pushed as a full word by the caller), which
-// both `args.N` indexing and `format(fmt, args)` forwarding read.
+// element-strided, which both `args.N` indexing and
+// `format(fmt, args)` forwarding read.
 
 const std = @import("std");
 const ast = @import("../ast.zig");
@@ -15,6 +15,7 @@ const def_emit = @import("def.zig");
 const class = @import("class.zig");
 const isa = @import("isa.zig");
 const opcodes = @import("opcodes.zig");
+const fixed = @import("fixed.zig");
 
 const Emitter = codegen.Emitter;
 const Type = types.Type;
@@ -31,6 +32,13 @@ pub const Active = struct {
     /// This specialization's vararg count.
     arity: u16,
 };
+
+/// Byte stride of one element in the active variadic argument block.
+pub fn elementStride(self: *const Emitter, active: Active) u16 {
+    const elem = active.elem orelse return 2;
+    // @as: two bytes is the VM's minimum aligned argument width.
+    return @max(@as(u16, 2), self.widthOfType(elem));
+}
 
 /// Mangled label for the arity-`N` specialization of variadic `name`.
 /// `$` can't appear in a source identifier, so it never collides with a
@@ -102,13 +110,17 @@ pub fn isArgsForward(self: *Emitter, e: *const ast.Expr) bool {
     return std.mem.eql(u8, self.source[e.ident.span.start..e.ident.span.end], v.param);
 }
 
-/// Lower `args.N` — load the `N`-th vararg word. The block is
-/// word-strided (the caller pushed each vararg as a full word, so a
-/// sub-word `T` rides the low half already sign/zero-extended), so the
-/// element is a plain word load at `N * 2` from the `args` base.
+/// Lower `args.N` — load the `N`-th value from the variadic block.
 pub fn emitArgsIndex(self: *Emitter, receiver: *const ast.Expr, index: u8) !void {
+    const active = self.current_variadic.?;
+    const stride = elementStride(self, active);
     try self.emitAddrOf(receiver); // acu = args base (fp + slot offset)
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
-    // @as: index < arity and arity*2 is frame-bounded, so the offset fits u16.
-    try class.emitWordLoadAtOffset(self, Reg.r1, @as(u16, index) * 2, Reg.acu);
+    // @as: the source index is a byte and the frame-size gate bounds the product.
+    const offset = @as(u16, index) * stride;
+    if (active.elem) |elem| if (fixed.isFixedType(elem)) {
+        try fixed.loadPairAt(self, Reg.r1, offset);
+        return;
+    };
+    try class.emitWordLoadAtOffset(self, Reg.r1, offset, Reg.acu);
 }
