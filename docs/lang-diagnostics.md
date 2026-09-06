@@ -1038,6 +1038,8 @@ Without a language server, editor integration is one of:
 
 1. Run `gero check --format=json` on save, parse the output in a
    VS Code task / Vim quickfix.
-2. Use the existing tree-sitter grammar (`editors/tree-sitter-gero/`)
-   for syntax highlighting only — no semantic diagnostics.
+2. For `.gas`, the
+   [`tree-sitter-gero-asm`](https://github.com/salty-max/tree-sitter-gero-asm)
+   grammar gives syntax highlighting only — no semantic diagnostics.
+   There is no equivalent grammar for `.gr`.
 3. Run `gero check` in a terminal pane and click line:col links.
