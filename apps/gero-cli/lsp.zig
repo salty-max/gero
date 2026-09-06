@@ -33,7 +33,12 @@ const Server = struct {
     /// report errors in the files it imports, and those have to be
     /// cleared once fixed — an editor keeps showing a published list
     /// until an empty one replaces it.
-    published: std.StringHashMapUnmanaged(void) = .{},
+    published: UriSet = .{},
+    /// Canonical paths each open document's last analysis read, keyed
+    /// by document URI. A change to any of those paths invalidates
+    /// that document's diagnostics, even though the editor only told
+    /// us about the file being typed in.
+    deps: std.StringHashMapUnmanaged([]const []const u8) = .{},
 
     fn deinit(self: *Server) void {
         var it = self.docs.iterator();
@@ -45,6 +50,51 @@ const Server = struct {
         var pit = self.published.keyIterator();
         while (pit.next()) |k| self.gpa.free(k.*);
         self.published.deinit(self.gpa);
+        var dit = self.deps.iterator();
+        while (dit.next()) |e| {
+            self.gpa.free(e.key_ptr.*);
+            self.freePaths(e.value_ptr.*);
+        }
+        self.deps.deinit(self.gpa);
+    }
+
+    fn freePaths(self: *Server, paths: []const []const u8) void {
+        for (paths) |p| self.gpa.free(p);
+        self.gpa.free(paths);
+    }
+
+    /// Remember which files `uri`'s analysis read, taking a gpa-owned
+    /// copy — the paths come from the per-message arena.
+    fn noteDeps(self: *Server, uri: []const u8, paths: []const []const u8) !void {
+        const owned = try self.gpa.alloc([]const u8, paths.len);
+        var filled: usize = 0;
+        errdefer {
+            for (owned[0..filled]) |p| self.gpa.free(p);
+            self.gpa.free(owned);
+        }
+        for (paths, 0..) |p, i| {
+            owned[i] = try self.gpa.dupe(u8, p);
+            filled = i + 1;
+        }
+        const gop = try self.deps.getOrPut(self.gpa, uri);
+        if (gop.found_existing) {
+            self.freePaths(gop.value_ptr.*);
+        } else {
+            gop.key_ptr.* = self.gpa.dupe(u8, uri) catch |err| {
+                _ = self.deps.remove(uri);
+                return err;
+            };
+        }
+        gop.value_ptr.* = owned;
+    }
+
+    /// True when `uri`'s last analysis read `path`.
+    fn dependsOn(self: *Server, uri: []const u8, path: []const u8) bool {
+        const paths = self.deps.get(uri) orelse return false;
+        for (paths) |p| {
+            if (std.mem.eql(u8, p, path)) return true;
+        }
+        return false;
     }
 
     /// Buffer text keyed by canonical path, for the resolvers. A
@@ -116,6 +166,10 @@ const Server = struct {
         if (self.docs.fetchRemove(uri)) |kv| {
             self.gpa.free(kv.key);
             self.gpa.free(kv.value);
+        }
+        if (self.deps.fetchRemove(uri)) |kv| {
+            self.gpa.free(kv.key);
+            self.freePaths(kv.value);
         }
     }
 };
@@ -298,7 +352,7 @@ fn onDidOpen(
     const uri = stringAt(doc, "uri") orelse return;
     const text = stringAt(doc, "text") orelse return;
     try server.put(uri, text);
-    try publish(io, arena, server, stdout, uri, text);
+    try publishAffected(io, arena, server, stdout, uri, text);
 }
 
 fn onDidChange(
@@ -320,7 +374,7 @@ fn onDidChange(
     if (last != .object) return;
     const text = stringAt(last.object, "text") orelse return;
     try server.put(uri, text);
-    try publish(io, arena, server, stdout, uri, text);
+    try publishAffected(io, arena, server, stdout, uri, text);
 }
 
 fn onFormatting(
@@ -359,6 +413,45 @@ fn onFormatting(
     try protocol.writeMessage(stdout, out.written());
 }
 
+/// Publish for `uri`, then for every other open document whose last
+/// analysis read `uri`'s file.
+///
+/// An editor reports only the buffer being typed in, but a `use` /
+/// `.include` graph means that edit can invalidate documents the
+/// editor said nothing about. Without this fan-out, changing a library
+/// leaves every importer showing diagnostics that no longer hold.
+fn publishAffected(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    server: *Server,
+    stdout: *std.Io.Writer,
+    uri: []const u8,
+    text: []const u8,
+) !void {
+    try publish(io, arena, server, stdout, uri, text);
+
+    const changed = try canonicalPathOf(io, arena, uri) orelse return;
+    // Collect first: publishing rewrites `deps` as it goes, which
+    // would invalidate an iterator held across the loop.
+    var affected: std.ArrayList([]const u8) = .empty;
+    var it = server.docs.keyIterator();
+    while (it.next()) |k| {
+        if (std.mem.eql(u8, k.*, uri)) continue;
+        if (server.dependsOn(k.*, changed)) try affected.append(arena, k.*);
+    }
+    for (affected.items) |dependent| {
+        const dep_text = server.docs.get(dependent) orelse continue;
+        try publish(io, arena, server, stdout, dependent, dep_text);
+    }
+}
+
+/// Canonical filesystem path for `uri`, or `null` when it names no
+/// readable file.
+fn canonicalPathOf(io: std.Io, arena: std.mem.Allocator, uri: []const u8) !?[]const u8 {
+    const path = (try uri_mod.toPath(arena, uri)) orelse return null;
+    return std.Io.Dir.cwd().realPathFileAlloc(io, path, arena) catch null;
+}
+
 /// Analyze `uri` and publish a diagnostic list for it — plus one for
 /// every file its import graph implicates, so an error in a library
 /// lands on the library rather than on whoever imported it. A document
@@ -372,17 +465,19 @@ fn publish(
     uri: []const u8,
     text: []const u8,
 ) !void {
-    var files: []const analysis.FileDiagnostics = &.{};
+    var result: analysis.Analysis = .{ .files = &.{}, .graph_files = &.{} };
     if (analysis.langOf(uri)) |lang| {
         var ov = try server.overlay(io, arena);
         defer ov.deinit(arena);
-        files = analysis.diagnose(io, arena, lang, uri, text, &ov) catch |err| switch (err) {
+        result = analysis.diagnose(io, arena, lang, uri, text, &ov) catch |err| switch (err) {
             error.OutOfMemory => return err,
             // The document names a file that cannot be read — it was
             // deleted or renamed under the editor. Nothing to report.
-            else => &.{},
+            else => .{ .files = &.{}, .graph_files = &.{} },
         };
     }
+    try server.noteDeps(uri, result.graph_files);
+    var files = result.files;
     if (files.len == 0) files = &.{.{ .uri = uri, .items = &.{} }};
 
     var written: UriSet = .{};
@@ -676,4 +771,111 @@ test "Server: reopening a document replaces its text without leaking" {
     try s.put("untitled:a.gr", "second");
     try testing.expectEqual(@as(usize, 1), s.docs.count());
     try testing.expectEqualStrings("second", s.docs.get("untitled:a.gr").?);
+}
+
+test "publishAffected: editing a library re-publishes its importers" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "lib.gr", .data = "def double(n: i16) -> i16\n  return n * 2\nend\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "main.gr", .data = "use \"./lib\"\ndef main()\n  print double(21)\nend\n" });
+    const lib_uri = try uriOf(arena, &tmp, "lib.gr");
+    const main_uri = try uriOf(arena, &tmp, "main.gr");
+
+    _ = try s.send(arena, try didOpen(arena, main_uri, "use \"./lib\"\ndef main()\n  print double(21)\nend\n"));
+    _ = try s.send(arena, try didOpen(arena, lib_uri, "def double(n: i16) -> i16\n  return n * 2\nend\n"));
+
+    // Rename `double` in the library's buffer only. The editor reports
+    // that buffer alone, so nothing tells the server to re-check the
+    // importer — it has to work that out from the graph it read.
+    const before = s.written().len;
+    _ = try s.send(arena, try didChange(arena, lib_uri, "def renamed(n: i16) -> i16\n  return n * 2\nend\n"));
+
+    const after = s.written()[before..];
+    try testing.expect(std.mem.indexOf(u8, after, main_uri) != null);
+    try testing.expect(std.mem.indexOf(u8, after, "undefined symbol `double`") != null);
+}
+
+test "publishAffected: an unrelated document is not re-published" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.gr", .data = "def a() -> i16\n  return 1\nend\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "b.gr", .data = "def b() -> i16\n  return 2\nend\n" });
+    const a_uri = try uriOf(arena, &tmp, "a.gr");
+    const b_uri = try uriOf(arena, &tmp, "b.gr");
+
+    _ = try s.send(arena, try didOpen(arena, a_uri, "def a() -> i16\n  return 1\nend\n"));
+    _ = try s.send(arena, try didOpen(arena, b_uri, "def b() -> i16\n  return 2\nend\n"));
+
+    // Neither imports the other, so the fan-out must stay narrow
+    // rather than re-checking every open buffer on every keystroke.
+    const before = s.written().len;
+    _ = try s.send(arena, try didChange(arena, a_uri, "def a() -> i16\n  return 11\nend\n"));
+    try testing.expect(std.mem.indexOf(u8, s.written()[before..], b_uri) == null);
+}
+
+/// `file://` URI of `name` inside `tmp`.
+fn uriOf(arena: std.mem.Allocator, tmp: *testing.TmpDir, name: []const u8) ![]const u8 {
+    const path = try tmp.dir.realPathFileAlloc(testing.io, name, arena);
+    return uri_mod.fromPath(arena, path);
+}
+
+fn didOpen(arena: std.mem.Allocator, uri: []const u8, text: []const u8) ![]const u8 {
+    return notification(arena, "textDocument/didOpen", uri, text, true);
+}
+
+fn didChange(arena: std.mem.Allocator, uri: []const u8, text: []const u8) ![]const u8 {
+    return notification(arena, "textDocument/didChange", uri, text, false);
+}
+
+/// Build a didOpen / didChange body, JSON-escaping `text` by writing
+/// it through the same stringifier the server answers with.
+fn notification(
+    arena: std.mem.Allocator,
+    method: []const u8,
+    uri: []const u8,
+    text: []const u8,
+    is_open: bool,
+) ![]const u8 {
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.beginObject();
+    try jw.objectField("jsonrpc");
+    try jw.write("2.0");
+    try jw.objectField("method");
+    try jw.write(method);
+    try jw.objectField("params");
+    try jw.beginObject();
+    try jw.objectField("textDocument");
+    try jw.beginObject();
+    try jw.objectField("uri");
+    try jw.write(uri);
+    if (is_open) {
+        try jw.objectField("text");
+        try jw.write(text);
+    }
+    try jw.endObject();
+    if (!is_open) {
+        try jw.objectField("contentChanges");
+        try jw.beginArray();
+        try jw.beginObject();
+        try jw.objectField("text");
+        try jw.write(text);
+        try jw.endObject();
+        try jw.endArray();
+    }
+    try jw.endObject();
+    try jw.endObject();
+    return out.written();
 }

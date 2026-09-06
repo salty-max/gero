@@ -66,12 +66,25 @@ diagnostic is published against **its own** URI, positioned in that
 file's coordinates — so an error in `lib.gr` lands on `lib.gr`, not at
 the `use` line in whoever imported it.
 
-Two consequences worth expecting as a client author:
+The reverse direction matters just as much. An editor reports only the
+buffer being typed in, but that edit can invalidate documents it said
+nothing about. So the server records which files each document's
+analysis read, and a change to any of them re-checks every open
+document that read it. Editing a library therefore reddens its open
+importers on the next keystroke. Documents that do not read the
+changed file are left alone.
+
+Three consequences worth expecting as a client author:
 
 - `publishDiagnostics` arrives for files the editor never opened.
+- `publishDiagnostics` arrives for open documents the editor did not
+  report a change to.
 - A file whose last error is fixed gets an explicit **empty** list.
   Without it the editor would keep showing diagnostics that no longer
   hold.
+
+A document the editor has **closed** is no longer re-checked, even if
+something it imported changes — the server keeps no text for it.
 
 ---
 

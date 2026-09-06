@@ -37,6 +37,18 @@ pub const Diagnostic = struct {
     message: []const u8,
 };
 
+/// One analysis: what to publish, and which files it read to decide.
+///
+/// `graph_files` is what makes a change to an imported file reach its
+/// importers — a server that only re-analyzed the edited document
+/// would leave every dependent showing stale diagnostics.
+pub const Analysis = struct {
+    files: []const FileDiagnostics,
+    /// Canonical paths of every file the import graph covered. Empty
+    /// for a document with no file behind it.
+    graph_files: []const []const u8,
+};
+
 /// Every diagnostic that belongs to one document. Analyzing a buffer
 /// can produce these for more than one document, because a `use` /
 /// `.include` graph is checked whole and an error in an imported file
@@ -60,7 +72,7 @@ pub fn diagnose(
     uri: []const u8,
     src: []const u8,
     overlay: ?*const gero.lang.Overlay,
-) ![]const FileDiagnostics {
+) !Analysis {
     const path = try uri_mod.toPath(arena, uri);
     return switch (lang) {
         .gr => diagnoseGr(io, arena, uri, path, src, overlay),
@@ -75,16 +87,19 @@ fn diagnoseGr(
     path: ?[]const u8,
     src: []const u8,
     overlay: ?*const gero.lang.Overlay,
-) ![]const FileDiagnostics {
+) !Analysis {
     const p = path orelse {
         // No file behind the buffer, so no import graph to resolve;
         // the text is the whole program as far as anything can tell.
         const diags = try gr_diagnostics.forGr(arena, src, true, null, null);
-        return single(arena, uri, try langDiagnostics(arena, src, diags));
+        return .{
+            .files = try single(arena, uri, try langDiagnostics(arena, src, diags)),
+            .graph_files = &.{},
+        };
     };
 
     const res = try gr_diagnostics.forGrFile(io, arena, p, overlay);
-    if (res.read_error) return &.{};
+    if (res.read_error) return .{ .files = &.{}, .graph_files = &.{} };
 
     var grouped = Grouped.init(uri);
     for (res.diagnostics) |d| {
@@ -98,7 +113,10 @@ fn diagnoseGr(
             .message = try arena.dupe(u8, d.message),
         });
     }
-    return grouped.finish(arena);
+    return .{
+        .files = try grouped.finish(arena),
+        .graph_files = try pathsOf(arena, res.source_map.files.items),
+    };
 }
 
 fn diagnoseGas(
@@ -108,11 +126,11 @@ fn diagnoseGas(
     path: ?[]const u8,
     src: []const u8,
     overlay: ?*const gero.lang.Overlay,
-) ![]const FileDiagnostics {
+) !Analysis {
     const resolved = try resolveGas(io, arena, uri, path, src, overlay);
     switch (resolved) {
-        .unresolvable => return &.{},
-        .include_errors => |files| return files,
+        .unresolvable => return .{ .files = &.{}, .graph_files = &.{} },
+        .include_errors => |a| return a,
         .ok => {},
     }
     const fused_source = resolved.ok.source;
@@ -140,7 +158,10 @@ fn diagnoseGas(
             });
         }
     }
-    return grouped.finish(arena);
+    return .{
+        .files = try grouped.finish(arena),
+        .graph_files = if (source_map) |sm| try pathsOf(arena, sm.files.items) else &.{},
+    };
 }
 
 /// A diagnostic before it has been given a position — everything a
@@ -157,7 +178,7 @@ const ResolvedGas = union(enum) {
     unresolvable,
     /// Resolution itself failed — a missing or cyclic include. Nothing
     /// downstream can run, so these are the whole answer.
-    include_errors: []const FileDiagnostics,
+    include_errors: Analysis,
     ok: struct {
         source: []const u8,
         /// Absent for a document with no file behind it, where fused
@@ -177,7 +198,10 @@ fn resolveGas(
     const p = path orelse return .{ .ok = .{ .source = src, .source_map = null } };
     const fused = gero.asm_.resolveIncludesOverlaid(io, arena, p, overlay) catch return .unresolvable;
     if (fused.errors.len > 0) {
-        return .{ .include_errors = try single(arena, uri, try asmDiagnostics(arena, fused.source, fused.errors)) };
+        return .{ .include_errors = .{
+            .files = try single(arena, uri, try asmDiagnostics(arena, fused.source, fused.errors)),
+            .graph_files = try pathsOf(arena, fused.source_map.files.items),
+        } };
     }
     return .{ .ok = .{ .source = fused.source, .source_map = fused.source_map } };
 }
@@ -254,6 +278,13 @@ fn place(text: []const u8, start: u32, end: u32, d: Unplaced) Diagnostic {
         .code = d.code,
         .message = d.message,
     };
+}
+
+/// Canonical paths of the files a resolved graph covered.
+fn pathsOf(arena: std.mem.Allocator, files: anytype) std.mem.Allocator.Error![]const []const u8 {
+    const out = try arena.alloc([]const u8, files.len);
+    for (files, 0..) |f, i| out[i] = f.path;
+    return out;
 }
 
 fn severityOf(s: gero.lang.Severity) u8 {
@@ -342,9 +373,9 @@ const testing = std.testing;
 
 /// Diagnose an untitled buffer — no path, so no import graph.
 fn diagnoseText(arena: std.mem.Allocator, lang: Lang, src: []const u8) ![]const Diagnostic {
-    const files = try diagnose(testing.io, arena, lang, "untitled:buffer", src, null);
-    try testing.expectEqual(@as(usize, 1), files.len);
-    return files[0].items;
+    const result = try diagnose(testing.io, arena, lang, "untitled:buffer", src, null);
+    try testing.expectEqual(@as(usize, 1), result.files.len);
+    return result.files[0].items;
 }
 
 test "langOf: dispatches on the URI suffix" {
@@ -455,15 +486,18 @@ test "diagnose: an unsaved import is read from the overlay, not from disk" {
 
     // Against the saved tree, `main.gr` is clean.
     const clean = try diagnose(testing.io, arena, .gr, main_uri, main_src, null);
-    try testing.expectEqual(@as(usize, 0), clean[0].items.len);
+    try testing.expectEqual(@as(usize, 0), clean.files[0].items.len);
+    // The graph it read is what lets a server know this document has
+    // to be re-checked when `lib.gr` changes.
+    try testing.expectEqual(@as(usize, 2), clean.graph_files.len);
 
     // The editor renames `double` in `lib.gr` without saving; the
     // importer must go red against the buffer, not against the file.
     var ov: gero.lang.Overlay = .{};
     try ov.put(arena, lib_path, "def renamed(n: i16) -> i16\n  return n * 2\nend\n");
     const dirty = try diagnose(testing.io, arena, .gr, main_uri, main_src, &ov);
-    try testing.expectEqual(@as(usize, 1), dirty[0].items.len);
-    try testing.expectEqualStrings("E_UNDEFINED_SYMBOL", dirty[0].items[0].code);
+    try testing.expectEqual(@as(usize, 1), dirty.files[0].items.len);
+    try testing.expectEqualStrings("E_UNDEFINED_SYMBOL", dirty.files[0].items[0].code);
 }
 
 test "diagnose: an error inside an import is published against that file" {
@@ -478,7 +512,8 @@ test "diagnose: an error inside an import is published against that file" {
 
     const main_path = try tmp.dir.realPathFileAlloc(testing.io, "main.gr", arena);
     const main_uri = try uri_mod.fromPath(arena, main_path);
-    const files = try diagnose(testing.io, arena, .gr, main_uri, "use \"./lib\"\ndef main()\n  print broken()\nend\n", null);
+    const result = try diagnose(testing.io, arena, .gr, main_uri, "use \"./lib\"\ndef main()\n  print broken()\nend\n", null);
+    const files = result.files;
 
     // The importer itself is clean; the error belongs to `lib.gr` and
     // is positioned in `lib.gr`'s own coordinates.
@@ -501,8 +536,8 @@ test "diagnose: a missing `use` target is reported on the importer" {
     const main_path = try tmp.dir.realPathFileAlloc(testing.io, "main.gr", arena);
     const main_uri = try uri_mod.fromPath(arena, main_path);
 
-    const files = try diagnose(testing.io, arena, .gr, main_uri, src, null);
-    try testing.expectEqualStrings("E_USE_NOT_FOUND", files[0].items[0].code);
+    const result = try diagnose(testing.io, arena, .gr, main_uri, src, null);
+    try testing.expectEqualStrings("E_USE_NOT_FOUND", result.files[0].items[0].code);
 }
 
 test "format: canonicalizes a gero-lang buffer" {
