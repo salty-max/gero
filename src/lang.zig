@@ -110,6 +110,12 @@ pub const IncludeErrorKind = include_mod.IncludeErrorKind;
 /// Walk the `use "..."` graph from `root_path`, returning fused
 /// source + source map.
 pub const resolveUseImports = include_mod.resolveUseImports;
+/// `resolveUseImports` reading overlaid buffers instead of disk for
+/// the files an editor holds unsaved.
+pub const resolveUseImportsOverlaid = include_mod.resolveUseImportsOverlaid;
+/// Unsaved buffer contents keyed by canonical path, for
+/// `resolveUseImportsOverlaid`.
+pub const Overlay = include_mod.Overlay;
 
 // ---------- typechecker ----------
 

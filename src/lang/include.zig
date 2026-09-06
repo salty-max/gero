@@ -199,6 +199,12 @@ pub const FusedSource = struct {
 /// Host failures (OOM, I/O) propagate through the error union.
 pub const ResolveError = Dir.RealPathFileAllocError || Dir.ReadFileAllocError;
 
+/// Unsaved buffer contents, keyed by canonical absolute path. A file
+/// listed here is taken from memory instead of from disk, so a
+/// language server resolves a `use` graph against what the editor
+/// shows rather than against what was last saved.
+pub const Overlay = std.StringHashMapUnmanaged([]const u8);
+
 const Context = struct {
     io: Io,
     allocator: std.mem.Allocator,
@@ -214,6 +220,7 @@ const Context = struct {
     /// directive is elided (the alias has no inlined declaration).
     import_aliases: *ImportAliases,
     imports: *std.ArrayList(ImportEdge),
+    overlay: ?*const Overlay,
 };
 
 /// Resolve every `use "./path"` reachable from `root_path` into
@@ -225,6 +232,19 @@ pub fn resolveUseImports(
     io: Io,
     allocator: std.mem.Allocator,
     root_path: []const u8,
+) ResolveError!FusedSource {
+    return resolveUseImportsOverlaid(io, allocator, root_path, null);
+}
+
+/// `resolveUseImports`, reading any file listed in `overlay` from
+/// memory instead of disk. Everything else is identical, so a server
+/// answering about unsaved edits and `gero check` answering about the
+/// saved tree run the same resolution.
+pub fn resolveUseImportsOverlaid(
+    io: Io,
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    overlay: ?*const Overlay,
 ) ResolveError!FusedSource {
     var fused: std.ArrayList(u8) = .empty;
     errdefer fused.deinit(allocator);
@@ -264,6 +284,7 @@ pub fn resolveUseImports(
         .emitted = &emitted,
         .import_aliases = &import_aliases,
         .imports = &imports,
+        .overlay = overlay,
     };
 
     const root_id = try resolveOne(&ctx, root_path, null, 0, 0);
@@ -344,7 +365,7 @@ fn resolveOne(
         }
     }
 
-    const content = Dir.cwd().readFileAlloc(ctx.io, canonical, ctx.allocator, Io.Limit.limited(max_file_size)) catch |err| {
+    const content = readContent(ctx, canonical) catch |err| {
         ctx.allocator.free(canonical);
         return err;
     };
@@ -372,6 +393,16 @@ fn resolveOne(
 /// recursing on each `use "..."`. Lines containing `--` comments
 /// or string literals are scanned carefully so directives inside
 /// strings or comments don't get matched.
+/// This file's text: the editor's unsaved buffer when one is
+/// overlaid, otherwise what is on disk. Always allocator-owned, since
+/// `SourceMap.intern` takes ownership either way.
+fn readContent(ctx: *Context, canonical: []const u8) ResolveError![]u8 {
+    if (ctx.overlay) |ov| {
+        if (ov.get(canonical)) |buffered| return ctx.allocator.dupe(u8, buffered);
+    }
+    return Dir.cwd().readFileAlloc(ctx.io, canonical, ctx.allocator, Io.Limit.limited(max_file_size));
+}
+
 fn processSource(
     ctx: *Context,
     content: []const u8,
