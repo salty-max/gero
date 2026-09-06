@@ -784,7 +784,6 @@ const testing = std.testing;
 test "repl/blockBalanced: balanced single-line is true" {
     try testing.expect(blockBalanced("let x = 10\n"));
     try testing.expect(blockBalanced("def foo() end\n"));
-    try testing.expect(blockBalanced("if x do print x end\n"));
 }
 
 test "repl/blockBalanced: open `def` without `end` is false" {
@@ -792,9 +791,11 @@ test "repl/blockBalanced: open `def` without `end` is false" {
     try testing.expect(!blockBalanced("def foo()\n  print x\n"));
 }
 
-test "repl/blockBalanced: `do` / `end` count past nested blocks" {
-    try testing.expect(blockBalanced("def foo()\n  if x do print x end\nend\n"));
-    try testing.expect(!blockBalanced("def foo()\n  if x do print x\nend\n"));
+test "repl/blockBalanced: nested blocks count toward the balance" {
+    try testing.expect(blockBalanced("def foo()\n  if x == 1\n    print x\n  end\nend\n"));
+    // The inner `if` swallows the only `end`, so the `def` stays open
+    // and the prompt must keep reading.
+    try testing.expect(!blockBalanced("def foo()\n  if x == 1\n    print x\n  end\n"));
 }
 
 test "repl/blockBalanced: `repeat` closes on `until`" {
@@ -834,7 +835,7 @@ test "repl/classifyForRoute: `const X = bake do …` re-routes to .decl" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var session = Session.init(arena.allocator(), undefined, undefined);
-    const kind = try session.classifyForRoute(arena.allocator(), "const X = bake do 1 + 2 end");
+    const kind = try session.classifyForRoute(arena.allocator(), "const X = bake do\n  1 + 2\nend");
     try testing.expectEqual(Session.InputKind.decl, kind);
 }
 

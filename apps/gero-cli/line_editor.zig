@@ -259,7 +259,8 @@ test "line_editor/pushHistory: appends new entries" {
     defer arena.deinit();
     var stub_buf: [16]u8 = undefined;
     var w: std.Io.Writer = .fixed(&stub_buf);
-    var ed = Editor.init(arena.allocator(), undefined, &w);
+    // `init` probes stdin for a TTY, so `io` must be real.
+    var ed = Editor.init(arena.allocator(), testing.io, &w);
     try ed.pushHistory("alpha");
     try ed.pushHistory("beta");
     try testing.expectEqual(@as(usize, 2), ed.history.items.len);
@@ -272,7 +273,8 @@ test "line_editor/pushHistory: drops empty + consecutive duplicates" {
     defer arena.deinit();
     var stub_buf: [16]u8 = undefined;
     var w: std.Io.Writer = .fixed(&stub_buf);
-    var ed = Editor.init(arena.allocator(), undefined, &w);
+    // `init` probes stdin for a TTY, so `io` must be real.
+    var ed = Editor.init(arena.allocator(), testing.io, &w);
     try ed.pushHistory("");
     try ed.pushHistory("alpha");
     try ed.pushHistory("alpha");

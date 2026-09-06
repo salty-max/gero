@@ -262,7 +262,13 @@ test "discover: an imported module's tests are not collected twice" {
     const util_path = try tmp.dir.realPathFileAlloc(std.testing.io, "util.gr", arena);
     const main_path = try tmp.dir.realPathFileAlloc(std.testing.io, "main.gr", arena);
 
-    var term: term_mod.Term = .{ .color = false, .quiet = true };
+    // `discover` warns through `term` on a module it skips; this run
+    // skips none, so the sink is only there to satisfy the signature.
+    var sink: std.ArrayList(u8) = .empty;
+    defer sink.deinit(std.testing.allocator);
+    var warnings = std.Io.Writer.Allocating.fromArrayList(std.testing.allocator, &sink);
+    defer warnings.deinit();
+    var term: term_mod.Term = .{ .out = &warnings.writer, .color = false };
     // Both files are under `[test].include`, and `main.gr` reaches
     // `util.gr` through its `use` graph. Collecting from the fused
     // program would find the test once per file that reaches it.
