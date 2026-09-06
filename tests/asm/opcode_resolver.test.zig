@@ -112,3 +112,16 @@ test "opres: imm8 narrowing — mov8 picks Imm8 shape over widening" {
     try std.testing.expect(!cg.hasErrors());
     try std.testing.expectEqualSlices(u8, &.{ 0x21, 0x42, 0x02 }, cg.image[16..]);
 }
+
+test "opres: sys resolves to 0xFB, the VM syscall boundary" {
+    // ISA §5.13 calls `sys` the embedding boundary; the resolver knew
+    // `int` (0xFC) and not `sys`, so hand-written asm could not print an
+    // integer, format into a buffer, allocate, or trap.
+    var pt = try gero.asm_.parse(alloc, "sys $02\n");
+    defer pt.deinit();
+    var cg = try gero.asm_.assemble(alloc, "sys $02\n", pt, .{});
+    defer cg.deinit();
+    try std.testing.expect(!cg.hasErrors());
+    try std.testing.expectEqual(@as(u8, 0xFB), cg.image[16]);
+    try std.testing.expectEqual(@as(u8, 0x02), cg.image[17]);
+}
