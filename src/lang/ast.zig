@@ -342,7 +342,7 @@ pub const Expr = union(enum) {
     /// `do ... end` as an expression — evaluates to the last
     /// expression of the body. §4.3.
     do_expr: DoExpr,
-    /// `if cond then a else b` as an expression (§4.4 — the bodies
+    /// `if cond ... else ... end` as an expression (§4.4 — the bodies
     /// are blocks; the value is the last expression of the taken
     /// branch). Optional in the spec — `if` is primarily a
     /// statement; the parser produces this form when an `if` is
@@ -609,7 +609,7 @@ pub const DoExpr = struct {
     span: Span,
 };
 
-/// `if cond then ... [else ...] end` used as an expression.
+/// `if cond ... [else ...] end` used as an expression.
 pub const IfExpr = struct {
     /// `cond / then-body` pairs in source order. The first arm is
     /// the `if`; subsequent arms are `else if` / `elif`.
@@ -783,16 +783,16 @@ pub const Statement = union(enum) {
     expr_stmt: ExprStmt,
     /// `do ... end` at statement position.
     block: BlockStmt,
-    /// `if cond then ... [elif ...] [else ...] end`.
+    /// `if cond ... [elif ...] [else ...] end`.
     if_stmt: IfStmt,
-    /// `while cond do ... end`.
+    /// `while cond ... end`.
     while_stmt: WhileStmt,
     /// `for binding in iter [step expr] ... end`.
     for_stmt: ForStmt,
     /// `repeat ... until cond` — body runs at least once; loop exits
     /// when `cond` evaluates true. §4.5.5.
     repeat_stmt: RepeatStmt,
-    /// `match scrutinee case pat [when guard] then body ... end`.
+    /// `match scrutinee case pat [when guard] => body ... end`.
     match_stmt: MatchStmt,
     /// `return [expr]`.
     return_stmt: ReturnStmt,
@@ -804,7 +804,7 @@ pub const Statement = union(enum) {
     print_stmt: PrintStmt,
     /// `def name(params) [-> T] body end`.
     def_decl: DefDecl,
-    /// `class Name [extends Parent] { ... }`.
+    /// `class Name [extends Parent] ... end`.
     class_decl: ClassDecl,
     /// `struct Name field: T, ... end`.
     struct_decl: StructDecl,
@@ -817,7 +817,7 @@ pub const Statement = union(enum) {
     /// setting the inner decl's `is_local` field rather than
     /// nesting; this variant remains here for unrecognized shapes.
     local_decl: LocalDecl,
-    /// `@asm("...")` — single inline-asm escape hatch line.
+    /// `asm "..."` — single inline-asm escape hatch line.
     asm_stmt: AsmStmt,
     /// `defer <stmt>` — schedule `stmt` to run when the enclosing
     /// block exits (§4.10). LIFO across multiple defers in the same
@@ -950,7 +950,7 @@ pub const BlockStmt = struct {
     span: Span,
 };
 
-/// `if cond then ... [elif ...] [else ...] end` — statement form.
+/// `if cond ... [elif ...] [else ...] end` — statement form.
 pub const IfStmt = struct {
     /// `cond / then-body` pairs in source order; the first arm is
     /// the `if`, the rest are `else if` / `elif`.
@@ -1013,7 +1013,7 @@ pub const MatchStmt = struct {
     span: Span,
 };
 
-/// One `case pat [when guard] then body` arm of a `match`.
+/// One `case pat [when guard] => body` arm of a `match`.
 pub const MatchArm = struct {
     pattern: *Pattern,
     /// Optional `when` guard following the pattern.
@@ -1160,7 +1160,7 @@ pub const LocalDecl = struct {
     span: Span,
 };
 
-/// `@asm("...")` — inline-assembly escape hatch (§3.7.7).
+/// `asm "..."` — inline-assembly escape hatch (§3.7.7).
 pub const AsmStmt = struct {
     /// Span covering the string literal (including the surrounding
     /// quotes). Codegen reads the bytes and performs `{name}`

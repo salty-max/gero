@@ -1219,7 +1219,7 @@ pub const Checker = struct {
         else_body: ?[]const ast.Statement,
     ) WalkError!void {
         // Flow analysis is applied only when there is exactly one
-        // arm — the simple `if cond then BODY [else …] end` shape.
+        // arm — the simple `if cond BODY [else …] end` shape.
         // Multi-arm `elif` chains skip the bookkeeping.
         const nil_flow: ?NilCheck = if (arms.len == 1 and arms[0].cond != null)
             self.matchNilCheck(arms[0].cond.?)

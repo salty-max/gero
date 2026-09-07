@@ -27,7 +27,7 @@ fn rejectStrandedDo(p: *Parser, context: []const u8) ParserError!void {
 
 // ---------- if / elif / else ----------
 
-/// `if cond then ... [elif ...] [else ...] end` — statement form.
+/// `if cond ... [elif ...] [else ...] end` — statement form.
 pub fn parseIfStatement(p: *Parser) ParserError!ast.Statement {
     const start_tok = p.peek();
     const result = try parseIfChain(p);
