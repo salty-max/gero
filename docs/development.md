@@ -145,6 +145,23 @@ accumulated changesets at release time.
 
 ---
 
+## The wasm lane
+
+`zig build wasm` builds `gero.wasm` (`docs/gero-lab.md` §2) and emits
+the sample corpus alongside it. `zig build test-wasm-examples` runs
+every example through that module and diffs against the same
+`.expected` files the native gates use.
+
+That gate needs **node**. The Zig toolchain cannot execute wasm on its
+own, and a JS host is what the module is built for — so the alternative
+to a JS runner is proving only that `wasm32` compiles, which the
+cross-target matrix already does. Everything else gero tests at runtime
+runs natively; this is the one place that runs somewhere else.
+
+It is wired into `verify` and `ci`, and runs on pull requests.
+
+---
+
 ## Releases (manual)
 
 Releases are cut manually. Multiple merged PRs accumulate

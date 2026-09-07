@@ -577,8 +577,24 @@ pub fn build(b: *std.Build) void {
     })).step);
 
     const wasm_install = b.addInstallArtifact(wasm_exe, .{});
+    // The artifact carries the sample corpus (§9, §10), so the
+    // application consumes it rather than keeping a copy that drifts.
+    const samples_cmd = b.addSystemCommand(&.{ "node", "scripts/emit-samples.mjs", "zig-out/samples" });
+
     const wasm_step = b.step("wasm", "Build the gero.wasm module for browser hosts");
     wasm_step.dependOn(&wasm_install.step);
+    wasm_step.dependOn(&samples_cmd.step);
+
+    // The runtime gate. `wasm32` is otherwise only compile-checked —
+    // every other runtime test gero has runs natively — so this is
+    // what turns "wasm32 compiles" into "wasm32 runs".
+    const wasm_examples_cmd = b.addSystemCommand(&.{ "bash", "scripts/test-wasm-examples.sh" });
+    wasm_examples_cmd.step.dependOn(wasm_step);
+    const wasm_examples_step = b.step(
+        "test-wasm-examples",
+        "Run every example through gero.wasm and diff against its .expected",
+    );
+    wasm_examples_step.dependOn(&wasm_examples_cmd.step);
 
     // ----- Golden bytecode corpus ------------------------------------------
     //
@@ -693,6 +709,7 @@ pub fn build(b: *std.Build) void {
     verify_step.dependOn(lint_step);
     verify_step.dependOn(test_step);
     verify_step.dependOn(golden_step);
+    verify_step.dependOn(wasm_examples_step);
     verify_step.dependOn(&check_examples_cmd.step);
     verify_step.dependOn(&check_doc_asm_cmd.step);
     verify_step.dependOn(&check_broken_cmd.step);
@@ -709,6 +726,7 @@ pub fn build(b: *std.Build) void {
     // Compiling for freestanding wasm is a different question from
     // compiling for wasi, and the lab depends on the answer.
     ci_step.dependOn(wasm_step);
+    ci_step.dependOn(wasm_examples_step);
     ci_step.dependOn(&check_examples_cmd.step);
     ci_step.dependOn(&check_broken_cmd.step);
     ci_step.dependOn(&fmt_check_examples_cmd.step);

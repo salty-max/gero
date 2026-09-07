@@ -129,3 +129,5 @@ jobs:
         run: zig build test-examples-lang -freference-trace
       - name: golden (emitted bytecode matches the blessed corpus)
         run: zig build golden -freference-trace
+      - name: test-wasm-examples (every example runs under wasm32, not just compiles)
+        run: zig build test-wasm-examples -freference-trace
