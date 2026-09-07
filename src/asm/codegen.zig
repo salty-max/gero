@@ -85,12 +85,15 @@ pub fn assemble(
         .max_bank = null,
         .sram_banks = 0,
         .sram_banks_span = null,
+        .heap_base = 0,
+        .heap_span = null,
     };
     defer layout.bank_sizes.deinit();
     var pending_lines: std.ArrayList(PendingLine) = .empty;
     defer pending_lines.deinit(allocator);
     try layoutPass(&symbols, &errors, source, tree, &layout, &pending_lines);
     try validateSramBanks(&errors, &layout, allocator);
+    try validateHeapBase(&errors, &layout, allocator);
 
     // Pass 2: emit. Per-bank buffers; the same `current_bank` state
     // walks alongside the layout state.
@@ -146,6 +149,11 @@ const Layout = struct {
     max_bank: ?u8,
     sram_banks: u8,
     sram_banks_span: ?ast.Span,
+    /// Address declared by `heap $ADDR`, or `0` for a program that
+    /// declared none — `sys alloc` then faults per ISA §7.1.
+    heap_base: u16,
+    /// Span of the `heap` directive, for the overlap diagnostic.
+    heap_span: ?ast.Span,
 };
 
 /// Per-bank emit buffers. Base image lives outside the banks
@@ -461,6 +469,12 @@ fn layoutPass(
                     layout.sram_banks_span = s.span;
                 }
             },
+            .heap => |h| {
+                if (h.addr) |addr| {
+                    layout.heap_base = addr;
+                    layout.heap_span = h.span;
+                }
+            },
             .instruction => |i| {
                 const line_start = bankAddr(current_bank, cursor_ptr.*);
                 const mnem = source[i.mnemonic.start..i.mnemonic.end];
@@ -538,6 +552,50 @@ fn validateSramBanks(
     });
 }
 
+/// A declared heap must point at memory the program actually owns:
+/// at or above the end of the emitted image, and — when the program
+/// is banked — below the bank window, whose contents a `mb` write
+/// replaces wholesale.
+///
+/// Neither case faults at run time. `sys alloc` bounds the top of the
+/// heap (against `sp`) and nothing bounds the bottom, so a bad base
+/// is silent corruption rather than a diagnosable failure.
+fn validateHeapBase(
+    errors: *std.ArrayList(include.Diagnostic),
+    layout: *const Layout,
+    allocator: std.mem.Allocator,
+) !void {
+    if (layout.heap_base == 0) return;
+    const span = layout.heap_span orelse return;
+
+    if (layout.heap_base < layout.base_size) {
+        try errors.append(allocator, .{
+            .code = .invalid_heap_base,
+            .parse_error = core.parseError(
+                "heap",
+                span.start,
+                "`heap` address falls inside the emitted image — the bump allocator would overwrite code or data; point it past the end of the image",
+                .{ .expected = "an address at or above the end of the emitted image", .kind = .semantic },
+            ),
+        });
+        return;
+    }
+
+    // A banked program does not own the window: whatever the heap
+    // hands out there is replaced wholesale on the next `mb` write.
+    if (layout.max_bank != null and layout.heap_base >= bank_window_base) {
+        try errors.append(allocator, .{
+            .code = .invalid_heap_base,
+            .parse_error = core.parseError(
+                "heap",
+                span.start,
+                "`heap` address falls inside the bank window ($C000..$FEFF) of a banked program — a bank switch would replace every allocation; place the heap below $C000",
+                .{ .expected = "an address below $C000 in a banked program", .kind = .semantic },
+            ),
+        });
+    }
+}
+
 fn sizeOfDataValues(
     values: []const ast.DataValue,
     word_size: u32,
@@ -610,7 +668,8 @@ fn emitPass(
                 const name = source[l.name.start..l.name.end];
                 if (name.len == 0 or name[0] != '.') parent_label = name;
             },
-            .const_decl, .struct_decl, .sram_banks_decl, .cond_directive, .comment, .unknown => {},
+            // `heap` sets a header field rather than emitting bytes.
+            .const_decl, .struct_decl, .sram_banks_decl, .heap, .cond_directive, .comment, .unknown => {},
             .bank_switch => |b| {
                 if (b.index) |idx| current_bank = idx;
             },
@@ -1238,9 +1297,7 @@ fn buildArchive(
     return gx.build(allocator, .{
         .base_image = emit.base.items,
         .entry_point = entry_point,
-        // Assembly declares no heap, so `sys alloc` faults per ISA
-        // §7.1 until a program can name a base address itself.
-        .heap_base = 0,
+        .heap_base = layout.heap_base,
         .sram_bank_count = layout.sram_banks,
         .banks = windows,
         .debug_section = debug.section(),

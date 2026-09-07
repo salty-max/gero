@@ -61,6 +61,13 @@ pub fn execute(
         return 0;
     }
 
+    // The heap declaration lives only in the header, so re-emit it
+    // as its directive — otherwise disassembling and re-assembling
+    // silently drops the program's heap.
+    if (header.heap_base != 0) {
+        try stdout.print("heap ${x:0>4}\n\n", .{header.heap_base});
+    }
+
     // No `--bank` → whole-cart view. Render the base image first
     // with its entry-point marker, then walk every bank with a
     // section header so a multi-bank cart fits in one transcript.

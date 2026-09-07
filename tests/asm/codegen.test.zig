@@ -1033,3 +1033,103 @@ test "codegen: debug_symbols=false drops the line table with the rest" {
     const header = try gero.disasm.parseHeader(off.image);
     try std.testing.expectEqual(@as(usize, 0), header.debug.len);
 }
+
+// ---------- heap directive ----------
+
+test "codegen: heap sets the header's heap_base" {
+    var out = try assembleRaw("heap $4000\nstart:\n  hlt\n", .{});
+    defer out.deinit();
+    const header = try gero.disasm.parseHeader(out.cg.image);
+    try std.testing.expectEqual(@as(u16, 0x4000), header.heap_base);
+}
+
+test "codegen: no heap directive leaves heap_base zero" {
+    var out = try assembleRaw("start:\n  hlt\n", .{});
+    defer out.deinit();
+    const header = try gero.disasm.parseHeader(out.cg.image);
+    // Assembly owns its memory map, so nothing is reserved unasked;
+    // `sys alloc` faults per ISA §7.1 until a program declares a heap.
+    try std.testing.expectEqual(@as(u16, 0), header.heap_base);
+}
+
+test "codegen: a heap address inside the image is rejected" {
+    // The image is 1 byte (`hlt`), so $0000 lands inside it. Below the
+    // image the allocator would hand out addresses over live code, and
+    // `sys alloc` only bounds the top of the heap.
+    var out = try assembleRaw("heap $0000\nstart:\n  hlt\n", .{});
+    defer out.deinit();
+    // `heap $0000` means "no heap", so it is not an error — pick an
+    // address that is non-zero and still inside the image.
+    var bad = try assembleRaw("heap $0001\nstart:\n  mov $002a, r1\n  hlt\n", .{});
+    defer bad.deinit();
+    try std.testing.expect(bad.cg.hasErrors());
+    var found = false;
+    for (bad.cg.errors) |e| {
+        if (e.code) |c| {
+            if (c == .invalid_heap_base) found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "codegen: a heap at the image's end is accepted" {
+    // The boundary itself is legal: the first byte past the image is
+    // the tightest heap a program can ask for.
+    var out = try assembleRaw("heap $0005\nstart:\n  mov $002a, r1\n  hlt\n", .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+    const header = try gero.disasm.parseHeader(out.cg.image);
+    try std.testing.expectEqual(@as(u16, 5), header.image_size);
+    try std.testing.expectEqual(@as(u16, 5), header.heap_base);
+}
+
+test "codegen: a declared heap makes sys alloc return addresses" {
+    var out = try assembleRaw(
+        \\heap $4000
+        \\start:
+        \\  mov $0010, acu
+        \\  sys $20
+        \\  mov acu, r1
+        \\  mov $0020, acu
+        \\  sys $20
+        \\  hlt
+        \\
+    , .{});
+    defer out.deinit();
+    try std.testing.expect(!out.cg.hasErrors());
+
+    const loaded = try gero.vm.parseGx(out.cg.image);
+    var vm = gero.vm.VM.init(alloc);
+    defer vm.deinit();
+    try vm.boot(alloc, loaded);
+    var steps: usize = 0;
+    while (steps < 100) : (steps += 1) {
+        switch (gero.vm.step(&vm)) {
+            .cont, .branched => continue,
+            else => break,
+        }
+    }
+    // First alloc hands back the heap base, the second the bumped
+    // cursor — the allocation the ISA documents, now reachable from asm.
+    try std.testing.expectEqual(@as(u16, 0x4000), vm.regs.read(.r1));
+    try std.testing.expectEqual(@as(u16, 0x4010), vm.regs.read(.acu));
+}
+
+test "codegen: a banked program's heap may not sit in the bank window" {
+    // The window mirrors bank `mb`, so a switch would replace every
+    // allocation living there. Unbanked, the same address is plain RAM
+    // and perfectly fine.
+    var banked = try assembleRaw("bank $00\nheap $c000\nstart:\n  hlt\n", .{});
+    defer banked.deinit();
+    var found = false;
+    for (banked.cg.errors) |e| {
+        if (e.code) |c| {
+            if (c == .invalid_heap_base) found = true;
+        }
+    }
+    try std.testing.expect(found);
+
+    var plain = try assembleRaw("heap $c000\nstart:\n  hlt\n", .{});
+    defer plain.deinit();
+    try std.testing.expect(!plain.cg.hasErrors());
+}

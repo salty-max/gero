@@ -296,6 +296,7 @@ fn writeStatementCanonical(
         .data16 => |d| try writeData(writer, "data16", d, source, opts, kv_block_width),
         .struct_decl => |s| try writeStruct(writer, s, source, opts),
         .org => |o| try writeOrg(writer, o, source, opts),
+        .heap => |h| try writeHeap(writer, h, source, opts),
         .bank_switch => |b| try writeBankSwitch(writer, b.index orelse 0, opts),
         .sram_banks_decl => |s| try writeSramBanks(writer, s.count orelse 0, opts),
         .instruction => |i| try writeInstruction(writer, i, source, opts),
@@ -356,6 +357,17 @@ fn writeOrg(
     try writer.writeAll("org ");
     const expr_width = try writeExpr(writer, o.addr_expr, source, opts);
     return "org ".len + expr_width;
+}
+
+fn writeHeap(
+    writer: *std.Io.Writer,
+    h: ast.HeapDecl,
+    source: []const u8,
+    opts: PrintOptions,
+) std.Io.Writer.Error!usize {
+    try writer.writeAll("heap ");
+    const expr_width = try writeExpr(writer, h.addr_expr, source, opts);
+    return "heap ".len + expr_width;
 }
 
 fn writeBankSwitch(

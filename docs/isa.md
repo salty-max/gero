@@ -676,7 +676,7 @@ metadata.
 | `0x0A` | image_size     | 2    | u16le base-image size in bytes (`0..65535`; max 65535-byte image — programs needing more use banks) |
 | `0x0C` | bank_count     | 1    | total number of 16KB banks (0..255) |
 | `0x0D` | sram_bank_count| 1    | how many of the **last** banks are battery-backed SRAM (0..255, must be `<= bank_count`); 0 ⇒ no save support |
-| `0x0E` | heap_base      | 2    | u16le address where the bump allocator's heap starts. Usually the first byte past the end of static data, leaving the gap to `sp` for heap growth. `0x0000` ⇒ no heap (programs that call `sys alloc` will fault). Added in version `0x0002`; files declaring version `0x0001` always read `0x0000` here. |
+| `0x0E` | heap_base      | 2    | u16le address where the bump allocator's heap starts. `0x0000` ⇒ no heap (programs that call `sys alloc` will fault). Otherwise it **must be at or above `image_size`**, and in a banked program (`bank_count > 0`) **below the bank window at `0xC000`** — a heap inside the image would hand out addresses over live code or data, and one inside the window would lose every allocation on the next `mb` write. `sys alloc` only bounds the top of the heap, so neither is caught at run time; a loader rejects a file that violates either. Added in version `0x0002`; files declaring version `0x0001` always read `0x0000` here. |
 
 #### Flags bitfield
 

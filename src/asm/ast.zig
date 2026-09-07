@@ -32,6 +32,7 @@ pub const Statement = union(enum) {
     data16: DataDecl,
     struct_decl: StructDecl,
     org: OrgDecl,
+    heap: HeapDecl,
     /// `bank N` — sticky directive switching subsequent emit into
     /// bank N's segment. `N == 0` is the base image (the default
     /// before any `bank` directive).
@@ -68,6 +69,7 @@ pub const Statement = union(enum) {
             .data16 => |d| d.span,
             .struct_decl => |s| s.span,
             .org => |o| o.span,
+            .heap => |h| h.span,
             .bank_switch => |b| b.span,
             .sram_banks_decl => |s| s.span,
             .instruction => |i| i.span,
@@ -285,6 +287,19 @@ pub const FieldType = enum {
             .u16 => 2,
         };
     }
+};
+
+/// `heap $ADDR` — declares where the bump allocator's heap starts,
+/// written to the `.gx` header's `heap_base` (ISA §7.1). Absent, the
+/// field stays `0` and `sys alloc` faults.
+pub const HeapDecl = struct {
+    /// RHS expression tree, owned by the program allocator.
+    addr_expr: *Expr,
+    /// Folded address value, or `null` if eval failed (in which case
+    /// a diagnostic was emitted).
+    addr: ?u16,
+    /// Span covering `heap <expr>` end-to-end.
+    span: Span,
 };
 
 /// `org $ADDR` — relocate the codegen emit cursor. The RHS is a
@@ -616,6 +631,7 @@ pub const Program = struct {
                 },
                 .struct_decl => |sd| freeStructDecl(self.allocator, sd),
                 .org => |o| freeExpr(self.allocator, o.addr_expr),
+                .heap => |h| freeExpr(self.allocator, h.addr_expr),
                 .instruction => |i| {
                     for (i.operands) |op| switch (op) {
                         .immediate => |e| freeExpr(self.allocator, e),

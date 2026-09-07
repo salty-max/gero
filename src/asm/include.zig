@@ -180,6 +180,11 @@ pub const ErrorCode = enum(u8) {
     unmatched_endif = 18,
     /// E019: `ifdef` / `ifndef` block left open at EOF.
     unclosed_conditional = 19,
+    /// E020: `heap $ADDR` points somewhere the program does not own —
+    /// inside the emitted image, or inside a banked program's bank
+    /// window. Either way the bump allocator would hand out addresses
+    /// that get overwritten (loader invariant — ISA §7.1).
+    invalid_heap_base = 20,
 
     /// Map a lexer-level `ParseError.message` to the asm spec §7
     /// code, or `null` when the message isn't one of the four
@@ -223,6 +228,7 @@ pub const ErrorCode = enum(u8) {
             .sram_without_banks => "E017",
             .unmatched_endif => "E018",
             .unclosed_conditional => "E019",
+            .invalid_heap_base => "E020",
         };
     }
 };

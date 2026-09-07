@@ -522,3 +522,11 @@ test "printProgram: reserve with a trailing comment reaches a fixed point" {
     defer second.deinit();
     try std.testing.expectEqualStrings(first.text, second.text);
 }
+
+test "printProgram: a heap directive survives the formatter" {
+    var p = try parseAndPrint("heap $4000\nstart:\n  hlt\n");
+    defer p.deinit();
+    // The formatter must not drop a directive it does not otherwise
+    // touch — a format-on-save that lost the heap would break `alloc`.
+    try std.testing.expect(std.mem.indexOf(u8, p.text, "heap $4000") != null);
+}

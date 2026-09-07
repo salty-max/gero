@@ -228,3 +228,56 @@ test "cycles: run accumulates one per step including the terminating hlt" {
     _ = gero.vm.run(&vm);
     try std.testing.expectEqual(@as(u64, 2), vm.cycles);
 }
+
+// ---------- heap_base validity (ISA §7.1) ----------
+
+/// Write `heap_base` into a header `buildGx` already laid out.
+fn setHeapBase(buf: []u8, heap_base: u16) void {
+    buf[0x0E] = @truncate(heap_base & 0xFF);
+    buf[0x0F] = @truncate(heap_base >> 8);
+}
+
+test "loader: rejects a heap_base pointing inside the base image" {
+    var buf: [24]u8 = undefined;
+    const gx = buildGx(&buf, 0x0004, 0, 0, 8, 0, 0);
+    // A heap starting inside the image would hand out addresses over
+    // live code; `sys alloc` only bounds the top of the heap, so
+    // nothing downstream would catch it.
+    setHeapBase(gx, 4);
+    try std.testing.expectError(error.HeapInsideImage, gero.vm.parseGx(gx));
+}
+
+test "loader: accepts a heap_base at the image's end" {
+    var buf: [24]u8 = undefined;
+    const gx = buildGx(&buf, 0x0004, 0, 0, 8, 0, 0);
+    // The first byte past the image is the tightest legal heap.
+    setHeapBase(gx, 8);
+    const loaded = try gero.vm.parseGx(gx);
+    try std.testing.expectEqual(@as(u16, 8), loaded.header.heap_base);
+}
+
+test "loader: heap_base zero means no heap, not an overlap" {
+    var buf: [24]u8 = undefined;
+    const gx = buildGx(&buf, 0x0004, 0, 0, 8, 0, 0);
+    setHeapBase(gx, 0);
+    const loaded = try gero.vm.parseGx(gx);
+    try std.testing.expectEqual(@as(u16, 0), loaded.header.heap_base);
+}
+
+test "loader: rejects a banked program's heap_base inside the bank window" {
+    var buf: [24]u8 = undefined;
+    const gx = buildGx(&buf, 0x0004, 0x0001, 0, 8, 1, 0);
+    setHeapBase(gx, 0xC000);
+    // The bank window mirrors bank `mb`; a switch would replace every
+    // allocation living there.
+    try std.testing.expectError(error.HeapInBankWindow, gero.vm.parseGx(gx));
+}
+
+test "loader: an unbanked program may put its heap at 0xC000" {
+    var buf: [24]u8 = undefined;
+    const gx = buildGx(&buf, 0x0004, 0, 0, 8, 0, 0);
+    setHeapBase(gx, 0xC000);
+    // With no banks the window is plain RAM, so the address is fine.
+    const loaded = try gero.vm.parseGx(gx);
+    try std.testing.expectEqual(@as(u16, 0xC000), loaded.header.heap_base);
+}
