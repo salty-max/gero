@@ -112,3 +112,30 @@ test "decode: a file from another format version is rejected" {
     defer arena.deinit();
     try std.testing.expectError(error.VersionMismatch, gero.lang.decodeFragments(arena.allocator(), bumped));
 }
+
+test "encode/decode: a fragment's statement ranges survive the disk format" {
+    var compiled = try compileWithFragments(sample);
+    defer compiled.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const blob = try gero.lang.encodeFragments(alloc, compiled.fragments);
+    defer alloc.free(blob);
+    const back = try gero.lang.decodeFragments(arena, blob);
+
+    // Line spans ride the cache with the code they describe: a warm
+    // build replays them, so its debug section matches a cold one's.
+    var before: usize = 0;
+    for (compiled.fragments) |f| before += f.lines.len;
+    var after: usize = 0;
+    for (back) |f| after += f.lines.len;
+    try std.testing.expect(before > 0);
+    try std.testing.expectEqual(before, after);
+
+    // And they come back pointing at the same code and source.
+    try std.testing.expectEqual(compiled.fragments[0].lines[0].start_offset, back[0].lines[0].start_offset);
+    try std.testing.expectEqual(compiled.fragments[0].lines[0].end_offset, back[0].lines[0].end_offset);
+    try std.testing.expectEqual(compiled.fragments[0].lines[0].source_offset, back[0].lines[0].source_offset);
+}

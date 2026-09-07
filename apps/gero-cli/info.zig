@@ -36,22 +36,50 @@ pub fn format(
         try out.print("sram:    {d} {s} (battery-backed)\n", .{ h.sram_bank_count, noun });
     }
     if (h.hasDebugSymbols()) {
-        // Parse the trailing debug blob to extract the symbol
-        // count for the summary line. The slice is borrowed; we
-        // only read the count header (no allocation needed here).
-        const count = peekSymbolCount(loaded.debug);
-        try out.print("debug:   yes (symbols: {d})\n", .{count});
+        try printDebugSummary(out, loaded.debug);
     } else {
         try out.print("debug:   no\n", .{});
     }
 }
 
-/// Read just the first 2-byte u16 from the debug blob — that's
-/// the symbol count per ISA §7.3. Returns 0 if the blob is too
-/// short (treated as "no symbols").
-fn peekSymbolCount(debug: []const u8) u16 {
-    if (debug.len < 2) return 0;
-    return @as(u16, debug[0]) | (@as(u16, debug[1]) << 8);
+/// Summarize the debug section's chunks: how many symbols, and
+/// whether a line table is present and how much of the image it
+/// covers. Chunk kinds this build does not know are counted but not
+/// named — the framing exists so a newer producer stays readable.
+fn printDebugSummary(out: *std.Io.Writer, debug: []const u8) !void {
+    var symbols: ?u16 = null;
+    var files: ?u16 = null;
+    var lines: ?u16 = null;
+    var unknown: usize = 0;
+
+    var it: gero.gx.ChunkIter = .{ .bytes = debug };
+    while (it.next() catch null) |chunk| switch (chunk.kind) {
+        .symbols => symbols = peekCount(chunk.payload),
+        .files => files = peekCount(chunk.payload),
+        .lines => lines = peekCount(chunk.payload),
+        _ => unknown += 1,
+    };
+
+    try out.print("debug:   yes (symbols: {d})\n", .{symbols orelse 0});
+    if (lines) |n| {
+        try out.print("lines:   {d} rows across {d} file{s}\n", .{
+            n,
+            files orelse 0,
+            if ((files orelse 0) == 1) "" else "s",
+        });
+    } else {
+        try out.print("lines:   none\n", .{});
+    }
+    if (unknown > 0) {
+        try out.print("         ({d} unrecognized chunk{s})\n", .{ unknown, if (unknown == 1) "" else "s" });
+    }
+}
+
+/// Read a chunk payload's leading u16 row count. Returns 0 for a
+/// payload too short to carry one.
+fn peekCount(payload: []const u8) u16 {
+    if (payload.len < 2) return 0;
+    return gero.gx.readU16Le(payload[0..2]);
 }
 
 // ---------- tests ----------

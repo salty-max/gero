@@ -11,7 +11,7 @@ pub const magic = "GROB";
 /// written by a different version is discarded rather than decoded,
 /// so an older build's fragments can never be spliced into a newer
 /// compiler's image.
-pub const format_version: u16 = 1;
+pub const format_version: u16 = 2;
 
 /// A fragment file that could not be decoded. Every variant means the
 /// same thing to a caller — treat the cache entry as a miss.
@@ -79,6 +79,13 @@ fn encodeFragment(allocator: std.mem.Allocator, out: *std.ArrayList(u8), f: Frag
         try putBytes(allocator, out, d.name);
         try putU32(allocator, out, @intCast(d.offset));
     }
+
+    try putU32(allocator, out, @intCast(f.lines.len));
+    for (f.lines) |l| {
+        try putU32(allocator, out, @intCast(l.start_offset));
+        try putU32(allocator, out, @intCast(l.end_offset));
+        try putU32(allocator, out, l.source_offset);
+    }
 }
 
 /// Rebuild the fragments `encode` wrote. Everything returned is
@@ -111,7 +118,18 @@ fn decodeFragment(arena: std.mem.Allocator, r: *Reader) (DecodeError || std.mem.
         .refs = try decodeRefs(arena, r),
         .strings = try decodeStrings(arena, r),
         .defines = try decodeDefines(arena, r),
+        .lines = try decodeLines(arena, r),
     };
+}
+
+fn decodeLines(arena: std.mem.Allocator, r: *Reader) (DecodeError || std.mem.Allocator.Error)![]const object.LineSpan {
+    const out = try arena.alloc(object.LineSpan, try r.readU32());
+    for (out) |*l| l.* = .{
+        .start_offset = try r.readU32(),
+        .end_offset = try r.readU32(),
+        .source_offset = try r.readU32(),
+    };
+    return out;
 }
 
 fn decodeRelocs(arena: std.mem.Allocator, r: *Reader) (DecodeError || std.mem.Allocator.Error)![]const object.Reloc {

@@ -22,6 +22,12 @@ pub const ModuleFixture = struct {
         try self.tmp.dir.writeFile(std.testing.io, .{ .sub_path = name, .data = body });
     }
 
+    /// Canonical path of a file written into the fixture. Caller owns
+    /// the result.
+    pub fn pathOf(self: *ModuleFixture, name: []const u8) ![:0]u8 {
+        return self.tmp.dir.realPathFileAlloc(std.testing.io, name, self.alloc);
+    }
+
     /// Compile `entry` with its `use` graph and run it, asserting on
     /// what the program printed.
     pub fn expectRuns(self: *ModuleFixture, entry: []const u8, expected: []const u8) !void {

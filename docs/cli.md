@@ -254,13 +254,20 @@ gero info game.gx
 file:        game.gx
 size:        24536 bytes
 magic:       GERO
-version:     0x0001
+version:     0x0004
 entry:       0x1100
 image:       12345 bytes
 banks:       4 × 16 KB
 sram:        2 banks (battery-backed)
 debug:       yes (symbols: 142)
+lines:       318 rows across 4 files
 ```
+
+`lines` reports the debug section's line table (ISA §7.3), which
+maps an address back to the source position that produced it. It
+reads `none` for an image whose producer had no include / import
+map to attribute files with, and the whole `debug` / `lines` pair
+is absent from a release build.
 
 **Exit:** 0; 1 on bad magic / version mismatch.
 

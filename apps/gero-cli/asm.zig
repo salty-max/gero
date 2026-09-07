@@ -50,7 +50,7 @@ pub fn execute(
     defer pt.deinit();
     const t_after_parse = std.Io.Timestamp.now(io, .awake);
 
-    var cg = try gero.asm_.assemble(arena, fused.source, pt, .{});
+    var cg = try gero.asm_.assemble(arena, fused.source, pt, .{ .source_map = &fused.source_map });
     defer cg.deinit();
     const t_after_codegen = std.Io.Timestamp.now(io, .awake);
 

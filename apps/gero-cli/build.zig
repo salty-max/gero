@@ -108,6 +108,7 @@ pub fn execute(
     const t_after_parse = std.Io.Timestamp.now(io, .awake);
 
     var cg = try gero.asm_.assemble(arena, fused.source, pt, .{
+        .source_map = &fused.source_map,
         .debug_symbols = manifest.build.debug_symbols,
     });
     defer cg.deinit();

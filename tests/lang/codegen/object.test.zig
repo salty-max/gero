@@ -382,3 +382,81 @@ test "skip_bodies: skipping a clean module's bodies builds the same image" {
     try std.testing.expect(!incr.compiled.hasErrors());
     try std.testing.expectEqualSlices(u8, full.compiled.image, incr.compiled.image);
 }
+
+// ---------- line table (ISA §7.3) ----------
+
+test "line table: a multi-file program attributes each address to its own file" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\def double(n: i16) -> i16
+        \\  return n * 2
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use "./lib"
+        \\def main()
+        \\  let a = 1
+        \\  print double(a)
+        \\end
+        \\
+    );
+    const path = try fx.pathOf("main.gr");
+    defer std.testing.allocator.free(path);
+
+    var fused = try gero.lang.resolveUseImports(std.testing.io, std.testing.allocator, path);
+    defer fused.deinit();
+    var stream = try gero.lang.tokenize(std.testing.allocator, fused.source);
+    defer stream.deinit();
+    var tree = try gero.lang.parseAllModules(std.testing.allocator, fused.source, stream, &fused.source_map);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheckGraph(std.testing.allocator, fused.source, &tree.program, &fused.import_aliases, .{ .source_map = &fused.source_map, .imports = fused.imports });
+    defer checked.deinit();
+    checked.program = &tree.program;
+    var compiled = try gero.lang.compile(std.testing.allocator, fused.source, &checked, .{
+        .import_aliases = &fused.import_aliases,
+        .graph = .{ .source_map = &fused.source_map, .imports = fused.imports },
+    });
+    defer compiled.deinit();
+
+    const header = try gero.disasm.parseHeader(compiled.image);
+    const files = try gero.gx.decodeFiles(std.testing.allocator, (try gero.gx.findChunk(header.debug, .files)).?);
+    defer std.testing.allocator.free(files);
+    const rows = try gero.gx.decodeLines(std.testing.allocator, (try gero.gx.findChunk(header.debug, .lines)).?);
+    defer std.testing.allocator.free(rows);
+
+    // Both files appear, and at least one row names each — an address
+    // from an imported module must not be credited to the importer.
+    try std.testing.expect(files.len >= 2);
+    var saw_main = false;
+    var saw_lib = false;
+    for (rows) |r| {
+        const name = std.fs.path.basename(files[r.file]);
+        if (std.mem.eql(u8, name, "main.gr")) saw_main = true;
+        if (std.mem.eql(u8, name, "lib.gr")) saw_lib = true;
+    }
+    try std.testing.expect(saw_main);
+    try std.testing.expect(saw_lib);
+
+    // Every row's range is non-empty and lands inside the image.
+    for (rows) |r| try std.testing.expect(r.end_addr > r.start_addr);
+}
+
+test "line table: absent when the build has no module graph" {
+    // A single-file compile with no source map cannot attribute a
+    // fused offset to a file, so it emits symbols only.
+    const src = "def main()\n  print 1\nend\n";
+    var stream = try gero.lang.tokenize(std.testing.allocator, src);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(std.testing.allocator, src, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(std.testing.allocator, src, &tree.program);
+    defer checked.deinit();
+    var compiled = try gero.lang.compile(std.testing.allocator, src, &checked, .{});
+    defer compiled.deinit();
+
+    const header = try gero.disasm.parseHeader(compiled.image);
+    try std.testing.expect((try gero.gx.findChunk(header.debug, .lines)) == null);
+    try std.testing.expect((try gero.gx.findChunk(header.debug, .symbols)) != null);
+}

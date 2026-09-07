@@ -124,6 +124,27 @@ pub const ChunkKind = enum(u8) {
 /// Bytes of chunk framing ahead of each payload.
 pub const chunk_header_size: usize = 5;
 
+/// One row of the line table: the half-open address range
+/// `[start_addr, end_addr)` that one source position generated.
+///
+/// Ranges are explicit rather than implied by the next row's start, so
+/// an address in a gap — a prologue, padding, a jump table — resolves
+/// to no row instead of silently borrowing the previous statement's.
+/// Rows nest wherever statements do; `lineAt` resolves that.
+pub const LineRow = struct {
+    start_addr: u16,
+    end_addr: u16,
+    /// Index into the files chunk.
+    file: u16,
+    /// 1-based, clamped at `0xFFFF`.
+    line: u16,
+    /// 1-based, clamped at `0xFFFF`.
+    column: u16,
+
+    /// Encoded size of one row.
+    pub const encoded_size: usize = 10;
+};
+
 /// Builds a debug section chunk by chunk. Chunks are written in the
 /// order added; a reader must not depend on that order.
 pub const DebugBuilder = struct {
@@ -159,6 +180,70 @@ pub const DebugBuilder = struct {
         return if (self.bytes.items.len == 0) null else self.bytes.items;
     }
 };
+
+/// 1-based (line, column) of `offset` within `content`, clamped to
+/// what a `LineRow` can hold. Both front-ends resolve positions this
+/// way, so a `.gas` row and a `.gr` row mean the same thing.
+pub fn lineColIn(content: []const u8, offset: u32) struct { line: u16, column: u16 } {
+    var line: usize = 1;
+    var column: usize = 1;
+    var i: usize = 0;
+    while (i < content.len and i < offset) : (i += 1) {
+        if (content[i] == '\n') {
+            line += 1;
+            column = 1;
+        } else column += 1;
+    }
+    // safety: both clamped to 0xFFFF before the narrowing cast.
+    return .{ .line = @intCast(@min(line, 0xFFFF)), .column = @intCast(@min(column, 0xFFFF)) };
+}
+
+/// Encode a files chunk payload: `[u16le count]` then, per file,
+/// `[u16le path_len][path bytes]`. Paths take a 16-bit length because
+/// an absolute path can exceed the 255 bytes a symbol name is capped
+/// at. Caller owns the result.
+pub fn encodeFiles(allocator: std.mem.Allocator, paths: []const []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try appendU16Le(allocator, &out, clampU16(paths.len));
+    for (paths) |p| {
+        const len = @min(p.len, 0xFFFF);
+        // safety: clamped to 0xFFFF on the line above.
+        try appendU16Le(allocator, &out, @intCast(len));
+        try out.appendSlice(allocator, p[0..len]);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Encode a lines chunk payload: `[u16le count]` then one `LineRow`
+/// per row, ascending by `start_addr`. Caller owns the result.
+pub fn encodeLines(allocator: std.mem.Allocator, rows: []const LineRow) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try appendU16Le(allocator, &out, clampU16(rows.len));
+    for (rows) |r| {
+        try appendU16Le(allocator, &out, r.start_addr);
+        try appendU16Le(allocator, &out, r.end_addr);
+        try appendU16Le(allocator, &out, r.file);
+        try appendU16Le(allocator, &out, r.line);
+        try appendU16Le(allocator, &out, r.column);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendU16Le(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: u16) !void {
+    var buf: [2]u8 = undefined;
+    writeU16Le(&buf, value);
+    try out.appendSlice(allocator, &buf);
+}
+
+/// A count that does not fit a u16 is clamped rather than truncated —
+/// the encoded count then under-reports, which a reader survives,
+/// where a wrapped count would desynchronize it.
+fn clampU16(n: usize) u16 {
+    // safety: clamped to 0xFFFF before the narrowing cast.
+    return @intCast(@min(n, 0xFFFF));
+}
 
 // ---------- reading ----------
 
@@ -202,4 +287,65 @@ pub fn findChunk(bytes: []const u8, kind: ChunkKind) DebugError!?[]const u8 {
         if (c.kind == kind) return c.payload;
     }
     return null;
+}
+
+/// Decode a files chunk payload into borrowed path slices. The
+/// returned slice is caller-owned; the paths point into `payload`.
+pub fn decodeFiles(allocator: std.mem.Allocator, payload: []const u8) ![]const []const u8 {
+    if (payload.len < 2) return error.TruncatedPayload;
+    const count = readU16Le(payload[0..2]);
+    const out = try allocator.alloc([]const u8, count);
+    errdefer allocator.free(out);
+
+    var cursor: usize = 2;
+    for (out) |*slot| {
+        if (cursor + 2 > payload.len) return error.TruncatedPayload;
+        const len = readU16Le(payload[cursor..][0..2]);
+        cursor += 2;
+        if (cursor + len > payload.len) return error.TruncatedPayload;
+        slot.* = payload[cursor..][0..len];
+        cursor += len;
+    }
+    return out;
+}
+
+/// Decode a lines chunk payload. Caller owns the returned slice.
+pub fn decodeLines(allocator: std.mem.Allocator, payload: []const u8) ![]const LineRow {
+    if (payload.len < 2) return error.TruncatedPayload;
+    const count = readU16Le(payload[0..2]);
+    // @as: widen the u16 row count for the byte-length math.
+    if (2 + @as(usize, count) * LineRow.encoded_size > payload.len) return error.TruncatedPayload;
+    const out = try allocator.alloc(LineRow, count);
+    errdefer allocator.free(out);
+
+    var cursor: usize = 2;
+    for (out) |*row| {
+        row.* = .{
+            .start_addr = readU16Le(payload[cursor..][0..2]),
+            .end_addr = readU16Le(payload[cursor + 2 ..][0..2]),
+            .file = readU16Le(payload[cursor + 4 ..][0..2]),
+            .line = readU16Le(payload[cursor + 6 ..][0..2]),
+            .column = readU16Le(payload[cursor + 8 ..][0..2]),
+        };
+        cursor += LineRow.encoded_size;
+    }
+    return out;
+}
+
+/// The row covering `addr`, or `null` when the address falls in a gap
+/// — a prologue, padding, or a jump table.
+///
+/// Statements nest, so an address inside an `if` body is covered by
+/// both the body's row and the `if`'s. The narrowest match is the one
+/// a debugger wants: the innermost statement actually executing.
+pub fn lineAt(rows: []const LineRow, addr: u16) ?LineRow {
+    var best: ?LineRow = null;
+    for (rows) |r| {
+        if (addr < r.start_addr or addr >= r.end_addr) continue;
+        const width = r.end_addr - r.start_addr;
+        if (best) |b| {
+            if (width < b.end_addr - b.start_addr) best = r;
+        } else best = r;
+    }
+    return best;
 }

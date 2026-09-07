@@ -20,6 +20,18 @@ pub const Span = struct {
     end: usize,
 };
 
+/// One statement's emitted range inside a fragment, rebased to the
+/// fragment's start. Carried through the cache so a build that
+/// replays a body still produces its line-table rows — without it a
+/// warm build's debug section would differ from a cold one's.
+pub const LineSpan = struct {
+    start_offset: usize,
+    end_offset: usize,
+    /// Fused-source offset of the statement, for file / position
+    /// lookup at section-build time.
+    source_offset: u32,
+};
+
 /// An intra-fragment jump, rebased to its fragment.
 pub const Reloc = struct {
     patch_offset: usize,
@@ -84,6 +96,7 @@ pub const Fragment = struct {
     refs: []const SymbolRef,
     strings: []const StringRef,
     defines: []const Definition,
+    lines: []const LineSpan,
 };
 
 /// Slice `emitter`'s buffers into one fragment per recorded span,
@@ -112,6 +125,7 @@ pub fn extract(arena: std.mem.Allocator, emitter: *const Emitter) ![]const Fragm
             .relocs = try collectRelocs(arena, emitter, s),
             .refs = try collectRefs(arena, emitter, s),
             .strings = try collectStrings(arena, emitter, s),
+            .lines = try collectLines(arena, emitter, s),
             .defines = try collectDefines(arena, emitter, s),
         });
     }
@@ -183,6 +197,23 @@ fn collectStrings(arena: std.mem.Allocator, emitter: *const Emitter, s: Span) ![
     return out.toOwnedSlice(arena);
 }
 
+/// The statement ranges lying wholly inside `s`, rebased to it. A
+/// range straddling the span's edge belongs to no single fragment and
+/// is dropped rather than rebased into the wrong one.
+fn collectLines(arena: std.mem.Allocator, emitter: *const Emitter, s: Span) ![]const LineSpan {
+    var out: std.ArrayList(LineSpan) = .empty;
+    for (emitter.line_rows.items) |l| {
+        if (!sameBank(l.bank, s.bank)) continue;
+        if (l.start_offset < s.start or l.end_offset > s.end) continue;
+        try out.append(arena, .{
+            .start_offset = l.start_offset - s.start,
+            .end_offset = l.end_offset - s.start,
+            .source_offset = l.span_start,
+        });
+    }
+    return out.toOwnedSlice(arena);
+}
+
 fn collectDefines(arena: std.mem.Allocator, emitter: *const Emitter, s: Span) ![]const Definition {
     var out: std.ArrayList(Definition) = .empty;
     var it = emitter.fn_addresses.iterator();
@@ -226,6 +257,7 @@ pub fn splice(emitter: *Emitter, f: Fragment) !void {
     try spliceRelocs(emitter, f, base);
     try spliceRefs(emitter, f, base);
     try spliceStrings(emitter, f, base);
+    try spliceLines(emitter, f, base);
 
     try emitter.noteFragment(f.symbol, f.module, f.bank, base, base + f.bytes.len);
 }
@@ -238,6 +270,18 @@ fn spliceDefines(emitter: *Emitter, f: Fragment, base: usize) !void {
         try emitter.fn_addresses.put(emitter.arena, name, .{
             .bank = f.bank,
             .offset = base + d.offset,
+        });
+    }
+}
+
+/// Re-record the fragment's statement ranges at their new offsets.
+fn spliceLines(emitter: *Emitter, f: Fragment, base: usize) !void {
+    for (f.lines) |l| {
+        try emitter.line_rows.append(emitter.allocator, .{
+            .bank = f.bank,
+            .start_offset = base + l.start_offset,
+            .end_offset = base + l.end_offset,
+            .span_start = l.source_offset,
         });
     }
 }
