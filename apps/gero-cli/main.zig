@@ -1,6 +1,7 @@
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
+const load_error = @import("load_error.zig");
 const term_mod = @import("term.zig");
 const run_cmd = @import("run.zig");
 const info_cmd = @import("info.zig");
@@ -116,7 +117,8 @@ fn infoDispatch(
     };
 
     const loaded = gero.vm.parseGx(bytes) catch |err| {
-        try term.err("gero info: invalid .gx file ({s})", .{@errorName(err)});
+        var msg_buf: [load_error.max_message_len]u8 = undefined;
+        try term.err("gero info: {s}", .{load_error.describe(&msg_buf, err, bytes)});
         return 1;
     };
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
+const load_error = @import("load_error.zig");
 const term_mod = @import("term.zig");
 
 /// Host interface that persists the SRAM bytes. Intrusive:
@@ -33,7 +34,8 @@ pub fn execute(
     gx_bytes: []const u8,
 ) !u8 {
     const loaded = gero.vm.parseGx(gx_bytes) catch |err| {
-        try term.err("gero run: invalid .gx file ({s})", .{@errorName(err)});
+        var msg_buf: [load_error.max_message_len]u8 = undefined;
+        try term.err("gero run: {s}", .{load_error.describe(&msg_buf, err, gx_bytes)});
         return 1;
     };
 
@@ -252,7 +254,11 @@ test "execute: bad magic exits 1 with structured message" {
 
     const code = try execute(testing.allocator, .{}, &out, &term, null, &buf);
     try testing.expectEqual(@as(u8, 1), code);
-    try testing.expect(std.mem.indexOf(u8, err_buf[0..err.end], "BadMagic") != null);
+    // The message names what is wrong, not the Zig error — an
+    // `@errorName` tells the user nothing they can act on.
+    const written = err_buf[0..err.end];
+    try testing.expect(std.mem.indexOf(u8, written, "not a .gx file") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "BadMagic") == null);
 }
 
 test "execute: unhandled fault exits 6" {
