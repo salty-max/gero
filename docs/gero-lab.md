@@ -67,6 +67,37 @@ returns variable-length data writes into a module-owned buffer and
 returns `(ptr, len)`; the caller copies out before the next call. No
 JS-side frees, no leaks across the boundary.
 
+**A pointer is an offset from the arena's base**, not an absolute
+address. A host resolves one as:
+
+```js
+memory.buffer + gero_arena_base() + ptr
+```
+
+The indirection buys uniformity: an offset means the same thing on
+wasm32, where a pointer already *is* a linear-memory offset, and on the
+64-bit host the module's tests run on.
+
+`0` is never a valid pointer — the arena reserves its first word — so
+an export signals failure by returning a null pointer without that
+colliding with a legitimate first allocation.
+
+**Lifecycle**
+
+| Export | Purpose |
+|---|---|
+| `gero_init(arena_bytes) -> Status` | Size the arena. `0` takes the default; a larger request is clamped. Calling it again resets the session. |
+| `gero_alloc(len) -> ptr` | Reserve `len` bytes to write source into. `0` means the arena cannot satisfy it. |
+| `gero_reset()` | Drop everything since the last reset. Exports do this on entry; a host calls it to reclaim memory while idle. |
+| `gero_arena_base() -> ptr` | Where the arena begins in linear memory. |
+| `gero_arena_used()` / `gero_arena_limit()` | For a host sizing its ceiling. |
+| `gero_result_size() -> u32` | So a decoder can assert it agrees with the module. |
+| `gero_version() -> Result` | The gero version this module was built from, for the `ready` event (§3.2). |
+
+Exhaustion is **reported, not trapped**: `gero_alloc` returns `0` and
+an export returns `out_of_memory`. A host raises its ceiling and
+retries rather than meeting an instance that has to be discarded.
+
 ### 2.2 Exports
 
 **Toolchain**
@@ -80,9 +111,42 @@ JS-side frees, no leaks across the boundary.
 | `gero_disasm(gx_ptr, gx_len, bank) -> Result` | `.gx` → annotated assembly |
 
 A `Result` carries a status, an optional payload (`.gx` bytes or
-formatted text), and a diagnostics array (§5). Both source languages
-use one shape, keyed by a `lang` discriminant, so the UI has one code
-path.
+formatted text), and a diagnostics array. Both source languages use one
+shape, keyed by a `lang` discriminant, so the UI has one code path.
+
+Every export returns a pointer to a single `Result` in module memory,
+valid until the next call. Its layout is fixed: **five little-endian
+`u32` fields**, twenty bytes, decoded with five reads at known offsets
+and no schema.
+
+| Offset | Field | Meaning |
+|---|---|---|
+| `0` | `status` | See below |
+| `4` | `payload_ptr` | `.gx` bytes or UTF-8 text, `0` when there is none |
+| `8` | `payload_len` | |
+| `12` | `diagnostics_ptr` | UTF-8 JSON array, `0` when there is none |
+| `16` | `diagnostics_len` | |
+
+| `status` | Meaning |
+|---|---|
+| `0` `ok` | Produced its payload with no fatal diagnostic |
+| `1` `diagnostics` | Ran and reported diagnostics; payload absent or partial |
+| `2` `not_initialized` | `gero_init` has not been called |
+| `3` `out_of_memory` | The arena cannot satisfy the request |
+| `4` `bad_lang` | A `lang` discriminant naming no front-end |
+| `5` `bad_argument` | A `(ptr, len)` outside the arena |
+
+The status distinguishes *nothing was reported* from *something was*.
+A host branches on it rather than on whether the payload happens to be
+empty — an empty JSON array is still two bytes.
+
+The payload stays **raw bytes**; only the diagnostics are JSON, because
+that is the one part with a shape worth sharing. Those objects come
+from the same writer `gero check --format=json` uses, so an error's
+wording, code, and span are identical in a terminal and in a browser
+(§5).
+
+`lang` is `0` for `.gas` and `1` for `.gr`.
 
 **VM**
 

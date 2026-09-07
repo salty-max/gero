@@ -366,6 +366,9 @@ zig build verify  # pre-push (~3s) — quick + lint + asm example
                   # + golden (emitted bytecode vs the blessed corpus).
                   # REQUIRED green before pushing.
 
+zig build wasm    # the gero.wasm module for browser hosts
+                  # (docs/gero-lab.md §2). Part of `ci`.
+
 zig build ci      # full matrix (~4s warm / ~2m cold) — verify
                   # + test-modes (Debug/Safe/Fast/Small)
                   # + test-all (linux/macos/windows/wasi)
