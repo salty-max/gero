@@ -216,3 +216,25 @@ test "dispatch: step auto-advances ip by instruction size" {
     try std.testing.expectEqual(@as(u16, 0x1103), vm.regs.read(.ip));
     try std.testing.expectEqual(@as(u16, 0xBEEF), vm.regs.read(.r1));
 }
+
+// ---------- vector space (ISA §6.1) ----------
+
+test "ivtSlot: every vector has a slot inside the table" {
+    // `int` takes an `Imm8`, so all 256 values are legal vectors and
+    // each needs a slot. The table spans 0x1000..0x11FF.
+    var v: u16 = 0;
+    while (v <= 0xFF) : (v += 1) {
+        // safety: bounded by the loop condition.
+        const slot = gero.vm.ivtSlot(@enumFromInt(@as(u8, @intCast(v))));
+        try std.testing.expect(slot >= 0x1000);
+        try std.testing.expect(slot <= 0x11FE);
+    }
+}
+
+test "ivtSlot: the table ends below user RAM" {
+    // The highest slot must not reach where a program's code loads —
+    // a vector reading its handler out of user code jumps to whatever
+    // the program's own bytes happen to decode as.
+    const highest = gero.vm.ivtSlot(@enumFromInt(0xFF));
+    try std.testing.expect(highest + 1 < gero.lang.codegen.code_base);
+}

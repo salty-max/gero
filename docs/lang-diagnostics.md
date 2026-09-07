@@ -746,6 +746,7 @@ should have already enforced.
 | Code | Meaning |
 |------|---------|
 | `E_CODEGEN_UNSUPPORTED` | A syntactically + type-valid construct the codegen doesn't lower yet (the catch-all — e.g. an ordering comparison on a struct or tuple, a `==` over an array / `Vec` / nullable field or a recursive enum, printing a value with no default rendering (array / `Vec` / class / reference / fn-pointer / nullable) or a recursive type, storing into a tuple's aggregate element). |
+| `E_CODEGEN_BAD_INTERRUPT_VECTOR` | An `@interrupt N` vector outside `0..255`. A vector is one byte (`int` takes an `Imm8`, isa.md §6.1), so a larger or negative literal is a mistake rather than something to wrap into range. |
 | `E_CODEGEN_FRAME_TOO_LARGE` | A function's locals or parameters exceed the 127-byte limit on `[fp + imm8]` fp-relative addressing (the ISA's only frame-offset mode). Reduce locals/params. |
 | `E_CODEGEN_INLINE_ASM` | An `asm "..."` statement (§4.11) couldn't lower — a `{name}` operand isn't a local / parameter, the instruction is malformed, or its operand types match no opcode form. |
 | `E_CODEGEN_UNDEFINED_FN` | A call's target isn't a known top-level `def` (an unresolved forward reference at patch time). |
