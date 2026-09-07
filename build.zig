@@ -539,6 +539,43 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(wasm_test).step);
 
+    // Each file carrying tests is its own root as well, so dropping one
+    // from the module's import graph cannot silently stop testing it.
+    // Written out rather than looped: the lint rule matches the literal
+    // path, and a `b.fmt` would hide these from it.
+    const wasm_abi_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-wasm/abi.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wasm_abi_mod.addImport("gero", gero_mod);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{
+        .name = "test-wasm-abi",
+        .root_module = wasm_abi_mod,
+    })).step);
+
+    const wasm_session_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-wasm/session.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wasm_session_mod.addImport("gero", gero_mod);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{
+        .name = "test-wasm-session",
+        .root_module = wasm_session_mod,
+    })).step);
+
+    const wasm_toolchain_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-wasm/toolchain.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wasm_toolchain_mod.addImport("gero", gero_mod);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{
+        .name = "test-wasm-toolchain",
+        .root_module = wasm_toolchain_mod,
+    })).step);
+
     const wasm_install = b.addInstallArtifact(wasm_exe, .{});
     const wasm_step = b.step("wasm", "Build the gero.wasm module for browser hosts");
     wasm_step.dependOn(&wasm_install.step);
