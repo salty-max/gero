@@ -26,7 +26,10 @@ const Result = abi.Result;
 /// plus its sources, diagnostics, and intermediate trees — with room
 /// to spare. A host that wants a different ceiling passes one to
 /// `gero_init`.
-var arena_store: [max_arena_bytes]u8 = undefined;
+// `align(16)` so aligning an *offset* into the store also aligns the
+// resulting address: the allocator hands out `base + offset`, and an
+// unaligned base would make every alignment guarantee a lie.
+var arena_store: [max_arena_bytes]u8 align(16) = undefined;
 
 /// Ceiling on the arena, and the default when `gero_init` is passed 0.
 pub const max_arena_bytes: usize = 16 * 1024 * 1024;
@@ -66,7 +69,7 @@ var result: Result = undefined;
 /// The session's source buffers. Outlives an operation's arena, so it
 /// carries its own storage — see `file_store`.
 var file_set: files.Set = undefined;
-var file_store: [max_file_bytes]u8 = undefined;
+var file_store: [max_file_bytes]u8 align(16) = undefined;
 var file_used: usize = 0;
 
 /// Ceiling on the file set's own storage. Separate from the operation
@@ -313,6 +316,41 @@ pub fn clearFiles() void {
 pub fn fileCount() u32 {
     // safety: bounded by the file store's capacity.
     return @intCast(file_set.count());
+}
+
+/// A failure that carries an explanation — a `.gx` that will not load
+/// says *why*, in the same words a terminal would use, rather than
+/// leaving a host to translate a status code.
+///
+/// The message rides in the diagnostics field: it is prose for a
+/// person, which is what that field already carries.
+pub fn failWith(status: Status, message: []const u8) *const Result {
+    result = .{
+        .status = @intFromEnum(status),
+        .payload_ptr = 0,
+        .payload_len = 0,
+        .diagnostics_ptr = ptrOf(message),
+        // safety: a bounded message, far under 4 GiB.
+        .diagnostics_len = @intCast(message.len),
+    };
+    return &result;
+}
+
+/// A payload plus a count of bytes dropped on the way to producing it.
+///
+/// Used by the print drain: a program can outrun its buffer, and the
+/// count is how that stays visible instead of silently truncating.
+pub fn finishWithDropped(payload: []const u8, dropped: u64) *const Result {
+    result = .{
+        .status = @intFromEnum(Status.ok),
+        .payload_ptr = ptrOf(payload),
+        // safety: a bounded buffer, far under 4 GiB.
+        .payload_len = @intCast(payload.len),
+        .diagnostics_ptr = 0,
+        // safety: clamped so a huge drop count still reports non-zero.
+        .diagnostics_len = @intCast(@min(dropped, std.math.maxInt(u32))),
+    };
+    return &result;
 }
 
 /// The bytes a `Result`'s payload points at. Resolving a pointer is

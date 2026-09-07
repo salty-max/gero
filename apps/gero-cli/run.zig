@@ -1,7 +1,7 @@
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
-const load_error = @import("load_error.zig");
+const load_error = gero.load_error;
 const term_mod = @import("term.zig");
 
 /// Host interface that persists the SRAM bytes. Intrusive:
