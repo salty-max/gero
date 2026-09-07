@@ -265,8 +265,19 @@ pub const ResolveError = Dir.RealPathFileAllocError || Dir.ReadFileAllocError;
 /// buffers can drive both resolvers with it.
 pub const Overlay = std.StringHashMapUnmanaged([]const u8);
 
+/// Where a resolver finds the files an `include` graph names. Same
+/// shape as `gero.lang.IncludeSource`, so a tool holding one file set
+/// drives both.
+pub const Source = union(enum) {
+    /// The host filesystem, with `overlay` shadowing unsaved buffers.
+    disk: struct { io: Io, overlay: ?*const Overlay },
+    /// The set **is** the filesystem: a name it does not hold is
+    /// not-found, and nothing is read from disk.
+    virtual: *const Overlay,
+};
+
 const Context = struct {
-    io: Io,
+    source: Source,
     allocator: std.mem.Allocator,
     fused: *std.ArrayList(u8),
     source_map: *SourceMap,
@@ -274,7 +285,6 @@ const Context = struct {
     /// Canonical paths currently being resolved — cycle detection.
     /// Strings reference paths owned by `source_map.files`.
     in_progress: *std.ArrayList([]const u8),
-    overlay: ?*const Overlay,
 };
 
 /// Walk the include graph from `root_path` and produce a single
@@ -298,6 +308,26 @@ pub fn resolveIncludesOverlaid(
     root_path: []const u8,
     overlay: ?*const Overlay,
 ) ResolveError!FusedSource {
+    return resolveIncludesFrom(allocator, root_path, .{ .disk = .{ .io = io, .overlay = overlay } });
+}
+
+/// Resolve an `include` graph entirely within `files`, with no
+/// filesystem. A name the set does not hold is a not-found diagnostic
+/// rather than a read.
+pub fn resolveIncludesVirtual(
+    allocator: std.mem.Allocator,
+    root_name: []const u8,
+    files: *const Overlay,
+) ResolveError!FusedSource {
+    return resolveIncludesFrom(allocator, root_name, .{ .virtual = files });
+}
+
+/// The resolver both entry points share.
+pub fn resolveIncludesFrom(
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    source: Source,
+) ResolveError!FusedSource {
     var fused: std.ArrayList(u8) = .empty;
     errdefer fused.deinit(allocator);
 
@@ -315,13 +345,12 @@ pub fn resolveIncludesOverlaid(
     defer in_progress.deinit(allocator);
 
     var ctx = Context{
-        .io = io,
+        .source = source,
         .allocator = allocator,
         .fused = &fused,
         .source_map = &source_map,
         .errors = &errors,
         .in_progress = &in_progress,
-        .overlay = overlay,
     };
 
     try resolveOne(&ctx, root_path, null, 0, 0);
@@ -338,10 +367,55 @@ pub fn resolveIncludesOverlaid(
 /// overlaid, otherwise what is on disk. Always allocator-owned, since
 /// `SourceMap.intern` takes ownership either way.
 fn readContent(ctx: *Context, canonical: []const u8) ResolveError![]u8 {
-    if (ctx.overlay) |ov| {
-        if (ov.get(canonical)) |buffered| return ctx.allocator.dupe(u8, buffered);
+    switch (ctx.source) {
+        .disk => |d| {
+            // unreachable: a freestanding build never constructs `.disk`,
+            // and the comptime guard keeps this arm out of that build.
+            if (comptime !hasFilesystem()) unreachable;
+            if (d.overlay) |ov| {
+                if (ov.get(canonical)) |buffered| return ctx.allocator.dupe(u8, buffered);
+            }
+            return Dir.cwd().readFileAlloc(d.io, canonical, ctx.allocator, Io.Limit.limited(max_file_size));
+        },
+        // `canonicalize` already proved the set holds it.
+        .virtual => |files| return ctx.allocator.dupe(u8, files.get(canonical).?),
     }
-    return Dir.cwd().readFileAlloc(ctx.io, canonical, ctx.allocator, Io.Limit.limited(max_file_size));
+}
+
+/// The name a file is known by once resolved, or `null` when it does
+/// not exist. On disk that is its real path; in a virtual set it is the
+/// requested path with `.` and `..` folded out.
+/// Whether this target has a filesystem the resolver can reach.
+///
+/// A freestanding build has none — `std.Io.Dir` does not even define
+/// `PATH_MAX` there — so the `.disk` branch below is compiled out
+/// rather than merely unused. Zig analyzes both arms of a runtime
+/// switch, so an ordinary `if` would not be enough.
+fn hasFilesystem() bool {
+    return @import("builtin").target.os.tag != .freestanding;
+}
+
+fn canonicalize(ctx: *Context, absolute: []const u8) ResolveError!?[:0]u8 {
+    switch (ctx.source) {
+        .disk => |d| {
+            // unreachable: a freestanding build never constructs `.disk`,
+            // and the comptime guard keeps this arm out of that build.
+            if (comptime !hasFilesystem()) unreachable;
+            return Dir.cwd().realPathFileAlloc(d.io, absolute, ctx.allocator) catch |err| switch (err) {
+                error.FileNotFound => null,
+                else => err,
+            };
+        },
+        .virtual => |files| {
+            const normalized = try std.fs.path.resolvePosix(ctx.allocator, &.{absolute});
+            defer ctx.allocator.free(normalized);
+            // A leading slash is an artifact of resolving against no
+            // cwd; the set's names have none.
+            const trimmed = std.mem.trimStart(u8, normalized, "/");
+            if (!files.contains(trimmed)) return null;
+            return try ctx.allocator.dupeZ(u8, trimmed);
+        },
+    }
 }
 
 fn resolveOne(
@@ -372,20 +446,17 @@ fn resolveOne(
         try std.fs.path.join(ctx.allocator, &.{ ".", requested });
     defer ctx.allocator.free(absolute);
 
-    const canonical = Dir.cwd().realPathFileAlloc(ctx.io, absolute, ctx.allocator) catch |err| switch (err) {
-        error.FileNotFound => {
-            try ctx.errors.append(ctx.allocator, .{
-                .code = .include_not_found,
-                .parse_error = core.parseError(
-                    "include",
-                    include_site_offset,
-                    "include target file not found",
-                    .{ .expected = "existing .gas file", .actual = requested, .kind = .semantic },
-                ),
-            });
-            return;
-        },
-        else => return err,
+    const canonical = (try canonicalize(ctx, absolute)) orelse {
+        try ctx.errors.append(ctx.allocator, .{
+            .code = .include_not_found,
+            .parse_error = core.parseError(
+                "include",
+                include_site_offset,
+                "include target file not found",
+                .{ .expected = "existing .gas file", .actual = requested, .kind = .semantic },
+            ),
+        });
+        return;
     };
 
     for (ctx.in_progress.items) |p| {
