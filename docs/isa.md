@@ -64,7 +64,7 @@ within `flg` (bit 0 = LSB):
 | 2   | `C`  | Unsigned overflow on add, borrow on sub, last bit shifted out of `shl`/`shr`. |
 | 3   | `V`  | Signed overflow (sign of result differs from sign of both operands on add; from sign of minuend on sub). |
 | 4   | `I`  | Interrupt-disable. `1` ⇒ global IRQs blocked (per-vector mask in `im` still applies on top). |
-| 5-15 | reserved | Read as 0. |
+| 5-15 | reserved | Read as `0`. A write to them is discarded, so a program cannot stash data there and find it later. |
 
 Operations that affect arithmetic flags (Z/N/C/V): `add`, `sub`,
 `mul`, `div`, `divs`, `neg`, `and`, `or`, `xor`, `not`, `shl`,
@@ -95,8 +95,8 @@ the host's `MemoryMapper` (§3.5) can remap any region to a device.
 |----------------|------|------|
 | `0x0000..0x00FF` | 256 B | **Zero page** — 1-byte addressing mode, fast access for lang globals and frequently-touched flags (6502-style). |
 | `0x0100..0x0FFF` | 3.75 KB | **Low RAM** — conventional stack range. `sp` initialized at `0xFFFE` but stack lives wherever the program puts it; this region is the canonical home. |
-| `0x1000..0x10FF` | 256 B | **Interrupt vector table** — 64 entries × 2 bytes each. Vector `N` lives at `0x1000 + 2*N`. |
-| `0x1100..0x7FFF` | ~28 KB | **User RAM** — code + data. Program image loads here at boot. |
+| `0x1000..0x11FF` | 512 B | **Interrupt vector table** — 256 entries × 2 bytes each, one per vector. Vector `N` lives at `0x1000 + 2*N`. |
+| `0x1200..0x7FFF` | ~27.5 KB | **User RAM** — code + data. Program image loads here at boot. |
 | `0x8000..0xBFFF` | 16 KB | **Mapped region A** — host-defined. Plain RAM by default. gtx-16 leaves this region as plain RAM and recommends carts use it for sprite-sheet storage + other large assets (the cart sets `SPRITESHEET_BASE` here). |
 | `0xC000..0xFEFF` | ~15.75 KB | **Bank window** — mirrors bank `mb` if the program is banked, otherwise plain RAM. |
 | `0xFF00..0xFFFF` | 256 B | **Mapped region B / IO page** — host-defined peripheral registers. gtx-16 maps display registers, drawing command surface, audio channels, input, RNG, timer, and KV store here. Plain RAM if no host device claims it. |
@@ -250,20 +250,37 @@ family of instruction you're looking at.
 
 | Page         | Role                                  | §    |
 |--------------|---------------------------------------|------|
-| `0x10-0x1F`  | Mouvement mot (`mov`)                 | 5.1  |
-| `0x20-0x2F`  | Mouvement octet (`mov8`/`movh`/`movl` + block) | 5.2  |
-| `0x30-0x3F`  | Pile (`push` / `pop`)                 | 5.3  |
-| `0x40-0x4F`  | Arithmétique principale               | 5.4  |
-| `0x50-0x5F`  | Arithmétique avec retenue (`adc` / `sbc`) | 5.5 |
-| `0x60-0x6F`  | Bitwise (logique mot + bit ops)       | 5.6  |
-| `0x70-0x7F`  | Décalages / rotations                 | 5.7  |
-| `0x80-0x8F`  | Comparaison (`cmp` / `tst`)           | 5.8  |
-| `0x90-0x9F`  | Branchements (sauts)                  | 5.9  |
-| `0xA0-0xAF`  | Sous-routines (`call` / `ret`)        | 5.10 |
-| `0xB0-0xBF`  | Manipulation de flags                 | 5.11 |
-| `0xC0-0xCF`  | Divers (`swap` / `nop`)               | 5.12 |
-| `0xD0-0xEF`  | **Réservées** pour extensions futures | —    |
-| `0xF0-0xFF`  | Système (`int` / `rti` / `brk` / `hlt`) | 5.13 |
+| `0x00-0x0F`  | **Unassigned** — always invalid (see below) | —    |
+| `0x10-0x1F`  | Word moves (`mov`)                    | 5.1  |
+| `0x20-0x2F`  | Byte moves (`mov8` / `movh` / `movl` + block) | 5.2  |
+| `0x30-0x3F`  | Stack (`push` / `pop`)                | 5.3  |
+| `0x40-0x4F`  | Core arithmetic                       | 5.4  |
+| `0x50-0x5F`  | Carry arithmetic (`adc` / `sbc`)      | 5.5  |
+| `0x60-0x6F`  | Bitwise (word logic + bit ops)        | 5.6  |
+| `0x70-0x7F`  | Shifts / rotates                      | 5.7  |
+| `0x80-0x8F`  | Comparison (`cmp` / `tst`)            | 5.8  |
+| `0x90-0x9F`  | Branches (jumps)                      | 5.9  |
+| `0xA0-0xAF`  | Subroutines (`call` / `ret`)          | 5.10 |
+| `0xB0-0xBF`  | Flag manipulation                     | 5.11 |
+| `0xC0-0xCF`  | Miscellaneous (`swap` / `nop`)        | 5.12 |
+| `0xD0-0xEF`  | **Reserved** for future extensions    | —    |
+| `0xF0-0xFF`  | System (`int` / `rti` / `brk` / `hlt`) | 5.13 |
+
+`0x00-0x0F` and `0xD0-0xEF` differ in intent, and the difference is
+frozen:
+
+- **`0x00-0x0F` stays permanently unassigned.** Zeroed RAM decodes as
+  `0x00`, so a program that runs off the end of its code faults
+  immediately on the invalid-opcode vector instead of executing
+  whatever the zero page happens to mean. Assigning anything here
+  would turn that into silent execution.
+- **`0xD0-0xEF` is reserved for future instructions.** A decoder that
+  meets one must raise the invalid-opcode fault, which is what makes
+  filling a slot later an additive change: an older VM rejects the
+  new program loudly rather than mis-decoding it.
+
+Every unassigned byte in either range raises the invalid-opcode fault
+(vector `0x01`). No opcode is "ignored".
 
 ### 5.1 Data movement (`mov` family) — `0x1X`
 
@@ -584,8 +601,14 @@ syscall surface. Add new syscall numbers conservatively.
 
 ### 6.1 Vectors
 
-The interrupt vector table lives at `0x1000` and holds 64 entries of
-2 bytes each (`u16le` address). Vector `N` lives at `0x1000 + 2 * N`.
+The interrupt vector table lives at `0x1000` and holds **256 entries**
+of 2 bytes each (`u16le` address). Vector `N` lives at
+`0x1000 + 2 * N`, so the table spans `0x1000..0x11FF`.
+
+The count follows from the encoding: `int` takes an `Imm8` (§5.13), so
+every one of the 256 byte values is a legal vector and every one needs
+a slot. A smaller table would leave part of the operand's range
+addressing memory outside it.
 
 Reserved vectors:
 
@@ -599,7 +622,7 @@ Reserved vectors:
 | `0x05` | Arithmetic overflow. VM raises this on `div` / `divs` when the quotient exceeds 16 bits. Languages targeting gero may also software-raise it (via `int 5`) when their own overflow checks fire — gero-lang does so for `+` / `-` / `*` in debug builds. |
 | `0x06` | Program-initiated trap. Raised by `sys trap` when a program gives up deliberately — gero-lang emits it after a failed `test.assert_*`, `panic`, `unreachable`, or `todo` has printed its message. Distinct from `hlt` so a host can tell a program that gave up from one that finished. |
 | `0x07..0x1F` | Reserved (host-defined). gtx-16 uses `0x07` for its vblank IRQ. |
-| `0x20..0x3F` | Software interrupts (`int N`). |
+| `0x20..0xFF` | Software interrupts (`int N`). |
 
 ### 6.2 Entry sequence
 
@@ -643,9 +666,9 @@ Two layers, by design — global on/off vs per-vector mask:
   on ISR entry, restored on `rti`. Software can `mov ... flg` to
   toggle.
 - **`im`** is a 16-bit per-vector mask: bit N enables vector N
-  (vectors `0x00..0x0F` only — fine-grained masking for the reserved
-  + first software-int range). Vectors `0x10..0x3F` are always
-  enabled if `flg.I = 0`; finer masking is the program's job.
+  (vectors `0x00..0x0F` only — fine-grained masking for the fault
+  range). Vectors `0x10..0xFF` are always enabled if `flg.I = 0`;
+  finer masking is the program's job.
 - At boot: `flg.I = 0` (interrupts globally enabled), `im = 0xFFFF`
   (every maskable vector enabled).
 
@@ -684,7 +707,7 @@ metadata.
 |-----|---------|
 | 0   | banked  — file contains `bank_count` × 16384 bytes after the base image |
 | 1   | has-debug-symbols — debug section follows the image / banks |
-| 2-15| reserved (must be 0) |
+| 2-15| reserved — a writer must set them to `0`, and a reader **must reject** a file with any set. Rejecting rather than ignoring is what lets a future flag be additive: an older VM refuses a program it cannot honor instead of running it with the flag's meaning silently dropped. |
 
 ### 7.2 Layout
 
@@ -852,8 +875,9 @@ incompatible versions.
 
 ## 11. Open questions
 
-None outstanding. The previously-deferred questions are now
-locked above:
+None outstanding — and unlike a previous revision, that is the result
+of a line-by-line audit against the implementation rather than an
+assertion. What the audit settled:
 
 - `mul` produces 32-bit `acu:dst` (8086 / 68000 lineage). §5.4.
 - `inc` / `dec` set Z, N, V but leave C intact (6502 / Z80 / 8086 /
@@ -861,16 +885,26 @@ locked above:
 - Interrupt re-entry control is `flg.I` plus the `im` per-vector
   mask (6502 / 8086 split). The standalone "in-ISR" bit is dropped.
   §2.1, §6.4.
-- `div` / `divs` are spec'd and implemented . §5.4. Faults at
+- `div` / `divs` are spec'd and implemented. §5.4. Faults at
   vectors `0x03` (/0) and `0x05` (overflow). §6.1, §9.
 - `image_size: u16le` ranges `0..65535` — no overload, no flag bit.
   Programs needing more than 65535 bytes of base image use banks.
   §7.1.
+- **The vector table holds 256 entries**, one per value of `int`'s
+  `Imm8` operand, spanning `0x1000..0x11FF`. An earlier revision
+  described 64 entries in a 256-byte region while the implementation
+  addressed all 256, so vectors above `0x7F` read their handler out of
+  user code. §3.1, §6.1.
+- **`0x00-0x0F` is permanently unassigned**, distinct from the
+  `0xD0-0xEF` reserved range. Zeroed memory must fault rather than
+  execute. §5.
+- **Reserved `flg` bits read as `0`** and are masked on write, so no
+  program can come to depend on them. §2.1.
+- **Reserved header flag bits are rejected**, not ignored, so an
+  older VM refuses a program it cannot honor. §7.1.
 
 Future-version considerations (track outside this doc):
 
-- Vector `0x04` is reserved but unassigned. Likely candidate: page
-  fault for a future MMU.
 - Saturating-arithmetic variants (`adds`, `subs`) for fixed-point
   math in gero-lang. Not implemented yet; would be an additive minor
   bump.

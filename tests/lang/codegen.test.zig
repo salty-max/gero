@@ -9493,3 +9493,66 @@ test "spec: every documented language feature compiles" {
     }
     try std.testing.expectEqualStrings("", broke.items);
 }
+
+// ---------- interrupt vectors (ISA §6.1) ----------
+
+/// Compile `src` and return whether it reported `code`.
+fn reportsCodegenError(src: []const u8, code: []const u8) !bool {
+    var stream = try gero.lang.tokenize(alloc, src);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, src, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, src, &tree.program);
+    defer checked.deinit();
+    var compiled = try gero.lang.compile(alloc, src, &checked, .{});
+    defer compiled.deinit();
+    for (compiled.diagnostics) |d| {
+        if (std.mem.eql(u8, d.code, code)) return true;
+    }
+    return false;
+}
+
+test "codegen/@interrupt: a vector above 255 is rejected" {
+    // A vector is one byte, so a larger literal is a mistake rather
+    // than something to wrap into range — this used to become 44.
+    try std.testing.expect(try reportsCodegenError(
+        "@interrupt 300\ndef handler()\nend\ndef main()\n  print 1\nend\n",
+        "E_CODEGEN_BAD_INTERRUPT_VECTOR",
+    ));
+}
+
+test "codegen/@interrupt: a negative vector is rejected" {
+    try std.testing.expect(try reportsCodegenError(
+        "@interrupt -1\ndef handler()\nend\ndef main()\n  print 1\nend\n",
+        "E_CODEGEN_BAD_INTERRUPT_VECTOR",
+    ));
+}
+
+test "codegen/@interrupt: vector 255 is in range" {
+    try std.testing.expect(!try reportsCodegenError(
+        "@interrupt 255\ndef handler()\nend\ndef main()\n  print 1\nend\n",
+        "E_CODEGEN_BAD_INTERRUPT_VECTOR",
+    ));
+}
+
+test "codegen/@interrupt: a vector above 0x7F fires its handler" {
+    // Vectors 0x80..0xFF take their slot from 0x1100..0x11FE. Until
+    // the table covered all 256 entries that region held user code, so
+    // this jumped into the program's own bytes instead.
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("main.gr",
+        \\@interrupt 200
+        \\def on_high()
+        \\  print 200
+        \\end
+        \\
+        \\def main()
+        \\  print 1
+        \\  asm "int $C8"
+        \\  print 2
+        \\end
+        \\
+    );
+    try fx.expectRuns("main.gr", "1\n200\n2\n");
+}

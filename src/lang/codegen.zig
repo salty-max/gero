@@ -43,10 +43,11 @@ const Sys = opcodes.Sys;
 
 // ---------- public constants (boot layout per ISA §7) ----------
 
-/// IVT base address (`0x1000..0x10FF` is reserved for 2-byte slots).
+/// IVT base address. `0x1000..0x11FF` holds 256 two-byte slots — one
+/// per `int` vector, since the operand is an `Imm8` (ISA §3.1, §6.1).
 pub const ivt_base: u16 = 0x1000;
 /// First byte of code emission.
-pub const code_base: u16 = 0x1100;
+pub const code_base: u16 = 0x1200;
 /// First byte of static-data emission.
 pub const data_base: u16 = 0x2000;
 /// Upper bound (exclusive) of the static-data region — and of the whole
@@ -1898,8 +1899,20 @@ pub const Emitter = struct {
                     } else if (std.mem.eql(u8, ann_name, "inline")) {
                         inline_marked = true;
                     } else if (std.mem.eql(u8, ann_name, "interrupt") and ann.args.len == 1 and ann.args[0].* == .int_lit) {
-                        // @as: vectors are capped at 64 (0x00..0x3F); narrow via mask.
-                        interrupt_vec = @intCast(ann.args[0].int_lit.value & 0xFF);
+                        const vec = ann.args[0].int_lit.value;
+                        // A vector is one byte (`int` takes an `Imm8`), so
+                        // anything else is a mistake rather than something
+                        // to silently wrap into range.
+                        if (vec < 0 or vec > 0xFF) {
+                            try self.diagFatal(
+                                ann.span,
+                                "E_CODEGEN_BAD_INTERRUPT_VECTOR",
+                                "`@interrupt` vector must be 0..255 — the ISA addresses one vector per byte (isa.md §6.1)",
+                            );
+                        } else {
+                            // safety: bounded to 0..255 on the line above.
+                            interrupt_vec = @intCast(vec);
+                        }
                     }
                 }
                 try self.fn_banks.put(self.arena, dup, bank);

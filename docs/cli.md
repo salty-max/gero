@@ -255,7 +255,7 @@ file:        game.gx
 size:        24536 bytes
 magic:       GERO
 version:     0x0004
-entry:       0x1100
+entry:       0x1200
 image:       12345 bytes
 banks:       4 × 16 KB
 sram:        2 banks (battery-backed)
