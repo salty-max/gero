@@ -6,8 +6,11 @@ compiler, all pure Zig. Public barrel: `src/gero.zig`, imported as
 deps; built on [knit](https://github.com/salty-max/knit) for the
 parser-combinator layer (asm + lang).
 
-The fantasy-console (gtx-16) and web playground live elsewhere and
-consume gero as a library — out of scope for this repo.
+The fantasy-console (gtx-16) and the gero-lab web application live
+elsewhere and consume gero as a library — out of scope for this repo.
+The wasm module they consume is not: it is a `zig build` target here,
+gated by a smoke test that runs the example corpus through it
+(`docs/gero-lab.md` §10).
 
 For source layout, full lint rule list, branch / commit /
 changeset conventions, release flow, and tech-stack reference,
@@ -36,6 +39,7 @@ guess from the codebase shape when the spec defines them.
 | [`lsp.md`](docs/lsp.md) | `gero lsp` — protocol scope, document sync, capabilities, per-editor wiring. |
 | [`tooling.md`](docs/tooling.md) | Project setup — installing the CLI, wiring editors, CI integration. |
 | [`asm-cookbook.md`](docs/asm-cookbook.md) | Working asm recipes — boot, IVT, banks, syscalls, etc. Reference for "how do I do X in asm?". |
+| [`gero-lab.md`](docs/gero-lab.md) | Browser playground spec — the wasm export surface (§2) is a `zig build` target here; the application (§3 onward) is out-of-repo. §10 draws the line. |
 | [`gtx-16.md`](docs/gtx-16.md) | Fantasy-console spec — consumes Gero as its CPU/VM. Out-of-repo, but the contract lives here. |
 
 These specs follow the "complete designs, no deferral" rule:
