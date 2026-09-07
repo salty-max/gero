@@ -14,6 +14,8 @@ pub const Registers = registers.Registers;
 /// Bits `flg` holds; reserved bits above are masked off on write
 /// (ISA §2.1).
 pub const flg_mask = registers.flg_mask;
+/// Highest `.gx` format version this loader accepts (ISA §7.1).
+pub const version_target = loader_mod.version_target;
 /// Flag bit positions inside `flg`.
 pub const Flag = registers.Flag;
 /// 64KB memory.

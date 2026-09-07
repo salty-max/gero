@@ -281,3 +281,10 @@ test "loader: an unbanked program may put its heap at 0xC000" {
     const loaded = try gero.vm.parseGx(gx);
     try std.testing.expectEqual(@as(u16, 0xC000), loaded.header.heap_base);
 }
+
+test "loader: the accepted version is the one producers stamp" {
+    // Two constants for one fact drifted once already: producers moved
+    // to 0x0004 while the loader still claimed 0x0003. The major-only
+    // check hid it.
+    try std.testing.expectEqual(gero.gx.version, gero.vm.version_target);
+}
