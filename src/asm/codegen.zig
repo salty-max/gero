@@ -7,6 +7,7 @@ const include = @import("include.zig");
 const parser_mod = @import("parser.zig");
 const symtab = @import("symtab.zig");
 const opres = @import("opcode_resolver.zig");
+const gx = @import("../gx.zig");
 
 /// Output of the codegen pass — the complete `.gx` byte image
 /// (header + body), the symbol table for debuggers + downstream
@@ -1188,82 +1189,37 @@ fn buildArchive(
     symbols: *const symtab.SymbolTable,
     debug_symbols: bool,
 ) ![]u8 {
-    // Header layout per ISA §7.1:
-    //   0x00..0x04  magic = "GERO"
-    //   0x04..0x06  u16le version = 0x0001
-    //   0x06..0x08  u16le flags
-    //   0x08..0x0A  u16le entry_point
-    //   0x0A..0x0C  u16le image_size      (base image only)
-    //   0x0C        u8 bank_count
-    //   0x0D        u8 sram_bank_count
-    //   0x0E..0x10  reserved (must be 0)
-    //
-    // Archive body per ISA §7.1 / §7.3:
-    //   header + base_image + (bank_count × bank_disk_size) + debug_section?
-    //
-    // SRAM banks are NOT emitted — they're zero-init at boot.
-    const header_size: usize = 16;
-    const base_len = emit.base.items.len;
+    // 0-based banks: the count is the highest declared index + 1, and
+    // the container zero-fills any index the program skipped.
+    // @as: widen the u8 bank index so `+ 1` cannot wrap at index 255.
+    const bank_count: usize = if (layout.max_bank) |m| @as(usize, m) + 1 else 0;
+    const windows = try allocator.alloc([]const u8, bank_count);
+    defer allocator.free(windows);
+    for (windows, 0..) |*w, i| {
+        // safety: i < bank_count <= 256, so it fits the u8 bank index.
+        w.* = if (emit.banks.get(@intCast(i))) |b| b.items else &.{};
+    }
 
-    // 0-based banks: bank_count = max_bank + 1 when any bank was
-    // declared, else 0.
-    // @as: widen u8 to u16 so the `+ 1` for a max-index of 255 fits.
-    const bank_count: u16 = if (layout.max_bank) |m| @as(u16, m) + 1 else 0;
-    // @as: widen u16 / u32 to usize for the byte-count math (max 256 × 16 KiB = 4 MiB).
-    const banked_bytes: usize = @as(usize, bank_count) * @as(usize, bank_disk_size);
-
-    // Collect debug-symbol entries (sorted by address). When
-    // disabled or empty the blob stays empty + the flag bit is
-    // not set.
     var debug_entries: std.ArrayList(DebugEntry) = .empty;
     defer debug_entries.deinit(allocator);
     if (debug_symbols) try collectDebugSymbols(allocator, symbols, &debug_entries);
 
-    const debug_bytes_len: usize = debugSectionByteSize(debug_entries.items);
-    const total = header_size + base_len + banked_bytes + debug_bytes_len;
-    var out = try allocator.alloc(u8, total);
+    var debug = gx.DebugBuilder.init(allocator);
+    defer debug.deinit();
+    const symbol_payload = try encodeSymbols(allocator, debug_entries.items);
+    defer allocator.free(symbol_payload);
+    try debug.addChunk(.symbols, symbol_payload);
 
-    // Flags per ISA §7.1: bit 0 = banked, bit 1 = has-debug.
-    const flag_banked: u16 = 0x0001;
-    const flag_has_debug: u16 = 0x0002;
-    var flags: u16 = 0;
-    if (bank_count > 0) flags |= flag_banked;
-    if (debug_bytes_len > 0) flags |= flag_has_debug;
-
-    @memcpy(out[0..4], &gx_magic);
-    writeU16Le(out[4..6], 0x0001); // version
-    writeU16Le(out[6..8], flags);
-    writeU16Le(out[8..10], entry_point);
-    // safety: base image capped at 64 KiB by the ISA's 16-bit
-    //         address space; banks live in their own segment.
-    writeU16Le(out[10..12], @intCast(base_len));
-    // safety: bank_count <= 256 by construction (u8 input + at most +1).
-    out[12] = @intCast(bank_count);
-    out[13] = layout.sram_banks;
-    writeU16Le(out[14..16], 0); // reserved
-
-    // Base image.
-    @memcpy(out[header_size..][0..base_len], emit.base.items);
-
-    // Banks 0..max_bank: 16 KB each, zero-padded if the program
-    // didn't fill the whole window. Gaps (banks the user skipped)
-    // are also zeros.
-    var cursor: usize = header_size + base_len;
-    var bank: u8 = 0;
-    while (bank < bank_count) : (bank += 1) {
-        const dst = out[cursor..][0..bank_disk_size];
-        @memset(dst, 0);
-        if (emit.banks.get(bank)) |b| {
-            const n = @min(b.items.len, bank_disk_size);
-            @memcpy(dst[0..n], b.items[0..n]);
-        }
-        cursor += bank_disk_size;
-    }
-
-    // Debug-symbol section per ISA §7.3.
-    if (debug_bytes_len > 0) writeDebugSection(out[cursor..][0..debug_bytes_len], debug_entries.items);
-
-    return out;
+    return gx.build(allocator, .{
+        .base_image = emit.base.items,
+        .entry_point = entry_point,
+        // Assembly declares no heap, so `sys alloc` faults per ISA
+        // §7.1 until a program can name a base address itself.
+        .heap_base = 0,
+        .sram_bank_count = layout.sram_banks,
+        .banks = windows,
+        .debug_section = debug.section(),
+    });
 }
 
 /// One row in the debug-symbol section per ISA §7.3: an address,
@@ -1312,28 +1268,30 @@ fn collectDebugSymbols(
 }
 
 /// Byte size of the encoded debug section, or 0 when empty.
-fn debugSectionByteSize(entries: []const DebugEntry) usize {
-    if (entries.len == 0) return 0;
-    var n: usize = 2; // symbol_count
-    for (entries) |e| n += 2 + 1 + 1 + e.name.len; // addr + kind + len + name
-    return n;
-}
-
 /// Encode the debug section in-place per ISA §7.3.
-fn writeDebugSection(dst: []u8, entries: []const DebugEntry) void {
-    // safety: caller passes a buffer sized for at most
-    //         `debugSectionByteSize(entries)` — every write is
-    //         bounded by entries.len ≤ u16 max.
-    writeU16Le(dst[0..2], @intCast(entries.len));
-    var cursor: usize = 2;
+/// Encode the symbols chunk payload per ISA §7.3: `[u16le count]`
+/// then, per symbol, `[u16le address][u8 kind][u8 name_len][name]`.
+/// Caller owns the result.
+fn encodeSymbols(allocator: std.mem.Allocator, entries: []const DebugEntry) ![]u8 {
+    if (entries.len == 0) return allocator.alloc(u8, 0);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var count_bytes: [2]u8 = undefined;
+    // safety: collectDebugSymbols yields at most u16-max entries.
+    gx.writeU16Le(&count_bytes, @intCast(entries.len));
+    try out.appendSlice(allocator, &count_bytes);
+
     for (entries) |e| {
-        writeU16Le(dst[cursor..][0..2], e.address);
-        dst[cursor + 2] = e.kind;
+        var addr_bytes: [2]u8 = undefined;
+        gx.writeU16Le(&addr_bytes, e.address);
+        try out.appendSlice(allocator, &addr_bytes);
+        try out.append(allocator, e.kind);
         // safety: collectDebugSymbols filters out names > 0xFF bytes.
-        dst[cursor + 3] = @intCast(e.name.len);
-        @memcpy(dst[cursor + 4 ..][0..e.name.len], e.name);
-        cursor += 4 + e.name.len;
+        try out.append(allocator, @intCast(e.name.len));
+        try out.appendSlice(allocator, e.name);
     }
+    return out.toOwnedSlice(allocator);
 }
 
 fn writeU16Le(dst: []u8, value: u16) void {

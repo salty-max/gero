@@ -81,14 +81,25 @@ test "symbols: empty blob produces zero entries" {
     try std.testing.expectEqual(@as(usize, 0), out.entries.len);
 }
 
+/// Wrap `payload` in a §7.3 symbols chunk, the way a front-end does.
+fn symbolChunk(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
+    var b = gero.gx.DebugBuilder.init(allocator);
+    defer b.deinit();
+    try b.addChunk(.symbols, payload);
+    return allocator.dupe(u8, b.section().?);
+}
+
 test "symbols: parse count + (addr, kind, name) entries" {
     // count=2, entry1: $0010 label "main", entry2: $0042 data "buf"
-    const blob = [_]u8{
+    const payload = [_]u8{
         0x02, 0x00, // count = 2
         0x10, 0x00, 0x00, 0x04, 'm', 'a', 'i', 'n', // addr / kind=label / len / name
         0x42, 0x00, 0x01, 0x03, 'b', 'u', 'f', // addr / kind=data / len / name
     };
-    const out = try gero.disasm.parseSymbols(std.testing.allocator, &blob);
+    const blob = try symbolChunk(std.testing.allocator, &payload);
+    defer std.testing.allocator.free(blob);
+
+    const out = try gero.disasm.parseSymbols(std.testing.allocator, blob);
     defer out.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), out.entries.len);
     try std.testing.expectEqual(@as(u16, 0x0010), out.entries[0].address);
@@ -100,28 +111,57 @@ test "symbols: parse count + (addr, kind, name) entries" {
 }
 
 test "symbols: lookup returns name on hit, null on miss" {
-    const blob = [_]u8{
-        0x01, 0x00,
-        0x10, 0x00,
-        0x00, 0x04,
-        'm',  'a',
-        'i',  'n',
-    };
-    const out = try gero.disasm.parseSymbols(std.testing.allocator, &blob);
+    const payload = [_]u8{ 0x01, 0x00, 0x10, 0x00, 0x00, 0x04, 'm', 'a', 'i', 'n' };
+    const blob = try symbolChunk(std.testing.allocator, &payload);
+    defer std.testing.allocator.free(blob);
+
+    const out = try gero.disasm.parseSymbols(std.testing.allocator, blob);
     defer out.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("main", out.lookup(0x0010).?);
     try std.testing.expect(out.lookup(0x0042) == null);
 }
 
-test "symbols: truncated count rejected" {
-    const blob = [_]u8{0x02}; // only 1 of 2 bytes
+test "symbols: a section with no symbols chunk yields no entries" {
+    // A release-adjacent image can carry line info and no symbols;
+    // that is empty, not malformed.
+    var b = gero.gx.DebugBuilder.init(std.testing.allocator);
+    defer b.deinit();
+    try b.addChunk(.lines, &[_]u8{ 0x00, 0x00 });
+    const out = try gero.disasm.parseSymbols(std.testing.allocator, b.section().?);
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), out.entries.len);
+}
+
+test "symbols: an unknown chunk kind is skipped, not fatal" {
+    // The framing exists so a later table can be added without
+    // breaking readers that predate it.
+    var b = gero.gx.DebugBuilder.init(std.testing.allocator);
+    defer b.deinit();
+    try b.addChunk(@enumFromInt(0x7F), &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF });
+    try b.addChunk(.symbols, &[_]u8{ 0x01, 0x00, 0x10, 0x00, 0x00, 0x04, 'm', 'a', 'i', 'n' });
+
+    const out = try gero.disasm.parseSymbols(std.testing.allocator, b.section().?);
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), out.entries.len);
+    try std.testing.expectEqualStrings("main", out.entries[0].name);
+}
+
+test "symbols: truncated chunk header rejected" {
+    const blob = [_]u8{ 0x01, 0x00 }; // kind + 1 of 4 length bytes
     try std.testing.expectError(error.TruncatedSymbolSection, gero.disasm.parseSymbols(std.testing.allocator, &blob));
+}
+
+test "symbols: truncated count rejected" {
+    const blob = try symbolChunk(std.testing.allocator, &[_]u8{0x02});
+    defer std.testing.allocator.free(blob);
+    try std.testing.expectError(error.TruncatedSymbolSection, gero.disasm.parseSymbols(std.testing.allocator, blob));
 }
 
 test "symbols: truncated name rejected" {
     // Declares 4 bytes of name but only has 2.
-    const blob = [_]u8{ 0x01, 0x00, 0x10, 0x00, 0x00, 0x04, 'a', 'b' };
-    try std.testing.expectError(error.TruncatedSymbolSection, gero.disasm.parseSymbols(std.testing.allocator, &blob));
+    const blob = try symbolChunk(std.testing.allocator, &[_]u8{ 0x01, 0x00, 0x10, 0x00, 0x00, 0x04, 'a', 'b' });
+    defer std.testing.allocator.free(blob);
+    try std.testing.expectError(error.TruncatedSymbolSection, gero.disasm.parseSymbols(std.testing.allocator, blob));
 }
 
 test "header: banked cart exposes bank slice + isBanked flag" {

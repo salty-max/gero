@@ -670,7 +670,7 @@ metadata.
 | Offset | Field          | Size | Notes |
 |--------|----------------|------|-------|
 | `0x00` | magic          | 4    | `'G' 'E' 'R' 'O'` (`0x47 0x45 0x52 0x4F`) |
-| `0x04` | version        | 2    | u16le format version. Currently `0x0003`. |
+| `0x04` | version        | 2    | u16le format version — major in the high byte, minor in the low. Currently `0x0004`. Every producer stamps this same value: the header describes the file, not which front-end wrote it. |
 | `0x06` | flags          | 2    | u16le bitfield (see below) |
 | `0x08` | entry_point    | 2    | u16le address `ip` is set to at boot |
 | `0x0A` | image_size     | 2    | u16le base-image size in bytes (`0..65535`; max 65535-byte image — programs needing more use banks) |
@@ -695,7 +695,32 @@ metadata.
 [Debug symbols — variable]         (only if flag bit 1)
 ```
 
-### 7.3 Debug symbol section (optional)
+### 7.3 Debug section (optional)
+
+Present when flag bit 1 is set. A sequence of chunks, each framed:
+
+```
+[u8 kind]
+[u32le payload_len]
+[payload_len bytes]
+```
+
+Chunks run to the end of the section; there is no chunk count. A
+reader **must skip a `kind` it does not recognize** rather than
+failing — that is what lets a later table be added without another
+format break, and it is the property this section is designed around.
+
+| `kind` | Chunk | Payload |
+|--------|-------|---------|
+| `0x01` | symbols | `address → name` |
+| `0x02` | files   | source paths a line table indexes into |
+| `0x03` | lines   | `address range → (file, line, column)` |
+| other  | reserved | skip |
+
+A chunk carrying no rows is omitted entirely. A section with no
+chunks is not written at all, and flag bit 1 stays clear.
+
+#### `0x01` — symbols
 
 ```
 [u16le symbol_count]
@@ -765,13 +790,13 @@ behave permissively (read `0xFF`, write dropped; stack wraps).
 
 ## 10. Versioning
 
-This document specifies version `0x0003`. Future ISA changes:
+This document specifies version `0x0004`. Future ISA changes:
 
 - **Patch-level edits to this doc** (clarifying ambiguous behavior,
   fixing typos, documenting reserved bits) do not bump the version.
 - **Backwards-compatible additions** (new opcodes in unused ranges,
   new flag bits, new vector reservations) bump the **minor** field
-  (low byte of version): e.g. `0x0003` would still load `0x0002`
+  (low byte of version): e.g. `0x0004` would still load `0x0003`
   files.
 - **Breaking changes** (changing existing opcode semantics, changing
   encoding, repurposing a register) bump the **major** field (would

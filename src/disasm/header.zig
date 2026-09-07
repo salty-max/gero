@@ -105,24 +105,24 @@ pub const SymbolsError = error{
 /// `Symbols.deinit`.
 pub fn parseSymbols(allocator: std.mem.Allocator, debug_bytes: []const u8) SymbolsError!Symbols {
     if (debug_bytes.len == 0) return .{ .entries = &.{} };
-    if (debug_bytes.len < 2) return error.TruncatedSymbolSection;
+    const payload = (gero.gx.findChunk(debug_bytes, .symbols) catch
+        return error.TruncatedSymbolSection) orelse return .{ .entries = &.{} };
+    if (payload.len < 2) return error.TruncatedSymbolSection;
 
-    // @as: widen each u8 byte to u16 so the OR / shift produces a u16 count.
-    const count: u16 = @as(u16, debug_bytes[0]) | (@as(u16, debug_bytes[1]) << 8);
+    const count = gero.gx.readU16Le(payload[0..2]);
     var entries = try allocator.alloc(Symbol, count);
     errdefer allocator.free(entries);
 
     var cursor: usize = 2;
     var i: usize = 0;
     while (i < count) : (i += 1) {
-        if (cursor + 4 > debug_bytes.len) return error.TruncatedSymbolSection;
-        // @as: widen each u8 byte to u16 for the LE u16 read.
-        const addr: u16 = @as(u16, debug_bytes[cursor]) | (@as(u16, debug_bytes[cursor + 1]) << 8);
-        const kind: SymbolKind = @enumFromInt(debug_bytes[cursor + 2]);
-        const name_len: usize = debug_bytes[cursor + 3];
+        if (cursor + 4 > payload.len) return error.TruncatedSymbolSection;
+        const addr = gero.gx.readU16Le(payload[cursor..][0..2]);
+        const kind: SymbolKind = @enumFromInt(payload[cursor + 2]);
+        const name_len: usize = payload[cursor + 3];
         cursor += 4;
-        if (cursor + name_len > debug_bytes.len) return error.TruncatedSymbolSection;
-        entries[i] = .{ .address = addr, .kind = kind, .name = debug_bytes[cursor..][0..name_len] };
+        if (cursor + name_len > payload.len) return error.TruncatedSymbolSection;
+        entries[i] = .{ .address = addr, .kind = kind, .name = payload[cursor..][0..name_len] };
         cursor += name_len;
     }
     return .{ .entries = entries };
