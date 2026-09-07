@@ -1900,7 +1900,9 @@ let square = lambda (x: i16) -> i16
   return x * x
 end
 
-let add5 = lambda (x: i16) -> i16  return x + 5  end
+let add5 = lambda (x: i16) -> i16
+  return x + 5
+end
 ```
 
 Lambdas are first-class function values (same as named `def`s) —
