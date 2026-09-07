@@ -23,6 +23,20 @@ pub const max_sessions: usize = 4;
 /// snapshot `reset` re-boots from.
 const session_bytes: usize = 512 * 1024;
 
+/// Breakpoints a session can hold at once.
+pub const max_breakpoints: usize = 64;
+
+/// The `brk` opcode (ISA §5.13), one byte, which is what makes
+/// patching a single byte enough to trap.
+const brk_opcode: u8 = 0xFE;
+
+/// One patched address and the byte it displaced.
+const Breakpoint = struct {
+    addr: u16 = 0,
+    original: u8 = 0,
+    active: bool = false,
+};
+
 /// Per-session print buffer. A host drains it every slice (§3.3), so
 /// this only has to absorb one slice's output.
 const output_bytes: usize = 16 * 1024;
@@ -109,6 +123,11 @@ const Session = struct {
     image_len: usize = 0,
     /// Bump cursor into this session's store.
     used: usize = 0,
+    breakpoints: [max_breakpoints]Breakpoint = [_]Breakpoint{.{}} ** max_breakpoints,
+    /// Address to step over before running on, set when a breakpoint
+    /// was just hit. The patched byte has to come out for one
+    /// instruction, or resuming would trap on the same `brk` forever.
+    resume_from: ?u16 = null,
 };
 
 var sessions = [_]Session{.{}} ** max_sessions;
@@ -250,6 +269,11 @@ pub fn load(handle: u32, image: []const u8, message_buf: *[gero.load_error.max_m
     const slot = lookup(handle) orelse
         return .{ .status = .bad_argument, .message = "no such VM session" };
 
+    // Breakpoints name addresses in the image being replaced, so they
+    // go with it rather than pointing into whatever loads next.
+    for (&slot.breakpoints) |*bp| bp.active = false;
+    slot.resume_from = null;
+
     // Re-booting starts from a clean store, so a reload does not
     // accumulate the previous image's allocations.
     slot.machine.deinit();
@@ -279,6 +303,9 @@ pub fn reset(handle: u32) Status {
 
     // The image sits at the base of the store, so rewinding to just
     // past it keeps it while dropping everything booted on top.
+    for (&slot.breakpoints) |*bp| bp.active = false;
+    slot.resume_from = null;
+
     const image = stores[indexOf(slot)][0..slot.image_len];
     slot.machine.deinit();
     slot.used = slot.image_len;
@@ -304,15 +331,52 @@ pub fn step(handle: u32, budget: u32) ?StepOutcome {
     }
 
     var retired: u32 = 0;
+
+    // Resuming from a hit: the `brk` still sits where the program's own
+    // instruction belongs, so it comes out for exactly one step. Doing
+    // this on entry rather than at the hit keeps the reported `ip` on
+    // the breakpoint, which is where a user expects to be stopped.
+    if (slot.resume_from) |addr| {
+        slot.resume_from = null;
+        if (findBreakpoint(slot, addr)) |bp| {
+            slot.machine.writeByte(addr, bp.original);
+            const result = gero.vm.step(&slot.machine);
+            slot.machine.writeByte(addr, brk_opcode);
+            retired += 1;
+            switch (result) {
+                .cont, .branched => {},
+                .halted => return outcome(slot, .halted, retired),
+                .breakpoint => return atBreakpoint(slot, retired),
+                .halted_on_fault => return outcome(slot, .faulted, retired),
+            }
+        }
+    }
+
     while (retired < budget) : (retired += 1) {
         switch (gero.vm.step(&slot.machine)) {
             .cont, .branched => continue,
             .halted => return outcome(slot, .halted, retired + 1),
-            .breakpoint => return outcome(slot, .breakpoint, retired + 1),
+            .breakpoint => return atBreakpoint(slot, retired + 1),
             .halted_on_fault => return outcome(slot, .faulted, retired + 1),
         }
     }
     return outcome(slot, .budget, retired);
+}
+
+/// Stop on a breakpoint, reporting the address the user set rather
+/// than the byte after it.
+///
+/// `step` advances past `brk` like any one-byte instruction, so `ip`
+/// is one past the patch. Rewinding means a host's "stopped here"
+/// matches the address it asked for, and the next `step` resumes by
+/// executing the instruction the patch is hiding.
+fn atBreakpoint(slot: *Session, steps: u32) StepOutcome {
+    const addr = slot.machine.regs.read(.ip) -% 1;
+    if (findBreakpoint(slot, addr) != null) {
+        slot.machine.regs.write(.ip, addr);
+        slot.resume_from = addr;
+    }
+    return outcome(slot, .breakpoint, steps);
 }
 
 fn outcome(slot: *Session, reason: StepReason, steps: u32) StepOutcome {
@@ -350,7 +414,12 @@ pub fn peek(handle: u32, addr: u16, out: []u8) bool {
     for (out, 0..) |*b, i| {
         // safety: the address space is 16-bit and wraps, which is what
         // a program reading past the end would observe too.
-        b.* = slot.machine.readByte(addr +% @as(u16, @intCast(i % 0x10000)));
+        const at = addr +% @as(u16, @intCast(i % 0x10000));
+        // A breakpoint is instrumentation, not the program. Reading
+        // back the patched `brk` would corrupt the memory pane and any
+        // disassembly a host builds from it — the user would see their
+        // own code change as they set a breakpoint.
+        b.* = if (findBreakpoint(slot, at)) |bp| bp.original else slot.machine.readByte(at);
     }
     return true;
 }
@@ -639,4 +708,211 @@ test "sram: round-trips through a fresh session" {
 
     // A save of the wrong size belongs to a different program.
     try testing.expectEqual(Status.bad_argument, loadSram(handle, "short"));
+}
+
+// ---------- breakpoints (§2.3) ----------
+
+/// Set a breakpoint at `addr` by patching `brk` over the byte there
+/// and remembering what it displaced.
+///
+/// Using the ISA's own opcode rather than a worker-side address set is
+/// what makes a breakpoint free when it is not hit: `step` already
+/// reports `.breakpoint`, so the run loop needs no per-instruction
+/// address comparison.
+pub fn addBreakpoint(handle: u32, addr: u16) Status {
+    const slot = lookup(handle) orelse return .bad_argument;
+    if (slot.image_len == 0) return .bad_argument;
+    if (findBreakpoint(slot, addr) != null) return .ok;
+
+    const free = for (&slot.breakpoints) |*bp| {
+        if (!bp.active) break bp;
+    } else return .out_of_memory;
+
+    free.* = .{ .addr = addr, .original = slot.machine.readByte(addr), .active = true };
+    slot.machine.writeByte(addr, brk_opcode);
+    return .ok;
+}
+
+/// Clear a breakpoint, putting back the byte it displaced. Clearing
+/// one that is not set is not an error.
+pub fn removeBreakpoint(handle: u32, addr: u16) Status {
+    const slot = lookup(handle) orelse return .bad_argument;
+    const bp = findBreakpoint(slot, addr) orelse return .ok;
+    slot.machine.writeByte(addr, bp.original);
+    bp.active = false;
+    if (slot.resume_from) |r| {
+        if (r == addr) slot.resume_from = null;
+    }
+    return .ok;
+}
+
+/// Clear every breakpoint. Called on `load` and `reset` too, since the
+/// addresses belong to the image that was loaded.
+pub fn clearBreakpoints(handle: u32) Status {
+    const slot = lookup(handle) orelse return .bad_argument;
+    unpatchAll(slot);
+    for (&slot.breakpoints) |*bp| bp.active = false;
+    slot.resume_from = null;
+    return .ok;
+}
+
+/// How many breakpoints are set.
+pub fn breakpointCount(handle: u32) u32 {
+    const slot = lookup(handle) orelse return 0;
+    var n: u32 = 0;
+    for (&slot.breakpoints) |*bp| {
+        if (bp.active) n += 1;
+    }
+    return n;
+}
+
+fn findBreakpoint(slot: *Session, addr: u16) ?*Breakpoint {
+    for (&slot.breakpoints) |*bp| {
+        if (bp.active and bp.addr == addr) return bp;
+    }
+    return null;
+}
+
+/// Put every displaced byte back, without forgetting the breakpoints.
+/// Used when the image underneath is about to change.
+fn unpatchAll(slot: *Session) void {
+    for (&slot.breakpoints) |*bp| {
+        if (bp.active) slot.machine.writeByte(bp.addr, bp.original);
+    }
+}
+
+test "breakpoints: running stops at the address that was set" {
+    resetAll();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const handle = try session(arena.allocator(),
+        \\main:
+        \\  mov $0041, acu
+        \\  sys $03
+        \\  mov $0042, acu
+        \\  sys $03
+        \\  hlt
+        \\
+    );
+
+    // The second `mov` begins at 0x0006 — after a 4-byte mov and a
+    // 2-byte sys.
+    try testing.expectEqual(Status.ok, addBreakpoint(handle, 0x0006));
+    const out = step(handle, 100).?;
+    try testing.expectEqual(@intFromEnum(StepReason.breakpoint), out.reason);
+    // `ip` is the address asked for, not the byte after the patch —
+    // "stopped here" must match where the user put the breakpoint.
+    try testing.expectEqual(@as(u32, 0x0006), out.ip);
+}
+
+test "breakpoints: the patch is invisible to peek" {
+    resetAll();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const handle = try session(arena.allocator(), "main:\n  mov $0041, acu\n  hlt\n");
+
+    var before: [1]u8 = undefined;
+    try testing.expect(peek(handle, 0x0000, &before));
+    try testing.expectEqual(Status.ok, addBreakpoint(handle, 0x0000));
+
+    var after: [1]u8 = undefined;
+    try testing.expect(peek(handle, 0x0000, &after));
+    // A memory pane showing `brk` where the user wrote `mov` would be
+    // the instrumentation editing their program on screen.
+    try testing.expectEqual(before[0], after[0]);
+    try testing.expect(after[0] != brk_opcode);
+}
+
+test "breakpoints: resuming runs the instruction the patch was hiding" {
+    resetAll();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const handle = try session(arena.allocator(),
+        \\main:
+        \\  mov $0041, acu
+        \\  sys $03
+        \\  mov $0042, acu
+        \\  sys $03
+        \\  hlt
+        \\
+    );
+
+    try testing.expectEqual(Status.ok, addBreakpoint(handle, 0x0006));
+    _ = step(handle, 100);
+    try testing.expectEqualStrings("A", takeOutput(handle).?.text);
+    clearOutput(handle);
+
+    // Without stepping over the patch first, this would trap on the
+    // same `brk` forever.
+    const out = step(handle, 100).?;
+    try testing.expectEqual(@intFromEnum(StepReason.halted), out.reason);
+    try testing.expectEqualStrings("B", takeOutput(handle).?.text);
+}
+
+test "breakpoints: removing one puts the program's byte back" {
+    resetAll();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const handle = try session(arena.allocator(), "main:\n  mov $0041, acu\n  hlt\n");
+
+    const original = slotOf(handle).machine.readByte(0x0000);
+    _ = addBreakpoint(handle, 0x0000);
+    try testing.expectEqual(brk_opcode, slotOf(handle).machine.readByte(0x0000));
+    try testing.expectEqual(Status.ok, removeBreakpoint(handle, 0x0000));
+    try testing.expectEqual(original, slotOf(handle).machine.readByte(0x0000));
+    try testing.expectEqual(@as(u32, 0), breakpointCount(handle));
+}
+
+test "breakpoints: setting the same address twice is not an error" {
+    resetAll();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const handle = try session(arena.allocator(), "main:\n  mov $0041, acu\n  hlt\n");
+
+    try testing.expectEqual(Status.ok, addBreakpoint(handle, 0x0000));
+    // A second add must not record `brk` as the displaced byte, or
+    // removing it would leave the patch in place forever.
+    try testing.expectEqual(Status.ok, addBreakpoint(handle, 0x0000));
+    try testing.expectEqual(@as(u32, 1), breakpointCount(handle));
+    _ = removeBreakpoint(handle, 0x0000);
+    try testing.expect(slotOf(handle).machine.readByte(0x0000) != brk_opcode);
+}
+
+test "breakpoints: a new image does not inherit the old one's" {
+    resetAll();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const handle = try session(arena.allocator(), "main:\n  mov $0041, acu\n  hlt\n");
+    _ = addBreakpoint(handle, 0x0000);
+
+    // Addresses belong to the image they were set in.
+    const other = try buildImage(arena.allocator(), "main:\n  hlt\n");
+    var buf: [gero.load_error.max_message_len]u8 = undefined;
+    try testing.expect(load(handle, other, &buf) == null);
+    try testing.expectEqual(@as(u32, 0), breakpointCount(handle));
+
+    _ = addBreakpoint(handle, 0x0000);
+    try testing.expectEqual(Status.ok, reset(handle));
+    try testing.expectEqual(@as(u32, 0), breakpointCount(handle));
+}
+
+test "breakpoints: a full table reports rather than silently dropping" {
+    resetAll();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const handle = try session(arena.allocator(), "main:\n  hlt\n");
+
+    var addr: u16 = 0;
+    while (addr < max_breakpoints) : (addr += 1) {
+        try testing.expectEqual(Status.ok, addBreakpoint(handle, addr));
+    }
+    // A host that set one too many must be told, not left believing it
+    // is stopped somewhere it is not.
+    try testing.expectEqual(Status.out_of_memory, addBreakpoint(handle, max_breakpoints));
+}
+
+/// The session a handle names. Tests only — the exports go through
+/// `lookup`, which reports rather than asserting.
+fn slotOf(handle: u32) *Session {
+    return lookup(handle).?;
 }

@@ -201,15 +201,48 @@ retired, which is under `n` when the run stopped early.
 ### 2.3 Breakpoints
 
 Breakpoints use the ISA's `brk` opcode rather than a worker-side
-address set. Setting one patches the byte at the address and stores
-the original; clearing restores it. `vm.step` already returns
+address set. Setting one patches the byte at the address and stores the
+original; clearing restores it. `vm.step` already returns
 `.breakpoint` for `brk`, so the run loop needs no per-instruction
-address comparison — the cost of a breakpoint is zero when it isn't
-hit.
+address comparison — **the cost of a breakpoint is zero when it isn't
+hit**, which is what lets the fastest speed setting actually be fast.
 
-Patched bytes are invisible to the UI: `gero_vm_peek` restores the
-originals in its returned copy, so the memory pane and the
-disassembly show the user's program, not the instrumentation.
+| Export | Purpose |
+|---|---|
+| `gero_vm_breakpoint_add(h, addr)` | Patch `brk` over the byte at `addr`. Setting one twice is not an error. |
+| `gero_vm_breakpoint_remove(h, addr)` | Restore the displaced byte. Clearing an unset one is not an error. |
+| `gero_vm_breakpoint_clear(h)` | Drop them all. |
+| `gero_vm_breakpoint_count(h)` | For the `bp` event (§3.2). |
+
+**Patched bytes are invisible to the UI.** `gero_vm_peek` returns the
+displaced byte, so the memory pane and any disassembly built from it
+show the user's program rather than the instrumentation. Without that,
+setting a breakpoint would visibly rewrite the program on screen.
+
+**Stopping reports the address that was set.** `step` advances past
+`brk` like any one-byte instruction, so `ip` would otherwise be one
+byte past what the user clicked. It is rewound.
+
+**Resuming steps over the patch.** The `brk` still occupies the place
+of the program's own instruction, so it is lifted for exactly one step
+and then replaced. Without that, resuming would trap on the same
+breakpoint forever.
+
+**Breakpoints belong to the image they were set in**, and `load` and
+`reset` clear them. An address means nothing once a different program
+occupies it.
+
+**A breakpoint mid-instruction is the caller's responsibility.** The
+module cannot detect one: knowing where an instruction begins requires
+decoding forward from a known boundary, and a host may set a
+breakpoint anywhere. Patching the middle of an instruction corrupts
+it — execution reaching that address runs `brk` as an operand, or the
+instruction decodes to something else entirely.
+
+A host avoids this by setting breakpoints only at addresses it knows to
+be instruction starts. The line table (§6) provides exactly those: a
+UI that sets breakpoints from source lines is safe by construction,
+which is the intended path.
 
 ---
 
