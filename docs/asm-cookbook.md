@@ -26,6 +26,7 @@ bottom of the section.
 6. [IRQ handler skeleton](#6-irq-handler-skeleton)
 7. [Fixed-point arithmetic (Q8.8)](#7-fixed-point-arithmetic-q88)
 8. [Include guards](#8-include-guards)
+9. [Heap allocation](#9-heap-allocation)
 
 ---
 
@@ -360,6 +361,49 @@ Notes:
   right frame).
 
 **See also**: [`asm.md` §2.2 `ifdef` / `ifndef` / `endif`](./asm.md).
+
+---
+
+## 9. Heap allocation
+
+`sys alloc` bump-allocates from a heap the program declares. Without
+a `heap` directive the header's `heap_base` stays `0` and the first
+`alloc` raises the heap-exhausted fault — assembly owns its memory
+map, so nothing is reserved on your behalf.
+
+```asm
+heap $4000                 ; heap starts past code + data
+
+start:
+  mov $0010, acu           ; want 16 bytes
+  sys $20                  ; acu = $4000, cursor advances to $4010
+  mov acu, r1              ; keep the pointer
+
+  mov $0020, acu           ; want 32 more
+  sys $20                  ; acu = $4010
+  hlt
+```
+
+Pick an address at or above the end of the emitted image — the
+assembler rejects anything lower with **E020**, because the
+allocator would otherwise hand out addresses over your own code.
+
+The heap grows upward toward `sp`, and `alloc` faults once the two
+would meet. **There is no `free`**: the cursor only moves forward, so
+allocating inside a loop exhausts the heap. Reuse a buffer instead.
+
+To size the heap deliberately, put it above your data and leave the
+gap to the stack:
+
+```asm
+const HEAP_START = $4000
+
+heap HEAP_START
+data8 SCRATCH = $00, $00, $00, $00
+```
+
+**See also**: [`asm.md` §2.2 `heap`](./asm.md), [`isa.md` §5.13.1
+`alloc`](./isa.md).
 
 ---
 

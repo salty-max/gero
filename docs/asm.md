@@ -182,7 +182,7 @@ loop:
 <directive_keyword> <args...>
 ```
 
-Nine directives:
+Ten directives:
 
 | Keyword   | Form                                   | Effect |
 |-----------|----------------------------------------|--------|
@@ -191,6 +191,7 @@ Nine directives:
 | `data16`  | `data16 NAME = value, ...`             | Same, in 16-bit little-endian words. |
 | `struct`  | `struct NAME { field: TYPE, ... }`     | Compile-time struct layout (offsets only, no bytes emitted). |
 | `org`     | `org $ADDR`                            | Set the current emit address. Subsequent statements emit starting at `$ADDR`. |
+| `heap`    | `heap $ADDR`                           | Declare where the bump allocator's heap starts. Without it `sys alloc` faults. |
 | `include` | `include "path.gas"`                   | Textually splice another `.gas` file at this point (6502 / z80 style). |
 | `ifndef`  | `ifndef NAME`                          | Open a conditional block — body emitted only if `NAME` is **not** currently bound as a `const`. |
 | `ifdef`   | `ifdef NAME`                           | Open a conditional block — body emitted only if `NAME` **is** currently bound as a `const`. |
@@ -206,6 +207,33 @@ const FLAGS_ALL      = ($01 << $08) - $01  ; full operator set
 ```
 
 Constants are pure substitution — no runtime cost.
+
+#### `heap`
+
+```asm
+heap $4000             ; bump allocator starts at $4000
+start:
+  mov $0010, acu
+  sys $20              ; alloc 16 bytes → acu = $4000
+  hlt
+```
+
+Writes the `.gx` header's `heap_base` (ISA §7.1). A program that
+declares no heap leaves the field `0`, and `sys alloc` raises the
+heap-exhausted fault on its first call — assembly owns its memory
+map, so a heap appears only where the program asks for one.
+
+The address must be at or above the end of the emitted image, and
+in a banked program below the bank window at `$C000` (**E020**
+otherwise). Below the image the allocator would hand out addresses
+over live code or data; inside the window a bank switch would
+replace every allocation. `sys alloc`'s bound only guards the top
+of the heap, so neither is caught at run time — and the loader
+rejects such an image too, so a hand-built `.gx` cannot smuggle one
+past.
+
+The heap grows upward toward `sp`; `sys alloc` faults once the two
+would collide. There is no `free` — the allocator only bumps.
 
 #### `data8` / `data16`
 
@@ -821,5 +849,6 @@ Common errors:
 | `E017` | `sram_banks N` exceeds the declared `bank N` count (loader invariant — SRAM banks live in the trailing slots of the bank pool, so they need at least N total banks to occupy) |
 | `E018` | `endif` without a matching `ifdef` / `ifndef` |
 | `E019` | `ifdef` / `ifndef` block left open at EOF (missing `endif`) |
+| `E020` | `heap $ADDR` points somewhere the program does not own — inside the emitted image, or inside the bank window of a banked program (loader invariant) |
 
 Errors print with caret-style snippets (knit's `formatParseErrorPretty`).

@@ -1,4 +1,5 @@
 const std = @import("std");
+const banks_mod = @import("banks.zig");
 
 /// Magic bytes at offset `0x00..0x04`.
 pub const magic: [4]u8 = .{ 'G', 'E', 'R', 'O' };
@@ -38,6 +39,15 @@ pub const LoaderError = error{
     /// `banked` flag set but the file is too short for the
     /// declared `bank_count` banks.
     BanksSizeMismatch,
+    /// A non-zero `heap_base` pointing inside the base image. The
+    /// bump allocator would hand out addresses over live code or
+    /// data, and `sys alloc`'s bound only guards the top of the
+    /// heap — nothing downstream would catch it.
+    HeapInsideImage,
+    /// A banked program's `heap_base` inside the bank window. The
+    /// window mirrors bank `mb`, so a switch replaces every
+    /// allocation living there.
+    HeapInBankWindow,
 };
 
 /// Parsed file header.
@@ -96,6 +106,13 @@ pub fn parse(bytes: []const u8) LoaderError!LoadedProgram {
     const sram_bank_count = bytes[0x0D];
     // heap_base added in version 0x0002; older files read 0.
     const heap_base = readU16Le(bytes, 0x0E);
+    // `0` declares no heap; anything else must start past the image
+    // and, in a banked program, below the bank window — a bank switch
+    // replaces the window wholesale, allocations included.
+    if (heap_base != 0) {
+        if (heap_base < image_size) return error.HeapInsideImage;
+        if (bank_count > 0 and heap_base >= banks_mod.window_base) return error.HeapInBankWindow;
+    }
     if (sram_bank_count > bank_count) return error.InvalidSramCount;
 
     const image_start = header_size;

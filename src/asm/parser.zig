@@ -139,6 +139,7 @@ fn cleanupStatements(allocator: std.mem.Allocator, statements: *std.ArrayList(as
         },
         .struct_decl => |sd| ast.freeStructDecl(allocator, sd),
         .org => |o| ast.freeExpr(allocator, o.addr_expr),
+        .heap => |h| ast.freeExpr(allocator, h.addr_expr),
         .instruction => |i| {
             for (i.operands) |op| switch (op) {
                 .immediate => |e| ast.freeExpr(allocator, e),
@@ -206,6 +207,9 @@ fn parseStatement(
     }
     if (consumeKeyword(state, "org")) {
         return parseOrgDecl(state, allocator, stmt_start, statements, errors, consts);
+    }
+    if (consumeKeyword(state, "heap")) {
+        return parseHeapDecl(state, allocator, stmt_start, statements, errors, consts);
     }
     if (consumeKeyword(state, "bank")) {
         return parseBankSwitch(state, allocator, stmt_start, statements, errors, consts);
@@ -964,6 +968,49 @@ fn parseOrgDecl(
     };
 
     try statements.append(allocator, .{ .org = .{
+        .addr_expr = rhs,
+        .addr = addr,
+        .span = spanFrom(stmt_start, state.index),
+    } });
+}
+
+/// `heap $ADDR` — mirrors `org`'s shape, but sets a header field
+/// rather than the emit cursor. Whether the address is legal (it must
+/// not fall inside the emitted image) is a codegen-time check, since
+/// the parser does not know the image's extent.
+fn parseHeapDecl(
+    state: *core.ParseState,
+    allocator: std.mem.Allocator,
+    stmt_start: usize,
+    statements: *std.ArrayList(ast.Statement),
+    errors: *std.ArrayList(include.Diagnostic),
+    consts: *expr.ConstantTable,
+) !void {
+    skipBlanksInLine(state);
+
+    const rhs = expr.parseExpression(state, allocator, errors) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ParseFailed => {
+            try recoverToNewline(state);
+            try statements.append(allocator, .{ .unknown = .{
+                .span = spanFrom(stmt_start, state.index),
+            } });
+            return;
+        },
+    };
+
+    const addr: ?u16 = blk: {
+        const eval = expr.evalExpr(rhs, state.input, consts.*);
+        switch (eval) {
+            .ok => |v| break :blk v,
+            .err => |d| {
+                try errors.append(allocator, d);
+                break :blk null;
+            },
+        }
+    };
+
+    try statements.append(allocator, .{ .heap = .{
         .addr_expr = rhs,
         .addr = addr,
         .span = spanFrom(stmt_start, state.index),
