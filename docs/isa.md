@@ -855,7 +855,10 @@ behave permissively (read `0xFF`, write dropped; stack wraps).
 
 ## 10. Versioning
 
-This document specifies version `0x0004`. Future ISA changes:
+This document specifies version `0x0004`. Which concrete edits are
+additive and which are breaking — with worked examples from this
+repository's own history — is settled in
+[`versioning.md`](versioning.md). Future ISA changes:
 
 - **Patch-level edits to this doc** (clarifying ambiguous behavior,
   fixing typos, documenting reserved bits) do not bump the version.
