@@ -743,6 +743,48 @@ instructions).
 Used by the disassembler to annotate addresses and by debuggers to
 resolve names. Stripped from release builds.
 
+#### `0x02` — files
+
+```
+[u16le file_count]
+For each file:
+  [u16le path_len]
+  [path_len bytes — UTF-8 source path]
+```
+
+Paths take a 16-bit length because an absolute path can exceed the
+255 bytes a symbol name is capped at. The order is the index space
+the `lines` chunk refers to: file `0` is the entry file.
+
+#### `0x03` — lines
+
+```
+[u16le row_count]
+For each row:
+  [u16le start_addr]
+  [u16le end_addr]          — exclusive
+  [u16le file]              — index into the files chunk
+  [u16le line]              — 1-based, clamped at 0xFFFF
+  [u16le column]            — 1-based, clamped at 0xFFFF
+```
+
+Maps a machine address back to the source position that produced it,
+for source-level stepping, a current-line highlight, and setting a
+breakpoint by clicking a line rather than typing an address.
+
+Rows are ascending by `start_addr`. Ranges are **explicit rather than
+implied by the next row's start**, so an address in a gap — a
+prologue, padding, a jump table — resolves to no row instead of
+silently borrowing the previous statement's position.
+
+Rows **nest** wherever source statements do: an address inside an `if`
+body is covered by both the body's row and the enclosing `if`'s. A
+reader resolving an address wants the **narrowest** covering row —
+the innermost statement actually executing.
+
+A `lines` chunk requires a `files` chunk; a producer that cannot
+attribute files (no include/import map available) emits neither.
+
 ---
 
 ## 8. Boot sequence

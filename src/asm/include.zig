@@ -64,6 +64,15 @@ pub const SourceMap = struct {
         return null;
     }
 
+    /// File id owning `fused_offset`, or `null` when the offset falls
+    /// outside every recorded region.
+    pub fn fileIdAt(self: SourceMap, fused_offset: u32) ?u16 {
+        for (self.regions.items) |r| {
+            if (fused_offset >= r.fused_start and fused_offset < r.fused_end) return r.file_id;
+        }
+        return null;
+    }
+
     /// Look up or register a file by canonical path. On a cache
     /// hit `caller_path` is freed (we already own a copy);
     /// likewise `caller_content`. On a miss the buffers are

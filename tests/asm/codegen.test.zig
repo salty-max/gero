@@ -1,6 +1,8 @@
 const std = @import("std");
 const gero = @import("gero");
 
+const util = @import("util");
+
 const alloc = std.testing.allocator;
 
 /// Assemble `source` end-to-end and return both the parse tree
@@ -920,4 +922,114 @@ test "codegen: bank_call on undefined symbol rejects with E004" {
     defer out.deinit();
     try std.testing.expect(out.cg.hasErrors());
     try std.testing.expectEqual(gero.asm_.ErrorCode.undefined_symbol, out.cg.errors[0].code.?);
+}
+
+// ---------- line table (ISA §7.3) ----------
+
+/// Decode a `.gx`'s line table alongside the files it indexes.
+const LineTable = struct {
+    files: []const []const u8,
+    rows: []const gero.gx.LineRow,
+
+    fn deinit(self: LineTable) void {
+        alloc.free(self.files);
+        alloc.free(self.rows);
+    }
+
+    fn of(image: []const u8) !?LineTable {
+        const header = try gero.disasm.parseHeader(image);
+        const files_p = (try gero.gx.findChunk(header.debug, .files)) orelse return null;
+        const lines_p = (try gero.gx.findChunk(header.debug, .lines)) orelse return null;
+        return .{
+            .files = try gero.gx.decodeFiles(alloc, files_p),
+            .rows = try gero.gx.decodeLines(alloc, lines_p),
+        };
+    }
+
+    /// `file:line` for the row covering `addr`.
+    fn at(self: LineTable, addr: u16) ?struct { file: []const u8, line: u16 } {
+        const row = gero.gx.lineAt(self.rows, addr) orelse return null;
+        return .{ .file = std.fs.path.basename(self.files[row.file]), .line = row.line };
+    }
+};
+
+test "codegen: the line table maps an address back to its source line" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("main.gas", "main:\n  mov $002a, r1\n  hlt\n");
+    const path = try fx.pathOf("main.gas");
+    defer alloc.free(path);
+
+    var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, path);
+    defer fused.deinit();
+    var pt = try gero.asm_.parse(alloc, fused.source);
+    defer pt.deinit();
+    var cg = try gero.asm_.assemble(alloc, fused.source, pt, .{ .source_map = &fused.source_map });
+    defer cg.deinit();
+
+    const table = (try LineTable.of(cg.image)).?;
+    defer table.deinit();
+    // The `mov` is the first instruction, so it starts at 0x0000.
+    try std.testing.expectEqual(@as(u16, 2), table.at(0x0000).?.line);
+    // `hlt` follows the 4-byte `mov`.
+    try std.testing.expectEqual(@as(u16, 3), table.at(0x0004).?.line);
+}
+
+test "codegen: an included file's code is attributed to that file" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("helper.gas", "double:\n  add r1, r1\n  ret\n");
+    try fx.write("main.gas", "include \"helper.gas\"\nmain:\n  call @double\n  hlt\n");
+    const path = try fx.pathOf("main.gas");
+    defer alloc.free(path);
+
+    var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, path);
+    defer fused.deinit();
+    var pt = try gero.asm_.parse(alloc, fused.source);
+    defer pt.deinit();
+    var cg = try gero.asm_.assemble(alloc, fused.source, pt, .{ .source_map = &fused.source_map });
+    defer cg.deinit();
+
+    const table = (try LineTable.of(cg.image)).?;
+    defer table.deinit();
+    // `helper.gas` is spliced first, so its `add` is at 0x0000 — the
+    // address has to name the included file, not the importer.
+    try std.testing.expectEqualStrings("helper.gas", table.at(0x0000).?.file);
+    try std.testing.expectEqualStrings("main.gas", table.at(0x0004).?.file);
+}
+
+test "codegen: no source map means symbols but no line table" {
+    // Without an include map a fused offset names no file, so a line
+    // table would index nothing. Symbols still resolve.
+    var out = try assembleRaw("main:\n  hlt\n", .{});
+    defer out.deinit();
+    try std.testing.expect((try LineTable.of(out.cg.image)) == null);
+    const header = try gero.disasm.parseHeader(out.cg.image);
+    var syms = try gero.disasm.parseSymbols(alloc, header.debug);
+    defer syms.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 1), syms.entries.len);
+}
+
+test "codegen: debug_symbols=false drops the line table with the rest" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("main.gas", "main:\n  mov $002a, r1\n  hlt\n");
+    const path = try fx.pathOf("main.gas");
+    defer alloc.free(path);
+
+    var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, path);
+    defer fused.deinit();
+    var pt = try gero.asm_.parse(alloc, fused.source);
+    defer pt.deinit();
+
+    // A release build pays nothing for debug info, and supplying a
+    // source map must not sneak a section in behind the cleared flag.
+    var off = try gero.asm_.assemble(alloc, fused.source, pt, .{ .debug_symbols = false, .source_map = &fused.source_map });
+    defer off.deinit();
+    var bare = try gero.asm_.assemble(alloc, fused.source, pt, .{ .debug_symbols = false });
+    defer bare.deinit();
+
+    try std.testing.expectEqualSlices(u8, bare.image, off.image);
+    const header = try gero.disasm.parseHeader(off.image);
+    try std.testing.expectEqual(@as(usize, 0), header.debug.len);
 }

@@ -46,6 +46,19 @@ pub const Options = struct {
     /// becomes a `(address, name)` entry. Disable for "release"
     /// builds that want to strip the names.
     debug_symbols: bool = true,
+    /// Include-resolution map for the fused `source`. Supplied, the
+    /// debug section gains a line table attributing each address to
+    /// the `.gas` file it came from; without it the section carries
+    /// symbols only, since a fused offset alone names no file.
+    source_map: ?*const include.SourceMap = null,
+};
+
+/// One instruction's address range, recorded during layout. The span
+/// resolves to a file and a position once the source map is in scope.
+const PendingLine = struct {
+    start_addr: u16,
+    end_addr: u16,
+    span_start: u32,
 };
 
 /// Run the full codegen pipeline against a parsed program.
@@ -74,7 +87,9 @@ pub fn assemble(
         .sram_banks_span = null,
     };
     defer layout.bank_sizes.deinit();
-    try layoutPass(&symbols, &errors, source, tree, &layout);
+    var pending_lines: std.ArrayList(PendingLine) = .empty;
+    defer pending_lines.deinit(allocator);
+    try layoutPass(&symbols, &errors, source, tree, &layout, &pending_lines);
     try validateSramBanks(&errors, &layout, allocator);
 
     // Pass 2: emit. Per-bank buffers; the same `current_bank` state
@@ -104,7 +119,7 @@ pub fn assemble(
         break :blk 0x0000;
     };
 
-    const final = try buildArchive(allocator, &emit, &layout, resolved_entry, &symbols, opts.debug_symbols);
+    const final = try buildArchive(allocator, &emit, &layout, resolved_entry, &symbols, opts, pending_lines.items);
 
     return .{
         .image = final,
@@ -279,6 +294,7 @@ fn layoutPass(
     source: []const u8,
     tree: parser_mod.ParseTree,
     layout: *Layout,
+    lines: *std.ArrayList(PendingLine),
 ) !void {
     var current_bank: ?u8 = null;
     var parent_label: ?[]const u8 = null;
@@ -446,6 +462,7 @@ fn layoutPass(
                 }
             },
             .instruction => |i| {
+                const line_start = bankAddr(current_bank, cursor_ptr.*);
                 const mnem = source[i.mnemonic.start..i.mnemonic.end];
                 // Pseudo-instructions desugar to a 2-instruction
                 // sequence (4-byte `mov` + 3-byte `call`/`jmp`).
@@ -477,6 +494,12 @@ fn layoutPass(
                         cursor_ptr.* += 1;
                     }
                 }
+                const line_end = bankAddr(current_bank, cursor_ptr.*);
+                if (line_end > line_start) try lines.append(symbols.allocator, .{
+                    .start_addr = line_start,
+                    .end_addr = line_end,
+                    .span_start = i.mnemonic.start,
+                });
             },
             .cond_directive, .comment, .unknown => {},
         }
@@ -1187,7 +1210,8 @@ fn buildArchive(
     layout: *const Layout,
     entry_point: u16,
     symbols: *const symtab.SymbolTable,
-    debug_symbols: bool,
+    opts: Options,
+    pending_lines: []const PendingLine,
 ) ![]u8 {
     // 0-based banks: the count is the highest declared index + 1, and
     // the container zero-fills any index the program skipped.
@@ -1202,13 +1226,14 @@ fn buildArchive(
 
     var debug_entries: std.ArrayList(DebugEntry) = .empty;
     defer debug_entries.deinit(allocator);
-    if (debug_symbols) try collectDebugSymbols(allocator, symbols, &debug_entries);
+    if (opts.debug_symbols) try collectDebugSymbols(allocator, symbols, &debug_entries);
 
     var debug = gx.DebugBuilder.init(allocator);
     defer debug.deinit();
     const symbol_payload = try encodeSymbols(allocator, debug_entries.items);
     defer allocator.free(symbol_payload);
     try debug.addChunk(.symbols, symbol_payload);
+    if (opts.debug_symbols) try addLineChunks(allocator, &debug, opts.source_map, pending_lines);
 
     return gx.build(allocator, .{
         .base_image = emit.base.items,
@@ -1269,6 +1294,46 @@ fn collectDebugSymbols(
 
 /// Byte size of the encoded debug section, or 0 when empty.
 /// Encode the debug section in-place per ISA §7.3.
+/// Append the files and lines chunks. Both are skipped without a
+/// source map: a fused offset alone names no file, and a line table
+/// indexing nothing is worse than none at all.
+fn addLineChunks(
+    allocator: std.mem.Allocator,
+    debug: *gx.DebugBuilder,
+    source_map: ?*const include.SourceMap,
+    pending: []const PendingLine,
+) !void {
+    const map = source_map orelse return;
+    if (pending.len == 0) return;
+
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer paths.deinit(allocator);
+    for (map.files.items) |f| try paths.append(allocator, f.path);
+
+    var rows: std.ArrayList(gx.LineRow) = .empty;
+    defer rows.deinit(allocator);
+    for (pending) |p| {
+        const located = map.lookup(p.span_start) orelse continue;
+        const at = gx.lineColIn(located.file.content, located.file_offset);
+        try rows.append(allocator, .{
+            .start_addr = p.start_addr,
+            .end_addr = p.end_addr,
+            .file = map.fileIdAt(p.span_start) orelse 0,
+            .line = at.line,
+            .column = at.column,
+        });
+    }
+    if (rows.items.len == 0) return;
+
+    const files_payload = try gx.encodeFiles(allocator, paths.items);
+    defer allocator.free(files_payload);
+    try debug.addChunk(.files, files_payload);
+
+    const lines_payload = try gx.encodeLines(allocator, rows.items);
+    defer allocator.free(lines_payload);
+    try debug.addChunk(.lines, lines_payload);
+}
+
 /// Encode the symbols chunk payload per ISA §7.3: `[u16le count]`
 /// then, per symbol, `[u16le address][u8 kind][u8 name_len][name]`.
 /// Caller owns the result.

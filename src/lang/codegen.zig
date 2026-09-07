@@ -147,6 +147,23 @@ pub const CodeRef = struct {
     }
 };
 
+/// Order line rows by start address, narrower range first on a tie.
+fn lineRowLessThan(_: void, a: gx.LineRow, b: gx.LineRow) bool {
+    if (a.start_addr != b.start_addr) return a.start_addr < b.start_addr;
+    return (a.end_addr - a.start_addr) < (b.end_addr - b.start_addr);
+}
+
+/// One statement's emitted code, recorded before its address is
+/// known. `span_start` indexes the fused source, so the file and the
+/// (line, column) inside it resolve through the module graph's source
+/// map at section-build time.
+const PendingLine = struct {
+    bank: ?u8,
+    start_offset: usize,
+    end_offset: usize,
+    span_start: u32,
+};
+
 /// One string pointer inside a baked global: the absolute image
 /// offset of its 2-byte slot, and the interned string whose resolved
 /// address goes there.
@@ -303,6 +320,7 @@ pub fn compile(
         .call_patches = .empty,
         .relocations = .empty,
         .fragment_spans = .empty,
+        .line_rows = .empty,
         .cached_fragments = opts.cached_fragments,
         .globals = .{},
         .data_cursor = data_base,
@@ -345,6 +363,7 @@ pub fn compile(
     defer emitter.call_patches.deinit(allocator);
     defer emitter.relocations.deinit(allocator);
     defer emitter.fragment_spans.deinit(allocator);
+    defer emitter.line_rows.deinit(allocator);
     defer emitter.bake_inits.deinit(allocator);
     defer emitter.bake_str_patches.deinit(allocator);
     defer emitter.global_inits.deinit(allocator);
@@ -769,6 +788,9 @@ pub const Emitter = struct {
     relocations: std.ArrayList(Relocation),
     /// Byte range each emitted symbol occupied, in emission order.
     fragment_spans: std.ArrayList(FragmentSpan),
+    /// Statement → emitted-code ranges, resolved into a `.gx` line
+    /// table once every address is known.
+    line_rows: std.ArrayList(PendingLine),
     /// Fragments this build may splice instead of lowering. Empty for
     /// a full build.
     cached_fragments: []const Fragment,
@@ -2175,6 +2197,29 @@ pub const Emitter = struct {
     /// Dispatch one statement to its lowering. Sub-modules call
     /// back into this for body walks.
     pub fn emitStatement(self: *Emitter, stmt: ast.Statement) EmitError!void {
+        const line_bank = self.current_bank;
+        const line_start = try self.currentOffset();
+        try self.emitStatementInner(stmt);
+        try self.noteLine(stmt.span(), line_bank, line_start);
+    }
+
+    /// Record the code `emitStatement` just produced for `span`.
+    /// A statement that emitted nothing, or that moved emission into
+    /// another buffer, contributes no row — a range spanning two
+    /// buffers has no single address.
+    fn noteLine(self: *Emitter, span: ast.Span, bank: ?u8, start: usize) !void {
+        if (!archive.banksEqual(self.current_bank, bank)) return;
+        const end = try self.currentOffset();
+        if (end <= start) return;
+        try self.line_rows.append(self.allocator, .{
+            .bank = bank,
+            .start_offset = start,
+            .end_offset = end,
+            .span_start = span.start,
+        });
+    }
+
+    fn emitStatementInner(self: *Emitter, stmt: ast.Statement) EmitError!void {
         switch (stmt) {
             .let_decl => |d| try self.emitLetDecl(d),
             .const_decl => |d| try self.emitConstDecl(d),
@@ -2592,7 +2637,51 @@ pub const Emitter = struct {
         var debug = gx.DebugBuilder.init(self.allocator);
         defer debug.deinit();
         try debug.addChunk(.symbols, payload.items);
+        try self.addLineChunks(&debug);
         return self.allocator.dupe(u8, debug.section() orelse &.{});
+    }
+
+    /// Append the files and lines chunks. Both are skipped when the
+    /// build has no module graph: without a source map a fused offset
+    /// resolves to no file, and a line table indexing nothing is worse
+    /// than none at all.
+    fn addLineChunks(self: *Emitter, debug: *gx.DebugBuilder) !void {
+        const g = self.graph orelse return;
+        if (self.line_rows.items.len == 0) return;
+
+        var paths: std.ArrayList([]const u8) = .empty;
+        defer paths.deinit(self.allocator);
+        for (g.source_map.files.items) |f| try paths.append(self.allocator, f.path);
+
+        var rows: std.ArrayList(gx.LineRow) = .empty;
+        defer rows.deinit(self.allocator);
+        for (self.line_rows.items) |p| {
+            const located = g.source_map.lookup(p.span_start) orelse continue;
+            const at = gx.lineColIn(located.file.content, located.file_offset);
+            const start_ref: CodeRef = .{ .bank = p.bank, .offset = p.start_offset };
+            const end_ref: CodeRef = .{ .bank = p.bank, .offset = p.end_offset };
+            try rows.append(self.allocator, .{
+                .start_addr = start_ref.addr(),
+                .end_addr = end_ref.addr(),
+                .file = g.source_map.fileIdAt(p.span_start) orelse 0,
+                .line = at.line,
+                .column = at.column,
+            });
+        }
+        if (rows.items.len == 0) return;
+
+        // Ascending by address so a consumer can stop scanning early;
+        // ties keep the narrower range first, which is the innermost
+        // statement at that address.
+        std.mem.sort(gx.LineRow, rows.items, {}, lineRowLessThan);
+
+        const files_payload = try gx.encodeFiles(self.allocator, paths.items);
+        defer self.allocator.free(files_payload);
+        try debug.addChunk(.files, files_payload);
+
+        const lines_payload = try gx.encodeLines(self.allocator, rows.items);
+        defer self.allocator.free(lines_payload);
+        try debug.addChunk(.lines, lines_payload);
     }
 
     /// Mutable view into the active code buffer. Used for emit-
