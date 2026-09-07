@@ -9,6 +9,7 @@ const opcodes = @import("codegen/opcodes.zig");
 /// spliced body to count real instructions).
 pub const disasm_decoder = @import("../disasm/decoder.zig");
 const archive = @import("codegen/archive.zig");
+const gx = @import("../gx.zig");
 const mem_builtin = @import("codegen/mem_builtin.zig");
 const strings = @import("codegen/strings.zig");
 const pattern = @import("codegen/pattern.zig");
@@ -2552,45 +2553,46 @@ pub const Emitter = struct {
         return inline_call.emitInlineCall(self, callee, c);
     }
 
-    /// Emit the debug-symbol section. Includes resolved fn
-    /// addresses (kind 0) and globals (kind 1). Compiler-internal
+    /// Emit the debug section. Carries a symbols chunk of resolved fn
+    /// addresses (kind 0) and globals (kind 1); compiler-internal
     /// labels are filtered out.
     ///
-    /// ```
-    /// [u16 symbol_count]
-    /// for each: [u16 address][u8 kind][u8 name_len][name bytes]
-    /// ```
+    /// The chunk framing is ISA §7.3; the symbols payload is
+    /// `[u16 count]` then `[u16 address][u8 kind][u8 name_len][name]`
+    /// per row.
     pub fn buildDebugSymbolSection(self: *Emitter) ![]u8 {
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(self.allocator);
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(self.allocator);
 
-        // Reserve space for the u16 symbol_count header — patched
-        // at the end once we've walked every symbol.
-        try out.append(self.allocator, 0);
-        try out.append(self.allocator, 0);
+        // Reserve the u16 count — patched once every symbol is walked.
+        try payload.append(self.allocator, 0);
+        try payload.append(self.allocator, 0);
         var count: u16 = 0;
 
-        // Code labels — fn addresses. Skip compiler-internal
-        // mangled prefixes that aren't user-meaningful in a
-        // debugger.
+        // Code labels — fn addresses. Skip compiler-internal mangled
+        // prefixes that aren't user-meaningful in a debugger.
         var fn_it = self.fn_addresses.iterator();
         while (fn_it.next()) |entry| {
             const name = entry.key_ptr.*;
             if (std.mem.startsWith(u8, name, "__lambda_")) continue;
             if (std.mem.startsWith(u8, name, "__class_vtable_")) continue;
-            try appendDebugSymbol(self.allocator, &out, entry.value_ptr.addr(), 0, name);
+            try appendDebugSymbol(self.allocator, &payload, entry.value_ptr.addr(), 0, name);
             count += 1;
         }
 
         // Data labels — top-level let / const globals.
         var g_it = self.globals.iterator();
         while (g_it.next()) |entry| {
-            try appendDebugSymbol(self.allocator, &out, entry.value_ptr.address, 1, entry.key_ptr.*);
+            try appendDebugSymbol(self.allocator, &payload, entry.value_ptr.address, 1, entry.key_ptr.*);
             count += 1;
         }
 
-        archive.writeU16Le(out.items[0..2], count);
-        return out.toOwnedSlice(self.allocator);
+        archive.writeU16Le(payload.items[0..2], count);
+
+        var debug = gx.DebugBuilder.init(self.allocator);
+        defer debug.deinit();
+        try debug.addChunk(.symbols, payload.items);
+        return self.allocator.dupe(u8, debug.section() orelse &.{});
     }
 
     /// Mutable view into the active code buffer. Used for emit-
@@ -2689,7 +2691,43 @@ pub const Emitter = struct {
 
 // ---------- archive layout (.gx per ISA §7.1) ----------
 
-const buildArchive = archive.buildArchive;
+/// Assemble the final `.gx` archive: header, base image, each declared
+/// bank's 16 KiB window (zero-padded for banks the program never
+/// touched), then the optional debug section.
+pub fn buildArchive(
+    allocator: std.mem.Allocator,
+    base_image: []const u8,
+    entry_point: u16,
+    heap_base: u16,
+    banks: *const std.AutoHashMapUnmanaged(u8, std.ArrayList(u8)),
+    debug_section: ?[]const u8,
+) ![]u8 {
+    // Bank count = highest declared index + 1; the container
+    // zero-fills any index the program skipped.
+    var max_bank: ?u8 = null;
+    var it = banks.keyIterator();
+    while (it.next()) |b| {
+        if (max_bank) |m| max_bank = @max(m, b.*) else max_bank = b.*;
+    }
+    // @as: widen the u8 bank index so `+ 1` cannot wrap at index 255.
+    const bank_count: usize = if (max_bank) |m| @as(usize, m) + 1 else 0;
+
+    const windows = try allocator.alloc([]const u8, bank_count);
+    defer allocator.free(windows);
+    for (windows, 0..) |*w, i| {
+        // safety: i < bank_count ≤ 256, so it fits the u8 bank index.
+        w.* = if (banks.get(@intCast(i))) |buf| buf.items else &.{};
+    }
+
+    return gx.build(allocator, .{
+        .base_image = base_image,
+        .entry_point = entry_point,
+        .heap_base = heap_base,
+        .banks = windows,
+        .debug_section = debug_section,
+    });
+}
+
 const decodeStringEscapes = archive.decodeStringEscapes;
 const alignUpU16 = archive.alignUpU16;
 const banksEqual = archive.banksEqual;

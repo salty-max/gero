@@ -489,23 +489,19 @@ test "codegen: debug symbols emit by default — flag bit + sorted entries" {
         \\
     , .{});
     defer out.deinit();
-    // Flags low byte: bit 1 = has-debug
     try std.testing.expect((out.cg.image[6] & 0x02) != 0);
-    // Trailing blob: count u16 LE = 2, then sorted by address.
-    // Entry layout per ISA §7.3: addr(2) + kind(1) + name_len(1) + name.
-    const tail_start = 16 + 2; // header + 2-byte image (2 hlt)
-    try std.testing.expectEqual(@as(u8, 0x02), out.cg.image[tail_start]);
-    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 1]);
-    // First entry: addr 0x0000, kind=label(0), name="main"
-    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 2]);
-    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 3]);
-    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 4]); // kind = label
-    try std.testing.expectEqual(@as(u8, 4), out.cg.image[tail_start + 5]); // name_len
-    try std.testing.expectEqualSlices(u8, "main", out.cg.image[tail_start + 6 ..][0..4]);
-    // Second entry: addr 0x0001, kind=label, name="helper" — starts at tail+10
-    try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[tail_start + 10]);
-    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 12]); // kind = label
-    try std.testing.expectEqualSlices(u8, "helper", out.cg.image[tail_start + 14 ..][0..6]);
+
+    const header = try gero.disasm.parseHeader(out.cg.image);
+    var syms = try gero.disasm.parseSymbols(std.testing.allocator, header.debug);
+    defer syms.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), syms.entries.len);
+    // Sorted by address, so `main` at 0x0000 precedes `helper`.
+    try std.testing.expectEqualStrings("main", syms.entries[0].name);
+    try std.testing.expectEqual(@as(u16, 0x0000), syms.entries[0].address);
+    try std.testing.expectEqual(gero.disasm.SymbolKind.label, syms.entries[0].kind);
+    try std.testing.expectEqualStrings("helper", syms.entries[1].name);
+    try std.testing.expectEqual(@as(u16, 0x0001), syms.entries[1].address);
 }
 
 test "codegen: debug_symbols=false skips the section + flag" {
@@ -519,7 +515,7 @@ test "codegen: debug_symbols=false skips the section + flag" {
 test "codegen: debug symbols skip local labels + consts" {
     // Locals (`.loop`) get mangled with a `.` which isn't a valid
     // ident — exclude. Consts are values, not addresses — also
-    // exclude. Only `main` should make it into the blob.
+    // exclude. Only `main` should make it into the section.
     var out = try assembleRaw(
         \\const N = $05
         \\main:
@@ -528,14 +524,14 @@ test "codegen: debug symbols skip local labels + consts" {
         \\
     , .{});
     defer out.deinit();
-    const tail_start = 16 + 1; // header + 1 image byte (hlt)
-    // symbol_count = 1
-    try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[tail_start]);
-    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 1]);
-    // The one entry is "main" — kind=label(0), name_len=4
-    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[tail_start + 4]); // kind = label
-    try std.testing.expectEqual(@as(u8, 4), out.cg.image[tail_start + 5]); // name_len
-    try std.testing.expectEqualSlices(u8, "main", out.cg.image[tail_start + 6 ..][0..4]);
+
+    const header = try gero.disasm.parseHeader(out.cg.image);
+    var syms = try gero.disasm.parseSymbols(std.testing.allocator, header.debug);
+    defer syms.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), syms.entries.len);
+    try std.testing.expectEqualStrings("main", syms.entries[0].name);
+    try std.testing.expectEqual(gero.disasm.SymbolKind.label, syms.entries[0].kind);
 }
 
 test "codegen: data declarations emit with kind=1 (data)" {
@@ -544,9 +540,13 @@ test "codegen: data declarations emit with kind=1 (data)" {
         \\
     , .{});
     defer out.deinit();
-    const tail_start = 16 + 2; // header + 2 image bytes
-    // First entry should have kind = data(1).
-    try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[tail_start + 4]);
+
+    const header = try gero.disasm.parseHeader(out.cg.image);
+    var syms = try gero.disasm.parseSymbols(std.testing.allocator, header.debug);
+    defer syms.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), syms.entries.len);
+    try std.testing.expectEqual(gero.disasm.SymbolKind.data, syms.entries[0].kind);
 }
 
 test "codegen: header magic + version + entry_point + image_size" {
@@ -554,9 +554,9 @@ test "codegen: header magic + version + entry_point + image_size" {
     defer out.deinit();
     // Magic "GERO".
     try std.testing.expectEqualSlices(u8, "GERO", out.cg.image[0..4]);
-    // Version = 0x0001 LE.
-    try std.testing.expectEqual(@as(u8, 0x01), out.cg.image[4]);
-    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[5]);
+    // The assembler and the compiler stamp the same format version —
+    // the header describes the file, not which front-end wrote it.
+    try std.testing.expectEqual(gero.gx.version, gero.gx.readU16Le(out.cg.image[4..6]));
     // Entry point = 0x1100 LE.
     try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[8]);
     try std.testing.expectEqual(@as(u8, 0x11), out.cg.image[9]);
