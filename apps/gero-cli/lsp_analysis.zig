@@ -9,7 +9,7 @@
 const std = @import("std");
 const gero = @import("gero");
 const gr_diagnostics = @import("gr_diagnostics.zig");
-const render = @import("diagnostics.zig");
+const render = gero.diagnostics_json;
 const uri_mod = @import("lsp_uri.zig");
 
 /// Which front-end a document belongs to, decided by its URI suffix.

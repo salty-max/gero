@@ -1,6 +1,11 @@
 /// Package version (from `build.zig.zon`).
 pub const VERSION: []const u8 = @import("build_options").version;
 
+/// The JSON shape every diagnostic producer emits (lang-diagnostics.md
+/// §9). Shared so a terminal, an editor, and the playground cannot
+/// disagree about an error.
+pub const diagnostics_json = @import("diagnostics_json.zig");
+
 /// The `.gx` container format: header, layout, debug section. Shared
 /// by both front-ends so one ISA yields one header, and the single
 /// place a bytecode-format freeze has to lock.

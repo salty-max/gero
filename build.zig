@@ -488,6 +488,61 @@ pub fn build(b: *std.Build) void {
     lint_step.dependOn(&fmt_check.step);
     lint_step.dependOn(&lint_run.step);
 
+    // ----- wasm module -----------------------------------------------------
+    //
+    // The boundary gero-lab is written against (docs/gero-lab.md §2).
+    // `wasm32-freestanding` rather than wasi: the consumer wants a
+    // narrow purpose-built surface, not a POSIX shim. Excluded from
+    // build.zig.zon's `paths`, so it never reaches library consumers.
+
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    const wasm_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-wasm/main.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    const wasm_gero_mod = b.createModule(.{
+        .root_source_file = b.path("src/gero.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    wasm_gero_mod.addImport("knit", b.dependency("knit", .{
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    }).module("knit"));
+    wasm_gero_mod.addOptions("build_options", lib_options);
+    wasm_mod.addImport("gero", wasm_gero_mod);
+
+    const wasm_exe = b.addExecutable(.{
+        .name = "gero",
+        .root_module = wasm_mod,
+    });
+    // A reactor, not a command: the host calls exports, there is no main.
+    wasm_exe.entry = .disabled;
+    wasm_exe.rdynamic = true;
+
+    // The module's own tests run natively: the arena, the `Result`
+    // encoding, and the diagnostics shape are host-independent, and a
+    // native runner reports failures legibly.
+    const wasm_host_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-wasm/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wasm_host_mod.addImport("gero", gero_mod);
+    const wasm_test = b.addTest(.{
+        .name = "test-wasm",
+        .root_module = wasm_host_mod,
+    });
+    test_step.dependOn(&b.addRunArtifact(wasm_test).step);
+
+    const wasm_install = b.addInstallArtifact(wasm_exe, .{});
+    const wasm_step = b.step("wasm", "Build the gero.wasm module for browser hosts");
+    wasm_step.dependOn(&wasm_install.step);
+
     // ----- Golden bytecode corpus ------------------------------------------
     //
     // Recompiles every example and compares the bytes against the
@@ -614,6 +669,9 @@ pub fn build(b: *std.Build) void {
     ci_step.dependOn(test_modes_step);
     ci_step.dependOn(test_all);
     ci_step.dependOn(golden_step);
+    // Compiling for freestanding wasm is a different question from
+    // compiling for wasi, and the lab depends on the answer.
+    ci_step.dependOn(wasm_step);
     ci_step.dependOn(&check_examples_cmd.step);
     ci_step.dependOn(&check_broken_cmd.step);
     ci_step.dependOn(&fmt_check_examples_cmd.step);

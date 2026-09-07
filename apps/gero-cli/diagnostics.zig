@@ -61,8 +61,8 @@ pub fn printAllFailures(
     for (failures) |f| {
         const local = f.parse_errors.len + f.codegen_errors.len;
         const keyed = try arena.alloc(Keyed, local);
-        for (f.parse_errors, 0..) |d, i| keyed[i] = .{ .diag = d, .path = pathOf(f.source_map, d) };
-        for (f.codegen_errors, 0..) |d, j| keyed[f.parse_errors.len + j] = .{ .diag = d, .path = pathOf(f.source_map, d) };
+        for (f.parse_errors, 0..) |d, i| keyed[i] = .{ .diag = d, .path = gero.diagnostics_json.pathOf(f.source_map, d) };
+        for (f.codegen_errors, 0..) |d, j| keyed[f.parse_errors.len + j] = .{ .diag = d, .path = gero.diagnostics_json.pathOf(f.source_map, d) };
         std.mem.sort(Keyed, keyed, {}, byPathThenIndex);
 
         var prev_path: []const u8 = "";
@@ -88,48 +88,6 @@ pub fn writeSummaryHeader(
     const error_noun: []const u8 = if (errors == 1) "error" else "errors";
     const file_noun: []const u8 = if (files == 1) "file" else "files";
     try stdout.print("{s}{d} {s}{s} in {d} {s}\n", .{ style.code, errors, error_noun, style.reset, files, file_noun });
-}
-
-/// Look up the file path the diagnostic points into. Falls back
-/// to `<unknown>` when the source-map miss (shouldn't normally
-/// happen in practice).
-pub fn pathOf(source_map: gero.asm_.SourceMap, d: gero.asm_.Diagnostic) []const u8 {
-    // @as: ParseError indexes fit in u32 — bounded by max_file_size (16 MiB) per include.zig.
-    const offset: u32 = @as(u32, @intCast(d.parse_error.index));
-    if (source_map.lookup(offset)) |loc| return loc.file.path;
-    return "<unknown>";
-}
-
-/// Resolve a diagnostic's fused-source offset back to its
-/// `(file_path, line, column)` triple. Falls back to
-/// `(<unknown>, 0, 0)` when the source-map misses.
-pub fn locationOf(source_map: gero.asm_.SourceMap, d: gero.asm_.Diagnostic) Location {
-    // @as: ParseError indexes fit in u32 — bounded by max_file_size (16 MiB) per include.zig.
-    const offset: u32 = @as(u32, @intCast(d.parse_error.index));
-    if (source_map.lookup(offset)) |loc| {
-        const lc = lineColIn(loc.file.content, loc.file_offset);
-        return .{ .path = loc.file.path, .line = lc.line, .column = lc.col };
-    }
-    return .{ .path = "<unknown>", .line = 0, .column = 0 };
-}
-
-/// `(line, column)` 1-based pair for a byte offset inside `content`.
-/// Linear scan — fine while individual files stay under the
-/// 16 MiB cap, which they always do.
-pub fn lineColIn(content: []const u8, file_offset: u32) struct { line: usize, col: usize } {
-    var line: usize = 1;
-    var col: usize = 1;
-    const target: usize = @as(usize, file_offset);
-    var i: usize = 0;
-    while (i < content.len and i < target) : (i += 1) {
-        if (content[i] == '\n') {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    return .{ .line = line, .col = col };
 }
 
 /// Resolved diagnostic location used by the JSON renderer + any
@@ -181,14 +139,14 @@ pub fn printJsonReport(
     try jw.objectField("diagnostics");
     try jw.beginArray();
     for (failures) |f| {
-        for (f.parse_errors) |d| try writeDiagnosticJson(&jw, f.source_map, d);
-        for (f.codegen_errors) |d| try writeDiagnosticJson(&jw, f.source_map, d);
+        for (f.parse_errors) |d| try gero.diagnostics_json.writeAsm(&jw, f.source_map, d);
+        for (f.codegen_errors) |d| try gero.diagnostics_json.writeAsm(&jw, f.source_map, d);
     }
     // `.gr` diagnostics share the array rather than trailing the object
     // as separate lines: `--format=json` is one object so an editor can
     // `JSON.parse(stdout)` whichever front-end produced the report.
     for (lang_files) |f| {
-        for (f.diagnostics) |d| try writeLangDiagnosticJson(&jw, f, d);
+        for (f.diagnostics) |d| try gero.diagnostics_json.writeLang(&jw, f, d);
     }
     for (read_errors) |re| {
         try jw.beginObject();
@@ -223,76 +181,6 @@ pub const ReadErrorEntry = struct {
     message: []const u8,
 };
 
-/// Emit one gero-lang diagnostic in the same shape as an asm one.
-/// Carries `end_line` / `end_col` too — a `.gr` span is a range, and
-/// an editor needs both ends to underline it.
-fn writeLangDiagnosticJson(
-    jw: *std.json.Stringify,
-    file: gero.lang.render.FileDiagnostics,
-    d: gero.lang.Diagnostic,
-) !void {
-    const start = gero.lang.render.lineColAt(file.source, d.span.start);
-    const end = gero.lang.render.lineColAt(file.source, d.span.end);
-    try jw.beginObject();
-
-    try jw.objectField("file");
-    try jw.write(file.path);
-    try jw.objectField("line");
-    try jw.write(start.line);
-    try jw.objectField("column");
-    try jw.write(start.col);
-    try jw.objectField("end_line");
-    try jw.write(end.line);
-    try jw.objectField("end_col");
-    try jw.write(end.col);
-    try jw.objectField("severity");
-    try jw.write(switch (d.severity) {
-        .fatal => "error",
-        .warning => "warning",
-        .note => "note",
-    });
-    try jw.objectField("code");
-    try jw.write(d.code);
-    try jw.objectField("message");
-    try jw.write(d.message);
-    if (d.help) |h| {
-        try jw.objectField("note");
-        try jw.write(h);
-    }
-
-    try jw.endObject();
-}
-
-fn writeDiagnosticJson(
-    jw: *std.json.Stringify,
-    source_map: gero.asm_.SourceMap,
-    d: gero.asm_.Diagnostic,
-) !void {
-    const loc = locationOf(source_map, d);
-    try jw.beginObject();
-
-    try jw.objectField("file");
-    try jw.write(loc.path);
-    try jw.objectField("line");
-    try jw.write(loc.line);
-    try jw.objectField("column");
-    try jw.write(loc.column);
-    try jw.objectField("severity");
-    try jw.write("error");
-    if (d.code) |c| {
-        try jw.objectField("code");
-        try jw.write(c.shortLabel());
-    }
-    try jw.objectField("message");
-    try jw.write(d.parse_error.message);
-    if (d.note) |n| {
-        try jw.objectField("note");
-        try jw.write(n);
-    }
-
-    try jw.endObject();
-}
-
 /// Sort comparator: by path lex order, then by fused-source
 /// offset within the same path. Used by `printMerged`.
 pub fn byPathThenIndex(_: void, a: Keyed, b: Keyed) bool {
@@ -321,15 +209,15 @@ test "diagnostics: byPathThenIndex breaks ties on parse_error.index" {
 
 test "diagnostics: lineColIn 1-indexes lines and columns" {
     const content = "abc\ndef\nghi";
-    const r1 = lineColIn(content, 0);
+    const r1 = gero.diagnostics_json.lineColIn(content, 0);
     try testing.expectEqual(@as(usize, 1), r1.line);
     try testing.expectEqual(@as(usize, 1), r1.col);
 
-    const r2 = lineColIn(content, 4); // first char of "def"
+    const r2 = gero.diagnostics_json.lineColIn(content, 4); // first char of "def"
     try testing.expectEqual(@as(usize, 2), r2.line);
     try testing.expectEqual(@as(usize, 1), r2.col);
 
-    const r3 = lineColIn(content, 10); // 'i' in "ghi"
+    const r3 = gero.diagnostics_json.lineColIn(content, 10); // 'i' in "ghi"
     try testing.expectEqual(@as(usize, 3), r3.line);
     try testing.expectEqual(@as(usize, 3), r3.col);
 }
@@ -391,7 +279,7 @@ test "diagnostics: writeDiagnosticJson — code + note both serialized when pres
     defer out.deinit();
     var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
     try jw.beginArray();
-    try writeDiagnosticJson(&jw, sm, d);
+    try gero.diagnostics_json.writeAsm(&jw, sm, d);
     try jw.endArray();
 
     const expected =
