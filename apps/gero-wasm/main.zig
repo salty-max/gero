@@ -16,6 +16,7 @@ const gero = @import("gero");
 const abi = @import("abi.zig");
 const session = @import("session.zig");
 const toolchain = @import("toolchain.zig");
+const vm = @import("vm.zig");
 
 const Result = abi.Result;
 const Status = abi.Status;
@@ -198,4 +199,123 @@ export fn gero_debug_info(gx_ptr: u32, gx_len: u32) *const Result {
 
     toolchain.writeDebugJson(arena, &jw, header.debug) catch return session.fail(.out_of_memory);
     return session.finish(out.written(), null, 0);
+}
+
+// ---------- VM session exports (§2.2) ----------
+
+/// Start a VM session. Returns a handle, or `0` when every slot is in
+/// use — reported rather than trapped, like every other ceiling here.
+export fn gero_vm_create() u32 {
+    if (!session.ready()) return 0;
+    return vm.create();
+}
+
+/// End a session and free its slot. A handle held past this is
+/// refused rather than addressing whoever takes the slot next.
+export fn gero_vm_destroy(handle: u32) u32 {
+    return @intFromEnum(vm.destroy(handle));
+}
+
+/// Parse a `.gx` and boot it into the session.
+///
+/// A file that will not load reports **why** in the words `gero run`
+/// uses, not a bare status — the same shared messages a terminal
+/// shows (#415).
+export fn gero_vm_load(handle: u32, gx_ptr: u32, gx_len: u32) *const Result {
+    if (session.begin()) |status| return session.fail(status);
+    const image = session.slice(gx_ptr, gx_len) orelse return session.fail(.bad_argument);
+
+    var message_buf: [gero.load_error.max_message_len]u8 = undefined;
+    if (vm.load(handle, image, &message_buf)) |failure| {
+        const copy = session.allocator().dupe(u8, failure.message) catch
+            return session.fail(.out_of_memory);
+        return session.failWith(failure.status, copy);
+    }
+    return session.finish(null, null, 0);
+}
+
+/// Re-boot the loaded image, discarding everything execution changed.
+export fn gero_vm_reset(handle: u32) u32 {
+    return @intFromEnum(vm.reset(handle));
+}
+
+/// Execute at most `budget` instructions. The payload is a
+/// `StepOutcome`: four little-endian `u32`s — reason, ip, fault, and
+/// instructions actually retired.
+export fn gero_vm_step(handle: u32, budget: u32) *const Result {
+    if (session.begin()) |status| return session.fail(status);
+    const out = vm.step(handle, budget) orelse return session.fail(.bad_argument);
+    const bytes = session.allocator().alloc(u8, vm.StepOutcome.encoded_size) catch
+        return session.fail(.out_of_memory);
+    @memcpy(bytes, std.mem.asBytes(&out));
+    return session.finish(bytes, null, 0);
+}
+
+/// The register file: 15 little-endian `u16`s, in `Register` index
+/// order.
+export fn gero_vm_regs(handle: u32) *const Result {
+    if (session.begin()) |status| return session.fail(status);
+    const bytes = session.allocator().alloc(u8, vm.register_bytes) catch
+        return session.fail(.out_of_memory);
+    if (!vm.registers(handle, bytes[0..vm.register_bytes])) return session.fail(.bad_argument);
+    return session.finish(bytes, null, 0);
+}
+
+/// Read `len` bytes from `addr` through the memory mapper, so a banked
+/// address returns what the running program sees.
+export fn gero_vm_peek(handle: u32, addr: u32, len: u32) *const Result {
+    if (session.begin()) |status| return session.fail(status);
+    const bytes = session.allocator().alloc(u8, len) catch return session.fail(.out_of_memory);
+    // safety: the ISA's address space is 16-bit.
+    if (!vm.peek(handle, @truncate(addr), bytes)) return session.fail(.bad_argument);
+    return session.finish(bytes, null, 0);
+}
+
+/// Write bytes at `addr` through the mapper.
+export fn gero_vm_poke(handle: u32, addr: u32, src_ptr: u32, src_len: u32) u32 {
+    const bytes = session.slice(src_ptr, src_len) orelse return @intFromEnum(Status.bad_argument);
+    // safety: the ISA's address space is 16-bit.
+    if (!vm.poke(handle, @truncate(addr), bytes)) return @intFromEnum(Status.bad_argument);
+    return @intFromEnum(Status.ok);
+}
+
+/// Set one register by index.
+export fn gero_vm_set_reg(handle: u32, index: u32, value: u32) u32 {
+    if (index > 0xFF) return @intFromEnum(Status.bad_argument);
+    // safety: both bounded by the checks above and the 16-bit file.
+    return @intFromEnum(vm.setRegister(handle, @truncate(index), @truncate(value)));
+}
+
+/// Inject a maskable interrupt, honouring `flg.I` and `im` exactly as
+/// the VM does.
+export fn gero_vm_raise_irq(handle: u32, vector: u32) u32 {
+    if (vector > 0xFF) return @intFromEnum(Status.bad_argument);
+    // safety: bounded by the check above.
+    return @intFromEnum(vm.raiseIrq(handle, @truncate(vector)));
+}
+
+/// Drain the print buffer. The payload is what the program printed;
+/// `diagnostics_len` carries how many bytes were **dropped** because
+/// it outran the buffer, so a flood is visible rather than silent.
+export fn gero_vm_take_output(handle: u32) *const Result {
+    if (session.begin()) |status| return session.fail(status);
+    const out = vm.takeOutput(handle) orelse return session.fail(.bad_argument);
+    const copy = session.allocator().dupe(u8, out.text) catch return session.fail(.out_of_memory);
+    vm.clearOutput(handle);
+    return session.finishWithDropped(copy, out.dropped);
+}
+
+/// The battery-backed banks, for persistence (§7). Empty when the
+/// program declares none.
+export fn gero_vm_sram(handle: u32) *const Result {
+    if (session.begin()) |status| return session.fail(status);
+    const bytes = vm.sram(handle) orelse return session.fail(.bad_argument);
+    const copy = session.allocator().dupe(u8, bytes) catch return session.fail(.out_of_memory);
+    return session.finish(copy, null, 0);
+}
+
+/// Restore battery-backed banks saved by an earlier session.
+export fn gero_vm_load_sram(handle: u32, src_ptr: u32, src_len: u32) u32 {
+    const bytes = session.slice(src_ptr, src_len) orelse return @intFromEnum(Status.bad_argument);
+    return @intFromEnum(vm.loadSram(handle, bytes));
 }

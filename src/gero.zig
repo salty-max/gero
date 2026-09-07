@@ -1,6 +1,10 @@
 /// Package version (from `build.zig.zon`).
 pub const VERSION: []const u8 = @import("build_options").version;
 
+/// Why a `.gx` failed to load, in words a user can act on. Shared so
+/// the same broken file explains itself the same way everywhere.
+pub const load_error = @import("load_error.zig");
+
 /// The JSON shape every diagnostic producer emits (lang-diagnostics.md
 /// §9). Shared so a terminal, an editor, and the playground cannot
 /// disagree about an error.

@@ -178,14 +178,17 @@ wording, code, and span are identical in a terminal and in a browser
 | `gero_vm_create()` / `gero_vm_destroy(h)` | Session lifecycle |
 | `gero_vm_load(h, gx_ptr, gx_len)` | Parse the archive and boot |
 | `gero_vm_reset(h)` | Re-boot the loaded image |
-| `gero_vm_step(h, n) -> StepOutcome` | Execute up to `n` instructions |
+| `gero_vm_step(h, n) -> StepOutcome` | Execute up to `n` instructions. The payload is four little-endian `u32`s: reason, `ip`, fault vector, and instructions retired. Reasons are `0` budget, `1` halted, `2` breakpoint, `3` faulted, `4` not-loaded — the run loop branches on all five, so they are not collapsed. |
 | `gero_vm_regs(h) -> ptr` | Register file snapshot |
 | `gero_vm_peek(h, addr, len) -> ptr` | Read memory through the mapper |
 | `gero_vm_poke(h, addr, ptr, len)` | Write memory through the mapper |
 | `gero_vm_set_reg(h, reg, value)` | Poke a register |
 | `gero_vm_raise_irq(h, vector)` | Inject a maskable interrupt |
-| `gero_vm_take_output(h) -> ptr` | Drain the print ring buffer |
+| `gero_vm_take_output(h) -> Result` | Drain the print buffer. `diagnostics_len` carries bytes **dropped** because the program outran it, so a flood is visible rather than silent. A full buffer never fails the program: the VM raises invalid-opcode when its writer errors, and a chatty program must not become a crashing one. |
 | `gero_vm_sram(h) -> ptr` / `gero_vm_load_sram(h, ptr, len)` | Persistence (§7) |
+
+A `.gx` that will not load reports **why** in the same words `gero run`
+uses, not a bare status.
 
 Multiple sessions coexist — `gero_vm_create` returns a handle, and
 neither the VM nor the toolchain holds module-level mutable state, so
