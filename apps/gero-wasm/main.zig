@@ -319,3 +319,29 @@ export fn gero_vm_load_sram(handle: u32, src_ptr: u32, src_len: u32) u32 {
     const bytes = session.slice(src_ptr, src_len) orelse return @intFromEnum(Status.bad_argument);
     return @intFromEnum(vm.loadSram(handle, bytes));
 }
+
+/// Set a breakpoint at `addr`, by patching the ISA's `brk` over the
+/// byte there (§2.3). Setting one twice is not an error.
+export fn gero_vm_breakpoint_add(handle: u32, addr: u32) u32 {
+    if (addr > 0xFFFF) return @intFromEnum(Status.bad_argument);
+    // safety: bounded by the check above.
+    return @intFromEnum(vm.addBreakpoint(handle, @truncate(addr)));
+}
+
+/// Clear a breakpoint, restoring the byte it displaced. Clearing one
+/// that is not set is not an error.
+export fn gero_vm_breakpoint_remove(handle: u32, addr: u32) u32 {
+    if (addr > 0xFFFF) return @intFromEnum(Status.bad_argument);
+    // safety: bounded by the check above.
+    return @intFromEnum(vm.removeBreakpoint(handle, @truncate(addr)));
+}
+
+/// Clear every breakpoint in the session.
+export fn gero_vm_breakpoint_clear(handle: u32) u32 {
+    return @intFromEnum(vm.clearBreakpoints(handle));
+}
+
+/// How many breakpoints are set, for the worker's `bp` event (§3.2).
+export fn gero_vm_breakpoint_count(handle: u32) u32 {
+    return vm.breakpointCount(handle);
+}
