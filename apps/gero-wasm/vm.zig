@@ -353,6 +353,14 @@ pub fn step(handle: u32, budget: u32) ?StepOutcome {
     }
 
     while (retired < budget) : (retired += 1) {
+        // The host-convention `int` vectors, before dispatch — the
+        // same two the CLI implements, so a program that prints in a
+        // terminal prints here too rather than faulting on an
+        // unhandled vector.
+        switch (hostInt(slot)) {
+            .printed, .sram_flush_requested => continue,
+            .no => {},
+        }
         switch (gero.vm.step(&slot.machine)) {
             .cont, .branched => continue,
             .halted => return outcome(slot, .halted, retired + 1),
@@ -377,6 +385,16 @@ fn atBreakpoint(slot: *Session, steps: u32) StepOutcome {
         slot.resume_from = addr;
     }
     return outcome(slot, .breakpoint, steps);
+}
+
+/// Run the host-convention `int` vectors for this session.
+///
+/// A save has nowhere to go here — the lab persists SRAM through
+/// `gero_vm_sram`, on its own schedule — so the flush is a no-op that
+/// still advances past the instruction. A program calling it must keep
+/// running, not fault.
+fn hostInt(slot: *Session) gero.vm.host_int.Outcome {
+    return gero.vm.host_int.handle(&slot.machine) catch .no;
 }
 
 fn outcome(slot: *Session, reason: StepReason, steps: u32) StepOutcome {

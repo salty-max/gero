@@ -14,6 +14,12 @@ pub const Registers = registers.Registers;
 /// Bits `flg` holds; reserved bits above are masked off on write
 /// (ISA §2.1).
 pub const flg_mask = registers.flg_mask;
+// allow-unused: a host-facing export. Nothing in the library calls it —
+// embedders do, which is the point: the CLI and the wasm module both
+// implement these vectors and must implement the same ones.
+/// The `int` vectors every host implements by convention, so a program
+/// behaves the same in a terminal and in a browser.
+pub const host_int = @import("host_int.zig");
 /// Highest `.gx` format version this loader accepts (ISA §7.1).
 pub const version_target = loader_mod.version_target;
 /// Flag bit positions inside `flg`.
