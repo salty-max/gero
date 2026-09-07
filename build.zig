@@ -488,6 +488,44 @@ pub fn build(b: *std.Build) void {
     lint_step.dependOn(&fmt_check.step);
     lint_step.dependOn(&lint_run.step);
 
+    // ----- Golden bytecode corpus ------------------------------------------
+    //
+    // Recompiles every example and compares the bytes against the
+    // blessed images in tests/golden/. Nothing else notices when a
+    // codegen change alters output that still runs correctly, which is
+    // the promise a format freeze makes.
+
+    const golden_mod = b.createModule(.{
+        .root_source_file = b.path("tools/golden/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    golden_mod.addImport("gero", gero_mod);
+    const golden_exe = b.addExecutable(.{
+        .name = "gero-golden",
+        .root_module = golden_mod,
+    });
+
+    const golden_test = b.addTest(.{
+        .name = "test-golden",
+        .root_module = golden_mod,
+    });
+    const golden_run = b.addRunArtifact(golden_exe);
+    golden_run.setCwd(b.path("."));
+    const golden_step = b.step("golden", "Check emitted bytecode against the blessed corpus");
+    golden_step.dependOn(&golden_run.step);
+    // The comparator's own rules — what counts as a difference — are
+    // unit-tested alongside the rest of the suite.
+    const golden_test_run = b.addRunArtifact(golden_test);
+    golden_test_run.setCwd(b.path("."));
+    test_step.dependOn(&golden_test_run.step);
+
+    const bless_run = b.addRunArtifact(golden_exe);
+    bless_run.setCwd(b.path("."));
+    bless_run.addArg("--bless");
+    const bless_step = b.step("bless-golden", "Rewrite the blessed corpus from current codegen");
+    bless_step.dependOn(&bless_run.step);
+
     // ----- Example integration tests ---------------------------------------
     //
     // Drive every examples/asm/*.gas through the installed `gero`
@@ -559,9 +597,10 @@ pub fn build(b: *std.Build) void {
 
     // ----- Pre-push gate ---------------------------------------------------
 
-    const verify_step = b.step("verify", "Pre-push gate (~3-5 min): lint + test + check-examples + check-broken + fmt-check-examples + check-examples-gr. The bash-driven static checks (strict, naming, unused, etc.) walk every .zig file via grep — that's most of the time. Skips test-modes / test-all / test-examples vs the full `ci` step — those run on GitHub Actions on push.");
+    const verify_step = b.step("verify", "Pre-push gate (~3-5 min): lint + test + golden + check-examples + check-broken + fmt-check-examples + check-examples-gr. The bash-driven static checks (strict, naming, unused, etc.) walk every .zig file via grep — that's most of the time. Skips test-modes / test-all / test-examples vs the full `ci` step — those run on GitHub Actions on push.");
     verify_step.dependOn(lint_step);
     verify_step.dependOn(test_step);
+    verify_step.dependOn(golden_step);
     verify_step.dependOn(&check_examples_cmd.step);
     verify_step.dependOn(&check_doc_asm_cmd.step);
     verify_step.dependOn(&check_broken_cmd.step);
@@ -570,10 +609,11 @@ pub fn build(b: *std.Build) void {
 
     // ----- All-in-one CI ---------------------------------------------------
 
-    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + check-examples + check-broken + fmt-check-examples + check-examples-gr + test-examples + test-examples-lang");
+    const ci_step = b.step("ci", "Local equivalent of CI: lint + test-modes + test-all + golden + check-examples + check-broken + fmt-check-examples + check-examples-gr + test-examples + test-examples-lang");
     ci_step.dependOn(lint_step);
     ci_step.dependOn(test_modes_step);
     ci_step.dependOn(test_all);
+    ci_step.dependOn(golden_step);
     ci_step.dependOn(&check_examples_cmd.step);
     ci_step.dependOn(&check_broken_cmd.step);
     ci_step.dependOn(&fmt_check_examples_cmd.step);

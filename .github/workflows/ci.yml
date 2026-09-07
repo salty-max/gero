@@ -111,7 +111,7 @@ jobs:
             zig-out
           # `examples` runs with the default (Debug) build, so share
           # the cache slot with the Debug test cell.
-          key: zig-${{ runner.os }}-test-Debug-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'apps/**', 'tests/**') }}
+          key: zig-${{ runner.os }}-test-Debug-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'apps/**', 'tests/**', 'tools/**') }}
           restore-keys: |
             zig-${{ runner.os }}-test-Debug-
             zig-${{ runner.os }}-examples-
@@ -127,3 +127,5 @@ jobs:
         run: zig build test-examples -freference-trace
       - name: test-examples-lang (compile + run + diff each .gr example)
         run: zig build test-examples-lang -freference-trace
+      - name: golden (emitted bytecode matches the blessed corpus)
+        run: zig build golden -freference-trace
