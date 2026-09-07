@@ -1,6 +1,7 @@
 const std = @import("std");
 const gero = @import("gero");
 const cli = @import("cli.zig");
+const load_error = @import("load_error.zig");
 const term_mod = @import("term.zig");
 
 const bank_size: usize = 0x4000;
@@ -27,7 +28,8 @@ pub fn execute(
     };
 
     const header = gero.disasm.parseHeader(bytes) catch |err| {
-        try term.err("gero disasm: invalid .gx file ({s})", .{@errorName(err)});
+        var msg_buf: [load_error.max_message_len]u8 = undefined;
+        try term.err("gero disasm: {s}", .{load_error.describe(&msg_buf, err, bytes)});
         return 1;
     };
 

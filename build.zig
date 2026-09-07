@@ -297,6 +297,16 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-gr-diagnostics",
         .root_module = gr_diagnostics_mod,
     });
+    const load_error_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/load_error.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    load_error_mod.addImport("gero", gero_mod);
+    const load_error_test = b.addTest(.{
+        .name = "test-cli-load-error",
+        .root_module = load_error_mod,
+    });
     const lsp_protocol_mod = b.createModule(.{
         .root_source_file = b.path("apps/gero-cli/lsp_protocol.zig"),
         .target = target,
@@ -391,6 +401,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(repl_test).step);
     test_step.dependOn(&b.addRunArtifact(line_editor_test).step);
     test_step.dependOn(&b.addRunArtifact(gr_diagnostics_test).step);
+    test_step.dependOn(&b.addRunArtifact(load_error_test).step);
     test_step.dependOn(&b.addRunArtifact(lsp_protocol_test).step);
     test_step.dependOn(&b.addRunArtifact(lsp_uri_test).step);
     test_step.dependOn(&b.addRunArtifact(lsp_analysis_test).step);
