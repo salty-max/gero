@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const gero = @import("gero");
+const files = @import("files.zig");
 
 // ---------- memory (§2.1) ----------
 
@@ -31,13 +32,26 @@ pub const max_arena_bytes: usize = 16 * 1024 * 1024;
 
 /// Bytes of `arena_store` this session may use.
 var arena_limit: usize = 0;
-/// Bump cursor into `arena_store`.
+/// Bump cursor for operation scratch, growing up from `null_guard`.
 ///
 /// Starts past offset 0 so that no live allocation ever has pointer
 /// `0`: exports report failure by returning a null pointer, and an
 /// offset-based scheme would otherwise make a perfectly good first
 /// allocation indistinguishable from that failure.
 var arena_used: usize = null_guard;
+
+/// Bump cursor for host input, growing **down** from the arena's top.
+///
+/// Inputs and scratch share one region from opposite ends, because
+/// they have different lifetimes and the same address space. Scratch
+/// is reset at the start of every operation; input is not, because an
+/// export's arguments are written *before* the call and must still be
+/// there when it reads them. Resetting one region on entry would free
+/// the other's contents — which is exactly the bug this shape exists
+/// to prevent.
+///
+/// A host frees inputs with `gero_reset`, once it is done with them.
+var input_top: usize = 0;
 
 /// Bytes reserved at the arena's base so `0` is never a valid pointer.
 const null_guard: usize = @alignOf(u64);
@@ -117,31 +131,37 @@ var result: Result = undefined;
 export fn gero_init(arena_bytes: u32) u32 {
     arena_limit = if (arena_bytes == 0) max_arena_bytes else @min(@as(usize, arena_bytes), max_arena_bytes);
     arena_used = null_guard;
+    input_top = arena_limit;
+    file_used = 0;
+    file_set = files.Set.init(fileAllocator());
     initialized = true;
     return @intFromEnum(Status.ok);
 }
 
-/// Drop everything allocated since the last reset. A host calls this
-/// between operations; the exports call it on entry themselves, so it
-/// exists for hosts that want to reclaim memory while idle.
+/// Drop everything: the last operation's scratch **and** the inputs a
+/// host wrote for it. Exports reset only scratch on entry, so this is
+/// how input memory is reclaimed.
 export fn gero_reset() void {
     arena_used = null_guard;
+    input_top = arena_limit;
 }
 
 /// Reserve `len` bytes and return a pointer a host can write into —
-/// how source text gets *in*. Returns 0 when the arena cannot satisfy
+/// how source text gets *in*. Returns 0 when the region cannot satisfy
 /// it, which a host must check.
+///
+/// Input survives an operation; only `gero_reset` reclaims it.
 export fn gero_alloc(len: u32) u32 {
     if (!initialized) return 0;
-    const bytes = alloc(len) orelse return 0;
+    const bytes = allocInput(len) orelse return 0;
     return ptrOf(bytes);
 }
 
-/// Bytes the arena has handed out since the last reset. For a host
-/// sizing its ceiling, and for tests.
+/// Bytes handed out since the last reset — scratch plus input. For a
+/// host sizing its ceiling, and for tests.
 export fn gero_arena_used() u32 {
     // safety: bounded by `arena_limit`, itself capped at 16 MiB.
-    return @intCast(arena_used - null_guard);
+    return @intCast((arena_used - null_guard) + (arena_limit - input_top));
 }
 
 /// The arena's ceiling for this session.
@@ -175,9 +195,19 @@ export fn gero_arena_base() u32 {
 /// to be thrown away.
 fn alloc(len: usize) ?[]u8 {
     const aligned = std.mem.alignForward(usize, arena_used, @alignOf(u64));
-    if (aligned + len > arena_limit) return null;
+    // The two cursors meet in the middle; exhaustion is when they cross.
+    if (aligned + len > input_top) return null;
     arena_used = aligned + len;
     return arena_store[aligned .. aligned + len];
+}
+
+/// Carve `len` bytes off the input end, or `null` when it will not fit.
+fn allocInput(len: usize) ?[]u8 {
+    if (len > input_top) return null;
+    const start = std.mem.alignBackward(usize, input_top - len, @alignOf(u64));
+    if (start < arena_used) return null;
+    input_top = start;
+    return arena_store[start .. start + len];
 }
 
 /// An allocator over the arena, for the library entry points.
@@ -185,7 +215,7 @@ const Arena = struct {
     fn allocFn(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
         const a = @max(alignment.toByteUnits(), @alignOf(u64));
         const aligned = std.mem.alignForward(usize, arena_used, a);
-        if (aligned + len > arena_limit) return null;
+        if (aligned + len > input_top) return null;
         arena_used = aligned + len;
         return arena_store[aligned..].ptr;
     }
@@ -236,6 +266,13 @@ fn ptrOf(bytes: []const u8) u32 {
 pub fn inArena(ptr: u32, len: u32) bool {
     if (ptr < null_guard) return false;
     return @as(usize, ptr) + @as(usize, len) <= arena_limit;
+}
+
+/// Whether an operation's scratch reset would invalidate `(ptr, len)`.
+/// Input lives above the scratch cursor, so it survives; anything
+/// below does not.
+pub fn isInput(ptr: u32, len: u32) bool {
+    return inArena(ptr, len) and ptr >= input_top;
 }
 
 /// Borrow `(ptr, len)` as a slice, or `null` when it is out of bounds.
@@ -325,6 +362,70 @@ pub fn encodeAsmDiagnostics(
     for (diagnostics) |d| try gero.diagnostics_json.writeAsm(&jw, source_map, d);
     try jw.endArray();
     return out.written();
+}
+
+// ---------- the virtual file set (§4.2) ----------
+
+/// The session's source buffers. Outlives an operation's arena, so it
+/// carries its own storage — see `file_store`.
+var file_set: files.Set = undefined;
+var file_store: [max_file_bytes]u8 = undefined;
+var file_used: usize = 0;
+
+/// Ceiling on the file set's own storage. Separate from the operation
+/// arena because buffers survive `gero_reset`, and an operation must
+/// not be able to evict the sources it is compiling.
+pub const max_file_bytes: usize = 4 * 1024 * 1024;
+
+fn fileAllocFn(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
+    const a = @max(alignment.toByteUnits(), @alignOf(u64));
+    const aligned = std.mem.alignForward(usize, file_used, a);
+    if (aligned + len > max_file_bytes) return null;
+    file_used = aligned + len;
+    return file_store[aligned..].ptr;
+}
+
+const file_vtable: std.mem.Allocator.VTable = .{
+    .alloc = fileAllocFn,
+    .resize = Arena.resizeFn,
+    .remap = Arena.remapFn,
+    .free = Arena.freeFn,
+};
+
+/// Allocator backing the file set. Bump-only like the operation arena;
+/// `gero_files_clear` is the reset.
+fn fileAllocator() std.mem.Allocator {
+    return .{ .ptr = undefined, .vtable = &file_vtable };
+}
+
+/// Add a buffer to the set, or replace one of the same name.
+/// `name` and `contents` are `(ptr, len)` into the operation arena.
+export fn gero_file_put(name_ptr: u32, name_len: u32, src_ptr: u32, src_len: u32) u32 {
+    if (!ready()) return @intFromEnum(Status.not_initialized);
+    const name = slice(name_ptr, name_len) orelse return @intFromEnum(Status.bad_argument);
+    const contents = slice(src_ptr, src_len) orelse return @intFromEnum(Status.bad_argument);
+    file_set.put(name, contents) catch return @intFromEnum(Status.out_of_memory);
+    return @intFromEnum(Status.ok);
+}
+
+/// Drop a buffer. Removing one that is not present is not an error.
+export fn gero_file_remove(name_ptr: u32, name_len: u32) u32 {
+    if (!ready()) return @intFromEnum(Status.not_initialized);
+    const name = slice(name_ptr, name_len) orelse return @intFromEnum(Status.bad_argument);
+    file_set.remove(name);
+    return @intFromEnum(Status.ok);
+}
+
+/// Empty the set and reclaim its storage.
+export fn gero_files_clear() void {
+    file_set.clear();
+    file_used = 0;
+}
+
+/// How many buffers the set holds.
+export fn gero_file_count() u32 {
+    // safety: bounded by the file store's capacity.
+    return @intCast(file_set.count());
 }
 
 // ---------- identity ----------
@@ -445,4 +546,409 @@ test "encodeLangDiagnostics: emits the shape a host decodes" {
     const first = parsed.value.array.items[0].object;
     try testing.expectEqualStrings("E_UNDEFINED_SYMBOL", first.get("code").?.string);
     try testing.expectEqualStrings("main.gr", first.get("file").?.string);
+}
+
+// ---------- toolchain exports (§2.2) ----------
+
+/// Compile the named entry file to a `.gx`, resolving `use` against
+/// the virtual file set.
+export fn gero_compile(name_ptr: u32, name_len: u32) *const Result {
+    if (begin()) |status| return fail(status);
+    const name = slice(name_ptr, name_len) orelse return fail(.bad_argument);
+    return buildGr(name, .image);
+}
+
+/// Assemble the named entry file to a `.gx`, resolving `include`
+/// against the virtual file set.
+export fn gero_assemble(name_ptr: u32, name_len: u32) *const Result {
+    if (begin()) |status| return fail(status);
+    const name = slice(name_ptr, name_len) orelse return fail(.bad_argument);
+    return buildGas(name, .image);
+}
+
+/// Diagnostics for the named entry file, with no image — the editor's
+/// fast path.
+export fn gero_check(name_ptr: u32, name_len: u32, lang: u32) *const Result {
+    if (begin()) |status| return fail(status);
+    const name = slice(name_ptr, name_len) orelse return fail(.bad_argument);
+    return switch (Lang.from(lang) orelse return fail(.bad_lang)) {
+        .gr => buildGr(name, .diagnostics_only),
+        .gas => buildGas(name, .diagnostics_only),
+    };
+}
+
+/// Canonical formatting of a single buffer. Formatting is per-buffer
+/// rather than per-graph: an editor formats the file in front of it,
+/// and a `use` target's own formatting is its own business.
+export fn gero_format(src_ptr: u32, src_len: u32, lang: u32) *const Result {
+    if (begin()) |status| return fail(status);
+    const src = slice(src_ptr, src_len) orelse return fail(.bad_argument);
+    const which = Lang.from(lang) orelse return fail(.bad_lang);
+    const arena = allocator();
+
+    const formatted = switch (which) {
+        .gr => formatGr(arena, src),
+        .gas => formatGas(arena, src),
+    } catch return fail(.out_of_memory);
+
+    // A buffer that does not parse formats to nothing rather than to a
+    // rewrite from a partial tree — the same rule the language server
+    // follows, for the same reason.
+    return finish(formatted, null, 0);
+}
+
+/// Disassemble a `.gx` into annotated assembly. `bank` selects a bank
+/// window, or `no_bank` for the base image.
+export fn gero_disasm(gx_ptr: u32, gx_len: u32, bank: u32) *const Result {
+    if (begin()) |status| return fail(status);
+    const image = slice(gx_ptr, gx_len) orelse return fail(.bad_argument);
+    const arena = allocator();
+
+    const header = gero.disasm.parseHeader(image) catch return fail(.bad_argument);
+    const region = if (bank == no_bank) header.image else blk: {
+        if (bank >= header.bank_count) return fail(.bad_argument);
+        const window = gero.gx.bank_disk_size;
+        const start = @as(usize, bank) * window;
+        break :blk header.banks[start .. start + window];
+    };
+
+    var out = std.Io.Writer.Allocating.init(arena);
+    gero.disasm.writeBytes(arena, &out.writer, region) catch return fail(.out_of_memory);
+    return finish(out.written(), null, 0);
+}
+
+/// `bank` value selecting the base image rather than a bank window.
+pub const no_bank: u32 = 0xFFFF_FFFF;
+
+// ---------- pipelines ----------
+
+/// Whether an operation wants the image, or only what is wrong.
+const Want = enum { image, diagnostics_only };
+
+/// Resolve, parse, type-check, and optionally lower a `.gr` entry.
+///
+/// Every phase reads from the virtual file set, never from a
+/// filesystem — the resolver's `virtual` source makes a name the set
+/// does not hold a not-found diagnostic rather than a read.
+fn buildGr(name: []const u8, want: Want) *const Result {
+    const arena = allocator();
+
+    var fused = gero.lang.resolveUseImportsVirtual(arena, name, &file_set.map) catch
+        return fail(.out_of_memory);
+    if (fused.hasErrors()) return includeDiagnostics(arena, fused);
+
+    const stream = gero.lang.tokenize(arena, fused.source) catch return fail(.out_of_memory);
+    var tree = gero.lang.parseAllModules(arena, fused.source, stream, &fused.source_map) catch
+        return fail(.out_of_memory);
+    if (tree.errors.len > 0) return langDiagnostics(arena, fused, tree.errors);
+
+    var checked = gero.lang.typecheckGraph(arena, fused.source, &tree.program, &fused.import_aliases, .{
+        .source_map = &fused.source_map,
+        .imports = fused.imports,
+    }) catch return fail(.out_of_memory);
+    checked.program = &tree.program;
+    if (checked.hasErrors() or want == .diagnostics_only) {
+        return reportLang(arena, fused, checked.diagnostics);
+    }
+
+    const compiled = gero.lang.compile(arena, fused.source, &checked, .{
+        .import_aliases = &fused.import_aliases,
+        .graph = .{ .source_map = &fused.source_map, .imports = fused.imports },
+    }) catch return fail(.out_of_memory);
+    if (compiled.hasErrors()) return reportLang(arena, fused, compiled.diagnostics);
+    return finish(compiled.image, null, 0);
+}
+
+/// Resolve, parse, and optionally assemble a `.gas` entry.
+fn buildGas(name: []const u8, want: Want) *const Result {
+    const arena = allocator();
+
+    const fused = gero.asm_.resolveIncludesVirtual(arena, name, &file_set.map) catch
+        return fail(.out_of_memory);
+    if (fused.errors.len > 0) return reportAsm(arena, fused.source_map, fused.errors);
+
+    const pt = gero.asm_.parse(arena, fused.source) catch return fail(.out_of_memory);
+    // Both passes run and both error sets are reported: an unknown
+    // mnemonic parses cleanly and only fails at opcode resolution, so
+    // stopping at the parse would hide it.
+    const cg = gero.asm_.assemble(arena, fused.source, pt, .{ .source_map = &fused.source_map }) catch
+        return fail(.out_of_memory);
+
+    if (pt.errors.len > 0 or cg.errors.len > 0) {
+        var all: std.ArrayList(gero.asm_.Diagnostic) = .empty;
+        all.appendSlice(arena, pt.errors) catch return fail(.out_of_memory);
+        all.appendSlice(arena, cg.errors) catch return fail(.out_of_memory);
+        return reportAsm(arena, fused.source_map, all.items);
+    }
+    if (want == .diagnostics_only) return finish(null, null, 0);
+    return finish(cg.image, null, 0);
+}
+
+fn formatGr(arena: std.mem.Allocator, src: []const u8) !?[]const u8 {
+    const stream = gero.lang.tokenize(arena, src) catch return null;
+    var tree = gero.lang.parse(arena, src, stream) catch return null;
+    if (tree.errors.len > 0) return null;
+    var out = std.Io.Writer.Allocating.init(arena);
+    gero.lang.print(&out.writer, &tree.program, src, tree.comments) catch return null;
+    return out.written();
+}
+
+fn formatGas(arena: std.mem.Allocator, src: []const u8) !?[]const u8 {
+    const pt = gero.asm_.parse(arena, src) catch return null;
+    if (pt.errors.len > 0) return null;
+    var out = std.Io.Writer.Allocating.init(arena);
+    gero.asm_.printProgram(&out.writer, &pt.program, src, gero.asm_.default_print_options) catch return null;
+    return out.written();
+}
+
+// ---------- reporting ----------
+
+/// Report lang diagnostics, attributed to the files they came from.
+fn reportLang(
+    arena: std.mem.Allocator,
+    fused: gero.lang.FusedSource,
+    diagnostics: []const gero.lang.Diagnostic,
+) *const Result {
+    if (diagnostics.len == 0) return finish(null, null, 0);
+    const json = encodeLangDiagnostics(arena, .{
+        .path = entryPath(fused),
+        .source = fused.source,
+        .diagnostics = diagnostics,
+    }) catch return fail(.out_of_memory);
+    return finish(null, json, diagnostics.len);
+}
+
+fn langDiagnostics(
+    arena: std.mem.Allocator,
+    fused: gero.lang.FusedSource,
+    errors: anytype,
+) *const Result {
+    var out: std.ArrayList(gero.lang.Diagnostic) = .empty;
+    for (errors) |e| {
+        out.append(arena, .{
+            .severity = .fatal,
+            .code = e.expected orelse "E_SYNTAX_GENERIC",
+            .message = e.message,
+            // safety: a fused-buffer index, bounded well under 4 GiB.
+            .span = .{ .start = @intCast(e.index), .end = @intCast(e.index) },
+        }) catch return fail(.out_of_memory);
+    }
+    return reportLang(arena, fused, out.items);
+}
+
+/// Report `use`-resolution failures — a missing or cyclic target.
+fn includeDiagnostics(arena: std.mem.Allocator, fused: gero.lang.FusedSource) *const Result {
+    var out: std.ArrayList(gero.lang.Diagnostic) = .empty;
+    for (fused.errors) |e| {
+        out.append(arena, .{
+            .severity = .fatal,
+            .code = switch (e.kind) {
+                .cycle => "E_USE_CYCLE",
+                .depth_exceeded => "E_USE_DEPTH",
+                .not_found => "E_USE_NOT_FOUND",
+                .duplicate_alias => "E_USE_DUPLICATE_ALIAS",
+            },
+            .message = switch (e.kind) {
+                .cycle => "`use` cycle detected",
+                .depth_exceeded => "`use` depth exceeds 32 — likely runaway recursion",
+                .not_found => "`use` target is not in the file set",
+                .duplicate_alias => "import alias is bound to two different targets",
+            },
+            .span = .{ .start = e.site_offset, .end = e.site_offset },
+        }) catch return fail(.out_of_memory);
+    }
+    return reportLang(arena, fused, out.items);
+}
+
+fn reportAsm(
+    arena: std.mem.Allocator,
+    source_map: gero.asm_.SourceMap,
+    diagnostics: []const gero.asm_.Diagnostic,
+) *const Result {
+    if (diagnostics.len == 0) return finish(null, null, 0);
+    const json = encodeAsmDiagnostics(arena, source_map, diagnostics) catch
+        return fail(.out_of_memory);
+    return finish(null, json, diagnostics.len);
+}
+
+/// Name of the file resolution started from, for diagnostics that
+/// carry no file of their own.
+fn entryPath(fused: gero.lang.FusedSource) []const u8 {
+    if (fused.entry_module < fused.source_map.files.items.len) {
+        return fused.source_map.files.items[fused.entry_module].path;
+    }
+    return "";
+}
+
+/// The debug tables from a `.gx`, as JSON: the symbols that drive a
+/// disassembly's label column, and the line rows that drive
+/// source-level stepping and click-to-breakpoint (§6).
+///
+/// Separate from the build result rather than a sixth `Result` field:
+/// the tables live in the image the build already returned, a host
+/// wants them once per build rather than on every operation, and a
+/// release image carries neither.
+export fn gero_debug_info(gx_ptr: u32, gx_len: u32) *const Result {
+    if (begin()) |status| return fail(status);
+    const image = slice(gx_ptr, gx_len) orelse return fail(.bad_argument);
+    const arena = allocator();
+
+    const header = gero.disasm.parseHeader(image) catch return fail(.bad_argument);
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+
+    writeDebugJson(arena, &jw, header.debug) catch return fail(.out_of_memory);
+    return finish(out.written(), null, 0);
+}
+
+fn writeDebugJson(
+    arena: std.mem.Allocator,
+    jw: *std.json.Stringify,
+    debug: []const u8,
+) !void {
+    try jw.beginObject();
+
+    try jw.objectField("symbols");
+    try jw.beginArray();
+    if (debug.len > 0) {
+        const syms = gero.disasm.parseSymbols(arena, debug) catch gero.disasm.Symbols{ .entries = &.{} };
+        for (syms.entries) |sym| {
+            try jw.beginObject();
+            try jw.objectField("address");
+            try jw.write(sym.address);
+            try jw.objectField("kind");
+            try jw.write(switch (sym.kind) {
+                .label => "label",
+                .data => "data",
+                else => "unknown",
+            });
+            try jw.objectField("name");
+            try jw.write(sym.name);
+            try jw.endObject();
+        }
+    }
+    try jw.endArray();
+
+    try jw.objectField("files");
+    try jw.beginArray();
+    const files_chunk = if (debug.len > 0) (gero.gx.findChunk(debug, .files) catch null) else null;
+    const paths: []const []const u8 = if (files_chunk) |p|
+        gero.gx.decodeFiles(arena, p) catch &.{}
+    else
+        &.{};
+    for (paths) |path| try jw.write(path);
+    try jw.endArray();
+
+    try jw.objectField("lines");
+    try jw.beginArray();
+    const lines_chunk = if (debug.len > 0) (gero.gx.findChunk(debug, .lines) catch null) else null;
+    if (lines_chunk) |p| {
+        const rows = gero.gx.decodeLines(arena, p) catch &.{};
+        for (rows) |row| {
+            try jw.beginObject();
+            try jw.objectField("start");
+            try jw.write(row.start_addr);
+            try jw.objectField("end");
+            try jw.write(row.end_addr);
+            try jw.objectField("file");
+            try jw.write(row.file);
+            try jw.objectField("line");
+            try jw.write(row.line);
+            try jw.objectField("column");
+            try jw.write(row.column);
+            try jw.endObject();
+        }
+    }
+    try jw.endArray();
+
+    try jw.endObject();
+}
+
+test "input survives an operation's scratch reset" {
+    _ = gero_init(0);
+    // The bug this shape prevents: an export resets scratch on entry,
+    // and if input shared that region it would free its own arguments
+    // before reading them. Input grows from the opposite end.
+    const p = gero_alloc(16);
+    try testing.expect(isInput(p, 16));
+    _ = begin();
+    try testing.expect(isInput(p, 16));
+    try testing.expect(slice(p, 16) != null);
+}
+
+test "gero_reset: reclaims input as well as scratch" {
+    _ = gero_init(0);
+    const first = gero_alloc(64);
+    _ = alloc(64);
+    try testing.expect(gero_arena_used() > 64);
+    gero_reset();
+    try testing.expectEqual(@as(u32, 0), gero_arena_used());
+    // The same input address comes back, so nothing leaked.
+    try testing.expectEqual(first, gero_alloc(64));
+}
+
+test "the two cursors cannot cross" {
+    _ = gero_init(4096);
+    // Scratch and input share one region from opposite ends, so
+    // exhaustion is when they meet — not when either alone runs out.
+    try testing.expect(gero_alloc(3000) != 0);
+    try testing.expect(alloc(3000) == null);
+    try testing.expect(gero_alloc(3000) == 0);
+}
+
+test "gero_file_put: replacing a buffer keeps the set's size" {
+    _ = gero_init(0);
+    try file_set.put("main.gr", "def main()\nend\n");
+    try file_set.put("main.gr", "def main()\n  print 1\nend\n");
+    try testing.expectEqual(@as(usize, 1), file_set.count());
+    try testing.expect(std.mem.indexOf(u8, file_set.map.get("main.gr").?, "print") != null);
+}
+
+test "buildGr: a use target outside the set is a diagnostic, not a read" {
+    _ = gero_init(0);
+    // Resolution is closed (§4.2): the set is the whole filesystem, so
+    // a name it does not hold cannot fall through to a disk or a fetch.
+    try file_set.put("main.gr", "use \"./nope\"\ndef main()\n  print 1\nend\n");
+    const r = buildGr("main.gr", .image);
+    try testing.expectEqual(@intFromEnum(Status.diagnostics), r.status);
+    const json = arena_store[r.diagnostics_ptr..][0..r.diagnostics_len];
+    try testing.expect(std.mem.indexOf(u8, json, "E_USE_NOT_FOUND") != null);
+}
+
+test "buildGr: a multi-file program compiles from the set alone" {
+    _ = gero_init(0);
+    try file_set.put("lib.gr", "def double(n: i16) -> i16\n  return n * 2\nend\n");
+    try file_set.put("main.gr", "use \"./lib\"\ndef main()\n  print double(21)\nend\n");
+    const r = buildGr("main.gr", .image);
+    try testing.expectEqual(@intFromEnum(Status.ok), r.status);
+    try testing.expect(r.payload_len > 0);
+    try testing.expectEqualStrings("GERO", arena_store[r.payload_ptr..][0..4]);
+}
+
+test "buildGas: an include target resolves from the set" {
+    _ = gero_init(0);
+    try file_set.put("helper.gas", "double:\n  add r1, r1\n  ret\n");
+    try file_set.put("m.gas", "include \"helper.gas\"\nmain:\n  call @double\n  hlt\n");
+    const r = buildGas("m.gas", .image);
+    try testing.expectEqual(@intFromEnum(Status.ok), r.status);
+    try testing.expectEqualStrings("GERO", arena_store[r.payload_ptr..][0..4]);
+}
+
+test "buildGas: parse and resolution errors are reported together" {
+    _ = gero_init(0);
+    // An unknown mnemonic parses cleanly and only fails at opcode
+    // resolution, so reporting just the parse would hide it.
+    try file_set.put("m.gas", "start:\n  mov r0, 1\n  bogus r1\n  hlt\n");
+    const r = buildGas("m.gas", .diagnostics_only);
+    try testing.expectEqual(@intFromEnum(Status.diagnostics), r.status);
+    const json = arena_store[r.diagnostics_ptr..][0..r.diagnostics_len];
+    try testing.expect(std.mem.indexOf(u8, json, "E001") != null);
+}
+
+test "check: a clean program reports nothing and returns no image" {
+    _ = gero_init(0);
+    try file_set.put("main.gr", "def main()\n  print 1\nend\n");
+    const r = buildGr("main.gr", .diagnostics_only);
+    try testing.expectEqual(@intFromEnum(Status.ok), r.status);
+    try testing.expectEqual(@as(u32, 0), r.payload_len);
 }

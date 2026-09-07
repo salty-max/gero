@@ -82,17 +82,39 @@ wasm32, where a pointer already *is* a linear-memory offset, and on the
 an export signals failure by returning a null pointer without that
 colliding with a legitimate first allocation.
 
+**Two lifetimes in one region.** Scratch grows up from the base and is
+reset at the start of every operation; **input grows down from the
+top** and is not. An export's arguments are written *before* the call
+and must still be there when it reads them — resetting one region on
+entry would free the other's contents. The cursors meet in the middle,
+and exhaustion is when they cross.
+
+A host reclaims input with `gero_reset`, once it is done with a result.
+
 **Lifecycle**
 
 | Export | Purpose |
 |---|---|
 | `gero_init(arena_bytes) -> Status` | Size the arena. `0` takes the default; a larger request is clamped. Calling it again resets the session. |
-| `gero_alloc(len) -> ptr` | Reserve `len` bytes to write source into. `0` means the arena cannot satisfy it. |
-| `gero_reset()` | Drop everything since the last reset. Exports do this on entry; a host calls it to reclaim memory while idle. |
+| `gero_alloc(len) -> ptr` | Reserve `len` bytes to write source into. Survives an operation. `0` means the region cannot satisfy it. |
+| `gero_reset()` | Drop the last operation's scratch **and** the inputs written for it. |
 | `gero_arena_base() -> ptr` | Where the arena begins in linear memory. |
 | `gero_arena_used()` / `gero_arena_limit()` | For a host sizing its ceiling. |
 | `gero_result_size() -> u32` | So a decoder can assert it agrees with the module. |
 | `gero_version() -> Result` | The gero version this module was built from, for the `ready` event (§3.2). |
+
+**The virtual file set**
+
+| Export | Purpose |
+|---|---|
+| `gero_file_put(name, contents) -> Status` | Add a buffer, or replace one of the same name. |
+| `gero_file_remove(name) -> Status` | Drop a buffer. Removing an absent one is not an error. |
+| `gero_files_clear()` | Empty the set. |
+| `gero_file_count() -> u32` | How many buffers it holds. |
+
+The set has storage of its own, separate from the arena: buffers
+outlive an operation, and compiling must not be able to evict the
+sources it is compiling.
 
 Exhaustion is **reported, not trapped**: `gero_alloc` returns `0` and
 an export returns `out_of_memory`. A host raises its ceiling and
@@ -105,10 +127,11 @@ retries rather than meeting an instance that has to be discarded.
 | Export | Purpose |
 |---|---|
 | `gero_assemble(src_ptr, src_len) -> Result` | `.gas` → `.gx` |
-| `gero_compile(src_ptr, src_len) -> Result` | `.gr` → `.gx`, resolving `use` imports from the virtual file set (§4.2) |
-| `gero_check(src_ptr, src_len, lang) -> Result` | Diagnostics only, no image — the editor's fast path |
-| `gero_format(src_ptr, src_len, lang) -> Result` | Canonical formatting, matching `gero fmt` |
-| `gero_disasm(gx_ptr, gx_len, bank) -> Result` | `.gx` → annotated assembly |
+| `gero_compile(name_ptr, name_len) -> Result` | `.gr` → `.gx`, resolving `use` imports from the virtual file set (§4.2) |
+| `gero_check(name_ptr, name_len, lang) -> Result` | Diagnostics only, no image — the editor's fast path |
+| `gero_format(src_ptr, src_len, lang) -> Result` | Canonical formatting of one buffer, matching `gero fmt` |
+| `gero_disasm(gx_ptr, gx_len, bank) -> Result` | `.gx` → annotated assembly; `bank` of `0xFFFFFFFF` selects the base image |
+| `gero_debug_info(gx_ptr, gx_len) -> Result` | The symbol and line tables (§6) as JSON |
 
 A `Result` carries a status, an optional payload (`.gx` bytes or
 formatted text), and a diagnostics array. Both source languages use one

@@ -116,6 +116,11 @@ pub const resolveUseImportsOverlaid = include_mod.resolveUseImportsOverlaid;
 /// Unsaved buffer contents keyed by canonical path, for
 /// `resolveUseImportsOverlaid`.
 pub const Overlay = include_mod.Overlay;
+/// Resolve a `use` graph entirely within a supplied file set, with no
+/// filesystem — what a browser host uses.
+pub const resolveUseImportsVirtual = include_mod.resolveUseImportsVirtual;
+/// Where a resolver finds files: the host filesystem, or a set.
+pub const IncludeSource = include_mod.Source;
 
 // ---------- typechecker ----------
 

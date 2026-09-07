@@ -205,8 +205,20 @@ pub const ResolveError = Dir.RealPathFileAllocError || Dir.ReadFileAllocError;
 /// shows rather than against what was last saved.
 pub const Overlay = std.StringHashMapUnmanaged([]const u8);
 
+/// Where a resolver finds the files a `use` graph names.
+pub const Source = union(enum) {
+    /// The host filesystem, with `overlay` shadowing it for buffers an
+    /// editor holds unsaved.
+    disk: struct { io: Io, overlay: ?*const Overlay },
+    /// The set **is** the filesystem. A name it does not hold is
+    /// not-found, and nothing is read from disk — which is what a
+    /// browser host has, and what makes resolution closed: a path
+    /// escaping the set is a diagnostic, never a fetch.
+    virtual: *const Overlay,
+};
+
 const Context = struct {
-    io: Io,
+    source: Source,
     allocator: std.mem.Allocator,
     fused: *std.ArrayList(u8),
     source_map: *SourceMap,
@@ -220,7 +232,6 @@ const Context = struct {
     /// directive is elided (the alias has no inlined declaration).
     import_aliases: *ImportAliases,
     imports: *std.ArrayList(ImportEdge),
-    overlay: ?*const Overlay,
 };
 
 /// Resolve every `use "./path"` reachable from `root_path` into
@@ -245,6 +256,28 @@ pub fn resolveUseImportsOverlaid(
     allocator: std.mem.Allocator,
     root_path: []const u8,
     overlay: ?*const Overlay,
+) ResolveError!FusedSource {
+    return resolveUseImportsFrom(allocator, root_path, .{ .disk = .{ .io = io, .overlay = overlay } });
+}
+
+/// Resolve a `use` graph entirely within `files`, with no filesystem.
+/// A name the set does not hold is a not-found diagnostic rather than
+/// a read, so resolution cannot reach outside what the caller supplied.
+pub fn resolveUseImportsVirtual(
+    allocator: std.mem.Allocator,
+    root_name: []const u8,
+    files: *const Overlay,
+) ResolveError!FusedSource {
+    return resolveUseImportsFrom(allocator, root_name, .{ .virtual = files });
+}
+
+/// The resolver both entry points share. `source` decides where files
+/// come from; everything else — cycles, include-once, the source map,
+/// alias collection — is identical either way.
+pub fn resolveUseImportsFrom(
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    source: Source,
 ) ResolveError!FusedSource {
     var fused: std.ArrayList(u8) = .empty;
     errdefer fused.deinit(allocator);
@@ -275,7 +308,7 @@ pub fn resolveUseImportsOverlaid(
     errdefer imports.deinit(allocator);
 
     var ctx = Context{
-        .io = io,
+        .source = source,
         .allocator = allocator,
         .fused = &fused,
         .source_map = &source_map,
@@ -284,7 +317,6 @@ pub fn resolveUseImportsOverlaid(
         .emitted = &emitted,
         .import_aliases = &import_aliases,
         .imports = &imports,
-        .overlay = overlay,
     };
 
     const root_id = try resolveOne(&ctx, root_path, null, 0, 0);
@@ -332,12 +364,9 @@ fn resolveOne(
         try std.fs.path.join(ctx.allocator, &.{ ".", with_ext });
     defer ctx.allocator.free(absolute);
 
-    const canonical = Dir.cwd().realPathFileAlloc(ctx.io, absolute, ctx.allocator) catch |err| switch (err) {
-        error.FileNotFound => {
-            try recordError(ctx, .not_found, site_offset, requested);
-            return null;
-        },
-        else => return err,
+    const canonical = (try canonicalize(ctx, absolute)) orelse {
+        try recordError(ctx, .not_found, site_offset, requested);
+        return null;
     };
 
     // Cycle check first — a file in `emitted` is also in `in_progress`
@@ -397,10 +426,60 @@ fn resolveOne(
 /// overlaid, otherwise what is on disk. Always allocator-owned, since
 /// `SourceMap.intern` takes ownership either way.
 fn readContent(ctx: *Context, canonical: []const u8) ResolveError![]u8 {
-    if (ctx.overlay) |ov| {
-        if (ov.get(canonical)) |buffered| return ctx.allocator.dupe(u8, buffered);
+    switch (ctx.source) {
+        .disk => |d| {
+            // unreachable: a freestanding build never constructs `.disk`,
+            // and the comptime guard keeps this arm out of that build.
+            if (comptime !hasFilesystem()) unreachable;
+            if (d.overlay) |ov| {
+                if (ov.get(canonical)) |buffered| return ctx.allocator.dupe(u8, buffered);
+            }
+            return Dir.cwd().readFileAlloc(d.io, canonical, ctx.allocator, Io.Limit.limited(max_file_size));
+        },
+        // `canonicalize` already proved the set holds it.
+        .virtual => |files| return ctx.allocator.dupe(u8, files.get(canonical).?),
     }
-    return Dir.cwd().readFileAlloc(ctx.io, canonical, ctx.allocator, Io.Limit.limited(max_file_size));
+}
+
+/// The name a file is known by once resolved, or `null` when it does
+/// not exist. On disk that is its real path; in a virtual set it is the
+/// requested path with `.` and `..` folded out, since the set's keys
+/// are already the canonical names.
+/// Whether this target has a filesystem the resolver can reach.
+///
+/// A freestanding build has none — `std.Io.Dir` does not even define
+/// `PATH_MAX` there — so the `.disk` branch below is compiled out
+/// rather than merely unused. Zig analyzes both arms of a runtime
+/// switch, so an ordinary `if` would not be enough.
+fn hasFilesystem() bool {
+    return @import("builtin").target.os.tag != .freestanding;
+}
+
+fn canonicalize(ctx: *Context, absolute: []const u8) ResolveError!?[:0]u8 {
+    switch (ctx.source) {
+        .disk => |d| {
+            // unreachable: a freestanding build never constructs `.disk`,
+            // and the comptime guard keeps this arm out of that build.
+            if (comptime !hasFilesystem()) unreachable;
+            return Dir.cwd().realPathFileAlloc(d.io, absolute, ctx.allocator) catch |err| switch (err) {
+                error.FileNotFound => null,
+                else => err,
+            };
+        },
+        .virtual => |files| {
+            const normalized = try std.fs.path.resolvePosix(ctx.allocator, &.{absolute});
+            // A leading slash is an artifact of resolving against no
+            // cwd; the set's names have none.
+            const trimmed = std.mem.trimStart(u8, normalized, "/");
+            if (files.contains(trimmed)) {
+                const owned = try ctx.allocator.dupeZ(u8, trimmed);
+                ctx.allocator.free(normalized);
+                return owned;
+            }
+            ctx.allocator.free(normalized);
+            return null;
+        },
+    }
 }
 
 fn processSource(

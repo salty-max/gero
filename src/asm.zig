@@ -38,6 +38,11 @@ pub const resolveIncludesOverlaid = include.resolveIncludesOverlaid;
 /// Unsaved buffer contents keyed by canonical path, for
 /// `resolveIncludesOverlaid`. Same type as `gero.lang.Overlay`.
 pub const Overlay = include.Overlay;
+/// Resolve an `include` graph entirely within a supplied file set,
+/// with no filesystem — what a browser host uses.
+pub const resolveIncludesVirtual = include.resolveIncludesVirtual;
+/// Where a resolver finds files: the host filesystem, or a set.
+pub const IncludeSource = include.Source;
 /// Format a `Diagnostic` as `<path>:<line>:<col>: [Exxx] <msg>`.
 pub const formatDiagnostic = include.formatDiagnostic;
 /// Pretty-format a `Diagnostic` with a caret-style snippet.
