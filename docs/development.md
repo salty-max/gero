@@ -153,6 +153,12 @@ are worth a coherent semver bump. Pushing to `main` runs CI but
 **never** publishes — only pushing a `vX.Y.Z` tag triggers
 `release.yml`.
 
+Below 1.0 the bump levels shift one place right: a `major` changeset
+moves the minor, `minor` and `patch` move the patch. `zig build
+version` therefore cannot produce `1.0.0` — declaring the API stable
+is a decision, not the arithmetic consequence of a changeset that said
+`major`. See [`.changeset/README.md`](../.changeset/README.md).
+
 ```bash
 git checkout main && git pull
 zig build version           # consume changesets, bump version, prepend CHANGELOG

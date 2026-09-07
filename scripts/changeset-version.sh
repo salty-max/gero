@@ -6,6 +6,12 @@
 # Usage:
 #   bash scripts/changeset-version.sh
 #
+# Version arithmetic below 1.0: each level shifts one place right, so
+# `major` moves the minor and `minor` / `patch` move the patch. The
+# CHANGELOG headings still follow the changesets' declared levels — a
+# breaking change reads as Breaking whichever digit it moved. Reaching
+# 1.0.0 is deliberate and manual; this script will not get there.
+#
 # CHANGELOG section shape:
 #
 #   ## vMAJOR.MINOR.PATCH - YYYY-MM-DD
@@ -128,11 +134,25 @@ if [[ -z "$current" ]]; then
 fi
 
 IFS='.' read -r major minor patch <<<"$current"
-case "$highest_bump" in
-  major) new_version="$((major + 1)).0.0" ;;
-  minor) new_version="$major.$((minor + 1)).0" ;;
-  patch) new_version="$major.$minor.$((patch + 1))" ;;
-esac
+if [[ "$major" -eq 0 ]]; then
+  # Below 1.0 every level shifts one place right: semver says a 0.x
+  # release makes no stability promise, so a breaking change moves the
+  # minor and everything else moves the patch.
+  #
+  # The point is that this script can never produce 1.0.0. Declaring
+  # the API stable is a decision someone makes, not an arithmetic
+  # consequence of a changeset that happened to say `major`.
+  case "$highest_bump" in
+    major) new_version="0.$((minor + 1)).0" ;;
+    minor | patch) new_version="0.$minor.$((patch + 1))" ;;
+  esac
+else
+  case "$highest_bump" in
+    major) new_version="$((major + 1)).0.0" ;;
+    minor) new_version="$major.$((minor + 1)).0" ;;
+    patch) new_version="$major.$minor.$((patch + 1))" ;;
+  esac
+fi
 
 # Update build.zig.zon (portable in-place edit via temp file).
 sed -E "s/(\.version[[:space:]]*=[[:space:]]*\")$current(\")/\1$new_version\2/" build.zig.zon >build.zig.zon.tmp
