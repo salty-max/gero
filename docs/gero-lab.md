@@ -45,6 +45,10 @@ but plain serializable messages. This keeps the run loop off the main
 thread, so a tight `while` loop in a user program cannot freeze the
 page.
 
+The lower boundary is also where the repositories divide: `gero.wasm`
+is built and gated in the gero repository, the two layers above it live
+with the application. §10 says why.
+
 ---
 
 ## 2. The wasm surface
@@ -279,25 +283,57 @@ surprise — the sample set is gated the same way the example corpus is.
 
 ## 10. Build and gating
 
-gero-lab lives in the gero repository and builds against the working
-tree, not a published release. That is the point: a change to the ISA,
-the assembler, or the language compiler updates the playground in the
-same commit, and the playground can never lag the toolchain it
-demonstrates.
+The split follows the toolchain boundary, not the product boundary.
+
+**In the gero repository**: the wasm module and the gate that proves it
+runs. Both are Zig artifacts — a `zig build` target and a Zig test —
+and both need the working tree rather than a published release. A
+change to the ISA, the assembler, or the language compiler rebuilds and
+re-gates the module in the same commit, so **the module can never lag
+the toolchain it exposes**.
+
+**In its own repository**: the web application — worker, UI,
+persistence, sharing. It brings its own toolchain (bun / vite / React),
+its own lint and test conventions, and its own CI. Holding a frontend
+to rules written for a VM serves neither.
 
 - The wasm module is a `zig build` artifact like any other target.
-- The web application has its own toolchain and its own CI lane,
-  parallel to the Zig lane rather than blocking it.
-- The Zig gates (`zig build verify` / `ci`) remain authoritative for
-  `src/`, `apps/`, and `tools/`. The lab's lane covers the lab.
 - A smoke test builds each sample through the wasm module and runs it
   to `hlt`, comparing output against the same `.expected` files the
   CLI example gate uses. This is what turns "wasm32 compiles" into
   "wasm32 runs" — a runtime check on a target that otherwise only
-  gets a compile check.
+  gets a compile check. It lives here because it needs the module and
+  the example corpus in one CI run; split them and the fixtures
+  duplicate and drift.
+- The Zig gates (`zig build verify` / `ci`) stay authoritative for
+  `src/`, `apps/`, and `tools/`, and now cover the module and its
+  smoke gate. The application's lane covers the application.
+- `build.zig.zon`'s `paths` allowlist excludes the wasm entry point, so
+  nothing lab-shaped reaches consumers who fetch gero as a library.
 
-`build.zig.zon`'s `paths` allowlist excludes the lab, so nothing here
-reaches consumers who fetch gero as a library.
+### Why the application may lag and the module may not
+
+A module that lags is a playground demonstrating semantics the VM no
+longer has — the `ret`-encoding drift of §11, shipped as a feature.
+That is the failure this document exists to prevent, and keeping the
+module in-tree prevents it outright.
+
+A UI that lags shows an older pane layout. The two are not the same
+risk, and paying for the second with a mixed-toolchain repository is a
+bad trade.
+
+What makes the lag safe rather than silent is that both boundaries are
+versioned: `PROTOCOL_VERSION` (§3) and the `Result` encoding (§2.2).
+An application built against an older module refuses to connect and
+says so. It does not quietly misbehave.
+
+### Samples across the boundary
+
+§9 draws the sample set from `examples/`, which lives here. The wasm
+module's release therefore carries the sample sources alongside it —
+they are already gated by the smoke test above, so they ship as part of
+the artifact that proves they work. The application consumes them; it
+does not vendor its own copies.
 
 ---
 
