@@ -358,7 +358,8 @@ zig build quick   # inner loop (~1s) — fmt-check + Debug test.
                   # Use between edits while iterating.
 
 zig build verify  # pre-push (~3s) — quick + lint + asm example
-                  # gates + .gr example gate (fmt-check + type-check).
+                  # gates + .gr example gate (fmt-check + type-check)
+                  # + golden (emitted bytecode vs the blessed corpus).
                   # REQUIRED green before pushing.
 
 zig build ci      # full matrix (~4s warm / ~2m cold) — verify
@@ -368,6 +369,20 @@ zig build ci      # full matrix (~4s warm / ~2m cold) — verify
                   # Mirrors GitHub Actions. Required before tagging
                   # a release; optional before PR push.
 ```
+
+**When `golden` fails**, the diff names the file and the first
+differing offset. A codegen change that alters emitted bytes is not
+automatically wrong — but it must be deliberate. Say what changed and
+why in the PR, then re-bless:
+
+```bash
+zig build bless-golden
+```
+
+Never re-bless to make a red gate go green without knowing which
+change moved the bytes. The corpus exists because an accidental ABI
+change is invisible otherwise: every other gate only asks whether a
+program still runs, not whether it still compiles to the same thing.
 
 GitHub Actions runs the CI workflow on every push — don't gate every
 commit on it locally, but `verify` green is required before pushing.

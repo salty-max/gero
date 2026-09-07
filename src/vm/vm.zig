@@ -66,6 +66,8 @@ pub const bank_size = banks_mod.bank_size;
 pub const parseGx = loader_mod.parse;
 /// Parsed program shape.
 pub const LoadedProgram = loader_mod.LoadedProgram;
+/// Parsed `.gx` header — the 16-byte prefix (ISA §7.1).
+pub const Header = loader_mod.Header;
 /// Loader error set.
 pub const LoaderError = loader_mod.LoaderError;
 
