@@ -50,27 +50,16 @@ pub fn execute(
     vm.host = .{ .out = stdout };
 
     while (true) {
-        const ip = vm.regs.read(.ip);
-        const op = vm.readByte(ip);
-
-        if (op == 0xFC) {
-            const vec = vm.readByte(ip +% 1);
-            switch (vec) {
-                0x10 => {
-                    // safety: truncating r1 to its low byte is the
-                    //         documented print-syscall contract
-                    const byte: u8 = @truncate(vm.regs.read(.r1));
-                    try stdout.writeByte(byte);
-                    vm.regs.write(.ip, ip +% 2);
-                    continue;
-                },
-                0x21 => {
-                    if (sram_sink) |sink| try sink.write(vm.sramSlice());
-                    vm.regs.write(.ip, ip +% 2);
-                    continue;
-                },
-                else => {},
-            }
+        // The host-convention `int` vectors, shared with every other
+        // host so a program prints the same wherever it runs. Where a
+        // save *goes* is this host's business, hence the switch.
+        switch (try gero.vm.host_int.handle(&vm)) {
+            .printed => continue,
+            .sram_flush_requested => {
+                if (sram_sink) |sink| try sink.write(vm.sramSlice());
+                continue;
+            },
+            .no => {},
         }
 
         const result = gero.vm.step(&vm);
