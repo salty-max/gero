@@ -40,10 +40,13 @@ test "registers: index 0..0x0E maps to the right named register" {
     }) |pair| {
         const idx: u8 = pair[0];
         const named: Register = pair[1];
-        const ok = r.writeByIndex(idx, 0xC0DE);
+        // `flg` masks its reserved bits (§2.1), so probe the mapping
+        // with a value every register can hold.
+        const probe: u16 = if (named == .flg) gero.vm.flg_mask else 0xC0DE;
+        const ok = r.writeByIndex(idx, probe);
         try std.testing.expect(ok);
-        try std.testing.expectEqual(@as(u16, 0xC0DE), r.read(named));
-        try std.testing.expectEqual(@as(?u16, 0xC0DE), r.readByIndex(idx));
+        try std.testing.expectEqual(probe, r.read(named));
+        try std.testing.expectEqual(@as(?u16, probe), r.readByIndex(idx));
         // Reset so the next iteration sees a clean slot.
         r.write(named, 0);
     }
@@ -89,10 +92,31 @@ test "flg: setFlag(false) on already-clear bit is a no-op" {
     try std.testing.expectEqual(@as(u16, 0), r.read(.flg));
 }
 
-test "flg: unrelated flg bits preserved across setFlag calls" {
+test "flg: unrelated flags preserved across setFlag calls" {
     var r = Registers.init();
-    r.write(.flg, 0xFFFF); // all bits set, including reserved
+    r.write(.flg, 0xFFFF);
     r.setFlag(.zero, false);
-    // Z (bit 0) cleared, every other bit (incl. reserved 5..15) preserved.
-    try std.testing.expectEqual(@as(u16, 0xFFFE), r.read(.flg));
+    // Z (bit 0) cleared, the other four defined flags untouched.
+    try std.testing.expectEqual(@as(u16, 0b1_1110), r.read(.flg));
+}
+
+test "flg: reserved bits do not survive a write" {
+    var r = Registers.init();
+    r.write(.flg, 0xFFFF);
+    // ISA §2.1 says bits 5..15 read as 0. Storing them would let a
+    // program depend on bits a later version may assign.
+    try std.testing.expectEqual(gero.vm.flg_mask, r.read(.flg));
+    _ = r.writeByIndex(@intFromEnum(Register.flg), 0xFFFF);
+    try std.testing.expectEqual(gero.vm.flg_mask, r.read(.flg));
+}
+
+test "flg_mask: covers exactly the defined flags" {
+    // Derived from `Flag`, so adding a sixth flag widens the mask
+    // rather than silently leaving it reserved-and-unwritable.
+    var expected: u16 = 0;
+    inline for (.{ Flag.zero, Flag.negative, Flag.carry, Flag.overflow, Flag.interrupt_disable }) |f| {
+        expected |= @as(u16, 1) << @intFromEnum(f);
+    }
+    try std.testing.expectEqual(expected, gero.vm.flg_mask);
+    try std.testing.expectEqual(@as(u16, 0b1_1111), gero.vm.flg_mask);
 }

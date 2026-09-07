@@ -11,6 +11,9 @@ const loader_mod = @import("loader.zig");
 pub const Register = registers.Register;
 /// Register file.
 pub const Registers = registers.Registers;
+/// Bits `flg` holds; reserved bits above are masked off on write
+/// (ISA §2.1).
+pub const flg_mask = registers.flg_mask;
 /// Flag bit positions inside `flg`.
 pub const Flag = registers.Flag;
 /// 64KB memory.

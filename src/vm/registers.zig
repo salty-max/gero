@@ -58,6 +58,18 @@ pub const Flag = enum(u4) {
     interrupt_disable = 4,
 };
 
+/// Bits `flg` actually holds — one per `Flag`. Everything above is
+/// reserved (ISA §2.1) and masked off on write, so a program cannot
+/// stash data there and come to depend on it. That is what keeps
+/// assigning a reserved bit later an additive change rather than one
+/// that breaks whoever was using it as storage.
+pub const flg_mask: u16 = blk: {
+    var m: u16 = 0;
+    // @as: widen the shift base to the register's width.
+    for (std.enums.values(Flag)) |f| m |= @as(u16, 1) << @intFromEnum(f);
+    break :blk m;
+};
+
 /// 15-slot u16 register file.
 pub const Registers = struct {
     /// Backing storage. Prefer the typed helpers below.
@@ -75,7 +87,7 @@ pub const Registers = struct {
 
     /// Write by named handle.
     pub fn write(self: *Registers, reg: Register, value: u16) void {
-        self.values[@intFromEnum(reg)] = value;
+        self.values[@intFromEnum(reg)] = if (reg == .flg) value & flg_mask else value;
     }
 
     /// Read by raw operand index. `null` for out-of-range.
@@ -87,7 +99,7 @@ pub const Registers = struct {
     /// Write by raw operand index. `false` for out-of-range.
     pub fn writeByIndex(self: *Registers, index: u8, value: u16) bool {
         if (index > max_index) return false;
-        self.values[index] = value;
+        self.values[index] = if (index == @intFromEnum(Register.flg)) value & flg_mask else value;
         return true;
     }
 
