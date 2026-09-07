@@ -31,6 +31,28 @@ list. Edit the resulting CHANGELOG.md section by hand before
 committing if the release deserves a narrative pass (sub-sections per
 area, grouped highlights, deprecation callouts).
 
+## What each level means
+
+`bump:` describes **the change**, not the digit it moves. Pick the
+level that honestly describes what you did, and let the release script
+work out the version:
+
+- `major` — a breaking change. An existing program, `.gx`, or API call
+  stops working or starts behaving differently.
+- `minor` — a new capability that breaks nothing.
+- `patch` — a bug fix, or anything else consumers notice that fits
+  neither of the above.
+
+Below 1.0 those shift one place right when a release is cut: `major`
+moves the minor, `minor` and `patch` move the patch. So a breaking
+change today takes `0.2.0` to `0.3.0`, which is what semver means by a
+0.x release promising nothing. The CHANGELOG still files it under
+**Breaking** — the heading follows what you declared, not the digit.
+
+Reaching `1.0.0` is a deliberate decision, never arithmetic. The
+release script cannot produce it: at `0.9.3` a `major` changeset gives
+`0.10.0`.
+
 ## When to add
 
 **Add one** for: `feat`, `fix`, `perf`, breaking refactor, or anything
