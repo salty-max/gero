@@ -1,13 +1,18 @@
 const std = @import("std");
 const banks_mod = @import("banks.zig");
+const gx = @import("../gx.zig");
 
 /// Magic bytes at offset `0x00..0x04`.
 pub const magic: [4]u8 = .{ 'G', 'E', 'R', 'O' };
 
-/// ISA version this loader accepts (high byte = major, low =
-/// minor). Higher major is rejected; same-major higher-minor
-/// is accepted.
-pub const version_target: u16 = 0x0003;
+/// ISA version this loader accepts (high byte = major, low = minor).
+/// Higher major is rejected; same-major higher-minor is accepted.
+///
+/// This is the same fact as the version producers stamp, so it reads
+/// from `gx` rather than being a second copy — they drifted once
+/// already, and a loader claiming to target an older format than the
+/// one it writes is a lie that the major-only check happens to hide.
+pub const version_target: u16 = gx.version;
 
 /// Header bytes — fixed 16-byte prefix.
 pub const header_size: usize = 16;
