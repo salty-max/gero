@@ -2449,6 +2449,18 @@ pub const Emitter = struct {
         return 2;
     }
 
+    /// An array operand's element type and length.
+    pub const ArrayShape = struct { elem: *const Type, count: u32 };
+
+    /// Element type and length of an array-typed expression, or `null`
+    /// for a non-array. The array analog of `structNameOf`.
+    pub fn arrayShapeOf(self: *const Emitter, e: *const ast.Expr) ?ArrayShape {
+        const ty = self.typeOf(e) orelse return null;
+        const inner = if (ty.* == .reference) ty.reference else ty;
+        if (inner.* != .array) return null;
+        return .{ .elem = inner.array.elem, .count = inner.array.len };
+    }
+
     /// Element list of a tuple-typed expression, or `null` for a
     /// non-tuple. The tuple analog of `structNameOf`: a tuple value is
     /// its base address (inline contiguous slots, §3.4).

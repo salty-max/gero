@@ -568,6 +568,31 @@ pub fn emitEquality(self: *Emitter, lhs: *const ast.Expr, rhs: *const ast.Expr, 
     try isa.addImmToReg(self, 2 * wslot, Reg.sp);
 }
 
+/// Compare `width` bytes of two stack slots, appending a mismatch jump
+/// per word so the caller's not-equal arm collects them. Mirrors the
+/// scalar cases in `emitFieldwiseEq`, for fields wider than a register.
+fn emitSlotBytesEq(
+    self: *Emitter,
+    lhs_off: u16,
+    rhs_off: u16,
+    width: u16,
+    patches: *std.ArrayList(usize),
+) error{OutOfMemory}!void {
+    var off: u16 = 0;
+    while (width - off >= 2) : (off += 2) {
+        try class.emitWordLoadAtOffset(self, Reg.sp, lhs_off + off, Reg.acu);
+        try class.emitWordLoadAtOffset(self, Reg.sp, rhs_off + off, Reg.r3);
+        try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+        try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+    }
+    if (off < width) {
+        try class.emitByteLoadAtOffset(self, Reg.sp, lhs_off + off, Reg.acu);
+        try class.emitByteLoadAtOffset(self, Reg.sp, rhs_off + off, Reg.r3);
+        try isa.cmpRegReg(self, Reg.acu, Reg.r3);
+        try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+    }
+}
+
 /// Compare `width` bytes at `[p1]` vs `[p2]` (both pointers, advanced as
 /// it walks), leaving `1`/`0` in `acu` (`negate` selects `!=`). Word
 /// strides + a trailing byte; `acu` and `r3` are scratch — neither may
@@ -778,6 +803,10 @@ fn emitFieldwiseEq(self: *Emitter, sname: []const u8, lhs_off: u16, rhs_off: u16
             try class.emitByteLoadAtOffset(self, Reg.sp, rhs_off + fo, Reg.r3);
             try isa.cmpRegReg(self, Reg.acu, Reg.r3);
             try patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jne_addr));
+        } else if (fw > 2) {
+            // An array or tuple field is wider than a register; walk its
+            // packed bytes rather than comparing only the first word.
+            try emitSlotBytesEq(self, lhs_off + fo, rhs_off + fo, fw, patches);
         } else {
             try class.emitWordLoadAtOffset(self, Reg.sp, lhs_off + fo, Reg.acu);
             try class.emitWordLoadAtOffset(self, Reg.sp, rhs_off + fo, Reg.r3);
@@ -831,6 +860,32 @@ pub fn eqSupported(self: *const Emitter, sname: []const u8) bool {
     return true;
 }
 
+/// Whether a value of this type compares correctly as raw bytes —
+/// false for anything needing content or slot comparison (`str`,
+/// payload-carrying enums, nullables, `Vec`) or holding one.
+fn bytewiseTypeAnn(self: *const Emitter, t: ast.TypeAnn) bool {
+    switch (t) {
+        .named => |n| {
+            if (isStrTypeAnn(self, t)) return false;
+            const name = self.source[n.name.start..n.name.end];
+            if (self.struct_decls.contains(name)) {
+                return eqSupported(self, name) and !needsFieldwise(self, name);
+            }
+            if (self.enum_decls.get(name)) |ed| return !self.enumHasPayload(ed);
+            return true;
+        },
+        .reference, .fn_type => return true,
+        .array => |a| return bytewiseTypeAnn(self, a.elem.*),
+        .tuple => |tp| {
+            for (tp.elems) |e| {
+                if (!bytewiseTypeAnn(self, e.*)) return false;
+            }
+            return true;
+        },
+        .nullable, .vec => return false,
+    }
+}
+
 fn fieldEqSupported(self: *const Emitter, t: ast.TypeAnn) bool {
     switch (t) {
         .named => |n| {
@@ -847,7 +902,18 @@ fn fieldEqSupported(self: *const Emitter, t: ast.TypeAnn) bool {
             return true;
         },
         .reference, .fn_type => return true, // pointer identity
-        .nullable, .array, .vec, .tuple => return false,
+        // A tuple field compares as its packed bytes, so it is supported
+        // exactly when every component is byte-comparable. An array
+        // field is not: a struct holding one does not copy its bytes
+        // through `emitIntoDest`, so a byte compare would read nothing
+        // and answer "equal" — see the struct-with-array-field gap.
+        .tuple => |tp| {
+            for (tp.elems) |e| {
+                if (!bytewiseTypeAnn(self, e.*)) return false;
+            }
+            return true;
+        },
+        .array, .nullable, .vec => return false,
     }
 }
 
@@ -943,6 +1009,80 @@ fn needsFieldwiseTuple(self: *const Emitter, elems: []const *const types.Type) b
 /// (mirrors `eqSupported`): scalar / `str` / `char` / `fixed` by value or
 /// content, class / `&T` by identity, enum by tag/slot, nested struct /
 /// tuple recursively. Rejected: nullable / array / `Vec` elements.
+/// Whether an array's elements compare correctly as raw bytes — the
+/// array path compares the packed block, so an element needing content
+/// or slot comparison (`str`, payload enum, nullable, `Vec`) is out.
+pub fn arrayEqSupported(self: *const Emitter, elem: *const types.Type) bool {
+    const one = [_]*const types.Type{elem};
+    return tupleEqSupported(self, &one) and !needsFieldwiseTuple(self, &one);
+}
+
+/// Lower `a == b` / `a != b` on array operands, leaving `0`/`1` in
+/// `acu` (`negate` selects `!=`).
+///
+/// Both operands are copied onto the stack before comparing. Pushing
+/// their addresses would alias whenever the two share a buffer — two
+/// array-returning calls reuse one sret scratch, so `mk(1) == mk(5)`
+/// would compare the second result with itself.
+/// Whether an operand returns its array through the call-return buffer.
+/// Two such operands in one comparison currently collide — the second
+/// call overwrites the first result before it is compared.
+pub fn arrayEqOperandsCollide(lhs: *const ast.Expr, rhs: *const ast.Expr) bool {
+    return returnsViaCallBuffer(lhs) and returnsViaCallBuffer(rhs);
+}
+
+fn returnsViaCallBuffer(e: *const ast.Expr) bool {
+    return switch (e.*) {
+        .call, .method_call => true,
+        .paren => |pe| returnsViaCallBuffer(pe.inner),
+        else => false,
+    };
+}
+
+/// Lower `a == b` / `a != b` on array operands, leaving `0`/`1` in
+/// `acu` (`negate` selects `!=`). Compares the packed elements, so the
+/// caller must have cleared `arrayEqSupported` and
+/// `arrayEqOperandsCollide` first.
+pub fn emitArrayEquality(
+    self: *Emitter,
+    lhs: *const ast.Expr,
+    rhs: *const ast.Expr,
+    elem: *const types.Type,
+    count: u32,
+    negate: bool,
+) error{OutOfMemory}!void {
+    // @as: element count is bounded by the frame-capped array width.
+    const width = self.widthOfType(elem) *% @as(u16, @intCast(count));
+    // Word-align each copy so both bases stay word-addressable.
+    const slot = width + (width & 1);
+
+    // Materialize both operands as distinct stack copies, the way the
+    // struct path does. Comparing their addresses instead would alias
+    // whenever the two share a buffer — two array-returning calls reuse
+    // one sret scratch, so `mk(1) == mk(5)` would compare the second
+    // result against itself.
+    // Both slots are reserved up front so `sp` does not move between
+    // the two evaluations — an operand that is itself a call places its
+    // return buffer relative to `sp`, and a shifting `sp` would let the
+    // second call land on the first result.
+    // safety: `slot` is the word-aligned array width, well inside i8 for
+    // the frame sizes codegen accepts.
+    try isa.subImmFromReg(self, 2 * slot, Reg.sp);
+    try emitArrayIntoDest(self, rhs, elem, count, .{ .sp = @intCast(slot) });
+    try emitArrayIntoDest(self, lhs, elem, count, .{ .sp = 0 });
+
+    // lhs copy at [sp], rhs copy at [sp + slot].
+    try isa.movRegToReg(self, Reg.sp, Reg.r1);
+    try isa.movRegToReg(self, Reg.sp, Reg.r2);
+    try isa.addImmToReg(self, slot, Reg.r2);
+    try emitBytesEqual(self, Reg.r1, Reg.r2, width, negate);
+
+    // Drop both copies; `acu` (the result) survives the sp bump.
+    try isa.addImmToReg(self, 2 * slot, Reg.sp);
+}
+
+/// Whether every element of a tuple can take part in an equality
+/// comparison — false for a nullable / array / `Vec` element.
 pub fn tupleEqSupported(self: *const Emitter, elems: []const *const types.Type) bool {
     for (elems, 0..) |et, i| {
         switch (self.tupleElemAggregate(elems, @intCast(i))) {

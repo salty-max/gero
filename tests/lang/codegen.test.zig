@@ -9734,3 +9734,109 @@ test "codegen/ternary: a parenthesized `and` stays a boolean chain" {
         \\end
     , "9\n");
 }
+
+// ---------- array equality (§3.4) ----------
+
+test "codegen/array_eq: arrays compare by element, not by address" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: [u8; 2] = [1, 2]
+        \\  let b: [u8; 2] = [1, 2]
+        \\  let c: [u8; 2] = [9, 9]
+        \\  print if a == b 1 else 0 end
+        \\  print if a == c 1 else 0 end
+        \\  print if a == a 1 else 0 end
+        \\end
+    , "1\n0\n1\n");
+}
+
+test "codegen/array_eq: a difference at any position is found" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: [u8; 5] = [1, 2, 3, 4, 5]
+        \\  let f: [u8; 5] = [9, 2, 3, 4, 5]
+        \\  let l: [u8; 5] = [1, 2, 3, 4, 9]
+        \\  print if a == f 1 else 0 end
+        \\  print if a == l 1 else 0 end
+        \\end
+    , "0\n0\n");
+}
+
+test "codegen/array_eq: `!=` negates" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: [i16; 3] = [1, 2, 3]
+        \\  let c: [i16; 3] = [1, 9, 3]
+        \\  print if a != c 1 else 0 end
+        \\  print if a != a 1 else 0 end
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/array_eq: an odd-width array compares its trailing byte" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: [u8; 3] = [1, 2, 3]
+        \\  let b: [u8; 3] = [1, 2, 9]
+        \\  print if a == b 1 else 0 end
+        \\end
+    , "0\n");
+}
+
+test "codegen/array_eq: arrays of structs compare by element" {
+    try runAndExpect(
+        \\struct Q
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\
+        \\def main()
+        \\  let a: [Q; 2] = [Q { x: 1, y: 2 }, Q { x: 3, y: 4 }]
+        \\  let b: [Q; 2] = [Q { x: 1, y: 2 }, Q { x: 3, y: 4 }]
+        \\  let c: [Q; 2] = [Q { x: 1, y: 2 }, Q { x: 3, y: 9 }]
+        \\  print if a == b 1 else 0 end
+        \\  print if a == c 1 else 0 end
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/array_eq: one operand may be a call" {
+    try runAndExpect(
+        \\def mk(n: i16) -> [i16; 2]
+        \\  return [n, n + 1]
+        \\end
+        \\
+        \\def main()
+        \\  let p = mk(1)
+        \\  print if p == mk(1) 1 else 0 end
+        \\  print if p == mk(5) 1 else 0 end
+        \\end
+    , "1\n0\n");
+}
+
+test "codegen/array_eq: equality is usable as a value, not just a condition" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: [u8; 2] = [1, 2]
+        \\  let b: [u8; 2] = [1, 2]
+        \\  let eq = a == b
+        \\  print if eq 1 else 0 end
+        \\end
+    , "1\n");
+}
+
+test "codegen/struct_eq: a tuple field compares by element" {
+    try runAndExpect(
+        \\struct P
+        \\  t: (i16, i16, i16)
+        \\end
+        \\
+        \\def main()
+        \\  let a = P { t: (1, 2, 3) }
+        \\  let b = P { t: (1, 2, 3) }
+        \\  let c = P { t: (1, 2, 9) }
+        \\  print if a == b 1 else 0 end
+        \\  print if a == c 1 else 0 end
+        \\end
+    , "1\n0\n");
+}
