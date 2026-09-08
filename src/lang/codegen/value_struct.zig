@@ -118,22 +118,25 @@ fn emitIfChainIntoDest(
 
     for (ie.arms) |arm| {
         const skip_body = try control_flow.emitIfArmTest(self, arm);
-        try emitBranchIntoDest(self, arm.body, dest, ctx, materialize);
+        try emitBranchIntoDest(self, arm.body, ie.span, dest, ctx, materialize);
         try end_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
         try isa.patchJumpTo(self, skip_body, try self.currentOffset());
     }
     // The checker requires an `else`, so the chain is total.
-    if (ie.else_body) |eb| try emitBranchIntoDest(self, eb, dest, ctx, materialize);
+    if (ie.else_body) |eb| try emitBranchIntoDest(self, eb, ie.span, dest, ctx, materialize);
 
     const end_offset = try self.currentOffset();
     for (end_patches.items) |patch| try isa.patchJumpTo(self, patch, end_offset);
 }
 
 /// One branch of `emitIfChainIntoDest`: scope the body, materialize its
-/// tail into `dest`, then close the scope.
+/// tail into `dest`, then close the scope. `span` covers the whole
+/// chain, so a branch with no value reports against a real location
+/// even when its own body is empty.
 fn emitBranchIntoDest(
     self: *Emitter,
     body: []const ast.Statement,
+    span: ast.Span,
     dest: Dest,
     ctx: anytype,
     comptime materialize: fn (*Emitter, *const ast.Expr, @TypeOf(ctx), Dest) error{OutOfMemory}!void,
@@ -142,18 +145,9 @@ fn emitBranchIntoDest(
     switch (p.tail) {
         .expr => |tail| try materialize(self, tail, ctx, dest),
         .if_chain => |nested| try emitIfChainIntoDest(self, nested, dest, ctx, materialize),
-        .none => try self.unsupported(
-            spanOfBody(body),
-            "this branch of a value `if` must end in an expression",
-        ),
+        .none => try self.unsupported(span, "this branch of a value `if` must end in an expression"),
     }
     try do_expr.emitSuffix(self, p);
-}
-
-/// Span covering a branch body, for diagnostics raised against it.
-fn spanOfBody(body: []const ast.Statement) ast.Span {
-    if (body.len == 0) return .{ .start = 0, .end = 0 };
-    return .{ .start = body[0].span().start, .end = body[body.len - 1].span().end };
 }
 
 fn structTail(self: *Emitter, src: *const ast.Expr, sname: []const u8, dest: Dest) error{OutOfMemory}!void {
