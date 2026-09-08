@@ -501,6 +501,14 @@ they are already gated by the smoke test above, so they ship as part of
 the artifact that proves they work. The application consumes them; it
 does not vendor its own copies.
 
+A release publishes both as loose assets, since a browser host fetches
+them by URL and cannot unpack an archive:
+
+| Asset | Contents |
+|---|---|
+| `gero.wasm` | The module, built `ReleaseSmall` for `wasm32-freestanding` |
+| `samples.json` | The manifest: `{ version, samples: [{ name, lang, entry, files }] }`, where `files` maps a name to its source. A multi-file sample is one entry with several `files` — `examples/asm/banks` is one program in three. |
+
 ---
 
 ## 11. What gero-lab explicitly does NOT do
