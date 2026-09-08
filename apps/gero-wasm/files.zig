@@ -49,7 +49,13 @@ pub const Set = struct {
         return self.map.contains(name);
     }
 
+    /// Empty the set and give up the map's storage.
+    ///
+    /// Retaining capacity would leave the map holding memory a caller
+    /// is about to hand out again — the set's allocator is a bump
+    /// cursor its owner rewinds, and the next buffer would be written
+    /// over the live hash table.
     pub fn clear(self: *Set) void {
-        self.map.clearRetainingCapacity();
+        self.map.clearAndFree(self.allocator);
     }
 };
