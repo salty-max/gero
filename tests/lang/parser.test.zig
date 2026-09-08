@@ -161,11 +161,39 @@ test "parse: `and` binds looser than comparison" {
 }
 
 test "parse: `or` binds looser than `and`" {
-    var tree = try parseClean("let x = a and b or c");
+    var tree = try parseClean("let x = a or b and c");
     defer tree.deinit();
     const init = tree.program.statements[0].let_decl.init.?;
     try std.testing.expectEqual(ast.BinaryOp.log_or, init.binary.op);
-    try std.testing.expectEqual(ast.BinaryOp.log_and, init.binary.lhs.binary.op);
+    try std.testing.expectEqual(ast.BinaryOp.log_and, init.binary.rhs.binary.op);
+}
+
+test "parse: a bare `cond and x or y` is the conditional expression" {
+    var tree = try parseClean("let x = a and b or c");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .if_expr);
+    try std.testing.expect(init.if_expr.from_and_or);
+    try std.testing.expectEqual(@as(usize, 1), init.if_expr.arms.len);
+    try std.testing.expect(init.if_expr.else_body != null);
+}
+
+test "parse: a parenthesized `and` keeps the boolean chain" {
+    var tree = try parseClean("let x = (a and b) or c");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expectEqual(ast.BinaryOp.log_or, init.binary.op);
+}
+
+test "parse: `cond and x or y` chains to the right" {
+    var tree = try parseClean("let x = a and b or c and d or e");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    // `a ? b : (c ? d : e)` — the else branch holds the rest.
+    try std.testing.expect(init.* == .if_expr);
+    const else_body = init.if_expr.else_body.?;
+    try std.testing.expectEqual(@as(usize, 1), else_body.len);
+    try std.testing.expect(else_body[0].expr_stmt.expr.* == .if_expr);
 }
 
 test "parse: unary minus binds tighter than mul" {

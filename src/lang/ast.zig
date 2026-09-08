@@ -616,6 +616,10 @@ pub const IfExpr = struct {
     arms: []IfArm,
     /// `else` body, `null` when omitted.
     else_body: ?[]Statement,
+    /// Set when this came from the `cond and x or y` ternary (§4.2.3)
+    /// rather than a written `if`. The checker uses it to flag the one
+    /// shape that reads as a boolean chain instead.
+    from_and_or: bool = false,
     span: Span,
 };
 

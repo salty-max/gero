@@ -3534,3 +3534,49 @@ test "ifExprType: an `if` statement still needs no else" {
         \\end
     );
 }
+
+// ---------- `cond and x or y` conditional (§4.2.3) ----------
+
+test "ifExprType: a bare `and` / `or` over bools is ambiguous" {
+    try expectCode(
+        \\def main()
+        \\  let a = true
+        \\  let b = false
+        \\  let c = true
+        \\  if a and b or c print 1 end
+        \\end
+    , "E_TYPE_TERNARY_BOOL");
+}
+
+test "ifExprType: parenthesizing resolves the boolean chain" {
+    try expectClean(
+        \\def main()
+        \\  let a = true
+        \\  let b = false
+        \\  let c = true
+        \\  if (a and b) or c print 1 end
+        \\end
+    );
+}
+
+test "ifExprType: plain boolean `and` / `or` chains are untouched" {
+    try expectClean(
+        \\def main()
+        \\  let a = true
+        \\  let b = false
+        \\  let c = true
+        \\  if a and b and c print 1 end
+        \\  if a or b or c print 1 end
+        \\  if a and (b or c) print 1 end
+        \\end
+    );
+}
+
+test "ifExprType: a non-bool ternary needs no parentheses" {
+    try expectClean(
+        \\def main()
+        \\  let n: i16 = 5
+        \\  print n > 1 and n or 0
+        \\end
+    );
+}

@@ -51,6 +51,11 @@ pub fn parseExpression(p: *Parser, min_prec: u8) ParserError!*ast.Expr {
     var lhs = try parseUnary(p);
     errdefer ast.freeExpr(p.allocator, lhs);
 
+    // Whether THIS loop built `lhs` as an `and`. A parenthesized
+    // `(a and b)` arrives through `parseUnary` instead, which is what
+    // separates the ternary from the boolean chain (§4.2.3).
+    var lhs_is_bare_and = false;
+
     while (true) {
         const k = p.peek().kind;
 
@@ -134,6 +139,16 @@ pub fn parseExpression(p: *Parser, min_prec: u8) ParserError!*ast.Expr {
 
         if (binaryOpOf(k)) |info| {
             if (info.prec < min_prec) break;
+
+            // `cond and x or y` — the ternary (§4.2.3). Parsed at the
+            // `or` rather than built from two boolean operators, so
+            // `and` / `or` keep their meaning everywhere else.
+            if (info.op == .log_or and lhs_is_bare_and) {
+                lhs = try finishAndOrTernary(p, lhs, info.prec);
+                lhs_is_bare_and = false;
+                continue;
+            }
+
             p.pos += 1;
             const rhs = try parseExpression(p, info.prec + 1);
             const new_node = try p.allocExpr(.{ .binary = .{
@@ -143,12 +158,53 @@ pub fn parseExpression(p: *Parser, min_prec: u8) ParserError!*ast.Expr {
                 .span = .{ .start = lhs.span().start, .end = rhs.span().end },
             } });
             lhs = new_node;
+            lhs_is_bare_and = info.op == .log_and;
             continue;
         }
 
         break;
     }
     return lhs;
+}
+
+/// Rewrite `cond and x` (already parsed as `and_node`) plus the `or y`
+/// at the cursor into the `if cond x else y end` it means. The else is
+/// parsed at the `or` level so a chain nests to the right:
+/// `a and b or c and d or e` is `a ? b : (c ? d : e)`.
+fn finishAndOrTernary(p: *Parser, and_node: *ast.Expr, or_prec: u8) ParserError!*ast.Expr {
+    p.pos += 1; // consume `or`
+    const cond = and_node.binary.lhs;
+    const then_expr = and_node.binary.rhs;
+    // The `and` wrapper is replaced, but its operands live on in the
+    // arms — release the node itself, not the tree under it.
+    p.allocator.destroy(and_node);
+
+    const else_expr = try parseExpression(p, or_prec);
+
+    const arms = try p.allocator.alloc(ast.IfArm, 1);
+    errdefer p.allocator.free(arms);
+    arms[0] = .{
+        .cond = cond,
+        .let_pattern = null,
+        .let_expr = null,
+        .let_guard = null,
+        .body = try exprAsBody(p, then_expr),
+        .span = .{ .start = cond.span().start, .end = then_expr.span().end },
+    };
+
+    return try p.allocExpr(.{ .if_expr = .{
+        .arms = arms,
+        .else_body = try exprAsBody(p, else_expr),
+        .from_and_or = true,
+        .span = .{ .start = cond.span().start, .end = else_expr.span().end },
+    } });
+}
+
+/// Wrap one expression as a single-statement branch body.
+fn exprAsBody(p: *Parser, e: *ast.Expr) ParserError![]ast.Statement {
+    const body = try p.allocator.alloc(ast.Statement, 1);
+    body[0] = .{ .expr_stmt = .{ .expr = e, .span = e.span() } };
+    return body;
 }
 
 const BinaryInfo = struct {

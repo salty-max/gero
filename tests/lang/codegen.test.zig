@@ -9232,7 +9232,7 @@ test "spec: every documented language feature compiles" {
         .{ .name = "4.2.1 operators", .src =
         \\def main()
         \\  print 1 + 2 - 3 * 4 / 2 % 3
-        \\  print 1 < 2 and 3 > 2 or false
+        \\  print (1 < 2 and 3 > 2) or false
         \\  print $F0 & $0F | $01 ^ $02
         \\  print 1 << 2 >> 1
         \\end
@@ -9693,4 +9693,44 @@ test "codegen/if_expr: a trailing `if` is a value block's tail" {
         \\  print c
         \\end
     , "30\n");
+}
+
+// ---------- `cond and x or y` conditional (§4.2.3) ----------
+
+test "codegen/ternary: `cond and x or y` takes the branch the condition selects" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 5
+        \\  print x > 3 and 100 or 0
+        \\  print x > 30 and 100 or 0
+        \\end
+    , "100\n0\n");
+}
+
+test "codegen/ternary: chains nest to the right" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 5
+        \\  print x > 30 and 1 or x > 3 and 2 or 3
+        \\end
+    , "2\n");
+}
+
+test "codegen/ternary: branches may be strings" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 5
+        \\  print x > 3 and "big" or "small"
+        \\end
+    , "big\n");
+}
+
+test "codegen/ternary: a parenthesized `and` stays a boolean chain" {
+    try runAndExpect(
+        \\def main()
+        \\  let t = true
+        \\  let u = false
+        \\  if (t and u) or t print 9 else print 8 end
+        \\end
+    , "9\n");
 }
