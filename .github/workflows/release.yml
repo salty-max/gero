@@ -88,9 +88,43 @@ jobs:
           path: ${{ steps.pkg.outputs.artifact }}
           if-no-files-found: error
 
+  wasm:
+    name: Build the browser module
+    needs: verify-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # `gero.wasm` and its sample manifest ship as loose release assets
+      # rather than inside a target tarball: a browser host fetches them
+      # by URL and cannot unpack an archive (docs/gero-lab.md §10).
+      # The module pins its own optimize mode, so there is no flag here.
+      - name: Build the module and its sample manifest
+        run: zig build wasm
+
+      - name: Stage assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp zig-out/bin/gero.wasm dist/gero.wasm
+          cp zig-out/samples/samples.json dist/samples.json
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gero-wasm
+          path: |
+            dist/gero.wasm
+            dist/samples.json
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, wasm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -131,7 +165,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          artifacts=(dist/*.tar.gz dist/*.zip)
+          artifacts=(dist/*.tar.gz dist/*.zip dist/gero.wasm dist/samples.json)
           if [[ ${#artifacts[@]} -eq 0 ]]; then
             echo "::error::No artifacts found in dist/"
             exit 1
