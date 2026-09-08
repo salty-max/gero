@@ -75,15 +75,17 @@ Three editor families covered today: VS Code, Neovim / Helix /
 Zed (tree-sitter consumers), and "anything else" (TextMate /
 syntax-only).
 
-Both languages have a tree-sitter grammar, so highlighting, folding and
-indentation work for `.gas` and `.gr` alike. Diagnostics and formatting
-come from the language server (§2.6). The one gap is VS Code, whose
-extension still targets the assembler only (§2.1).
+Both languages are covered end to end: a tree-sitter grammar each for
+the editors that consume one, a TextMate grammar in the VS Code
+extension for those that don't, and diagnostics + formatting from the
+language server (§2.6).
 
 ### 2.1 VS Code
 
 The extension ships a TextMate grammar + language config (file
-association, comment toggle, bracket pairs).
+association, comment toggle, bracket pairs) for **both** languages —
+`.gas` and `.gr`. Comment toggle is `;` in one and `--` in the other;
+`Cmd+/` picks the right one from the buffer's language.
 
 **Until the marketplace publish lands**: install from a
 local `.vsix`.
