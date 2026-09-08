@@ -1424,9 +1424,48 @@ source read the same way regardless of context.
 13. `..` `..=`
 14. Assignment (`=`, `+=`, etc. — right-associative)
 
+The complete shape `cond and x or y` is the conditional expression
+(§4.2.3), not two applications of the operators above.
+
 Same precedence as C / Rust for bitwise vs comparison (low) and
 shifts vs arithmetic (low). Use parens when in doubt — `if (flags &
 MASK) == TARGET` reads better than relying on precedence memory.
+
+#### 4.2.3 Conditional expression (`and` / `or`)
+
+`cond and x or y` is gero's ternary — Lua's spelling, but a single
+three-operand form rather than two value-returning operators. It is
+exactly `if cond x else y end` (§4.4.2), and desugars to it in the
+parser:
+
+```
+let speed  = boosted and 20 or 10
+let label  = hp <= 0 and "dead" or "alive"
+```
+
+`and` and `or` keep their boolean meaning everywhere else; only the
+complete three-part shape is a conditional. Chains nest to the right,
+so an `elif` ladder reads as one line:
+
+```
+let tier = score > 90 and 3 or score > 50 and 2 or 1
+```
+
+**Parenthesize the boolean chain.** A bare `a and b or c` over three
+`bool` values would read as the conditional *and* as `(a and b) or c`,
+and the two disagree whenever `a` holds and `b` does not. gero refuses
+to guess (`E_TYPE_TERNARY_BOOL`):
+
+```
+if ready and armed or override      -- error: which did you mean?
+if (ready and armed) or override    -- boolean chain
+if ready and armed or override_v    -- fine when the branches aren't bool
+```
+
+Because `x` and `y` must share one type (§4.4.2), the middle operand
+being `false` is not the trap it is in Lua — `cond and false or y`
+either types as a `bool` conditional and is caught by the rule above,
+or does not type at all.
 
 #### 4.2.2 Discarding a value
 

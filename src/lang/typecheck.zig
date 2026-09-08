@@ -798,7 +798,22 @@ pub const Checker = struct {
             result = try self.unifyBranch(result, t, arm.span);
         }
         const else_ty = try self.doBlockType(else_body, hint);
-        return try self.unifyBranch(result, else_ty, ie.span);
+        const unified = try self.unifyBranch(result, else_ty, ie.span);
+
+        // `a and b or c` over three `bool`s reads as the boolean chain
+        // it resembles, and the two disagree whenever `a` holds and `b`
+        // does not. Parentheses say which was meant (§4.2.3).
+        if (ie.from_and_or) if (unified) |t| {
+            if (t.* == .primitive and t.primitive == .bool_) {
+                try self.emitSpan(
+                    "E_TYPE_TERNARY_BOOL",
+                    ie.span,
+                    "`and` / `or` over `bool` values is ambiguous: write `(a and b) or c` " ++
+                        "for the boolean chain, or `if a b else c end` for the conditional",
+                );
+            }
+        };
+        return unified;
     }
 
     /// Fold one branch's type into the chain's, reporting the first
