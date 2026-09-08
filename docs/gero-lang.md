@@ -44,8 +44,12 @@ goal.
 
 ### 2.1 Whitespace
 
-Spaces and tabs are insignificant within a line. **Newlines terminate
-statements** (no semicolons). Blank lines are allowed anywhere.
+Spaces and tabs are insignificant within a line, with two exceptions
+where a token's meaning depends on whether it is attached to what
+precedes it: `--` (§4.2 — attached is decrement, detached opens a
+comment) and the `(` / `[` that open a call's arguments or an index
+(§4.6). **Newlines terminate statements** (no semicolons). Blank lines
+are allowed anywhere.
 
 To continue a long expression onto the next line, wrap it in
 parentheses:
@@ -166,6 +170,7 @@ and or not
 break continue defer
 print
 asm bake
+sizeof
 ```
 
 `do` opens a `do … end` block (§4.3); it's not a loop-head
@@ -1876,6 +1881,30 @@ let r = apply(add, 3, 4)   -- 7
 
 The function-pointer type is spelled `fn(args) -> ret` in
 annotations. At runtime it's a 16-bit code address.
+
+#### 4.6.1 Calls attach to their callee
+
+The `(` opening an argument list must touch the callee, and the `[` of
+an index must touch what it indexes:
+
+```
+foo(a, b)        -- a call
+foo (a, b)       -- `foo`, then a parenthesized expression
+grid[0]          -- an index
+grid [0]         -- `grid`, then an array literal
+```
+
+Without the rule a one-line block whose body opens with a bracket
+would be swallowed by its head — `if c (1, 2) else …` would parse as
+calling `c`. The same principle already governs `--` (§4.2): attached
+to an operand it decrements, detached it opens a comment.
+
+Only the postfix forms are affected. Keyword-introduced parentheses —
+`return (a, b)`, `case (a, b)`, `let (x, y) = …`, `sizeof(T)`,
+`lambda (x) … end`, `@align(16)` — are unambiguous and may be spaced.
+
+A detached bracket is a syntax error rather than a silent reinterpretation
+in every position where a call was plainly intended.
 
 #### 4.6.1 Tail-call optimization
 
