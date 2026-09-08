@@ -464,6 +464,14 @@ fn emitLitInto(self: *Emitter, sl: ast.StructLit, sname: []const u8, dest: Dest)
                 continue;
             };
             try emitTupleIntoDest(self, value, elems, field_dest);
+        } else if (info.is_array) {
+            // Likewise an array field — element type and length come
+            // from the value's inferred type.
+            const shape = self.arrayShapeOf(value) orelse {
+                try self.unsupported(value.span(), "array struct field initialized from a non-array value");
+                continue;
+            };
+            try emitArrayIntoDest(self, value, shape.elem, shape.count, field_dest);
         } else {
             try self.emitExpr(value);
             try isa.movRegToReg(self, Reg.acu, Reg.r2);
@@ -480,7 +488,7 @@ fn emitLitInto(self: *Emitter, sl: ast.StructLit, sname: []const u8, dest: Dest)
 pub fn emitFieldLoad(self: *Emitter, sname: []const u8, field_name: []const u8) !void {
     const info = self.structFieldInfo(sname, field_name).?;
     // An aggregate field (nested struct or tuple) is addressed inline.
-    if (info.struct_name != null or info.is_tuple) {
+    if (info.isAggregate()) {
         if (info.offset != 0) try isa.addImmToReg(self, info.offset, Reg.acu);
         return;
     }
@@ -502,7 +510,7 @@ pub fn emitFieldLoad(self: *Emitter, sname: []const u8, field_name: []const u8) 
 /// no temporary binding is needed.
 pub fn emitFieldStore(self: *Emitter, recv: *const ast.Expr, sname: []const u8, field_name: []const u8, value: *const ast.Expr) !void {
     const info = self.structFieldInfo(sname, field_name).?;
-    if (info.struct_name != null or info.is_tuple) {
+    if (info.isAggregate()) {
         // Compute the field's address and park it, then materialize the
         // value through it — `sp` stays put across the value's fields.
         try self.emitExpr(recv); // acu = receiver base
@@ -902,18 +910,16 @@ fn fieldEqSupported(self: *const Emitter, t: ast.TypeAnn) bool {
             return true;
         },
         .reference, .fn_type => return true, // pointer identity
-        // A tuple field compares as its packed bytes, so it is supported
-        // exactly when every component is byte-comparable. An array
-        // field is not: a struct holding one does not copy its bytes
-        // through `emitIntoDest`, so a byte compare would read nothing
-        // and answer "equal" — see the struct-with-array-field gap.
+        // An array or tuple field compares as its packed bytes, so it is
+        // supported exactly when every component is byte-comparable.
+        .array => |a| return bytewiseTypeAnn(self, a.elem.*),
         .tuple => |tp| {
             for (tp.elems) |e| {
                 if (!bytewiseTypeAnn(self, e.*)) return false;
             }
             return true;
         },
-        .array, .nullable, .vec => return false,
+        .nullable, .vec => return false,
     }
 }
 

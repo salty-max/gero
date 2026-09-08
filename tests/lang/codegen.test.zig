@@ -9840,3 +9840,83 @@ test "codegen/struct_eq: a tuple field compares by element" {
         \\end
     , "1\n0\n");
 }
+
+// ---------- struct fields holding arrays (§3.4) ----------
+
+test "codegen/struct_array_field: a struct literal may carry an array field" {
+    try runAndExpect(
+        \\struct P
+        \\  v: [u8; 3]
+        \\end
+        \\
+        \\def main()
+        \\  let a = P { v: [1, 2, 3] }
+        \\  print a.v[0]
+        \\  print a.v[2]
+        \\end
+    , "1\n3\n");
+}
+
+test "codegen/struct_array_field: the array copies with the struct" {
+    try runAndExpect(
+        \\struct P
+        \\  v: [u8; 3]
+        \\  n: i16
+        \\end
+        \\
+        \\def take(p: P) -> u8
+        \\  return p.v[1]
+        \\end
+        \\
+        \\def make() -> P
+        \\  return P { v: [7, 8, 9], n: 42 }
+        \\end
+        \\
+        \\def main()
+        \\  let a = P { v: [1, 2, 3], n: 5 }
+        \\  let b = a
+        \\  print b.v[1]
+        \\  print take(a)
+        \\  let m = make()
+        \\  print m.v[2]
+        \\  print m.n
+        \\end
+    , "2\n2\n9\n42\n");
+}
+
+test "codegen/struct_array_field: `==` compares the array field" {
+    try runAndExpect(
+        \\struct P
+        \\  v: [u8; 3]
+        \\end
+        \\
+        \\def main()
+        \\  let a = P { v: [1, 2, 3] }
+        \\  let b = P { v: [1, 2, 3] }
+        \\  let c = P { v: [1, 9, 3] }
+        \\  let d = P { v: [1, 2, 9] }
+        \\  print if a == b 1 else 0 end
+        \\  print if a == c 1 else 0 end
+        \\  print if a == d 1 else 0 end
+        \\end
+    , "1\n0\n0\n");
+}
+
+test "codegen/struct_array_field: nested aggregates carry arrays" {
+    try runAndExpect(
+        \\struct P
+        \\  v: [u8; 3]
+        \\end
+        \\
+        \\struct Outer
+        \\  inner: P
+        \\end
+        \\
+        \\def main()
+        \\  let o = Outer { inner: P { v: [4, 5, 6] } }
+        \\  print o.inner.v[1]
+        \\  let arr: [P; 2] = [P { v: [1, 1, 1] }, P { v: [2, 2, 2] }]
+        \\  print arr[1].v[0]
+        \\end
+    , "5\n2\n");
+}
