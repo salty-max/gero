@@ -531,13 +531,6 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
     if (self.arrayShapeOf(b.lhs) orelse self.arrayShapeOf(b.rhs)) |shape| {
         switch (b.op) {
             .eq, .neq => {
-                if (value_struct.arrayEqOperandsCollide(b.lhs, b.rhs)) {
-                    try self.unsupported(
-                        b.span,
-                        "array `==` where both operands are calls — bind one to a `let` first",
-                    );
-                    return;
-                }
                 if (!value_struct.arrayEqSupported(self, shape.elem)) {
                     try self.unsupported(
                         b.span,
@@ -762,13 +755,6 @@ pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
                 if (self.arrayShapeOf(b.lhs) orelse self.arrayShapeOf(b.rhs)) |shape| {
                     switch (b.op) {
                         .eq, .neq => {
-                            if (value_struct.arrayEqOperandsCollide(b.lhs, b.rhs)) {
-                                try self.unsupported(
-                                    b.span,
-                                    "array `==` where both operands are calls — bind one to a `let` first",
-                                );
-                                return;
-                            }
                             if (!value_struct.arrayEqSupported(self, shape.elem)) {
                                 try self.unsupported(
                                     b.span,
@@ -1257,7 +1243,11 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
     // never returns to use that space.
     const skip_cleanup = self.noreturn_defs.contains(callee_name);
     if (!skip_cleanup) {
-        var drop_bytes: u16 = if (returns_struct or returns_tuple) 2 else 0; // hidden sret pointer
+        // The hidden sret pointer, dropped under exactly the condition
+        // that pushed it — a mismatch leaks 2 bytes per call, and the
+        // drift corrupts any sp-relative destination computed after it.
+        const pushed_sret = returns_struct or returns_tuple or returns_scalar_opt or returns_array;
+        var drop_bytes: u16 = if (pushed_sret) 2 else 0;
         for (c.args) |a| {
             if (self.argStructName(a)) |sname| {
                 drop_bytes += self.structSlotWidth(sname);

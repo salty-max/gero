@@ -9920,3 +9920,21 @@ test "codegen/struct_array_field: nested aggregates carry arrays" {
         \\end
     , "5\n2\n");
 }
+
+test "codegen/array_eq: both operands may be calls" {
+    // An aggregate-returning call pushes a hidden sret pointer; dropping
+    // it under a narrower condition than it was pushed left `sp` adrift,
+    // so the second call's copy landed on the first result.
+    try runAndExpect(
+        \\def mk(n: i16) -> [i16; 2]
+        \\  return [n, n + 1]
+        \\end
+        \\
+        \\def main()
+        \\  print if mk(1) == mk(1) 1 else 0 end
+        \\  print if mk(1) == mk(5) 1 else 0 end
+        \\  print if mk(3) != mk(3) 1 else 0 end
+        \\  print if mk(3) != mk(4) 1 else 0 end
+        \\end
+    , "1\n0\n0\n1\n");
+}
