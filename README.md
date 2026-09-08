@@ -102,8 +102,8 @@ exe.root_module.addImport("gero", gero.module("gero"));
 Shipped features land in [`CHANGELOG.md`](./CHANGELOG.md).
 Open work is tracked on the
 [project board](https://github.com/salty-max/gero/projects).
-Editor tooling (tree-sitter grammar, VS Code extension) lives in
-[`editors/`](./editors/).
+Editor tooling lives in [`editors/`](./editors/) as submodules: a
+tree-sitter grammar per language, plus the VS Code extension.
 
 The gtx-16 fantasy console is built in its own repo and consumes gero
 as a library; its contract lives in [`docs/gtx-16.md`](./docs/gtx-16.md).

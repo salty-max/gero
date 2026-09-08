@@ -4,3 +4,6 @@
 [submodule "editors/vscode-gero"]
 	path = editors/vscode-gero
 	url = git@github.com:salty-max/vscode-gero.git
+[submodule "editors/tree-sitter-gero-lang"]
+	path = editors/tree-sitter-gero-lang
+	url = git@github.com:salty-max/tree-sitter-gero-lang.git
