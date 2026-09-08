@@ -119,6 +119,24 @@ toolchain it demonstrates.
 - **Cross-targets** compiled on every PR: `x86_64-linux`,
   `aarch64-macos`, `x86_64-windows`, `aarch64-windows`, `wasm32-wasi`
 
+### Bytecode
+
+The `.gx` format is at **0.4**, and frozen from there: within a format
+major, a file runs on any gero that accepts that major — an older file
+on a newer build, and a newer file on an older one, because every minor
+bump is additive by rule.
+
+A file whose major is higher is **refused**, never run and hoped for:
+
+```
+built for .gx format 1.4, but this build supports up to 0.4 — upgrade gero to open it
+```
+
+The format version is independent of this package's version: one can
+move without the other. What counts as additive versus breaking, what
+the freeze commits to, and what enforces it rather than intending it
+are in [`docs/versioning.md`](./docs/versioning.md) §6.
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for branching, commit
