@@ -369,6 +369,22 @@ pub fn diagnosticsOf(r: *const Result) []const u8 {
 
 const testing = std.testing;
 
+test "clearFiles: reusing the set does not hand out its own storage twice" {
+    init(0);
+    // A host rebuilds by replacing the whole set, so this runs on every
+    // build. The store's cursor rewinds on clear, and a map that kept
+    // its capacity across that would be overwritten by the next buffer.
+    var round: usize = 0;
+    while (round < 64) : (round += 1) {
+        clearFiles();
+        try putFile("main.gr", "def main()\n  print 1\nend\n");
+        try putFile("lib.gr", "def two() -> i16\n  return 2\nend\n");
+        try testing.expectEqual(@as(u32, 2), fileCount());
+        try testing.expect(fileSet().contains("main.gr"));
+        try testing.expect(fileSet().contains("lib.gr"));
+    }
+}
+
 test "init: the arena is unusable until it is called" {
     initialized = false;
     // A host that skips init must get a status, not a trap or a wild
