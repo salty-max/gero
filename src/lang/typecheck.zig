@@ -750,7 +750,7 @@ pub const Checker = struct {
     /// scope and the block evaluates to its last expression's type (or
     /// `nil` if the last item is a statement). A trailing bare `do … end`
     /// is itself a value block, so descend into it.
-    fn doBlockType(self: *Checker, body: []const ast.Statement, hint: ?*const types.Type) WalkError!?*const types.Type {
+    pub fn doBlockType(self: *Checker, body: []const ast.Statement, hint: ?*const types.Type) WalkError!?*const types.Type {
         const saved = self.current_scope;
         var child: Scope = .init(self.arena, saved);
         self.current_scope = &child;
@@ -766,6 +766,10 @@ pub const Checker = struct {
                 .{ .arms = is_.arms, .else_body = is_.else_body, .span = is_.span },
                 hint,
             ),
+            .match_stmt => |ms| try self.matchExprType(
+                .{ .scrutinee = ms.scrutinee, .arms = ms.arms, .span = ms.span },
+                hint,
+            ),
             else => blk: {
                 try self.walkStatement(body[body.len - 1]);
                 break :blk try self.primitive(.nil_);
@@ -773,12 +777,34 @@ pub const Checker = struct {
         };
     }
 
+    /// Type a `match` used as a value (§4.8.4). Every arm must yield the
+    /// same type, and the arms must be exhaustive — an unmatched
+    /// scrutinee has no value to produce, which `checkMatch` already
+    /// reports for the statement form.
+    fn matchExprType(self: *Checker, me: ast.MatchExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
+        // Each arm's tail is typed inside the scope holding that arm's
+        // pattern bindings, so `case Potion(n) => n * 2` can see `n`.
+        var arm_types: std.ArrayList(?*const types.Type) = .empty;
+        try match.checkMatchValue(
+            self,
+            .{ .scrutinee = me.scrutinee, .arms = me.arms, .span = me.span },
+            .{ .hint = hint, .out = &arm_types },
+        );
+
+        // As for `if`: the first arm that types sets the shape, and an
+        // arm ending in a statement types as `nil`, so it fails the same
+        // unification.
+        var result: ?*const types.Type = null;
+        for (arm_types.items, 0..) |t, i| {
+            result = try self.unifyBranch(result, t, me.arms[i].span, .match_expr);
+        }
+        return result;
+    }
+
     /// Type an `if` chain used as a value (§4.4.2). Every branch must
     /// yield the same type, and an `else` is required — without one a
     /// failing chain has no value to produce.
     fn ifExprType(self: *Checker, ie: ast.IfExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
-        try self.checkIfChain(ie.arms, ie.else_body);
-
         const else_body = ie.else_body orelse {
             try self.emitSpan(
                 "E_TYPE_IF_EXPR_NO_ELSE",
@@ -787,18 +813,23 @@ pub const Checker = struct {
             );
             return null;
         };
+        _ = else_body;
 
-        // The first branch that types successfully sets the shape the
-        // rest must match; `hint` still flows into each so a literal
-        // can take the target's width. A branch ending in a statement
-        // types as `nil` and so fails the same unification.
+        // Each branch's tail is typed inside the scope holding that
+        // arm's `if let` bindings, so `if let Potion(n) = item n * 2`
+        // can see `n`.
+        var branch_types: std.ArrayList(?*const types.Type) = .empty;
+        try self.checkIfChainInner(ie.arms, ie.else_body, .{ .hint = hint, .out = &branch_types });
+
+        // The first branch that types sets the shape the rest must
+        // match; a branch ending in a statement types as `nil` and so
+        // fails the same unification.
         var result: ?*const types.Type = null;
-        for (ie.arms) |arm| {
-            const t = try self.doBlockType(arm.body, hint);
-            result = try self.unifyBranch(result, t, arm.span);
+        for (branch_types.items, 0..) |t, i| {
+            const span = if (i < ie.arms.len) ie.arms[i].span else ie.span;
+            result = try self.unifyBranch(result, t, span, .if_expr);
         }
-        const else_ty = try self.doBlockType(else_body, hint);
-        const unified = try self.unifyBranch(result, else_ty, ie.span);
+        const unified = result;
 
         // `a and b or c` over three `bool`s reads as the boolean chain
         // it resembles, and the two disagree whenever `a` holds and `b`
@@ -818,11 +849,34 @@ pub const Checker = struct {
 
     /// Fold one branch's type into the chain's, reporting the first
     /// disagreement against the shape already established.
+    /// Which value form is being unified — they share the rule but
+    /// report under their own code, so a diagnostic names the construct
+    /// the reader actually wrote.
+    const BranchKind = enum {
+        if_expr,
+        match_expr,
+
+        fn code(self: BranchKind) []const u8 {
+            return switch (self) {
+                .if_expr => "E_TYPE_IF_EXPR_BRANCH_MISMATCH",
+                .match_expr => "E_TYPE_MATCH_ARM_MISMATCH",
+            };
+        }
+
+        fn noun(self: BranchKind) []const u8 {
+            return switch (self) {
+                .if_expr => "`if` branches",
+                .match_expr => "`match` arms",
+            };
+        }
+    };
+
     fn unifyBranch(
         self: *Checker,
         acc: ?*const types.Type,
         branch: ?*const types.Type,
         span: ast.Span,
+        kind: BranchKind,
     ) WalkError!?*const types.Type {
         const b = branch orelse return acc;
         const a = acc orelse return b;
@@ -830,10 +884,10 @@ pub const Checker = struct {
         if (relations.assignable(a.*, b.*)) return b;
         const msg = try std.fmt.allocPrint(
             self.arena,
-            "`if` branches produce different types: `{s}` and `{s}`",
-            .{ try types.render(self.arena, a.*), try types.render(self.arena, b.*) },
+            "{s} produce different types: `{s}` and `{s}`",
+            .{ kind.noun(), try types.render(self.arena, a.*), try types.render(self.arena, b.*) },
         );
-        try self.emitSpan("E_TYPE_IF_EXPR_BRANCH_MISMATCH", span, msg);
+        try self.emitSpan(kind.code(), span, msg);
         return a;
     }
 
@@ -1283,10 +1337,27 @@ pub const Checker = struct {
         try self.emitSpan("E_ANN_CAPTURE_VIOLATION", target.span(), msg);
     }
 
+    /// How an `if` chain in value position collects its branch types:
+    /// each body's tail is typed inside the scope holding that arm's
+    /// `if let` bindings, which a second walk from outside would miss.
+    const IfValueMode = struct {
+        hint: ?*const types.Type,
+        out: *std.ArrayList(?*const types.Type),
+    };
+
     fn checkIfChain(
         self: *Checker,
         arms: []const ast.IfArm,
         else_body: ?[]const ast.Statement,
+    ) WalkError!void {
+        return self.checkIfChainInner(arms, else_body, null);
+    }
+
+    fn checkIfChainInner(
+        self: *Checker,
+        arms: []const ast.IfArm,
+        else_body: ?[]const ast.Statement,
+        value: ?IfValueMode,
     ) WalkError!void {
         // Flow analysis is applied only when there is exactly one
         // arm — the simple `if cond BODY [else …] end` shape.
@@ -1322,7 +1393,11 @@ pub const Checker = struct {
             defer self.current_scope = saved;
             if (arm.let_pattern) |pat| try self.registerBindingsFromType(pat, let_ty);
             if (arm.let_guard) |g| try self.requireBool(g);
-            try self.walkArmBodyWithIsBinding(arm.body, is_binding);
+            if (value) |v| {
+                try v.out.append(self.arena, try self.doBlockType(arm.body, v.hint));
+            } else {
+                try self.walkArmBodyWithIsBinding(arm.body, is_binding);
+            }
             if (added) self.popNonNil(arm_gain.?);
         }
 
@@ -1334,7 +1409,11 @@ pub const Checker = struct {
             else
                 null;
             const added = if (else_gain) |n| try self.pushNonNil(n) else false;
-            try self.walkInScope(eb);
+            if (value) |v| {
+                try v.out.append(self.arena, try self.doBlockType(eb, v.hint));
+            } else {
+                try self.walkInScope(eb);
+            }
             if (added) self.popNonNil(else_gain.?);
         }
     }
@@ -1811,6 +1890,7 @@ pub const Checker = struct {
             .index => |ix| self.exprMentions(ix.receiver, name) or self.exprMentions(ix.index, name),
             .do_expr => |d| self.bodyMentions(d.body, name),
             .if_expr => |ie| ifChainMentions(self, ie.arms, ie.else_body, name),
+            .match_expr => |me| matchMentions(self, .{ .scrutinee = me.scrutinee, .arms = me.arms, .span = me.span }, name),
             .lambda => |l| self.bodyMentions(l.body, name),
             .list_lit => |ll| anyExprMentions(self, ll.elems, name),
             .list_repeat => |lr| self.exprMentions(lr.value, name) or self.exprMentions(lr.count, name),
@@ -2078,6 +2158,7 @@ pub const Checker = struct {
             },
             .do_expr => |d| return try self.doBlockType(d.body, hint),
             .if_expr => |ie| return try self.ifExprType(ie, hint),
+            .match_expr => |me| return try self.matchExprType(me, hint),
             .lambda => |l| {
                 const saved = self.current_scope;
                 var lambda_scope: Scope = .init(self.arena, saved);

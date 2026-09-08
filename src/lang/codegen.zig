@@ -1305,6 +1305,23 @@ pub const Emitter = struct {
             // in THIS frame, so count their bodies.
             .lambda => 0,
             .do_expr => |de| self.countFrameBytesDepth(de.body, depth),
+            .match_expr => |me| blk: {
+                // Mirrors the statement form: the scrutinee is
+                // materialized into a slot once, and each arm reserves
+                // its pattern binders and body locals in THIS frame.
+                const scrut_ty = self.typeOf(me.scrutinee);
+                var n: usize = if (scrut_ty != null and self.isInlineAggregateType(scrut_ty.?))
+                    alignUpU16(self.widthOfType(scrut_ty.?), 2)
+                else
+                    2;
+                n += self.countExprInlineBytes(me.scrutinee, depth);
+                for (me.arms) |a| {
+                    if (a.guard) |g| n += self.countExprInlineBytes(g, depth);
+                    n += self.ownSlotBinderBytes(a.pattern, false);
+                    n += self.countFrameBytesDepth(a.body, depth);
+                }
+                break :blk n;
+            },
             .if_expr => |ie| blk: {
                 var n: usize = 0;
                 for (ie.arms) |a| {

@@ -704,7 +704,7 @@ pub fn emitLoopJump(self: *Emitter, j: ast.LoopJumpStmt, kind: LoopJumpKind) !vo
 /// Lower `match scrutinee case … end`. The fast path is a jump-
 /// table indexed by tag byte, used when every arm is a bare
 /// variant pattern (with an optional trailing wildcard) on a
-/// nullary-payload enum scrutinee, with no guards (spec §4.8.5
+/// nullary-payload enum scrutinee, with no guards (spec §4.8.6
 /// "Single-arm tag dispatch"). The fallback is a sequential
 /// `cmp + branch` decision tree: OR-patterns collapse onto one
 /// shared body label, range patterns emit a single low+high cmp
@@ -750,7 +750,7 @@ fn emitMatchSequential(self: *Emitter, ms: ast.MatchStmt) !void {
     for (end_patches.items) |p| try isa.patchJumpTo(self, p, end_offset);
 }
 
-/// Detect the spec §4.8.5 "single-arm tag dispatch" shape and,
+/// Detect the spec §4.8.6 "single-arm tag dispatch" shape and,
 /// when it matches, emit a jump table indexed by tag byte:
 ///
 /// ```

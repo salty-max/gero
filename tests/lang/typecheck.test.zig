@@ -3580,3 +3580,56 @@ test "ifExprType: a non-bool ternary needs no parentheses" {
         \\end
     );
 }
+
+// ---------- `match` in value position (§4.8.4) ----------
+
+test "matchExprType: a non-exhaustive value `match` is rejected" {
+    try expectCode(
+        \\enum E
+        \\  case A
+        \\  case B
+        \\end
+        \\
+        \\def main()
+        \\  let x = match E.A
+        \\    case E.A => 1
+        \\  end
+        \\  print x
+        \\end
+    , "E_MATCH_NON_EXHAUSTIVE");
+}
+
+test "matchExprType: arms producing different types are rejected" {
+    try expectCode(
+        \\def main()
+        \\  let x = match 1
+        \\    case 1 => 1
+        \\    case _ => "s"
+        \\  end
+        \\  print x
+        \\end
+    , "E_TYPE_MATCH_ARM_MISMATCH");
+}
+
+test "matchExprType: an arm ending in a statement has no value" {
+    try expectCode(
+        \\def main()
+        \\  let x = match 1
+        \\    case 1 => print 1
+        \\    case _ => 0
+        \\  end
+        \\  print x
+        \\end
+    , "E_TYPE_MATCH_ARM_MISMATCH");
+}
+
+test "matchExprType: a `match` statement produces nothing and needs no arms to agree" {
+    try expectClean(
+        \\def main()
+        \\  match 1
+        \\    case 1 => print 1
+        \\    case _ => print 2
+        \\  end
+        \\end
+    );
+}

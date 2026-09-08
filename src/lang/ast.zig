@@ -348,6 +348,9 @@ pub const Expr = union(enum) {
     /// found in expression position, and for the `cond and x or y`
     /// conditional (§4.2.3), which desugars to it.
     if_expr: IfExpr,
+    /// `match scrutinee case … end` as an expression (§4.8) — the value
+    /// is the taken arm's last expression, exactly as for `if_expr`.
+    match_expr: MatchExpr,
     /// `lambda (args) -> ret body end` — anonymous function literal.
     lambda: LambdaExpr,
     /// `[expr, expr, ...]` — array literal. Used for `[T; N]` init
@@ -398,6 +401,7 @@ pub const Expr = union(enum) {
             .index => |e| e.span,
             .do_expr => |e| e.span,
             .if_expr => |e| e.span,
+            .match_expr => |e| e.span,
             .lambda => |e| e.span,
             .list_lit => |e| e.span,
             .list_repeat => |e| e.span,
@@ -606,6 +610,18 @@ pub const DoExpr = struct {
     /// evaluated at compile time and the result is lowered to static
     /// data.
     is_bake: bool = false,
+    span: Span,
+};
+
+/// `if cond ... [else ...] end` used as an expression. The checker
+/// requires the `else` and one shared branch type (§4.4.2), so every
+/// path through the chain yields a value.
+/// `match … end` used as an expression. The checker requires every arm
+/// to produce the same type and the arms to be exhaustive (§4.8.3), so
+/// every path through the chain yields a value.
+pub const MatchExpr = struct {
+    scrutinee: *Expr,
+    arms: []MatchArm,
     span: Span,
 };
 
@@ -1327,6 +1343,18 @@ fn freeStatementList(allocator: std.mem.Allocator, list: []Statement) void {
     allocator.free(list);
 }
 
+/// Release a `match` chain's scrutinee and arms. Shared by the
+/// statement and expression forms, which own the same shape.
+fn freeMatchArms(allocator: std.mem.Allocator, scrutinee: *Expr, arms: []MatchArm) void {
+    freeExpr(allocator, scrutinee);
+    for (arms) |arm| {
+        freePattern(allocator, arm.pattern);
+        if (arm.guard) |g| freeExpr(allocator, g);
+        freeStatementList(allocator, arm.body);
+    }
+    allocator.free(arms);
+}
+
 fn freeIfArmsAndElse(
     allocator: std.mem.Allocator,
     arms: []IfArm,
@@ -1390,6 +1418,7 @@ pub fn freeExpr(allocator: std.mem.Allocator, e: *Expr) void {
         },
         .do_expr => |d| freeStatementList(allocator, d.body),
         .if_expr => |ie| freeIfArmsAndElse(allocator, ie.arms, ie.else_body),
+        .match_expr => |me| freeMatchArms(allocator, me.scrutinee, me.arms),
         .lambda => |l| {
             for (l.params) |p| if (p.type_ann) |t| freeTypeAnn(allocator, t);
             allocator.free(l.params);

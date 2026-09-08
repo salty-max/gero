@@ -850,6 +850,7 @@ const Printer = struct {
                 try self.writer.writeAll("end");
             },
             .if_expr => |ie| try self.writeIfChain(ie.arms, ie.else_body, ie.span.end),
+            .match_expr => |me| try self.writeMatchStmt(.{ .scrutinee = me.scrutinee, .arms = me.arms, .span = me.span }),
             .lambda => |l| try self.writeLambda(l),
             .list_lit => |ll| {
                 try self.writer.writeByte('[');

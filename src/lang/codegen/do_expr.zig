@@ -12,6 +12,7 @@ const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const control_flow = @import("control_flow.zig");
 const if_expr = @import("if_expr.zig");
+const match_expr = @import("match_expr.zig");
 const isa = @import("isa.zig");
 const opcodes = @import("opcodes.zig");
 
@@ -34,6 +35,7 @@ pub const Prefix = struct {
 pub const Tail = union(enum) {
     expr: *const ast.Expr,
     if_chain: ast.IfExpr,
+    match_chain: ast.MatchExpr,
     none,
 };
 
@@ -47,9 +49,12 @@ fn emitBodyPrefix(self: *Emitter, body: []const ast.Statement, scopes: *u8) erro
         // A trailing `do … end` parses as a block statement; it is the
         // value-producing tail, so descend (opening its own scope).
         .block => |b| try emitBodyPrefix(self, b.body, scopes),
-        // A trailing `if` chain is a value tail by the same rule.
+        // A trailing `if` or `match` chain is a value tail by the same rule.
         .if_stmt => |is_| .{
             .if_chain = .{ .arms = is_.arms, .else_body = is_.else_body, .span = is_.span },
+        },
+        .match_stmt => |ms| .{
+            .match_chain = .{ .scrutinee = ms.scrutinee, .arms = ms.arms, .span = ms.span },
         },
         else => blk: {
             try self.emitStatement(body[body.len - 1]);
@@ -97,6 +102,7 @@ pub fn emitBodyValue(self: *Emitter, body: []const ast.Statement) error{OutOfMem
     switch (p.tail) {
         .expr => |t| try self.emitExpr(t),
         .if_chain => |ie| try if_expr.emitScalar(self, ie),
+        .match_chain => |me| try match_expr.emitScalar(self, me),
         .none => try isa.movImmToReg(self, 0, Reg.acu),
     }
     try emitSuffix(self, p);

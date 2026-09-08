@@ -288,7 +288,29 @@ pub fn parseRepeatStatement(p: *Parser) ParserError!ast.Statement {
 // ---------- match ----------
 
 /// `match scrutinee case pat [when guard] => body ... end` (§4.8).
+/// A parsed `match` head and arms, shared by the statement and the
+/// expression form (§4.8) — they differ only in what wraps them.
+pub const MatchChain = struct {
+    scrutinee: *ast.Expr,
+    arms: []ast.MatchArm,
+    start: u32,
+    end: u32,
+};
+
+/// `match scrutinee case … end` at statement position (§4.8).
 pub fn parseMatchStatement(p: *Parser) ParserError!ast.Statement {
+    const chain = try parseMatchChain(p);
+    try p.requireStatementBoundary();
+    return .{ .match_stmt = .{
+        .scrutinee = chain.scrutinee,
+        .arms = chain.arms,
+        .span = .{ .start = chain.start, .end = chain.end },
+    } };
+}
+
+/// The head and arms both `match` forms share, without the trailing
+/// statement boundary the statement form requires.
+pub fn parseMatchChain(p: *Parser) ParserError!MatchChain {
     const match_tok = p.peek();
     p.pos += 1;
     const start = match_tok.start;
@@ -329,13 +351,13 @@ pub fn parseMatchStatement(p: *Parser) ParserError!ast.Statement {
         });
     }
     const end_tok = try p.expect(.kw_end, "end");
-    try p.requireStatementBoundary();
 
-    return .{ .match_stmt = .{
+    return .{
         .scrutinee = scrutinee,
         .arms = try arms.toOwnedSlice(p.allocator),
-        .span = .{ .start = start, .end = end_tok.end },
-    } };
+        .start = start,
+        .end = end_tok.end,
+    };
 }
 
 fn cleanupMatchArms(

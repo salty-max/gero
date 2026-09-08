@@ -2241,7 +2241,45 @@ variant / bool case explicitly. For other primitive scrutinees
 (integers, strings), exhaustiveness can't be checked — the
 compiler requires a wildcard arm or warns.
 
-#### 4.8.4 Worked example
+#### 4.8.4 `match` as an expression
+
+A `match` in value position evaluates to the value of the arm it takes,
+the same rule `do … end` (§4.3) and `if` (§4.4.2) follow:
+
+```gero
+let label = match state
+  case State.Idle => "idle"
+  case State.Run  => "running"
+  case State.Dead => "dead"
+end
+```
+
+Two requirements make that total:
+
+- **The arms must be exhaustive** (§4.8.3). An unmatched scrutinee has
+  no value to produce, so the rule that is a warning-shaped design
+  choice for the statement form is a hard requirement here.
+- **Every arm produces the same type**
+  (`E_TYPE_MATCH_ARM_MISMATCH`). An arm ending in a statement has type
+  `nil`, so it mismatches an arm ending in an expression — which
+  catches an arm that forgot its value.
+
+An arm is a block, so it may run statements before its value, and
+payload binders are in scope for it:
+
+```gero
+let dmg = match action
+  case Action.Hit(power) =>
+    let scaled = power * 2
+    scaled + bonus
+  case _ => 0
+end
+```
+
+A `match` at statement position is unchanged — no exhaustiveness
+requirement beyond §4.8.3's, and arms produce nothing.
+
+#### 4.8.5 Worked example
 
 ```gero
 enum Event
@@ -2271,7 +2309,7 @@ def handle(e: Event)
 end
 ```
 
-#### 4.8.5 Compilation
+#### 4.8.6 Compilation
 
 - **Single-arm tag dispatch** (no payloads): jump table indexed by
   tag byte
@@ -2281,7 +2319,7 @@ end
   (compiler dedupes the body if it can)
 - **Range patterns**: emit `cmp` + bounded jumps
 
-#### 4.8.6 `if let` vs `match` — when to use which
+#### 4.8.7 `if let` vs `match` — when to use which
 
 | Situation | Use |
 |-----------|-----|

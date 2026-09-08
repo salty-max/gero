@@ -241,6 +241,7 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_TOP_LEVEL_STATEMENT` | An executable statement sits at module scope. A module body is declarations only (§7.1) — execution begins at `main`, so the statement would never run. |
 | `E_TYPE_RETURN_FROM_VOID` | `return <value>` in a function with no `-> T` in its signature. An unannotated `def` is a void return (§4.6), so the value has nowhere to go and no caller can read it. |
 | `E_TYPE_TERNARY_BOOL` | A bare `a and b or c` whose branches are `bool` (§4.2.3). The shape reads both as the conditional expression and as the boolean chain `(a and b) or c`, and they disagree when `a` holds and `b` does not — parenthesize the chain, or write `if a b else c end`. |
+| `E_TYPE_MATCH_ARM_MISMATCH` | The arms of a value `match` produce different types (§4.8.4). All arms share one type, so an arm ending in a statement (type `nil`) mismatches an arm ending in an expression. |
 | `E_TYPE_IF_EXPR_NO_ELSE` | An `if` used as a value has no `else` (§4.4.2). Every branch must produce the value, and a chain that falls through has none — add an `else`, or use `if` as a statement. |
 | `E_TYPE_IF_EXPR_BRANCH_MISMATCH` | The branches of a value `if` produce different types (§4.4.2). All branches share one type, so a branch ending in a statement (type `nil`) mismatches a branch ending in an expression. |
 | `E_TYPE_AMBIGUOUS_IMPORT` | Two of a module's imports provide the same name, so an unqualified reference can't say which is meant. Alias one with `use <name> as <other> from "..."`. |
@@ -788,6 +789,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_TOP_LEVEL_STATEMENT` | Typechecker | v0.3 |
 | `E_TYPE_RETURN_FROM_VOID` | Typechecker | v0.3 |
 | `E_TYPE_TERNARY_BOOL` | Typechecker | v0.3 |
+| `E_TYPE_MATCH_ARM_MISMATCH` | Typechecker | v0.3 |
 | `E_TYPE_IF_EXPR_NO_ELSE` | Typechecker | v0.3 |
 | `E_TYPE_IF_EXPR_BRANCH_MISMATCH` | Typechecker | v0.3 |
 | `E_TYPE_AMBIGUOUS_IMPORT` | Typechecker | v0.3 |
