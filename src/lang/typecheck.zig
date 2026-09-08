@@ -760,11 +760,66 @@ pub const Checker = struct {
         return switch (body[body.len - 1]) {
             .expr_stmt => |es| try self.inferExpr(es.expr, hint),
             .block => |b| try self.doBlockType(b.body, hint),
+            // A trailing `if` chain is the value-producing tail, the
+            // same way a trailing `do … end` is (§4.4.2).
+            .if_stmt => |is_| try self.ifExprType(
+                .{ .arms = is_.arms, .else_body = is_.else_body, .span = is_.span },
+                hint,
+            ),
             else => blk: {
                 try self.walkStatement(body[body.len - 1]);
                 break :blk try self.primitive(.nil_);
             },
         };
+    }
+
+    /// Type an `if` chain used as a value (§4.4.2). Every branch must
+    /// yield the same type, and an `else` is required — without one a
+    /// failing chain has no value to produce.
+    fn ifExprType(self: *Checker, ie: ast.IfExpr, hint: ?*const types.Type) WalkError!?*const types.Type {
+        try self.checkIfChain(ie.arms, ie.else_body);
+
+        const else_body = ie.else_body orelse {
+            try self.emitSpan(
+                "E_TYPE_IF_EXPR_NO_ELSE",
+                ie.span,
+                "`if` used as a value needs an `else` — every branch must produce one",
+            );
+            return null;
+        };
+
+        // The first branch that types successfully sets the shape the
+        // rest must match; `hint` still flows into each so a literal
+        // can take the target's width. A branch ending in a statement
+        // types as `nil` and so fails the same unification.
+        var result: ?*const types.Type = null;
+        for (ie.arms) |arm| {
+            const t = try self.doBlockType(arm.body, hint);
+            result = try self.unifyBranch(result, t, arm.span);
+        }
+        const else_ty = try self.doBlockType(else_body, hint);
+        return try self.unifyBranch(result, else_ty, ie.span);
+    }
+
+    /// Fold one branch's type into the chain's, reporting the first
+    /// disagreement against the shape already established.
+    fn unifyBranch(
+        self: *Checker,
+        acc: ?*const types.Type,
+        branch: ?*const types.Type,
+        span: ast.Span,
+    ) WalkError!?*const types.Type {
+        const b = branch orelse return acc;
+        const a = acc orelse return b;
+        if (relations.assignable(b.*, a.*)) return a;
+        if (relations.assignable(a.*, b.*)) return b;
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "`if` branches produce different types: `{s}` and `{s}`",
+            .{ try types.render(self.arena, a.*), try types.render(self.arena, b.*) },
+        );
+        try self.emitSpan("E_TYPE_IF_EXPR_BRANCH_MISMATCH", span, msg);
+        return a;
     }
 
     /// Walk a flat statement list and absorb the "fall-through gain"
@@ -2007,10 +2062,7 @@ pub const Checker = struct {
                 return null;
             },
             .do_expr => |d| return try self.doBlockType(d.body, hint),
-            .if_expr => |ie| {
-                try self.checkIfChain(ie.arms, ie.else_body);
-                return null;
-            },
+            .if_expr => |ie| return try self.ifExprType(ie, hint),
             .lambda => |l| {
                 const saved = self.current_scope;
                 var lambda_scope: Scope = .init(self.arena, saved);

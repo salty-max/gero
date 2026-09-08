@@ -240,6 +240,8 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_REFUTABLE_LET` | A `let` binding uses a refutable pattern (a literal / range / or-pattern, or a multi-variant enum) that can fail to match — use `if let` / `match` instead (§4.2). |
 | `E_TYPE_TOP_LEVEL_STATEMENT` | An executable statement sits at module scope. A module body is declarations only (§7.1) — execution begins at `main`, so the statement would never run. |
 | `E_TYPE_RETURN_FROM_VOID` | `return <value>` in a function with no `-> T` in its signature. An unannotated `def` is a void return (§4.6), so the value has nowhere to go and no caller can read it. |
+| `E_TYPE_IF_EXPR_NO_ELSE` | An `if` used as a value has no `else` (§4.4.2). Every branch must produce the value, and a chain that falls through has none — add an `else`, or use `if` as a statement. |
+| `E_TYPE_IF_EXPR_BRANCH_MISMATCH` | The branches of a value `if` produce different types (§4.4.2). All branches share one type, so a branch ending in a statement (type `nil`) mismatches a branch ending in an expression. |
 | `E_TYPE_AMBIGUOUS_IMPORT` | Two of a module's imports provide the same name, so an unqualified reference can't say which is meant. Alias one with `use <name> as <other> from "..."`. |
 | `E_TYPE_PRIVATE_ACCESS` | Referencing a declaration another module marked `local` (§5.1). It exists but stays private to its own module — drop `local` there to export it. |
 | `E_TYPE_TUPLE_TOO_MANY` | A tuple has more than 4 elements (§3.4) — use a struct instead. |
@@ -784,6 +786,8 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_MISMATCH` | Typechecker | v0.3 |
 | `E_TYPE_TOP_LEVEL_STATEMENT` | Typechecker | v0.3 |
 | `E_TYPE_RETURN_FROM_VOID` | Typechecker | v0.3 |
+| `E_TYPE_IF_EXPR_NO_ELSE` | Typechecker | v0.3 |
+| `E_TYPE_IF_EXPR_BRANCH_MISMATCH` | Typechecker | v0.3 |
 | `E_TYPE_AMBIGUOUS_IMPORT` | Typechecker | v0.3 |
 | `E_TYPE_PRIVATE_ACCESS` | Typechecker | v0.3 |
 | `E_TYPE_UNDEFINED` | Typechecker | v0.3 |

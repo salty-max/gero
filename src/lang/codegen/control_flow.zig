@@ -187,8 +187,8 @@ fn emitIsClassBindingTest(
 
 /// Emit the test for one if-arm and return the offset of the
 /// "skip body" jump patch — the caller resolves it to the byte
-/// right after the body.
-fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
+/// right after the body. Shared with the value form (`if_expr`).
+pub fn emitIfArmTest(self: *Emitter, arm: ast.IfArm) !usize {
     if (arm.cond) |c| {
         if (c.* == .is_test) if (c.is_test.classBinding()) |probe| {
             return try emitIsClassBindingTest(self, c, probe);

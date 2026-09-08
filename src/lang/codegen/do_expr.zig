@@ -11,6 +11,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const codegen = @import("../codegen.zig");
 const control_flow = @import("control_flow.zig");
+const if_expr = @import("if_expr.zig");
 const isa = @import("isa.zig");
 const opcodes = @import("opcodes.zig");
 
@@ -23,24 +24,36 @@ const Reg = opcodes.Reg;
 /// name→slot map snapshot to restore at `emitSuffix` (so the block's
 /// `let`s — incl. ones shadowing an enclosing binding — are scoped out).
 pub const Prefix = struct {
-    tail: ?*const ast.Expr,
+    tail: Tail,
     scopes: u8,
     saved_locals: std.StringHashMapUnmanaged(i8),
 };
 
-fn emitBodyPrefix(self: *Emitter, body: []const ast.Statement, scopes: *u8) error{OutOfMemory}!?*const ast.Expr {
+/// What a value block ends in: an expression, an `if` chain that is
+/// itself value-producing (§4.4.2), or a statement (no value).
+pub const Tail = union(enum) {
+    expr: *const ast.Expr,
+    if_chain: ast.IfExpr,
+    none,
+};
+
+fn emitBodyPrefix(self: *Emitter, body: []const ast.Statement, scopes: *u8) error{OutOfMemory}!Tail {
     try control_flow.pushBlock(self);
     scopes.* += 1;
-    if (body.len == 0) return null;
+    if (body.len == 0) return .none;
     for (body[0 .. body.len - 1]) |s| try self.emitStatement(s);
     return switch (body[body.len - 1]) {
-        .expr_stmt => |es| es.expr,
+        .expr_stmt => |es| .{ .expr = es.expr },
         // A trailing `do … end` parses as a block statement; it is the
         // value-producing tail, so descend (opening its own scope).
         .block => |b| try emitBodyPrefix(self, b.body, scopes),
+        // A trailing `if` chain is a value tail by the same rule.
+        .if_stmt => |is_| .{
+            .if_chain = .{ .arms = is_.arms, .else_body = is_.else_body, .span = is_.span },
+        },
         else => blk: {
             try self.emitStatement(body[body.len - 1]);
-            break :blk null;
+            break :blk .none;
         },
     };
 }
@@ -49,9 +62,15 @@ fn emitBodyPrefix(self: *Emitter, body: []const ast.Statement, scopes: *u8) erro
 /// Pair with `emitSuffix(p.scopes)`; between them the caller emits /
 /// materializes `p.tail` (still inside the innermost scope).
 pub fn emitPrefix(self: *Emitter, de: ast.DoExpr) error{OutOfMemory}!Prefix {
+    return emitBodyPrefixScoped(self, de.body);
+}
+
+/// `emitPrefix` over a bare statement list — an `if` branch in value
+/// position is scoped and tailed exactly like a do-block body.
+pub fn emitBodyPrefixScoped(self: *Emitter, body: []const ast.Statement) error{OutOfMemory}!Prefix {
     const saved_locals = try self.locals.clone(self.arena);
     var scopes: u8 = 0;
-    const tail = try emitBodyPrefix(self, de.body, &scopes);
+    const tail = try emitBodyPrefix(self, body, &scopes);
     return .{ .tail = tail, .scopes = scopes, .saved_locals = saved_locals };
 }
 
@@ -69,11 +88,16 @@ pub fn emitSuffix(self: *Emitter, prefix: Prefix) error{OutOfMemory}!void {
 /// value-aggregate path (`value_struct`), which intercepts `do_expr`
 /// sources and recurses through `emitPrefix` / `emitSuffix`.
 pub fn emitScalar(self: *Emitter, de: ast.DoExpr) error{OutOfMemory}!void {
-    const p = try emitPrefix(self, de);
-    if (p.tail) |t| {
-        try self.emitExpr(t);
-    } else {
-        try isa.movImmToReg(self, 0, Reg.acu);
+    return emitBodyValue(self, de.body);
+}
+
+/// Run a statement list for its tail value, leaving it in `acu`.
+pub fn emitBodyValue(self: *Emitter, body: []const ast.Statement) error{OutOfMemory}!void {
+    const p = try emitBodyPrefixScoped(self, body);
+    switch (p.tail) {
+        .expr => |t| try self.emitExpr(t),
+        .if_chain => |ie| try if_expr.emitScalar(self, ie),
+        .none => try isa.movImmToReg(self, 0, Reg.acu),
     }
     try emitSuffix(self, p);
 }
