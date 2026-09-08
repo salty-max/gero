@@ -77,8 +77,9 @@ syntax-only).
 
 Both languages are covered end to end: a tree-sitter grammar each for
 the editors that consume one, a TextMate grammar in the VS Code
-extension for those that don't, and diagnostics + formatting from the
-language server (§2.6).
+extension for those that don't, a prebuilt `.wasm` of each grammar for
+browsers (§2.6), and diagnostics + formatting from the language server
+(§2.7).
 
 ### 2.1 VS Code
 
@@ -279,7 +280,35 @@ grammar — drop it into Sublime Text's
 `Packages/User/` or any TextMate-derived editor's bundle
 directory.
 
-### 2.6 LSP
+### 2.6 Browser consumers (web-tree-sitter)
+
+An editor running in a browser cannot compile a grammar — `web-tree-sitter`
+loads a prebuilt one. Both grammars build that artifact in CI on tag and
+attach it to the release:
+
+| Language | Artifact | From |
+|---|---|---|
+| `.gas` | `tree-sitter-gero_asm.wasm` | `tree-sitter-gero-asm` v0.3.1+ |
+| `.gr` | `tree-sitter-gero_lang.wasm` | `tree-sitter-gero-lang` v0.1.1+ |
+
+```
+https://github.com/salty-max/tree-sitter-gero-asm/releases/download/<tag>/tree-sitter-gero_asm.wasm
+https://github.com/salty-max/tree-sitter-gero-lang/releases/download/<tag>/tree-sitter-gero_lang.wasm
+```
+
+```js
+await Parser.init();
+const lang = await Language.load("tree-sitter-gero_lang.wasm");
+const parser = new Parser();
+parser.setLanguage(lang);
+```
+
+Each release job smoke-tests the artifact — loads it and parses a
+trivial program — before attaching it, so a tag never ships a `.wasm`
+that cannot be loaded. gero-lab consumes these; see
+[`gero-lab.md`](gero-lab.md) §4.3.
+
+### 2.7 LSP
 
 `gero lsp` offers in-editor diagnostics (the same ones `gero
 check` reports) and format-on-save (the same output `gero fmt`
