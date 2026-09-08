@@ -65,8 +65,21 @@ continuation (`a +\n  b`) is **not** a line-continuation rule.
 
 The one exception lives outside the bracket families: a `.` at the
 start of the next line continues the postfix chain on the previous
-expression (§4.6.3). That's the only newline-significant carve-out
-in the otherwise strict newline-terminated grammar.
+expression (§4.6.3).
+
+A statement also ends against the keyword that closes the block it
+sits in — `end`, `else`, `elif`, `until`, `case` — so a short block
+fits on one line, as in Lua:
+
+```
+if hp <= 0 print "dead" end
+while queue.len() > 0 step() end
+let add5 = lambda (x: i16) -> i16  return x + 5  end
+```
+
+Only a block-closing keyword ends a statement this way. Two plain
+statements still need a newline between them: `print 1 print 2` is
+an error, not two statements.
 
 ### 2.2 Comments
 
@@ -1486,7 +1499,8 @@ end
 ```
 
 No parentheses around conditions, no `then` keyword. The condition
-expression ends at the newline; the body starts on the next line.
+expression ends where the body begins — at a newline, or on the same
+line for a one-line block (§2.1).
 
 #### 4.4.1 `if let`
 
@@ -1532,7 +1546,8 @@ end
 ```
 
 No `do` keyword after the head — the condition / range expression
-ends at the newline, body starts on the next line.
+ends where the body begins, at a newline or on the same line for a
+one-line block (§2.1).
 
 `break` and `continue` work in any loop.
 
@@ -1900,9 +1915,7 @@ let square = lambda (x: i16) -> i16
   return x * x
 end
 
-let add5 = lambda (x: i16) -> i16
-  return x + 5
-end
+let add5 = lambda (x: i16) -> i16  return x + 5  end
 ```
 
 Lambdas are first-class function values (same as named `def`s) —

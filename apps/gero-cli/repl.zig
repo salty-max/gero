@@ -501,7 +501,7 @@ fn fixupNewlines(sa: std.mem.Allocator, input: []const u8) ![]const u8 {
 }
 
 fn isMissingNewlineMsg(msg: []const u8) bool {
-    return std.mem.indexOf(u8, msg, "expected newline") != null;
+    return std.mem.eql(u8, msg, gero.lang.missing_boundary_message);
 }
 
 // ---------- diagnostic glue ----------
