@@ -673,6 +673,14 @@ pub fn build(b: *std.Build) void {
     );
     check_doc_asm_step.dependOn(&check_doc_asm_cmd.step);
 
+    const check_doc_gr_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-doc-gr.sh" });
+    check_doc_gr_cmd.step.dependOn(b.getInstallStep());
+    const check_doc_gr_step = b.step(
+        "check-doc-gr",
+        "Parse every ```gero block in docs/gero-lang.md (fails on any that can't)",
+    );
+    check_doc_gr_step.dependOn(&check_doc_gr_cmd.step);
+
     const check_broken_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-broken.sh" });
     check_broken_cmd.step.dependOn(b.getInstallStep());
     const check_broken_step = b.step(
@@ -712,6 +720,7 @@ pub fn build(b: *std.Build) void {
     verify_step.dependOn(wasm_examples_step);
     verify_step.dependOn(&check_examples_cmd.step);
     verify_step.dependOn(&check_doc_asm_cmd.step);
+    verify_step.dependOn(&check_doc_gr_cmd.step);
     verify_step.dependOn(&check_broken_cmd.step);
     verify_step.dependOn(&fmt_check_examples_cmd.step);
     verify_step.dependOn(&check_examples_gr_cmd.step);
