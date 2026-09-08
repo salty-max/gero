@@ -1676,3 +1676,43 @@ test "requireStatementBoundary: two plain statements still need a newline" {
         tree.errors[0].message,
     );
 }
+
+// ---------- calls attach to their callee (§4.6.1) ----------
+
+test "parseExpression: `(` must touch the callee to open an argument list" {
+    var tree = try parseClean("let x = foo(1)");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .call);
+}
+
+test "parseExpression: a detached `(` is not a call" {
+    var tree = try parseSource("def main()\n  foo (1)\nend\n");
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+}
+
+test "parseExpression: `[` must touch what it indexes" {
+    var tree = try parseClean("let x = grid[0]");
+    defer tree.deinit();
+    const init = tree.program.statements[0].let_decl.init.?;
+    try std.testing.expect(init.* == .index);
+}
+
+test "parseExpression: keyword parens may be spaced" {
+    const sources = [_][]const u8{
+        "def pair() -> (i16, i16)\n  return (1, 2)\nend\n",
+        "def main()\n  let (a, b) = pair()\nend\n",
+        "struct Pt\n  x: i16\nend\n\ndef main()\n  print sizeof(Pt)\nend\n",
+        "def main()\n  let f = lambda (x: i16) -> i16  return x  end\nend\n",
+    };
+    for (sources) |src| {
+        var tree = try parseClean(src);
+        tree.deinit();
+    }
+}
+
+test "parseExpression: a one-line block body may open with a paren" {
+    var tree = try parseClean("def main()\n  let p = if c (1, 2) else (3, 4) end\nend\n");
+    defer tree.deinit();
+}

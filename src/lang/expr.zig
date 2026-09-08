@@ -294,8 +294,18 @@ fn parseCallChain(p: *Parser) ParserError!*ast.Expr {
             p.pos += 1;
         }
         switch (p.peek().kind) {
-            .lparen => e = try parseCallArgs(p, e),
-            .lbracket => e = try parseIndexAccess(p, e),
+            // §4.6 — the bracket opening an argument list or an index
+            // must touch what it applies to. `foo (x)` is `foo` then
+            // `(x)`, not a call, which is what keeps a one-line block's
+            // parenthesized body from being swallowed by its head. Same
+            // rule as `x--` (decrement) versus `x --` (comment).
+            .lparen, .lbracket => {
+                if (p.peek().start != e.span().end) break;
+                e = if (p.check(.lparen))
+                    try parseCallArgs(p, e)
+                else
+                    try parseIndexAccess(p, e);
+            },
             .dot => e = try parseFieldOrMethod(p, e),
             else => break,
         }
