@@ -1030,25 +1030,9 @@ pub fn arrayEqSupported(self: *const Emitter, elem: *const types.Type) bool {
 /// their addresses would alias whenever the two share a buffer — two
 /// array-returning calls reuse one sret scratch, so `mk(1) == mk(5)`
 /// would compare the second result with itself.
-/// Whether an operand returns its array through the call-return buffer.
-/// Two such operands in one comparison currently collide — the second
-/// call overwrites the first result before it is compared.
-pub fn arrayEqOperandsCollide(lhs: *const ast.Expr, rhs: *const ast.Expr) bool {
-    return returnsViaCallBuffer(lhs) and returnsViaCallBuffer(rhs);
-}
-
-fn returnsViaCallBuffer(e: *const ast.Expr) bool {
-    return switch (e.*) {
-        .call, .method_call => true,
-        .paren => |pe| returnsViaCallBuffer(pe.inner),
-        else => false,
-    };
-}
-
 /// Lower `a == b` / `a != b` on array operands, leaving `0`/`1` in
 /// `acu` (`negate` selects `!=`). Compares the packed elements, so the
-/// caller must have cleared `arrayEqSupported` and
-/// `arrayEqOperandsCollide` first.
+/// caller must have cleared `arrayEqSupported` first.
 pub fn emitArrayEquality(
     self: *Emitter,
     lhs: *const ast.Expr,
