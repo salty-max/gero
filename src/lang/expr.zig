@@ -48,6 +48,7 @@ pub const Prec = struct {
 /// minimum operator precedence the loop will consume — call sites
 /// pass `0` for "full expression".
 pub fn parseExpression(p: *Parser, min_prec: u8) ParserError!*ast.Expr {
+    p.skipNewlinesInBrackets();
     var lhs = try parseUnary(p);
     errdefer ast.freeExpr(p.allocator, lhs);
 
@@ -57,6 +58,7 @@ pub fn parseExpression(p: *Parser, min_prec: u8) ParserError!*ast.Expr {
     var lhs_is_bare_and = false;
 
     while (true) {
+        p.skipNewlinesInBrackets();
         const k = p.peek().kind;
 
         if (k == .dot_dot or k == .dot_dot_eq) {
@@ -237,6 +239,7 @@ fn binaryOpOf(k: Kind) ?BinaryInfo {
 }
 
 fn parseUnary(p: *Parser) ParserError!*ast.Expr {
+    p.skipNewlinesInBrackets();
     const tok = p.peek();
     switch (tok.kind) {
         .minus => {
@@ -315,6 +318,8 @@ fn parseCallChain(p: *Parser) ParserError!*ast.Expr {
 
 fn parseCallArgs(p: *Parser, callee: *ast.Expr) ParserError!*ast.Expr {
     p.pos += 1;
+    p.openBracket();
+    defer p.closeBracket();
     p.skipNewlines();
     var args: std.ArrayList(*ast.Expr) = .empty;
     errdefer {
@@ -341,7 +346,10 @@ fn parseCallArgs(p: *Parser, callee: *ast.Expr) ParserError!*ast.Expr {
 
 fn parseIndexAccess(p: *Parser, receiver: *ast.Expr) ParserError!*ast.Expr {
     p.pos += 1;
+    p.openBracket();
+    defer p.closeBracket();
     const idx = try parseExpression(p, 0);
+    p.skipNewlines();
     const rb = try p.expect(.rbracket, "]");
     return try p.allocExpr(.{ .index = .{
         .receiver = receiver,
@@ -553,6 +561,8 @@ fn parseStructLit(p: *Parser) ParserError!*ast.Expr {
     const name_tok = p.peek();
     p.pos += 1;
     _ = try p.expect(.lbrace, "{");
+    p.openBracket();
+    defer p.closeBracket();
     p.skipNewlines();
 
     var fields: std.ArrayList(ast.StructLitField) = .empty;
@@ -663,6 +673,8 @@ fn cleanupStrParts(
 fn parseParenOrTupleExpr(p: *Parser) ParserError!*ast.Expr {
     const lp = p.peek();
     p.pos += 1;
+    p.openBracket();
+    defer p.closeBracket();
     p.skipNewlines();
     const first = try parseExpression(p, 0);
     errdefer ast.freeExpr(p.allocator, first);
@@ -696,6 +708,8 @@ fn parseParenOrTupleExpr(p: *Parser) ParserError!*ast.Expr {
 fn parseListLit(p: *Parser) ParserError!*ast.Expr {
     const lb = p.peek();
     p.pos += 1;
+    p.openBracket();
+    defer p.closeBracket();
     p.skipNewlines();
     var elems: std.ArrayList(*ast.Expr) = .empty;
     errdefer {

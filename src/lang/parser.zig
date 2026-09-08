@@ -201,6 +201,7 @@ pub fn parse(
         .errors = &errors,
         .pending_annotations = &pending_annotations,
         .allocated_messages = &allocated_messages,
+        .bracket_depth = 0,
     };
 
     p.skipNewlines();
@@ -293,6 +294,13 @@ pub const Parser = struct {
     /// them. String literals don't land here.
     allocated_messages: *std.ArrayList([]const u8),
 
+    /// How many bracket groups the expression parser currently has
+    /// open. Newlines inside a group are insignificant (§2.1), so an
+    /// expression may wrap across lines; `parseStatement` zeroes this
+    /// for a block body nested inside one, where statements still
+    /// terminate at a newline as usual.
+    bracket_depth: u32,
+
     /// Current token. Always defined — the lexer guarantees a
     /// trailing `.eof` token.
     pub fn peek(self: *const Parser) lexer.Token {
@@ -329,6 +337,23 @@ pub const Parser = struct {
     /// boundaries.
     pub fn skipNewlines(self: *Parser) void {
         while (self.check(.newline)) self.pos += 1;
+    }
+
+    /// Skip newlines that fall inside an open bracket group (§2.1).
+    /// A no-op at depth zero, where a newline ends the statement.
+    pub fn skipNewlinesInBrackets(self: *Parser) void {
+        if (self.bracket_depth > 0) self.skipNewlines();
+    }
+
+    /// Enter a bracket group opened by the expression parser.
+    pub fn openBracket(self: *Parser) void {
+        self.bracket_depth += 1;
+    }
+
+    /// Leave one. Saturating, so a malformed program that recovers
+    /// past a closing bracket cannot underflow.
+    pub fn closeBracket(self: *Parser) void {
+        if (self.bracket_depth > 0) self.bracket_depth -= 1;
     }
 
     /// Keywords that close the enclosing block. A statement may end
@@ -567,6 +592,13 @@ pub fn parseStatement(
     p: *Parser,
     statements: *std.ArrayList(ast.Statement),
 ) ParserError!void {
+    // A statement always begins outside any bracket group, even when
+    // the block holding it sits inside one — `(do … end)` still needs
+    // its statements on separate lines.
+    const enclosing_depth = p.bracket_depth;
+    p.bracket_depth = 0;
+    defer p.bracket_depth = enclosing_depth;
+
     switch (p.peek().kind) {
         .annotation => {
             const tok = p.peek();

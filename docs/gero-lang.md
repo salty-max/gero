@@ -63,9 +63,15 @@ let total = (
 
 Inside any open `( … )`, `[ … ]`, or `{ … }` group, newlines are
 ignored — so multi-line argument lists, array / struct / tuple
-literals, and parameter declarations wrap naturally. Outside those
-groups, a newline ends the current statement; trailing-operator
-continuation (`a +\n  b`) is **not** a line-continuation rule.
+literals, parameter declarations, and long expressions wrap
+naturally, whether the line breaks before or after an operator.
+Outside those groups, a newline ends the current statement;
+trailing-operator continuation (`a +\n  b`) is **not** a
+line-continuation rule, which is why the parentheses above are
+needed.
+
+A block nested inside a group keeps its own statement boundaries —
+the statements in `(do … end)` still go on separate lines.
 
 The one exception lives outside the bracket families: a `.` at the
 start of the next line continues the postfix chain on the previous
