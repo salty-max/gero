@@ -172,13 +172,40 @@ fn entryPath(fused: gero.lang.FusedSource) []const u8 {
     return "";
 }
 
-/// The debug tables from a `.gx`, as JSON: the symbols that drive a
-/// disassembly's label column, and the line rows that drive
-/// source-level stepping and click-to-breakpoint (§6).
+/// Disassemble a `.gx` into annotated assembly: an address gutter, an
+/// entry marker, and symbol names in place of raw addresses.
 ///
-/// Separate from the build result rather than a sixth `Result` field:
-/// the tables live in the image the build already returned, a host
-/// wants them once per build rather than on every operation, and a
+/// `bank` selects a bank window, or `abi.no_bank` for the base image.
+/// The annotations are what make the text addressable — a debugger
+/// maps a click to a breakpoint through the gutter, and a plain
+/// instruction listing gives it nothing to map.
+pub fn disassemble(image: []const u8, bank: u32) *const Result {
+    const arena = session.allocator();
+    const header = gero.disasm.parseHeader(image) catch return session.fail(.bad_argument);
+
+    const base_image = bank == abi.no_bank;
+    const region = if (base_image) header.image else blk: {
+        if (bank >= header.bank_count) return session.fail(.bad_argument);
+        const window = gero.gx.bank_disk_size;
+        // @as: widen the host's bank index for the offset math.
+        const start = @as(usize, bank) * window;
+        break :blk header.banks[start .. start + window];
+    };
+
+    // A malformed debug section costs the symbol column, not the
+    // disassembly — a release image carries none either, and both
+    // still render.
+    const symbols = gero.disasm.parseSymbols(arena, header.debug) catch null;
+
+    var out = std.Io.Writer.Allocating.init(arena);
+    gero.disasm.writeBytesPretty(arena, &out.writer, region, .{
+        .base_addr = if (base_image) 0x0000 else abi.bank_window_base,
+        .entry_addr = if (base_image) header.entry_point else null,
+        .symbols = symbols,
+    }) catch return session.fail(.out_of_memory);
+    return session.finish(out.written(), null, 0);
+}
+
 /// Encode gero-lang diagnostics as the JSON array a host renders in
 /// its gutter.
 ///
@@ -349,4 +376,46 @@ test "check: a clean program reports nothing and returns no image" {
     const r = buildGr("main.gr", .diagnostics_only);
     try testing.expectEqual(@intFromEnum(Status.ok), r.status);
     try testing.expectEqual(@as(u32, 0), r.payload_len);
+}
+
+test "disassemble: the base image renders with an address gutter, symbols and the entry marker" {
+    session.init(0);
+    try session.putFile("main.gas", "start:\n  mov $0041, r1\n  int $10\n  jmp start\n");
+    const built = buildGas("main.gas", .image);
+    try testing.expectEqual(@intFromEnum(Status.ok), built.status);
+
+    // The image has to survive `session.begin()`'s scratch reset, the
+    // same way a host's does — it holds the bytes, not the module.
+    const image = try testing.allocator.dupe(u8, session.payloadOf(built));
+    defer testing.allocator.free(image);
+
+    session.init(0);
+    const r = disassemble(image, abi.no_bank);
+    try testing.expectEqual(@intFromEnum(Status.ok), r.status);
+    const text = session.payloadOf(r);
+
+    // The gutter is what makes a line addressable: a debugger maps a
+    // click to a breakpoint through it. The first instruction sits at
+    // the image's own base, which is also where the entry marker goes.
+    try testing.expect(std.mem.startsWith(u8, text, "0000:"));
+    try testing.expect(std.mem.indexOf(u8, text, "; entry point") != null);
+    // A branch renders as its label rather than as `&XXXX`, which is
+    // the whole point of feeding the symbol table in.
+    try testing.expect(std.mem.indexOf(u8, text, "jmp   start") != null);
+}
+
+test "disassemble: bank 0 is a window, not a request for the base image" {
+    session.init(0);
+    try session.putFile("main.gas", "start:\n  hlt\n");
+    const built = buildGas("main.gas", .image);
+    const image = try testing.allocator.dupe(u8, session.payloadOf(built));
+    defer testing.allocator.free(image);
+
+    session.init(0);
+    // A cart with no banks has no window 0, so `no_bank` is the only
+    // way to ask for the base image.
+    try testing.expectEqual(
+        @intFromEnum(Status.bad_argument),
+        disassemble(image, 0).status,
+    );
 }

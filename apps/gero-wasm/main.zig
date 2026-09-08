@@ -159,27 +159,13 @@ export fn gero_format(src_ptr: u32, src_len: u32, lang: u32) *const Result {
 }
 
 /// Disassemble a `.gx` into annotated assembly. `bank` selects a bank
-/// window, or `no_bank` for the base image.
+/// window, or `abi.no_bank` for the base image.
 export fn gero_disasm(gx_ptr: u32, gx_len: u32, bank: u32) *const Result {
     if (session.begin()) |status| return session.fail(status);
     const image = session.slice(gx_ptr, gx_len) orelse return session.fail(.bad_argument);
-    const arena = session.allocator();
-
-    const header = gero.disasm.parseHeader(image) catch return session.fail(.bad_argument);
-    const region = if (bank == no_bank) header.image else blk: {
-        if (bank >= header.bank_count) return session.fail(.bad_argument);
-        const window = gero.gx.bank_disk_size;
-        const start = @as(usize, bank) * window;
-        break :blk header.banks[start .. start + window];
-    };
-
-    var out = std.Io.Writer.Allocating.init(arena);
-    gero.disasm.writeBytes(arena, &out.writer, region) catch return session.fail(.out_of_memory);
-    return session.finish(out.written(), null, 0);
+    return toolchain.disassemble(image, bank);
 }
 
-/// `bank` value selecting the base image rather than a bank window.
-pub const no_bank: u32 = 0xFFFF_FFFF;
 /// The debug tables from a `.gx`, as JSON: the symbols that drive a
 /// disassembly's label column, and the line rows that drive
 /// source-level stepping and click-to-breakpoint (§6).
