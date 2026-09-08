@@ -18,6 +18,7 @@ const isa = @import("isa.zig");
 const class = @import("class.zig");
 const strings = @import("strings.zig");
 const overflow = @import("overflow.zig");
+const destructure = @import("destructure.zig");
 const do_expr = @import("do_expr.zig");
 
 const Emitter = codegen.Emitter;
@@ -129,6 +130,44 @@ fn emitIfChainIntoDest(
     for (end_patches.items) |patch| try isa.patchJumpTo(self, patch, end_offset);
 }
 
+/// Lower a value `match` (§4.8.4) whose arms each materialize an
+/// aggregate into `dest`. Mirrors `emitIfChainIntoDest` over the arm
+/// table; the checker's exhaustiveness rule makes the chain total.
+fn emitMatchChainIntoDest(
+    self: *Emitter,
+    me: ast.MatchExpr,
+    dest: Dest,
+    ctx: anytype,
+    comptime materialize: fn (*Emitter, *const ast.Expr, @TypeOf(ctx), Dest) error{OutOfMemory}!void,
+) error{OutOfMemory}!void {
+    const scrut_ty = self.typeOf(me.scrutinee);
+    const slot = try destructure.materializeScrutinee(self, me.scrutinee, scrut_ty);
+
+    var end_patches: std.ArrayList(usize) = .empty;
+    defer end_patches.deinit(self.allocator);
+
+    for (me.arms) |arm| {
+        var skip_patches: std.ArrayList(usize) = .empty;
+        defer skip_patches.deinit(self.allocator);
+
+        try destructure.emitMatchPattern(self, arm.pattern, slot, scrut_ty, &skip_patches);
+        if (arm.guard) |g| {
+            try self.emitExpr(g);
+            try isa.cmpRegImm(self, Reg.acu, 0);
+            try skip_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jeq_addr));
+        }
+
+        try emitBranchIntoDest(self, arm.body, arm.span, dest, ctx, materialize);
+        try end_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
+
+        const after_arm = try self.currentOffset();
+        for (skip_patches.items) |p| try isa.patchJumpTo(self, p, after_arm);
+    }
+
+    const end_offset = try self.currentOffset();
+    for (end_patches.items) |patch| try isa.patchJumpTo(self, patch, end_offset);
+}
+
 /// One branch of `emitIfChainIntoDest`: scope the body, materialize its
 /// tail into `dest`, then close the scope. `span` covers the whole
 /// chain, so a branch with no value reports against a real location
@@ -145,6 +184,7 @@ fn emitBranchIntoDest(
     switch (p.tail) {
         .expr => |tail| try materialize(self, tail, ctx, dest),
         .if_chain => |nested| try emitIfChainIntoDest(self, nested, dest, ctx, materialize),
+        .match_chain => |nested| try emitMatchChainIntoDest(self, nested, dest, ctx, materialize),
         .none => try self.unsupported(span, "this branch of a value `if` must end in an expression"),
     }
     try do_expr.emitSuffix(self, p);
@@ -166,6 +206,7 @@ fn arrayTail(self: *Emitter, src: *const ast.Expr, shape: ArrayShape, dest: Dest
 
 fn emitIntoDest(self: *Emitter, src: *const ast.Expr, sname: []const u8, dest: Dest) error{OutOfMemory}!void {
     if (src.* == .if_expr) return try emitIfChainIntoDest(self, src.if_expr, dest, sname, structTail);
+    if (src.* == .match_expr) return try emitMatchChainIntoDest(self, src.match_expr, dest, sname, structTail);
     // A `do … end` value block: run its scoped prefix, then materialize
     // its tail expression into `dest`.
     if (src.* == .do_expr) {
@@ -227,6 +268,7 @@ pub fn emitArrayIntoSret(self: *Emitter, src: *const ast.Expr, elem: *const type
 
 fn emitTupleIntoDest(self: *Emitter, src: *const ast.Expr, elems: []const *const types.Type, dest: Dest) error{OutOfMemory}!void {
     if (src.* == .if_expr) return try emitIfChainIntoDest(self, src.if_expr, dest, elems, tupleTail);
+    if (src.* == .match_expr) return try emitMatchChainIntoDest(self, src.match_expr, dest, elems, tupleTail);
     if (src.* == .do_expr) {
         const p = try do_expr.emitPrefix(self, src.do_expr);
         switch (p.tail) {
@@ -299,6 +341,7 @@ pub fn emitArrayInto(self: *Emitter, src: *const ast.Expr, elem: *const types.Ty
 
 fn emitArrayIntoDest(self: *Emitter, src: *const ast.Expr, elem: *const types.Type, count: u32, dest: Dest) error{OutOfMemory}!void {
     if (src.* == .if_expr) return try emitIfChainIntoDest(self, src.if_expr, dest, ArrayShape{ .elem = elem, .count = count }, arrayTail);
+    if (src.* == .match_expr) return try emitMatchChainIntoDest(self, src.match_expr, dest, ArrayShape{ .elem = elem, .count = count }, arrayTail);
     if (src.* == .do_expr) {
         const p = try do_expr.emitPrefix(self, src.do_expr);
         switch (p.tail) {

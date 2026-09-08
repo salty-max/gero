@@ -522,6 +522,7 @@ fn parsePrimary(p: *Parser) ParserError!*ast.Expr {
         .kw_bake => return try parseBakeExpr(p),
         .kw_sizeof => return try parseSizeofExpr(p),
         .kw_if => return try parseIfExpr(p),
+        .kw_match => return try parseMatchExpr(p),
         .kw_lambda => return try parseLambda(p),
         // Short lambda form `|x| expr`, `|x, y| expr`, `|| expr`.
         // §4.7.1. At expression start, a leading `|` always means a
@@ -821,6 +822,16 @@ fn parseBakeExpr(p: *Parser) ParserError!*ast.Expr {
         return error.ParseFailed;
     }
     return try parseBakeDoExpr(p, bake_tok.start);
+}
+
+fn parseMatchExpr(p: *Parser) ParserError!*ast.Expr {
+    const stmt_mod = @import("stmt.zig");
+    const chain = try stmt_mod.parseMatchChain(p);
+    return try p.allocExpr(.{ .match_expr = .{
+        .scrutinee = chain.scrutinee,
+        .arms = chain.arms,
+        .span = .{ .start = chain.start, .end = chain.end },
+    } });
 }
 
 fn parseIfExpr(p: *Parser) ParserError!*ast.Expr {

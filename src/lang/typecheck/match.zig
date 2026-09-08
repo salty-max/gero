@@ -11,7 +11,26 @@ const WalkError = error{OutOfMemory};
 /// Type-check a `match` statement: infer the scrutinee type,
 /// walk every arm's pattern + guard + body, and (for enum or
 /// `bool` scrutinees) check that every value is covered.
+/// How a `match` in value position (§4.8.4) collects its arm types:
+/// each arm's tail is typed inside the scope holding that arm's pattern
+/// bindings, which a second walk from outside would not see.
+pub const ValueMode = struct {
+    hint: ?*const types.Type,
+    out: *std.ArrayList(?*const types.Type),
+};
+
+/// Check a `match` at statement position: arm patterns, guards,
+/// bodies, and exhaustiveness (§4.8.3).
 pub fn checkMatch(self: *Checker, ms: ast.MatchStmt) WalkError!void {
+    return checkMatchInner(self, ms, null);
+}
+
+/// `checkMatch` plus the per-arm value type, for the expression form.
+pub fn checkMatchValue(self: *Checker, ms: ast.MatchStmt, value: ValueMode) WalkError!void {
+    return checkMatchInner(self, ms, value);
+}
+
+fn checkMatchInner(self: *Checker, ms: ast.MatchStmt, value: ?ValueMode) WalkError!void {
     const scrut_ty = try self.inferExpr(ms.scrutinee, null);
 
     // Lookup the enum being matched. Prefer the scrutinee's inferred
@@ -44,7 +63,11 @@ pub fn checkMatch(self: *Checker, ms: ast.MatchStmt) WalkError!void {
         defer self.current_scope = saved;
         try self.registerBindingsFromType(arm.pattern, scrut_ty);
         if (arm.guard) |g| try self.requireBool(g);
-        try self.walkStatementSequence(arm.body);
+        if (value) |v| {
+            try v.out.append(self.arena, try self.doBlockType(arm.body, v.hint));
+        } else {
+            try self.walkStatementSequence(arm.body);
+        }
     }
 
     // Exhaustiveness: every variant / bool case must be covered

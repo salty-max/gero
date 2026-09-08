@@ -48,6 +48,7 @@ const cg_objfile = @import("lang/codegen/objfile.zig");
 const cg_inline_asm = @import("lang/codegen/inline_asm.zig");
 const cg_do_expr = @import("lang/codegen/do_expr.zig");
 const cg_if_expr = @import("lang/codegen/if_expr.zig");
+const cg_match_expr = @import("lang/codegen/match_expr.zig");
 const cg_expr_emit = @import("lang/codegen/expr.zig");
 const cg_control_flow = @import("lang/codegen/control_flow.zig");
 const cg_class = @import("lang/codegen/class.zig");
@@ -307,6 +308,8 @@ pub const internal = struct {
         pub const do_expr = cg_do_expr;
         /// Value-position `if` chain lowering (§4.4.2).
         pub const if_expr = cg_if_expr;
+        /// Value-position `match` lowering (§4.8.4).
+        pub const match_expr = cg_match_expr;
         /// Expression lowering.
         pub const expr_emit = cg_expr_emit;
         /// Control-flow lowering (if / while / for / match / break / continue / defer).

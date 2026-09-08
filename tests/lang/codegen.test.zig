@@ -9938,3 +9938,114 @@ test "codegen/array_eq: both operands may be calls" {
         \\end
     , "1\n0\n0\n1\n");
 }
+
+// ---------- `match` in value position (§4.8.4) ----------
+
+test "codegen/match_expr: a `match` evaluates to the arm it takes" {
+    try runAndExpect(
+        \\def classify(n: i16) -> i16
+        \\  return match n
+        \\    case 1 => 10
+        \\    case 2 => 20
+        \\    case _ => 0
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  print classify(1)
+        \\  print classify(2)
+        \\  print classify(9)
+        \\end
+    , "10\n20\n0\n");
+}
+
+test "codegen/match_expr: an arm's payload binder is in scope for its value" {
+    try runAndExpect(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(n: i16)
+        \\end
+        \\
+        \\def main()
+        \\  let item = Item.Potion(7)
+        \\  let v = match item
+        \\    case Item.Sword => 0
+        \\    case Item.Potion(n) => n * 2
+        \\  end
+        \\  print v
+        \\end
+    , "14\n");
+}
+
+test "codegen/match_expr: an arm may run statements before its value" {
+    try runAndExpect(
+        \\def main()
+        \\  let w = match 1
+        \\    case 1 =>
+        \\      let t: i16 = 3
+        \\      t * 4
+        \\    case _ => 0
+        \\  end
+        \\  print w
+        \\end
+    , "12\n");
+}
+
+test "codegen/match_expr: guards select the arm" {
+    try runAndExpect(
+        \\def main()
+        \\  let g = match 15
+        \\    case n when n > 10 => 100
+        \\    case _ => 1
+        \\  end
+        \\  print g
+        \\end
+    , "100\n");
+}
+
+test "codegen/match_expr: arms may produce an aggregate" {
+    try runAndExpect(
+        \\def main()
+        \\  let n = 1
+        \\  let p: (i16, i16) = match n
+        \\    case 1 => (1, 2)
+        \\    case _ => (3, 4)
+        \\  end
+        \\  print p.0
+        \\  print p.1
+        \\end
+    , "1\n2\n");
+}
+
+test "codegen/match_expr: a trailing `match` is a value block's tail" {
+    try runAndExpect(
+        \\def main()
+        \\  let v = do
+        \\    match 1
+        \\      case 1 => 11
+        \\      case _ => 22
+        \\    end
+        \\  end
+        \\  print v
+        \\end
+    , "11\n");
+}
+
+test "codegen/if_expr: an `if let` binder is in scope for the branch value" {
+    try runAndExpect(
+        \\enum Item
+        \\  case Sword
+        \\  case Potion(n: i16)
+        \\end
+        \\
+        \\def main()
+        \\  let item = Item.Potion(7)
+        \\  let v = if let Item.Potion(n) = item
+        \\    n * 2
+        \\  else
+        \\    0
+        \\  end
+        \\  print v
+        \\end
+    , "14\n");
+}
