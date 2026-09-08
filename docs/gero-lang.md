@@ -210,16 +210,24 @@ silent fallback. Conversions across types are always explicit (`as`,
 
 ### 3.1 Primitive types
 
-| Type | Width | Range |
-|------|-------|-------|
-| `i8`  | 1 byte | -128..127 |
-| `u8`  | 1 byte | 0..255 |
-| `i16` (alias `int`) | 2 bytes | -32768..32767 |
-| `u16` (alias `uint`) | 2 bytes | 0..65535 |
-| `bool` | 1 byte | `false`=0, `true`=1 |
-| `nil` | 0 bytes | unit type, the empty value |
+| Type | Width | Range | Detail |
+|------|-------|-------|--------|
+| `i8`  | 1 byte | -128..127 | |
+| `u8`  | 1 byte | 0..255 | |
+| `i16` (alias `int`) | 2 bytes | -32768..32767 | |
+| `u16` (alias `uint`) | 2 bytes | 0..65535 | |
+| `char` | 1 byte | 0..255 | ASCII byte; `'A'` is `$41` — §2.5.1 |
+| `fixed` | 2 bytes | ±127.99…, step 1/256 | 8.8 fixed-point — §3.3 |
+| `bool` | 1 byte | `false`=0, `true`=1 | |
+| `str` | 2 bytes | — | pointer to null-terminated bytes — §3.2 |
 
 `int` / `uint` are the defaults — `let x = 0` gives `int`.
+
+Those eight are every type an annotation may name. `nil` is the unit
+type — the type of a `def` with no `-> T` and of the `nil` literal —
+but it is internal: `let x: nil` and `-> nil` are both syntax errors.
+Compound types (`[T; N]`, tuples, `fn`, `T?`, `&T`, `Vec(T)`) are
+§3.3 onward; `class`, `struct` and `enum` declare their own.
 
 ### 3.2 String type
 
