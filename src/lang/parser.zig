@@ -331,17 +331,36 @@ pub const Parser = struct {
         while (self.check(.newline)) self.pos += 1;
     }
 
-    /// Assert the next token is a statement boundary (`.newline`
-    /// or EOF); otherwise emit a diagnostic and recover.
+    /// Keywords that close the enclosing block. A statement may end
+    /// against one of these with no newline, which is what lets a
+    /// whole block sit on one line (`if x print 1 end`).
+    const block_close = [_]lexer.Token.Kind{
+        .kw_end,
+        .kw_else,
+        .kw_elif,
+        .kw_until,
+        .kw_case,
+    };
+
+    /// Diagnostic raised when a statement runs into the next one with
+    /// no boundary between them. Named so consumers can recognize it
+    /// without matching on its prose — the REPL rewrites one-liners by
+    /// injecting newlines wherever this fires.
+    pub const missing_boundary_message =
+        "expected a newline, end-of-input, or a block-closing keyword after statement";
+
+    /// Assert the next token is a statement boundary — a `.newline`,
+    /// EOF, or a keyword closing the enclosing block; otherwise emit a
+    /// diagnostic and recover.
     pub fn requireStatementBoundary(self: *Parser) !void {
         if (self.atEnd() or self.check(.newline)) {
             self.skipNewlines();
             return;
         }
-        try self.recordError(
-            "expected newline or end-of-input after statement",
-            "E_SYNTAX_MISSING_TOKEN",
-        );
+        for (block_close) |kind| {
+            if (self.check(kind)) return;
+        }
+        try self.recordError(missing_boundary_message, "E_SYNTAX_MISSING_TOKEN");
         try self.recoverToNewline();
     }
 

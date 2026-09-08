@@ -1618,3 +1618,33 @@ test "parseAllModules: a span still resolves to the file that owns it" {
         }
     }
 }
+
+// ---------- one-line blocks (§2.1) ----------
+
+test "requireStatementBoundary: a block-closing keyword ends a statement" {
+    const sources = [_][]const u8{
+        "def main()\n  if x print 1 end\nend\n",
+        "def main()\n  if x print 1 else print 2 end\nend\n",
+        "def main()\n  if x print 1 elif y print 2 end\nend\n",
+        "def main()\n  while x tick() end\nend\n",
+        "def main()\n  for i in 0..2 print i end\nend\n",
+        "def main()\n  repeat tick() until done\nend\n",
+        "def main()\n  do print 1 end\nend\n",
+        "def main()\n  match n\n    case 1 => print 1 case _ => print 2\n  end\nend\n",
+        "def main()\n  let f = lambda (x: i16) -> i16  return x + 5  end\nend\n",
+    };
+    for (sources) |src| {
+        var tree = try parseClean(src);
+        tree.deinit();
+    }
+}
+
+test "requireStatementBoundary: two plain statements still need a newline" {
+    var tree = try parseSource("def main()\n  print 1 print 2\nend\n");
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+    try std.testing.expectEqualStrings(
+        gero.lang.missing_boundary_message,
+        tree.errors[0].message,
+    );
+}

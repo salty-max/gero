@@ -78,6 +78,9 @@ pub const ParseTree = parser_mod.ParseTree;
 /// Parse tokens into an `ast.Program`.
 pub const parse = parser_mod.parse;
 
+/// The "statement ran into the next one" diagnostic message.
+pub const missing_boundary_message = parser_mod.Parser.missing_boundary_message;
+
 /// Per-module parse: each module parses from its own tokens, sharing
 /// the buffer their offsets index into.
 pub const parseAllModules = parser_mod.parseAllModules;
