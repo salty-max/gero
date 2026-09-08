@@ -162,6 +162,40 @@ It is wired into `verify` and `ci`, and runs on pull requests.
 
 ---
 
+## Documentation gates
+
+Two gates compile the examples in the docs, because a spec example is
+what someone learning the language copies — one that no longer works
+teaches wrong syntax, silently.
+
+| Gate | Checks | Marker for a block that cannot stand alone |
+|---|---|---|
+| `zig build check-doc-asm` | every ` ```asm ` block in `docs/asm.md` assembles | first line `; fragment: <why>` |
+| `zig build check-doc-gr` | every ` ```gero ` block in `docs/gero-lang.md` parses | first line `-- fragment: <why>` |
+
+Both are wired into `verify`.
+
+**Only tagged blocks are checked.** A bare ` ``` ` fence is prose — a
+keyword list, a memory map, an API signature table — and is skipped.
+Tag a block ` ```gero ` when it is gero, which is also what gives it
+syntax highlighting.
+
+**The `.gr` gate checks syntax, not types.** Most blocks are fragments
+that reference symbols the surrounding prose defines, so type errors
+are expected and ignored. A syntax error never is.
+
+Reach for `-- fragment:` only when a block genuinely cannot parse:
+an elided body (`...`), a form the section is documenting *as* an
+error, or a desugaring written in terms the parser never sees. If a
+block fails because the language changed under it, fix the block.
+
+The `.gr` gate found three of these on the day it was added — `def` as
+a struct field, `use` and `step` as function names, all reserved since
+§2.6 — plus a range example using integer suffixes and a `match` using
+a leading-dot variant shorthand, neither of which the language has.
+
+---
+
 ## Releases (manual)
 
 Releases are cut manually. Multiple merged PRs accumulate

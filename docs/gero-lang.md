@@ -54,7 +54,7 @@ are allowed anywhere.
 To continue a long expression onto the next line, wrap it in
 parentheses:
 
-```
+```gero
 let total = (
   player.hp +
   player.mp
@@ -81,7 +81,7 @@ A statement also ends against the keyword that closes the block it
 sits in — `end`, `else`, `elif`, `until`, `case` — so a short block
 fits on one line, as in Lua:
 
-```
+```gero
 if hp <= 0 print "dead" end
 while queue.len() > 0 tick() end
 let add5 = lambda (x: i16) -> i16  return x + 5  end
@@ -93,7 +93,7 @@ an error, not two statements.
 
 ### 2.2 Comments
 
-```
+```gero
 -- single-line comment to end of line
 ```
 
@@ -129,7 +129,7 @@ literal; `(` after `$` → interpolation marker.
 
 ### 2.5 String literals
 
-```
+```gero
 let greeting = "Hello, world!"
 let path = "level/town/intro"
 ```
@@ -147,7 +147,8 @@ literal is undefined (it lives in ROM at runtime).
 
 Single-quoted single-byte literals are sugar for their ASCII value:
 
-```
+```gero
+-- fragment: elided body
 let c: u8 = 'A'              -- $41
 let nl: u8 = '\n'            -- $0A
 if s.at(0) == 'A'            -- byte compare reads naturally
@@ -225,7 +226,7 @@ silent fallback. Conversions across types are always explicit (`as`,
 `str` — immutable, null-terminated, lives in static data. Variables
 hold a 16-bit pointer.
 
-```
+```gero
 let s: str = "hello"
 ```
 
@@ -259,7 +260,7 @@ Embed expressions directly in string literals via `$(expr)` —
 Lua/Kotlin-style interpolation with optional Python-style format
 specs after `:`.
 
-```
+```gero
 let s = "hello, $(name)"
 let h = "hp = $(self.hp)/$(self.max_hp)"
 let a = "addr = $(addr:04X)"             -- 4-char hex, uppercase, zero-padded
@@ -290,7 +291,7 @@ let p = "$(percent:>3d)% complete"        -- right-aligned in 3 chars
 
 Common idioms for old-school output:
 
-```
+```gero
 "$(addr:04X)"   -- 04F2 (hex address, 4 digits, zero-padded, uppercase)
 "$(n:3d)"       -- "  42" (decimal, padded to 3 chars right-aligned)
 "$(n:03d)"      -- "042" (decimal, padded to 3 chars with zeros)
@@ -320,7 +321,7 @@ saw it); `{{` / `}}` are literal braces. The `:spec` after the index is
 the same spec language as above, parsed at runtime. The trailing args
 are positional and share a single type. Allocates the result.
 
-```
+```gero
 let line = str.format("hp={0}/{1} ({2:3d}%)", hp, max, pct)
 let hex  = str.format("addr={0:04X}", ptr)
 ```
@@ -330,7 +331,7 @@ let hex  = str.format("addr={0:04X}", ptr)
 `fixed` — 8.8 fixed-point (16-bit storage, 8 bits integer + 8 bits
 fraction). Range ±127.99…, precision 1/256.
 
-```
+```gero
 let v: fixed = 1.5    -- compiles to $0180
 let dx: fixed = 0.125 -- compiles to $0020
 ```
@@ -367,7 +368,7 @@ spans more than 128 units lives in `i16` whole units alongside a
 `fixed` (or `u8`) subpixel accumulator, and the accumulator's carry
 advances the integer part:
 
-```
+```gero
 let x: i16 = 200        -- whole units
 let sub: fixed = 0.0    -- subpixel remainder
 
@@ -403,7 +404,7 @@ the special value `nil` representing absence. It applies to
 and to **scalars** (`i8` / `u8` / `i16` / `u16` / `bool` / `char` /
 `fixed`), which `Vec.get` / `Vec.pop` return (§3.4.3).
 
-```
+```gero
 let s: str?    = nil            -- nullable string, currently absent
 let p: Player? = find_player()  -- may return nil
 let n: i16?    = 12             -- nullable scalar
@@ -431,7 +432,7 @@ payload.
 
 **Testing for nil:**
 
-```
+```gero
 if p != nil
   p.greet()           -- safe — flow analysis carries non-nil through
 end
@@ -448,7 +449,7 @@ value compiles with a runtime nil-check that faults via vector
 a nil-check** in obvious cases — uncheck-then-deref in straight-line
 code is a compile error:
 
-```
+```gero
 let p: Player? = find_player()
 p.greet()             -- compile error: dereferencing nullable without nil-check
 ```
@@ -460,7 +461,8 @@ just `nil` and explicit checks. Old-school authentic.
 **Fallible operations** that need to surface an error reason use
 **multi-return tuples** (Go-style) instead of a `Result` type:
 
-```
+```gero
+-- fragment: elided body
 def parse_int(s: str) -> (i16, str?)
   if s.len == 0
     return (0, "empty input")
@@ -485,7 +487,7 @@ success. Idiomatic in Lua, Go, and most pre-Rust runtimes.
 multi-return tuple's slots so that the success path doesn't pessimize
 into the error path. Specifically, when the source has the shape
 
-```
+```gero
 let (value, err) = produces_value_or_error()
 if err != nil
   -- bail path (return / break / continue / @noreturn call)
@@ -530,7 +532,7 @@ The cost difference matters on a 16-bit target — an array of 100
 bytes. Make this trade-off explicit at declaration so reviewers
 can see the cost in the source.
 
-```
+```gero
 -- 6-byte values, copy-on-pass, no behavior
 struct Stats
   hp: i16
@@ -561,7 +563,7 @@ delimiters consistent with the rest of the language; literal
 construction uses `{ ... }` because it's an expression form (matches
 how `Player(...)` is a class-constructor call):
 
-```
+```gero
 -- Definition
 struct Stats
   hp: i16
@@ -583,7 +585,7 @@ is comptime. When the data is intrinsically variable-length — an
 inventory that grows, an event queue, a scratch buffer — use
 `Vec(T)` instead.
 
-```
+```gero
 let inv: Vec(Item) = Vec.new()             -- empty, cap = 0
 let buf: Vec(u8)   = Vec.with_capacity(64) -- empty, cap = 64
 let xs: Vec(i16)   = Vec.from([1, 2, 3])   -- pre-filled from a fixed array
@@ -606,7 +608,7 @@ let xs: Vec(i16)   = Vec.from([1, 2, 3])   -- pre-filled from a fixed array
 
 `Vec(T)` participates in `for-in`:
 
-```
+```gero
 for item in inv
   consume(item)
 end
@@ -636,7 +638,7 @@ exist for two reasons on a 16-bit cart target:
 
 **Syntax.**
 
-```
+```gero
 def apply_damage(stats: &Stats, dmg: i16)
   stats.hp = stats.hp - dmg     -- mutates the referenced struct
 end
@@ -662,7 +664,8 @@ at is in scope. Returning `&local` from a function (where `local` is
 a stack binding) is a compile error — the compiler tracks
 stack-vs-static origin to reject the obvious cases:
 
-```
+```gero
+-- fragment: elided struct literal, and a deliberate compile error
 def bad() -> &Stats
   let s = Stats { hp: 0, mp: 0, atk: 0, defense: 0 }
   return &s          -- COMPILE ERROR: returns ref to stack-local
@@ -746,7 +749,7 @@ Type annotations are **optional everywhere** the compiler can deduce
 them. Annotate when you want precision, public-API clarity, or
 better error messages — skip when the type is obvious from context.
 
-```
+```gero
 let x = 0          -- inferred int
 let s = "hi"       -- inferred str
 let p: i16? = nil  -- explicit because nil alone has no type
@@ -785,7 +788,7 @@ When inference can't bridge a type gap — narrowing, widening, or
 crossing the integer / `fixed` boundary — use `as` to force the
 conversion:
 
-```
+```gero
 let small: u8 = (raw & $FF) as u8
 let wide:  i16 = byte_count as i16
 let pixel: u8 = palette[i] as u8
@@ -840,7 +843,7 @@ Sum types — a value is exactly one of N variants, each variant
 carrying its own optional payload. The compiler enforces
 exhaustiveness at `match` sites.
 
-```
+```gero
 enum Item
   case Sword
   case Potion(amount: i16)
@@ -850,7 +853,7 @@ end
 
 Instantiation (variant constructors are functions):
 
-```
+```gero
 let s = Item.Sword
 let p = Item.Potion(20)
 let k = Item.Key("brass", 1)
@@ -869,7 +872,7 @@ documented per program.
 
 Use `is` for variant-tag tests (binding-free):
 
-```
+```gero
 if item is Item.Sword
   equip_basic()
 end
@@ -880,7 +883,7 @@ For payload extraction, use `match` (§4.8).
 `is` also accepts a **class name** on the RHS for runtime class-
 type checks via the vtable pointer (§6):
 
-```
+```gero
 def report(a: Animal)
   if a is Dog
     print "found a Dog instance"
@@ -908,7 +911,7 @@ cond of an `if` arm, an optional `as <ident>` binds the
 receiver under the new name *inside the arm*, typed as the
 target class:
 
-```
+```gero
 def report(a: Animal)
   if a is Dog as d
     d.bark()          -- d: Dog in this arm
@@ -951,7 +954,7 @@ back to the base image with `@bank 0`. Declarations that appear
 without any `@bank` annotation (and no file-level default) land
 in the base image (bank-less area before `$C000`).
 
-```
+```gero
 @zero_page
 let cursor_pos: u16 = 0      -- fast access, e.g. updated 60×/sec
 
@@ -977,7 +980,7 @@ end
 | `@cold` | `def` | Mark the function as unlikely-called. Codegen emits all `@cold` functions of a module **after** every non-cold function, in source-declaration order. Bytecode placement is deterministic and reproducible across compiler versions. |
 | `@no_capture` | `def` | Forbid this function from defining any closure that captures-and-mutates a binding from its lexical scope. See §4.7.2 (closures auto-promote to heap when they mutate captures; `@no_capture` forces a compile error instead so cycle-critical functions can't pay that cost by accident). |
 
-```
+```gero
 @inline
 def fast_clamp(x: i16, min: i16, max: i16) -> i16
   if x < min
@@ -1033,7 +1036,7 @@ helpers where a hidden alloc is unacceptable.
 |------------|------------|--------|
 | `@noreturn` | `def` | Asserts the function never returns normally (it must `hlt`, infinite-loop, or call another `@noreturn`). The compiler treats calls as diverging — usable in `match` bail arms with otherwise non-exhaustive shape. The return type, if specified, must be `noreturn`. |
 
-```
+```gero
 @noreturn
 def panic(msg: str) -> noreturn
   print "PANIC: ", msg
@@ -1064,7 +1067,7 @@ Module-level visibility is controlled by the `local` keyword
 |------------|------------|--------|
 | `@interrupt N` | `def` | Bind this function as the handler for vector `N` (gero ISA §6.1). The compiler makes the handler transparent to the interrupted code: interrupt entry preserves only `ip`/`fp`/`flg` (ISA §6.2), so the compiler saves + restores the general-purpose registers around the body and gives the handler its own stack frame. It emits the `rti` epilogue automatically and writes the function address into `mem[$1000 + 2 * N]` at boot. The function body must take no parameters and return nothing. |
 
-```
+```gero
 @interrupt $07              -- vblank (gtx-16)
 def on_vblank()
   frame_count += 1
@@ -1083,7 +1086,7 @@ end
 | `@test` | `def` | Mark as a unit test. Excluded from release builds; collected and run by `gero test`. |
 | `@bench` | `def` | Mark as a benchmark. Excluded from release builds; collected and run by `gero bench`. The runner executes the function N times (default 1000) and reports avg cycle count + min/max. Useful on a 16-bit target where every cycle on a hot path matters. |
 
-```
+```gero
 @test
 def damage_floor_is_one()
   let weak   = Stats { hp: 1, mp: 0, atk: 1, defense: 100 }
@@ -1118,7 +1121,7 @@ visibility is **public** — no `@public` needed.
 
 Worked example:
 
-```
+```gero
 @abstract
 class Entity
   let x: i16
@@ -1182,7 +1185,7 @@ This is the canonical way to generate lookup tables (sin/cos,
 palette ramps, RNG seeds, mip levels) without hand-encoding the
 bytes, and without a separate build script that emits `.gr` files.
 
-```
+```gero
 bake def make_sin_table() -> [i16; 256]
   let t: [i16; 256] = [0; 256]
   for i in 0..256
@@ -1201,7 +1204,7 @@ equally inline its own approximation or build a simpler table such as
 
 `bake do` is the same idea inline, without a named function:
 
-```
+```gero
 const PALETTE = bake do
   let p: [u8; 16] = [0; 16]
   for i in 0..16
@@ -1247,7 +1250,7 @@ literal. It lives in ROM at runtime and cannot be mutated. Assigning
 to a `let` initialized from a `bake` result copies the bytes into a
 mutable location:
 
-```
+```gero
 -- in ROM
 const READONLY_TABLE = bake do
   make_sin_table()
@@ -1276,7 +1279,7 @@ codegen and have no meaning for compile-time evaluation.
 
 ### 4.1 Variable declaration
 
-```
+```gero
 let name = expr               -- mutable, inferred type
 let name: T = expr            -- mutable, explicit type
 const name = expr             -- immutable binding (read-only; reassignment is an error)
@@ -1301,7 +1304,7 @@ binding is the exception: its initializer is **not** written at boot —
 the pinned location (typically MMIO, §3.7.1) already holds the live
 value, and a read picks that up.
 
-```
+```gero
 const PI_FIXED = $0324       -- seeded at startup, read-only
 const player_name = read_input()  -- runtime value, read-only
 player_name = "x"             -- compile error: cannot reassign const
@@ -1315,7 +1318,7 @@ immutable cover both ends without ambiguity.
 The `let` binding accepts patterns on the left-hand side — same
 patterns as `match` (§4.8.1):
 
-```
+```gero
 let (x, y) = compute_position()
 let Player { hp, mp } = active_player()
 let Item.Potion(amount) = the_item    -- only valid if statically known to match
@@ -1326,7 +1329,7 @@ enum variant in plain `let` is a compile error if the variant isn't
 the only possibility. For fallible destructuring (you want to bail
 out if the shape doesn't match), use `match` with an early-return:
 
-```
+```gero
 match item
   case Item.Potion(n) => heal(n)
   case _              => return
@@ -1335,7 +1338,7 @@ end
 
 ### 4.2 Assignment
 
-```
+```gero
 x = expr
 x += expr   -- sugar for x = x + expr
 x -= expr
@@ -1356,7 +1359,7 @@ x--         -- statement only — sugar for x -= 1
 typically `@volatile`), assignment compiles to a real store at the
 pinned address. No special syntax needed:
 
-```
+```gero
 @addr $FE40
 @volatile
 let DISPCTL: u8 = 0
@@ -1372,7 +1375,8 @@ by dead-store optimization).
 `++` and `--` are **statements**, not expressions. They cannot be
 nested inside another expression:
 
-```
+```gero
+-- fragment: shows forms that are deliberately compile errors
 x++                    -- OK
 items.count++          -- OK (works on any int field / index)
 
@@ -1450,7 +1454,7 @@ MASK) == TARGET` reads better than relying on precedence memory.
 Use `_` as the assignment target to evaluate an expression for its
 side effects and discard the result:
 
-```
+```gero
 _ = expensive_call()           -- explicitly ignore the return
 _ = items.push(x)              -- ignore the new length
 ```
@@ -1467,7 +1471,7 @@ three-operand form rather than two value-returning operators. It is
 exactly `if cond x else y end` (§4.4.2), and desugars to it in the
 parser:
 
-```
+```gero
 let speed  = boosted and 20 or 10
 let label  = hp <= 0 and "dead" or "alive"
 ```
@@ -1476,7 +1480,7 @@ let label  = hp <= 0 and "dead" or "alive"
 complete three-part shape is a conditional. Chains nest to the right,
 so an `elif` ladder reads as one line:
 
-```
+```gero
 let tier = score > 90 and 3 or score > 50 and 2 or 1
 ```
 
@@ -1485,7 +1489,8 @@ let tier = score > 90 and 3 or score > 50 and 2 or 1
 and the two disagree whenever `a` holds and `b` does not. gero refuses
 to guess (`E_TYPE_TERNARY_BOOL`):
 
-```
+```gero
+-- fragment: shows the ambiguity this section rejects
 if ready and armed or override      -- error: which did you mean?
 if (ready and armed) or override    -- boolean chain
 if ready and armed or override_v    -- fine when the branches aren't bool
@@ -1503,7 +1508,7 @@ declared inside go out of scope at `end`.
 
 As a statement (no value used):
 
-```
+```gero
 do
   let temp = compute()
   print temp
@@ -1513,7 +1518,7 @@ end
 As an expression — the block evaluates to its **last expression**
 (or `nil` if the last item is a statement):
 
-```
+```gero
 let area = do
   let w = read_width()
   let h = read_height()
@@ -1531,7 +1536,7 @@ returns; `return` propagates to the enclosing function.
 
 ### 4.4 Conditionals
 
-```
+```gero
 if cond
   body
 end
@@ -1560,7 +1565,7 @@ line for a one-line block (§2.1).
 Pattern-match in conditional position. Bindings introduced by the
 pattern are in scope inside the truthy branch (and only there):
 
-```
+```gero
 if let Item.Potion(n) = item
   drink(n)
 end
@@ -1580,7 +1585,7 @@ An `if` chain in value position evaluates to the value of the branch
 it takes — the same rule `do … end` follows (§4.3), where a block's
 value is its last expression:
 
-```
+```gero
 let label = if hp <= 0
   "dead"
 elif hp < 20
@@ -1601,7 +1606,7 @@ Two requirements make that total:
 
 A branch is a block, so it may run statements before its value:
 
-```
+```gero
 let cost = if premium
   let base = price * 2
   base + shipping
@@ -1612,7 +1617,7 @@ end
 
 With one-line blocks (§2.1) this is gero's conditional expression:
 
-```
+```gero
 let n = if ready 1 else 0 end
 ```
 
@@ -1621,7 +1626,7 @@ branches produce nothing.
 
 ### 4.5 Loops
 
-```
+```gero
 while cond
   body
 end
@@ -1670,7 +1675,8 @@ inner type is the same as `start`'s type; `end` and `step` are
 checked to match. Runtime slot: 4 × `sizeof(T)` + 1 byte for the
 inclusive flag (padded to the next 2-byte boundary).
 
-```
+```gero
+-- fragment: bare `for` heads, shown for their range types
 const FIRST: u8 = 0
 for byte_val in FIRST..=255              -- a u8 range: the inner type is `start`'s
 for tile_id in first_tile..=tile_count
@@ -1693,7 +1699,7 @@ protocol; see §4.5.3.
 Loop while a pattern keeps matching. The bindings refresh each
 iteration:
 
-```
+```gero
 while let Event.KeyDown(k) = poll_event()
   handle_key(k)
 end
@@ -1705,7 +1711,7 @@ end
 
 Equivalent rewrite (longer) for the keydown loop:
 
-```
+```gero
 while true
   let evt = poll_event()
   if let Event.KeyDown(k) = evt
@@ -1726,7 +1732,7 @@ The compiler reads the return type to deduce the loop variable's
 type; iteration stops when `next()` returns `nil`. No declaration,
 no trait, no `iter()` indirection — Lua-style convention.
 
-```
+```gero
 class Inventory
   let items: [Item; 64]
   let count: u16
@@ -1750,7 +1756,9 @@ end                  -- terminates when inv.next() returns nil
 
 **Desugaring.** `for x in expr <body> end` compiles to:
 
-```
+-- fragment: the desugaring, in terms the parser never sees
+```gero
+-- fragment: the desugaring, in terms the parser never sees
 let __it = expr
 while true
   let __v = __it.next()
@@ -1769,7 +1777,7 @@ is at its end; a second loop produces nothing until `inv` is reset.
 To iterate the same data twice, instantiate twice or expose a
 `reset()` method on your class:
 
-```
+```gero
 for item in inv             -- first pass: iterates 0..count
   consume(item)
 end
@@ -1797,7 +1805,7 @@ custom iterator; the special-case is invisible.
 Body runs at least once; the loop exits when the trailing
 expression evaluates true:
 
-```
+```gero
 repeat
   let cmd = read_input()
   process(cmd)
@@ -1814,7 +1822,7 @@ Statement boundary follows the condition.
 
 Labels work as on `while` / `for`:
 
-```
+```gero
 repeat :outer
   for x in 0..width
     if found(x) break :outer end
@@ -1827,7 +1835,7 @@ until exhausted
 A loop may carry a `:label` after its head; `break :label` and
 `continue :label` target the labeled loop instead of the innermost:
 
-```
+```gero
 for y in 0..height :rows
   for x in 0..width
     if hit_wall(x, y)
@@ -1851,7 +1859,7 @@ newline).
 
 ### 4.6 Functions
 
-```
+```gero
 def name(arg: T, arg2: T) -> RetT
   body
   return value
@@ -1878,7 +1886,7 @@ Functions are **first-class** — they're values like any other:
 - **Return** from functions: `def make_adder(n) -> fn(i16) -> i16 …`
 - **Store** in arrays / struct fields / collections
 
-```
+```gero
 let op = add               -- function reference
 let result = op(1, 2)      -- call through variable
 
@@ -1897,7 +1905,9 @@ annotations. At runtime it's a 16-bit code address.
 The `(` opening an argument list must touch the callee, and the `[` of
 an index must touch what it indexes:
 
-```
+-- fragment: shows a form that is deliberately not a call
+```gero
+-- fragment: shows a form that is deliberately not a call
 foo(a, b)        -- a call
 foo (a, b)       -- `foo`, then a parenthesized expression
 grid[0]          -- an index
@@ -1925,7 +1935,7 @@ current stack frame instead of pushing a new one. This is **the
 only** tail-call shape optimized — full Scheme-style TCO across all
 call positions is out of scope.
 
-```
+```gero
 def count_down(n: i16)
   if n == 0
     return
@@ -1966,7 +1976,7 @@ depth is unbounded.
 
 The last parameter of a `def` may be variadic, spelled `args: ...`:
 
-```
+```gero
 def log(level: u8, fmt: str, args: ...)
   print level, " ", format(fmt, args)
 end
@@ -2011,7 +2021,7 @@ Restrictions:
 Methods on classes (and stdlib helpers spelled as methods) call with
 dot notation:
 
-```
+```gero
 hero.take_damage(10)
 inventory.push(item)
 ```
@@ -2019,7 +2029,7 @@ inventory.push(item)
 A `.` at the **start** of the next line continues the chain — useful
 for fluent-style transformations:
 
-```
+```gero
 let damaged_alive = monsters
   .filter(alive)
   .map(deal_damage)
@@ -2033,7 +2043,7 @@ of "did this newline end the statement?" ambiguity).
 
 ### 4.7 Lambdas (anonymous functions)
 
-```
+```gero
 let square = lambda (x: i16) -> i16
   return x * x
 end
@@ -2050,7 +2060,7 @@ unnamed and inline.
 For single-expression lambdas (the common case in `map`, `filter`,
 `fold`), gero-lang accepts a Rust-style short form:
 
-```
+```gero
 |x| x * 2                           -- one param, expression body
 |x, y| x + y                        -- multiple params
 || read_input()                     -- zero params
@@ -2061,7 +2071,7 @@ The body is a **single expression**, not a block — there is no
 `return` keyword, no `end` terminator. The expression's value is the
 lambda's return value.
 
-```
+```gero
 let doubled = xs.map(|x| x * 2)
 let evens   = xs.filter(|x| x % 2 == 0)
 let total   = xs.fold(0, |acc, x| acc + x)
@@ -2069,7 +2079,7 @@ let total   = xs.fold(0, |acc, x| acc + x)
 
 For multi-statement bodies, drop back to the long form:
 
-```
+```gero
 let summary = items.map(lambda (item: Item) -> str
   let n = format_count(item.count)
   let name = item.display_name()
@@ -2080,7 +2090,7 @@ end)
 Or wrap the work in a `do … end` expression so the short form still
 applies:
 
-```
+```gero
 let labels = items.map(|item| do
   let n = format_count(item.count)
   item.display_name() + " x" + n
@@ -2095,7 +2105,7 @@ All functions — `def` and `lambda` alike — close over the lexical
 scope they were defined in. Free variables in the body resolve to the
 binding in the enclosing scope at definition time, not at call time:
 
-```
+```gero
 def make_counter(start: i16) -> fn() -> i16
   let n = start
   return lambda () -> i16
@@ -2130,7 +2140,7 @@ Older lang traditions use Immediately Invoked Lambda Expressions
 uses **`do … end` as an expression** instead (§4.3) — same effect,
 half the syntax:
 
-```
+```gero
 let area = do
   let w = read_width()
   let h = read_height()
@@ -2177,7 +2187,7 @@ patterns, and compile-time exhaustiveness checking.
 
 `when` clause adds an arbitrary boolean condition:
 
-```
+```gero
 match item
   case Item.Potion(n) when n > 50 =>
     print "big potion"
@@ -2196,7 +2206,9 @@ to the next arm. The arm separator is `=>` (fat arrow), not `then`.
 For enum-typed scrutinees, the compiler **errors** if any variant is
 unhandled and there's no wildcard arm:
 
-```
+-- fragment: elided arm bodies
+```gero
+-- fragment: elided arm bodies
 match item
   case Item.Sword => ...
   case Item.Potion(_) => ...
@@ -2207,7 +2219,9 @@ end
 `bool` is treated the same way: a `bool` scrutinee must cover both
 `true` and `false`, or fall back to a wildcard.
 
-```
+-- fragment: shows a non-exhaustive match, which is an error
+```gero
+-- fragment: shows a non-exhaustive match, which is an error
 match flag
   case true => ...
   -- ERROR: missing case for `false`
@@ -2221,7 +2235,7 @@ compiler requires a wildcard arm or warns.
 
 #### 4.8.4 Worked example
 
-```
+```gero
 enum Event
   case Quit
   case KeyDown(u8)
@@ -2282,7 +2296,7 @@ shorter form reads better.
 preserves the old-school BASIC immediate-mode feel that the language
 takes its ergonomics from):
 
-```
+```gero
 print "hello"
 print x, y, z       -- comma = space-separated, newline at end
 ```
@@ -2327,7 +2341,7 @@ exits. Useful for hardware-state save / restore, IRQ-mask windows,
 and any cleanup that has to fire on **every** exit path including
 `return` / `break` / `continue`:
 
-```
+```gero
 def render_with_palette(new_pal: u8)
   let old = read_palette()
   defer set_palette(old)        -- restoration guaranteed
@@ -2349,7 +2363,7 @@ enclosing block (`do`, `if`-arm, `while` / `for` body, function
 body, `match`-arm body, `lambda` body). The deferred statement runs
 when that block exits, not when the function returns.
 
-```
+```gero
 while cond
   let frame = acquire()
   defer release(frame)      -- runs at the bottom of every iteration
@@ -2362,7 +2376,7 @@ end
 
 **Order.** Multiple defers in the same block run in **LIFO** order:
 
-```
+```gero
 defer a()
 defer b()
 defer c()
@@ -2415,7 +2429,7 @@ gero ISA for cases the compiler can't express: ISR atomic
 windows, hand-tuned hot loops, cycle-counted timing tricks, or
 direct manipulation of the VM's register / flag state.
 
-```
+```gero
 def load_acu(x: i16)
   asm "mov {x}, acu"
 end
@@ -2477,7 +2491,7 @@ reference can't say which is meant and is rejected
 (`E_TYPE_AMBIGUOUS_IMPORT`); alias one with
 `use <name> as <other> from "..."`.
 
-```
+```gero
 -- file: math.gr
 
 const PI_FIXED = $0324      -- π ≈ 3.14159 in 8.8 fixed
@@ -2496,7 +2510,7 @@ end
 
 ### 5.2 Imports
 
-```
+```gero
 use math                     -- imports the whole module as "math"
 use "./physics"              -- relative path import
 use abs from math            -- selective import (only "abs" in scope)
@@ -2538,7 +2552,7 @@ both are built-in pseudo-functions:
   `W_DEBUG_ASSERT_SIDE_EFFECT` when an arg contains a call, since
   observable effects in that arg disappear in release.
 
-```
+```gero
 assert(self.hp >= 0, "hp went negative")        -- always live
 debug_assert(items.len() < 1000)                -- debug-only
 ```
@@ -2566,7 +2580,8 @@ Four more diverging / introspection builtins are always in scope:
   sizes), and named classes (returns `2` — the instance-pointer
   width, not the heap-instance footprint).
 
-```
+-- fragment: elided arm bodies
+```gero
 match item
   case Action.Heal(n) => heal(n)
   case _              => panic("not a healing item")
@@ -2702,7 +2717,7 @@ does not survive it — roughly 700 short formatted strings exhaust the
 default heap, about twelve seconds at 60 fps. Format into a buffer you
 own instead:
 
-```
+```gero
 def draw_score(score: i16)
   let buf: [u8; 64] = [0; 64]
   let dst = mem.addr_of(buf)
@@ -2736,7 +2751,7 @@ collection form of the same mistake.
 > it costs 2 bytes less per instance and signals "pure data" at the
 > call site.
 
-```
+```gero
 class Player
   let hp: i16
   let mp: i16
@@ -2769,7 +2784,7 @@ receiver are spelled `@static` and called as `ClassName.method(...)`.
 
 Instantiation:
 
-```
+```gero
 let p = Player("Cecil")     -- calls init
 p.take_damage(20)
 print p.hp                  -- 80
@@ -2777,7 +2792,7 @@ print p.hp                  -- 80
 
 Inheritance:
 
-```
+```gero
 class Hero extends Player
   let weapon: str
 
@@ -2797,7 +2812,7 @@ field with the same name as a parent field — the subclass field
 shadows the parent's for unqualified access (`self.value`). The
 shadowed parent field remains addressable via `super.<field>`:
 
-```
+```gero
 class Parent
   let value: i16 = 10
 end
@@ -2884,7 +2899,7 @@ $FF00..$FFFF  IO page tail (RNG, timing, KV store, mouse)
 Per-module banking via `@bank N` (§3.7.1). A whole-file annotation
 sits at the top:
 
-```
+```gero
 -- file: dialogs/town.gr
 @bank 5
 
@@ -2910,7 +2925,7 @@ above) so call frames never land in switched memory.
 Per-declaration banking is also supported — useful when only some
 items in a module need to live in a specific bank:
 
-```
+```gero
 def main()
   -- always-resident
 end
@@ -2929,7 +2944,7 @@ Intra-bank calls compile to plain `call addr` with no overhead.
 
 ### 8.1 Hello, world
 
-```
+```gero
 def main()
   print "Hello, world!"
 end
@@ -2937,7 +2952,7 @@ end
 
 ### 8.2 Fibonacci
 
-```
+```gero
 def fib(n: i16) -> i16
   if n < 2
     return n
@@ -2952,7 +2967,7 @@ end
 
 ### 8.3 J-RPG main loop sketch
 
-```
+```gero
 use input
 use display
 use bank
