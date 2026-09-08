@@ -1502,6 +1502,51 @@ No parentheses around conditions, no `then` keyword. The condition
 expression ends where the body begins — at a newline, or on the same
 line for a one-line block (§2.1).
 
+#### 4.4.2 `if` as an expression
+
+An `if` chain in value position evaluates to the value of the branch
+it takes — the same rule `do … end` follows (§4.3), where a block's
+value is its last expression:
+
+```
+let label = if hp <= 0
+  "dead"
+elif hp < 20
+  "hurt"
+else
+  "ok"
+end
+```
+
+Two requirements make that total:
+
+- **An `else` is required.** Without one a chain that matches nothing
+  has no value to produce (`E_TYPE_IF_EXPR_NO_ELSE`).
+- **Every branch produces the same type**
+  (`E_TYPE_IF_EXPR_BRANCH_MISMATCH`). A branch ending in a statement
+  has type `nil`, so it mismatches a branch ending in an expression —
+  which catches a body that forgot its value.
+
+A branch is a block, so it may run statements before its value:
+
+```
+let cost = if premium
+  let base = price * 2
+  base + shipping
+else
+  price
+end
+```
+
+With one-line blocks (§2.1) this is gero's conditional expression:
+
+```
+let n = if ready 1 else 0 end
+```
+
+An `if` in statement position is unchanged — no `else` needed, and
+branches produce nothing.
+
 #### 4.4.1 `if let`
 
 Pattern-match in conditional position. Bindings introduced by the

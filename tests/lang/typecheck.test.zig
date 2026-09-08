@@ -3491,3 +3491,46 @@ test "arityRequests: every recorded variadic call site is reported" {
     }
     try std.testing.expect(saw_one and saw_three);
 }
+
+// ---------- `if` in value position (§4.4.2) ----------
+
+test "ifExprType: a value `if` without an `else` is rejected" {
+    try expectCode(
+        \\def main()
+        \\  let c = if true 1 end
+        \\  print c
+        \\end
+    , "E_TYPE_IF_EXPR_NO_ELSE");
+}
+
+test "ifExprType: branches producing different types are rejected" {
+    try expectCode(
+        \\def main()
+        \\  let c = if true 1 else "s" end
+        \\  print c
+        \\end
+    , "E_TYPE_IF_EXPR_BRANCH_MISMATCH");
+}
+
+test "ifExprType: a branch ending in a statement has no value" {
+    try expectCode(
+        \\def main()
+        \\  let c = if true
+        \\    print 1
+        \\  else
+        \\    0
+        \\  end
+        \\  print c
+        \\end
+    , "E_TYPE_IF_EXPR_BRANCH_MISMATCH");
+}
+
+test "ifExprType: an `if` statement still needs no else" {
+    try expectClean(
+        \\def main()
+        \\  if true
+        \\    print 1
+        \\  end
+        \\end
+    );
+}

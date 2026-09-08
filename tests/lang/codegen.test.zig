@@ -9556,3 +9556,141 @@ test "codegen/@interrupt: a vector above 0x7F fires its handler" {
     );
     try fx.expectRuns("main.gr", "1\n200\n2\n");
 }
+
+// ---------- `if` in value position (§4.4.2) ----------
+
+test "codegen/if_expr: an `if` chain evaluates to the taken branch" {
+    try runAndExpect(
+        \\def main()
+        \\  print if true 1 else 2 end
+        \\  print if false 1 else 2 end
+        \\end
+    , "1\n2\n");
+}
+
+test "codegen/if_expr: `elif` arms are tested in order" {
+    try runAndExpect(
+        \\def classify(n: i16) -> i16
+        \\  return if n > 10 100 elif n > 5 50 else 0 end
+        \\end
+        \\
+        \\def main()
+        \\  print classify(20)
+        \\  print classify(7)
+        \\  print classify(1)
+        \\end
+    , "100\n50\n0\n");
+}
+
+test "codegen/if_expr: a branch reserves its locals in the enclosing frame" {
+    try runAndExpect(
+        \\def main()
+        \\  let c = if true
+        \\    let t: i16 = 10
+        \\    t * 4
+        \\  else
+        \\    0
+        \\  end
+        \\  print c
+        \\end
+    , "40\n");
+}
+
+test "codegen/if_expr: the else branch reserves its locals too" {
+    try runAndExpect(
+        \\def main()
+        \\  let c = if false
+        \\    0
+        \\  else
+        \\    let t: i16 = 10
+        \\    t * 4
+        \\  end
+        \\  print c
+        \\end
+    , "40\n");
+}
+
+test "codegen/if_expr: branches may produce a string" {
+    try runAndExpect(
+        \\def main()
+        \\  let s = if true "one" else "other" end
+        \\  print s
+        \\end
+    , "one\n");
+}
+
+test "codegen/if_expr: a value `if` nests inside a branch" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 5
+        \\  let c = if x > 0
+        \\    if x > 3 30 else 3 end
+        \\  else
+        \\    0
+        \\  end
+        \\  print c
+        \\end
+    , "30\n");
+}
+
+test "codegen/if_expr: branches may produce a tuple" {
+    try runAndExpect(
+        \\def main()
+        \\  let c = true
+        \\  let p: (i16, i16) = if c
+        \\    (1, 2)
+        \\  else
+        \\    (3, 4)
+        \\  end
+        \\  print p.0
+        \\  print p.1
+        \\end
+    , "1\n2\n");
+}
+
+test "codegen/if_expr: branches may produce a struct" {
+    try runAndExpect(
+        \\struct Pt
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\
+        \\def main()
+        \\  let c = false
+        \\  let p: Pt = if c
+        \\    Pt { x: 1, y: 2 }
+        \\  else
+        \\    Pt { x: 3, y: 4 }
+        \\  end
+        \\  print p.x
+        \\  print p.y
+        \\end
+    , "3\n4\n");
+}
+
+test "codegen/if_expr: branches may produce an array" {
+    try runAndExpect(
+        \\def main()
+        \\  let c = false
+        \\  let a: [u8; 2] = if c
+        \\    [1, 2]
+        \\  else
+        \\    [7, 8]
+        \\  end
+        \\  print a[0]
+        \\  print a[1]
+        \\end
+    , "7\n8\n");
+}
+
+test "codegen/if_expr: a trailing `if` is a value block's tail" {
+    try runAndExpect(
+        \\def main()
+        \\  let x: i16 = 5
+        \\  let c = do
+        \\    if x > 3 30 else 3 end
+        \\  end
+        \\  print c
+        \\end
+    , "30\n");
+}

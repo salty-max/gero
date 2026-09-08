@@ -12,6 +12,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const codegen = @import("../codegen.zig");
+const control_flow = @import("control_flow.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const class = @import("class.zig");
@@ -100,15 +101,84 @@ pub fn emitIntoSret(self: *Emitter, src: *const ast.Expr, sname: []const u8, ptr
     try emitIntoDest(self, src, sname, .{ .indirect = .{ .ptr_ofs = ptr_ofs, .delta = 0 } });
 }
 
+/// Lower a value `if` (§4.4.2) whose branches each materialize an
+/// aggregate into `dest`. The branch skeleton is the statement form's;
+/// `materialize` is the caller's own into-dest function, applied to
+/// each branch's tail expression so struct / tuple / array destinations
+/// share one implementation.
+fn emitIfChainIntoDest(
+    self: *Emitter,
+    ie: ast.IfExpr,
+    dest: Dest,
+    ctx: anytype,
+    comptime materialize: fn (*Emitter, *const ast.Expr, @TypeOf(ctx), Dest) error{OutOfMemory}!void,
+) error{OutOfMemory}!void {
+    var end_patches: std.ArrayList(usize) = .empty;
+    defer end_patches.deinit(self.allocator);
+
+    for (ie.arms) |arm| {
+        const skip_body = try control_flow.emitIfArmTest(self, arm);
+        try emitBranchIntoDest(self, arm.body, dest, ctx, materialize);
+        try end_patches.append(self.allocator, try isa.emitJumpPlaceholder(self, Op.jmp_addr));
+        try isa.patchJumpTo(self, skip_body, try self.currentOffset());
+    }
+    // The checker requires an `else`, so the chain is total.
+    if (ie.else_body) |eb| try emitBranchIntoDest(self, eb, dest, ctx, materialize);
+
+    const end_offset = try self.currentOffset();
+    for (end_patches.items) |patch| try isa.patchJumpTo(self, patch, end_offset);
+}
+
+/// One branch of `emitIfChainIntoDest`: scope the body, materialize its
+/// tail into `dest`, then close the scope.
+fn emitBranchIntoDest(
+    self: *Emitter,
+    body: []const ast.Statement,
+    dest: Dest,
+    ctx: anytype,
+    comptime materialize: fn (*Emitter, *const ast.Expr, @TypeOf(ctx), Dest) error{OutOfMemory}!void,
+) error{OutOfMemory}!void {
+    const p = try do_expr.emitBodyPrefixScoped(self, body);
+    switch (p.tail) {
+        .expr => |tail| try materialize(self, tail, ctx, dest),
+        .if_chain => |nested| try emitIfChainIntoDest(self, nested, dest, ctx, materialize),
+        .none => try self.unsupported(
+            spanOfBody(body),
+            "this branch of a value `if` must end in an expression",
+        ),
+    }
+    try do_expr.emitSuffix(self, p);
+}
+
+/// Span covering a branch body, for diagnostics raised against it.
+fn spanOfBody(body: []const ast.Statement) ast.Span {
+    if (body.len == 0) return .{ .start = 0, .end = 0 };
+    return .{ .start = body[0].span().start, .end = body[body.len - 1].span().end };
+}
+
+fn structTail(self: *Emitter, src: *const ast.Expr, sname: []const u8, dest: Dest) error{OutOfMemory}!void {
+    return emitIntoDest(self, src, sname, dest);
+}
+
+fn tupleTail(self: *Emitter, src: *const ast.Expr, elems: []const *const types.Type, dest: Dest) error{OutOfMemory}!void {
+    return emitTupleIntoDest(self, src, elems, dest);
+}
+
+const ArrayShape = struct { elem: *const types.Type, count: u32 };
+
+fn arrayTail(self: *Emitter, src: *const ast.Expr, shape: ArrayShape, dest: Dest) error{OutOfMemory}!void {
+    return emitArrayIntoDest(self, src, shape.elem, shape.count, dest);
+}
+
 fn emitIntoDest(self: *Emitter, src: *const ast.Expr, sname: []const u8, dest: Dest) error{OutOfMemory}!void {
+    if (src.* == .if_expr) return try emitIfChainIntoDest(self, src.if_expr, dest, sname, structTail);
     // A `do … end` value block: run its scoped prefix, then materialize
     // its tail expression into `dest`.
     if (src.* == .do_expr) {
         const p = try do_expr.emitPrefix(self, src.do_expr);
-        if (p.tail) |tail| {
-            try emitIntoDest(self, tail, sname, dest);
-        } else {
-            try self.unsupported(src.do_expr.span, "`do` value block must end in an expression");
+        switch (p.tail) {
+            .expr => |tail| try emitIntoDest(self, tail, sname, dest),
+            else => try self.unsupported(src.do_expr.span, "`do` value block must end in an expression"),
         }
         try do_expr.emitSuffix(self, p);
         return;
@@ -162,12 +232,12 @@ pub fn emitArrayIntoSret(self: *Emitter, src: *const ast.Expr, elem: *const type
 }
 
 fn emitTupleIntoDest(self: *Emitter, src: *const ast.Expr, elems: []const *const types.Type, dest: Dest) error{OutOfMemory}!void {
+    if (src.* == .if_expr) return try emitIfChainIntoDest(self, src.if_expr, dest, elems, tupleTail);
     if (src.* == .do_expr) {
         const p = try do_expr.emitPrefix(self, src.do_expr);
-        if (p.tail) |tail| {
-            try emitTupleIntoDest(self, tail, elems, dest);
-        } else {
-            try self.unsupported(src.do_expr.span, "`do` value block must end in an expression");
+        switch (p.tail) {
+            .expr => |tail| try emitTupleIntoDest(self, tail, elems, dest),
+            else => try self.unsupported(src.do_expr.span, "`do` value block must end in an expression"),
         }
         try do_expr.emitSuffix(self, p);
         return;
@@ -234,12 +304,12 @@ pub fn emitArrayInto(self: *Emitter, src: *const ast.Expr, elem: *const types.Ty
 }
 
 fn emitArrayIntoDest(self: *Emitter, src: *const ast.Expr, elem: *const types.Type, count: u32, dest: Dest) error{OutOfMemory}!void {
+    if (src.* == .if_expr) return try emitIfChainIntoDest(self, src.if_expr, dest, ArrayShape{ .elem = elem, .count = count }, arrayTail);
     if (src.* == .do_expr) {
         const p = try do_expr.emitPrefix(self, src.do_expr);
-        if (p.tail) |tail| {
-            try emitArrayIntoDest(self, tail, elem, count, dest);
-        } else {
-            try self.unsupported(src.do_expr.span, "`do` value block must end in an expression");
+        switch (p.tail) {
+            .expr => |tail| try emitArrayIntoDest(self, tail, elem, count, dest),
+            else => try self.unsupported(src.do_expr.span, "`do` value block must end in an expression"),
         }
         try do_expr.emitSuffix(self, p);
         return;

@@ -10,6 +10,7 @@ const stdlib = @import("stdlib.zig");
 const class = @import("class.zig");
 const value_struct = @import("value_struct.zig");
 const do_expr = @import("do_expr.zig");
+const if_expr = @import("if_expr.zig");
 const vec_builtin = @import("vec_builtin.zig");
 const str_builtin = @import("str_builtin.zig");
 const variadic = @import("variadic.zig");
@@ -140,6 +141,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
         .cast => |c| try emitExpr(self, c.inner), // same-width primitives share a bit pattern, so the cast is a no-op
         .sizeof => |s| try isa.movImmToReg(self, self.widthOfTypeAnn(s.type_ann.*), Reg.acu),
         .do_expr => |de| try do_expr.emitScalar(self, de),
+        .if_expr => |ie| try if_expr.emitScalar(self, ie),
         else => try self.unsupported(e.span(), "this expression form"),
     }
 }

@@ -1299,12 +1299,21 @@ pub const Emitter = struct {
     fn countExprInlineBytes(self: *const Emitter, e: *const ast.Expr, depth: u8) usize {
         return switch (e.*) {
             .int_lit, .fixed_lit, .bool_lit, .nil_lit, .char_lit, .ident, .self_expr, .super_expr, .sizeof => 0,
-            // A lambda body is a separate def with its own prologue; an
-            // `if` expression isn't lowered at value position. A `do …
-            // end` value block (§4.3) reserves its inner locals in THIS
-            // frame, so count its body.
-            .if_expr, .lambda => 0,
+            // A lambda body is a separate def with its own prologue.
+            // A `do … end` value block (§4.3) and an `if` chain in
+            // value position (§4.4.2) both reserve their inner locals
+            // in THIS frame, so count their bodies.
+            .lambda => 0,
             .do_expr => |de| self.countFrameBytesDepth(de.body, depth),
+            .if_expr => |ie| blk: {
+                var n: usize = 0;
+                for (ie.arms) |a| {
+                    if (a.let_pattern) |lp| n += self.letArmFrameBytes(lp, a.let_expr);
+                    n += self.countFrameBytesDepth(a.body, depth);
+                }
+                if (ie.else_body) |eb| n += self.countFrameBytesDepth(eb, depth);
+                break :blk n;
+            },
             .str_lit => |s| blk: {
                 var n: usize = 0;
                 var has_aggregate = false;
