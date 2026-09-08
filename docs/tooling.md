@@ -75,10 +75,10 @@ Three editor families covered today: VS Code, Neovim / Helix /
 Zed (tree-sitter consumers), and "anything else" (TextMate /
 syntax-only).
 
-Coverage is not uniform across the two languages. Highlighting is
-`.gas`-only — the grammar and the extensions target the assembler.
-Diagnostics and formatting cover both, through the language server
-(§2.5). So a `.gr` buffer today is colourless but fully checked.
+Both languages have a tree-sitter grammar, so highlighting, folding and
+indentation work for `.gas` and `.gr` alike. Diagnostics and formatting
+come from the language server (§2.6). The one gap is VS Code, whose
+extension still targets the assembler only (§2.1).
 
 ### 2.1 VS Code
 
@@ -111,7 +111,7 @@ any `.gas` file — you should see syntax coloring out of the box.
 code --install-extension salty-max.gero-asm
 ```
 
-### 2.2 Neovim (tree-sitter)
+### 2.2 Neovim — gero asm
 
 The grammar repo
 [`tree-sitter-gero-asm`](https://github.com/salty-max/tree-sitter-gero-asm)
@@ -179,7 +179,60 @@ require("nvim-treesitter.configs").setup({
 })
 ```
 
-### 2.3 Helix
+### 2.3 Neovim — gero-lang
+
+[`tree-sitter-gero-lang`](https://github.com/salty-max/tree-sitter-gero-lang)
+ships the same three query files for `.gr`.
+
+**It differs from the asm grammar in one way that matters here:** it has
+an external scanner, because gero-lang terminates statements at a
+newline (§2.1). The compile step must include `src/scanner.c` alongside
+`src/parser.c` — the asm snippet above compiles one file, and copying it
+with the names swapped fails at link time.
+
+```lua
+-- ~/.config/nvim/lua/plugins/gero-lang.lua
+return {
+  {
+    "salty-max/tree-sitter-gero-lang",
+    build = function()
+      local clone_dir = vim.fn.stdpath("data") .. "/lazy/tree-sitter-gero-lang"
+      local out_dir = vim.fn.stdpath("data") .. "/site/parser"
+      vim.fn.mkdir(out_dir, "p")
+      vim.fn.system({
+        "cc",
+        "-o",
+        out_dir .. "/gero_lang.so",
+        "-shared",
+        "-Os",
+        "-fPIC",
+        "-I",
+        clone_dir .. "/src",
+        clone_dir .. "/src/parser.c",
+        clone_dir .. "/src/scanner.c", -- the external scanner
+      })
+      local queries = vim.fn.stdpath("config") .. "/queries/gero_lang"
+      vim.fn.mkdir(queries, "p")
+      for _, q in ipairs({ "highlights", "folds", "indents" }) do
+        vim.fn.system({
+          "ln",
+          "-sf",
+          clone_dir .. "/queries/" .. q .. ".scm",
+          queries .. "/" .. q .. ".scm",
+        })
+      end
+    end,
+    init = function()
+      vim.filetype.add({ extension = { gr = "gero_lang" } })
+    end,
+  },
+}
+```
+
+Pair it with `gero lsp` ([`lsp.md`](lsp.md)) for diagnostics and
+formatting: the grammar colours the buffer, the server checks it.
+
+### 2.4 Helix
 
 Add to `~/.config/helix/languages.toml`:
 
@@ -194,6 +247,17 @@ indent = { tab-width = 2, unit = "  " }
 [[grammar]]
 name = "gero-asm"
 source = { git = "https://github.com/salty-max/tree-sitter-gero-asm", rev = "<tag>" }   # pin to a tagged release
+
+[[language]]
+name = "gero-lang"
+scope = "source.gero_lang"
+file-types = ["gr"]
+comment-token = "--"
+indent = { tab-width = 2, unit = "  " }
+
+[[grammar]]
+name = "gero-lang"
+source = { git = "https://github.com/salty-max/tree-sitter-gero-lang", rev = "<tag>" }
 ```
 
 Then build the grammar + queries:
@@ -205,7 +269,7 @@ mkdir -p ~/.config/helix/runtime/queries/gero-asm
 ln -sf /path/to/tree-sitter-gero-asm/queries/highlights.scm ~/.config/helix/runtime/queries/gero-asm/highlights.scm
 ```
 
-### 2.4 Anything else (Sublime / TextMate)
+### 2.5 Anything else (Sublime / TextMate)
 
 The VS Code extension's grammar file
 (`grammars/gero-asm.tmLanguage.json`) is a vanilla TextMate
@@ -213,7 +277,7 @@ grammar — drop it into Sublime Text's
 `Packages/User/` or any TextMate-derived editor's bundle
 directory.
 
-### 2.5 LSP
+### 2.6 LSP
 
 `gero lsp` offers in-editor diagnostics (the same ones `gero
 check` reports) and format-on-save (the same output `gero fmt`
