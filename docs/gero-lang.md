@@ -1436,6 +1436,21 @@ Same precedence as C / Rust for bitwise vs comparison (low) and
 shifts vs arithmetic (low). Use parens when in doubt — `if (flags &
 MASK) == TARGET` reads better than relying on precedence memory.
 
+#### 4.2.2 Discarding a value
+
+Use `_` as the assignment target to evaluate an expression for its
+side effects and discard the result:
+
+```
+_ = expensive_call()           -- explicitly ignore the return
+_ = items.push(x)              -- ignore the new length
+```
+
+The compiler **errors** on a non-`nil` expression result that's not
+assigned, used, or discarded. This forces side-effecting calls that
+return a value to either capture it (`let x = …`) or explicitly
+discard (`_ = …`) — no silent value loss.
+
 #### 4.2.3 Conditional expression (`and` / `or`)
 
 `cond and x or y` is gero's ternary — Lua's spelling, but a single
@@ -1471,21 +1486,6 @@ Because `x` and `y` must share one type (§4.4.2), the middle operand
 being `false` is not the trap it is in Lua — `cond and false or y`
 either types as a `bool` conditional and is caught by the rule above,
 or does not type at all.
-
-#### 4.2.2 Discarding a value
-
-Use `_` as the assignment target to evaluate an expression for its
-side effects and discard the result:
-
-```
-_ = expensive_call()           -- explicitly ignore the return
-_ = items.push(x)              -- ignore the new length
-```
-
-The compiler **errors** on a non-`nil` expression result that's not
-assigned, used, or discarded. This forces side-effecting calls that
-return a value to either capture it (`let x = …`) or explicitly
-discard (`_ = …`) — no silent value loss.
 
 ### 4.3 Blocks
 
@@ -1546,6 +1546,25 @@ No parentheses around conditions, no `then` keyword. The condition
 expression ends where the body begins — at a newline, or on the same
 line for a one-line block (§2.1).
 
+#### 4.4.1 `if let`
+
+Pattern-match in conditional position. Bindings introduced by the
+pattern are in scope inside the truthy branch (and only there):
+
+```
+if let Item.Potion(n) = item
+  drink(n)
+end
+
+if let Event.MouseClick(x, y) = e when x < 128
+  hit_left(x, y)
+end
+```
+
+Pattern syntax = §4.8.1; `when` guards are accepted (§4.8.2). When
+the pattern doesn't match, the truthy branch is skipped (and `else`
+runs if present).
+
 #### 4.4.2 `if` as an expression
 
 An `if` chain in value position evaluates to the value of the branch
@@ -1590,25 +1609,6 @@ let n = if ready 1 else 0 end
 
 An `if` in statement position is unchanged — no `else` needed, and
 branches produce nothing.
-
-#### 4.4.1 `if let`
-
-Pattern-match in conditional position. Bindings introduced by the
-pattern are in scope inside the truthy branch (and only there):
-
-```
-if let Item.Potion(n) = item
-  drink(n)
-end
-
-if let Event.MouseClick(x, y) = e when x < 128
-  hit_left(x, y)
-end
-```
-
-Pattern syntax = §4.8.1; `when` guards are accepted (§4.8.2). When
-the pattern doesn't match, the truthy branch is skipped (and `else`
-runs if present).
 
 ### 4.5 Loops
 

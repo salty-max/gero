@@ -342,11 +342,11 @@ pub const Expr = union(enum) {
     /// `do ... end` as an expression — evaluates to the last
     /// expression of the body. §4.3.
     do_expr: DoExpr,
-    /// `if cond ... else ... end` as an expression (§4.4 — the bodies
-    /// are blocks; the value is the last expression of the taken
-    /// branch). Optional in the spec — `if` is primarily a
-    /// statement; the parser produces this form when an `if` is
-    /// found in expression position.
+    /// `if cond ... else ... end` as an expression (§4.4.2 — the
+    /// bodies are blocks; the value is the last expression of the
+    /// taken branch). The parser produces this form when an `if` is
+    /// found in expression position, and for the `cond and x or y`
+    /// conditional (§4.2.3), which desugars to it.
     if_expr: IfExpr,
     /// `lambda (args) -> ret body end` — anonymous function literal.
     lambda: LambdaExpr,
@@ -609,7 +609,9 @@ pub const DoExpr = struct {
     span: Span,
 };
 
-/// `if cond ... [else ...] end` used as an expression.
+/// `if cond ... [else ...] end` used as an expression. The checker
+/// requires the `else` and one shared branch type (§4.4.2), so every
+/// path through the chain yields a value.
 pub const IfExpr = struct {
     /// `cond / then-body` pairs in source order. The first arm is
     /// the `if`; subsequent arms are `else if` / `elif`.
