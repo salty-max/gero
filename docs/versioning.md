@@ -149,7 +149,61 @@ already implemented and observable.**
 
 ---
 
-## 6. Declaring the bump
+## 6. The compatibility guarantee
+
+The rules above exist to support one promise, stated here once so
+README and the changelog can point at it rather than restate it.
+
+**Within a format major, a `.gx` runs on any gero that accepts that
+major.** Both directions hold, and they are not the same claim:
+
+| | Behaviour | Why |
+|---|---|---|
+| Older file, newer gero | Runs | Nothing was removed; §4 is what a removal would require. |
+| Newer file, older gero, same major | Runs | Every minor bump is additive (§3), so the older VM either handles the addition or ignores metadata it can detect. |
+| Higher major | **Refused**, with the version in the message | §4 changes meaning; running it would be silently wrong. |
+
+That middle row is the one worth being precise about: an older VM
+**accepts** a same-major newer file. It is not rejected and then
+tolerated — it is expected to run correctly, which is exactly the
+burden §3 places on every additive change. A change that an older VM
+would accept and mishandle is not additive, whatever it looks like.
+
+Verified rather than asserted: a `0.9` file runs on a `0.4` build, a
+`0.1` file runs on it too, and a `1.4` file is refused with
+`built for .gx format 1.4, but this build supports up to 0.4`.
+
+### Format major 0
+
+The format is at major **0**, and the promise above is not weakened by
+that. Major 0 here means "no breaking change has been needed yet", not
+"unstable" — the minor has reached 4 through four additive changes,
+each of which an older VM handles or detects.
+
+A future major bump is what §4 describes and what
+`docs/isa.md` §10 would record. It is not scheduled, and the freeze
+below is a commitment not to make one casually.
+
+### The freeze
+
+From format **0.4** onward, the container and the ISA it encodes are
+frozen in the sense §4 defines: a change that would make an older VM
+accept a file and do the wrong thing requires a major bump, and a
+major bump is a deliberate, documented event rather than a side effect.
+
+What enforces it, rather than merely intending it:
+
+- The golden corpus (`zig build golden`) compares emitted bytes against
+  a blessed set, so a codegen change that moves bytes fails CI until
+  someone says why and re-blesses.
+- `gx.version` is the single source of truth, and `loader.version_target`
+  reads from it — they drifted once, and the major-only check hid it.
+- The audited ISA (`docs/isa.md` §11) leaves no under-specified corner
+  for a later reading to disagree about.
+
+---
+
+## 7. Declaring the bump
 
 A changeset already carries `bump: patch | minor | major` — that is
 the **package** version. When a change also moves the format version,
