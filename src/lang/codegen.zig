@@ -2365,7 +2365,22 @@ pub const Emitter = struct {
     /// Layout of one struct field: byte offset, byte width, and — when
     /// the field is itself a struct — that struct's name (so codegen
     /// recurses into nested aggregates rather than storing a scalar).
-    pub const FieldInfo = struct { offset: u16, width: u16, struct_name: ?[]const u8, signed_byte: bool = false, is_tuple: bool = false };
+    /// `is_tuple` / `is_array` mark the other two inline aggregates,
+    /// which are addressed rather than loaded.
+    pub const FieldInfo = struct {
+        offset: u16,
+        width: u16,
+        struct_name: ?[]const u8,
+        signed_byte: bool = false,
+        is_tuple: bool = false,
+        is_array: bool = false,
+
+        /// Whether the field lays out inline and is therefore reached by
+        /// address, not by a register-width load.
+        pub fn isAggregate(self: FieldInfo) bool {
+            return self.struct_name != null or self.is_tuple or self.is_array;
+        }
+    };
 
     /// `FieldInfo` for `field_name` within `struct_name`, or `null` if
     /// unknown. Fields are laid out contiguously in declaration order
@@ -2382,6 +2397,7 @@ pub const Emitter = struct {
                     .struct_name = self.structNameOfTypeAnn(f.type_ann.*),
                     .signed_byte = self.isPrimitiveTypeAnn(f.type_ann.*, "i8"),
                     .is_tuple = f.type_ann.* == .tuple,
+                    .is_array = f.type_ann.* == .array,
                 };
             }
             ofs +%= w;
