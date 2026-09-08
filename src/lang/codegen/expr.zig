@@ -525,6 +525,36 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
         }
     }
 
+    // An array operand evaluates to its base address, so a plain `cmp`
+    // would compare addresses. `==`/`!=` compare the packed elements
+    // (§3.4); ordering operators are undefined on arrays.
+    if (self.arrayShapeOf(b.lhs) orelse self.arrayShapeOf(b.rhs)) |shape| {
+        switch (b.op) {
+            .eq, .neq => {
+                if (value_struct.arrayEqOperandsCollide(b.lhs, b.rhs)) {
+                    try self.unsupported(
+                        b.span,
+                        "array `==` where both operands are calls — bind one to a `let` first",
+                    );
+                    return;
+                }
+                if (!value_struct.arrayEqSupported(self, shape.elem)) {
+                    try self.unsupported(
+                        b.span,
+                        "array `==` with a `str` / nullable / `Vec` / payload-enum element",
+                    );
+                    return;
+                }
+                try value_struct.emitArrayEquality(self, b.lhs, b.rhs, shape.elem, shape.count, b.op == .neq);
+                return;
+            },
+            else => {
+                try self.unsupported(b.span, "ordering comparison on arrays — only `==` and `!=` are defined");
+                return;
+            },
+        }
+    }
+
     const fixed_op = self.isPrimitiveType(b.lhs, .fixed) and
         self.isPrimitiveType(b.rhs, .fixed) and
         (b.op == .mul or b.op == .div);
@@ -722,6 +752,39 @@ pub fn emitCondBranch(self: *Emitter, e: *const ast.Expr) !void {
                         },
                         else => {
                             try self.unsupported(b.span, "ordering comparison on tuples — only `==` and `!=` are defined");
+                            return;
+                        },
+                    }
+                }
+                // An array operand compares its packed elements; the 0/1
+                // it leaves in acu is tested against 0 so the branch
+                // consumes its flags like any scalar condition.
+                if (self.arrayShapeOf(b.lhs) orelse self.arrayShapeOf(b.rhs)) |shape| {
+                    switch (b.op) {
+                        .eq, .neq => {
+                            if (value_struct.arrayEqOperandsCollide(b.lhs, b.rhs)) {
+                                try self.unsupported(
+                                    b.span,
+                                    "array `==` where both operands are calls — bind one to a `let` first",
+                                );
+                                return;
+                            }
+                            if (!value_struct.arrayEqSupported(self, shape.elem)) {
+                                try self.unsupported(
+                                    b.span,
+                                    "array `==` with a `str` / nullable / `Vec` / payload-enum element",
+                                );
+                                return;
+                            }
+                            try value_struct.emitArrayEquality(self, b.lhs, b.rhs, shape.elem, shape.count, b.op == .neq);
+                            try isa.cmpRegImm(self, Reg.acu, 0);
+                            return;
+                        },
+                        else => {
+                            try self.unsupported(
+                                b.span,
+                                "ordering comparison on arrays — only `==` and `!=` are defined",
+                            );
                             return;
                         },
                     }
