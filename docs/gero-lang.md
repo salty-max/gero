@@ -83,7 +83,7 @@ fits on one line, as in Lua:
 
 ```
 if hp <= 0 print "dead" end
-while queue.len() > 0 step() end
+while queue.len() > 0 tick() end
 let add5 = lambda (x: i16) -> i16  return x + 5  end
 ```
 
@@ -536,10 +536,10 @@ struct Stats
   hp: i16
   mp: i16
   atk: u8
-  def: u8
+  defense: u8
 end
 
-let s = Stats { hp: 100, mp: 30, atk: 12, def: 8 }   -- literal
+let s = Stats { hp: 100, mp: 30, atk: 12, defense: 8 }   -- literal
 
 -- 8+ byte instances (vtable + fields), shared by reference
 class Player extends Entity
@@ -567,11 +567,11 @@ struct Stats
   hp: i16
   mp: i16
   atk: u8
-  def: u8
+  defense: u8
 end
 
 -- Literal construction (an expression)
-let s = Stats { hp: 100, mp: 30, atk: 12, def: 8 }
+let s = Stats { hp: 100, mp: 30, atk: 12, defense: 8 }
 ```
 
 Trailing comma after the last field is optional in both forms.
@@ -608,7 +608,7 @@ let xs: Vec(i16)   = Vec.from([1, 2, 3])   -- pre-filled from a fixed array
 
 ```
 for item in inv
-  use(item)
+  consume(item)
 end
 ```
 
@@ -641,7 +641,7 @@ def apply_damage(stats: &Stats, dmg: i16)
   stats.hp = stats.hp - dmg     -- mutates the referenced struct
 end
 
-let s = Stats { hp: 100, mp: 50, atk: 10, def: 5 }
+let s = Stats { hp: 100, mp: 50, atk: 10, defense: 5 }
 apply_damage(&s, 20)             -- prefix `&` to take a reference
 print s.hp                       -- 80 (mutation visible)
 ```
@@ -664,7 +664,7 @@ stack-vs-static origin to reject the obvious cases:
 
 ```
 def bad() -> &Stats
-  let s = Stats { hp: 0, mp: 0, atk: 0, def: 0 }
+  let s = Stats { hp: 0, mp: 0, atk: 0, defense: 0 }
   return &s          -- COMPILE ERROR: returns ref to stack-local
 end
 
@@ -1086,15 +1086,15 @@ end
 ```
 @test
 def damage_floor_is_one()
-  let weak   = Stats { hp: 1, mp: 0, atk: 1, def: 100 }
-  let strong = Stats { hp: 100, mp: 0, atk: 10, def: 0 }
+  let weak   = Stats { hp: 1, mp: 0, atk: 1, defense: 100 }
+  let strong = Stats { hp: 100, mp: 0, atk: 10, defense: 0 }
   assert(damage(weak, strong, 0) == 1, "raw negative should clamp to 1")
 end
 
 @bench
 def bench_damage_calc()
-  let a = Stats { hp: 100, mp: 0, atk: 50, def: 10 }
-  let t = Stats { hp: 100, mp: 0, atk: 5,  def: 30 }
+  let a = Stats { hp: 100, mp: 0, atk: 50, defense: 10 }
+  let t = Stats { hp: 100, mp: 0, atk: 5,  defense: 30 }
   damage(a, t, 100)
 end
 ```
@@ -1671,8 +1671,9 @@ checked to match. Runtime slot: 4 × `sizeof(T)` + 1 byte for the
 inclusive flag (padded to the next 2-byte boundary).
 
 ```
-for byte_val in 0u8..=255u8              -- iterate every byte
-for tile_id in 0i16..=tile_count
+const FIRST: u8 = 0
+for byte_val in FIRST..=255              -- a u8 range: the inner type is `start`'s
+for tile_id in first_tile..=tile_count
 ```
 
 Methods:
@@ -1743,7 +1744,7 @@ end
 
 let inv = Inventory.new()
 for item in inv
-  use(item)
+  consume(item)
 end                  -- terminates when inv.next() returns nil
 ```
 
@@ -1770,15 +1771,15 @@ To iterate the same data twice, instantiate twice or expose a
 
 ```
 for item in inv             -- first pass: iterates 0..count
-  use(item)
+  consume(item)
 end
 for item in inv             -- second pass: empty! cursor already at count
-  use(item)
+  consume(item)
 end
 
 inv.cursor = 0              -- manual reset
 for item in inv             -- now this works again
-  use(item)
+  consume(item)
 end
 ```
 
@@ -2573,9 +2574,9 @@ end
 
 def color_for(s: State) -> u8
   match s
-    case .Idle    => return 0
-    case .Active  => return 1
-    case .Stopped => return 2
+    case State.Idle    => return 0
+    case State.Active  => return 1
+    case State.Stopped => return 2
   end
   unreachable()
 end
