@@ -1716,3 +1716,45 @@ test "parseExpression: a one-line block body may open with a paren" {
     var tree = try parseClean("def main()\n  let p = if c (1, 2) else (3, 4) end\nend\n");
     defer tree.deinit();
 }
+
+// ---------- newlines inside a bracket group (§2.1) ----------
+
+test "parseExpression: a newline inside a bracket group is insignificant" {
+    const sources = [_][]const u8{
+        // The §2.1 example, verbatim.
+        "def main()\n  let total = (\n    player.hp +\n    player.mp\n  )\nend\n",
+        // Trailing and leading operator, both inside the group.
+        "def main()\n  let t = (a +\n    b)\nend\n",
+        "def main()\n  let t = (a\n    + b)\nend\n",
+        // A newline before the closing bracket.
+        "def main()\n  let t = (a + b\n  )\nend\n",
+        // Call arguments, array elements and struct fields.
+        "def main()\n  let t = add(a +\n    b, c)\nend\n",
+        "def main()\n  let t = [\n    1,\n    2 +\n    3\n  ]\nend\n",
+        "def main()\n  let t = P {\n    x: 1 +\n    2,\n    y: 3\n  }\nend\n",
+        "def main()\n  let t = grid[a +\n    b]\nend\n",
+    };
+    for (sources) |src| {
+        var tree = try parseClean(src);
+        tree.deinit();
+    }
+}
+
+test "parseExpression: a block inside a group still needs its newlines" {
+    // The group makes newlines insignificant for the expression, not
+    // for statements in a block body nested inside it.
+    var tree = try parseClean("def main()\n  let v = (do\n    let t = 1\n    t * 2\n  end)\nend\n");
+    defer tree.deinit();
+}
+
+test "parseExpression: two statements in a nested block are still an error" {
+    var tree = try parseSource("def main()\n  let v = (do\n    let t = 1 t * 2\n  end)\nend\n");
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+}
+
+test "parseExpression: a newline outside any group still ends the statement" {
+    var tree = try parseSource("def main()\n  let a = 1 +\n    2\nend\n");
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+}
