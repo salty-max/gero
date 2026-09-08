@@ -326,6 +326,49 @@ reachable ones.
 Resolution is closed: a path that escapes the set is a diagnostic, not
 a network fetch. The lab never loads code from a URL at build time.
 
+### 4.3 Highlighting
+
+The editor colours source with the **same tree-sitter grammars the
+native editors use**, loaded in the browser through
+[`web-tree-sitter`](https://github.com/tree-sitter/tree-sitter/tree/master/lib/binding_web):
+
+| Language | Grammar | Artifact |
+|---|---|---|
+| `.gas` | [`tree-sitter-gero-asm`](https://github.com/salty-max/tree-sitter-gero-asm) | `tree-sitter-gero_asm.wasm` |
+| `.gr` | [`tree-sitter-gero-lang`](https://github.com/salty-max/tree-sitter-gero-lang) | `tree-sitter-gero_lang.wasm` |
+
+Each grammar builds that artifact in CI on tag and attaches it to the
+release, so the lab fetches a versioned file rather than compiling a
+grammar it cannot compile:
+
+```
+https://github.com/salty-max/tree-sitter-<name>/releases/download/<tag>/tree-sitter-<name>.wasm
+```
+
+The `queries/highlights.scm` shipped alongside each grammar is the
+lab's theme mapping too. Editors and the lab therefore colour the same
+token the same way by construction, not by two teams agreeing.
+
+**Why not a CodeMirror or Monaco mode.** A hand-written mode is a
+second grammar, and it drifts — the failure §11 records for the VM,
+in a smaller place. The lab holds no token table for the same reason it
+holds no opcode table.
+
+**Why not semantic tokens.** They would come from the wasm module and
+so could not drift, but they need the symbol table `docs/lsp.md` §6
+gates hover and go-to-definition on. Highlighting does not need to wait
+for that, and a grammar answers it better regardless: it colours a
+buffer that does not compile, which is most buffers most of the time.
+
+**A language with no grammar renders as plain text.** That is the only
+fallback. It is not a licence to write a mode for the gap — the gap is
+closed by publishing a grammar, and both languages have one.
+
+**Build order.** The lab's highlighting depends on a tagged grammar
+release carrying its `.wasm`. Both do from `tree-sitter-gero-asm`
+v0.3.1 and `tree-sitter-gero-lang` v0.1.1 onward; earlier tags carry
+the grammar but no browser artifact.
+
 ---
 
 ## 5. Diagnostics
