@@ -106,8 +106,17 @@ jobs:
         run: zig build test-all -freference-trace
 
   examples:
-    name: Example integration
-    runs-on: ubuntu-latest
+    name: Examples (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # These are the gates that run `gero` over a corpus on disk, so
+    # they are where a path, line-ending or case-sensitivity
+    # divergence shows up — the unit tests call the library in
+    # process and never touch a filesystem. macOS is here for its
+    # case-insensitive volume as much as for macOS.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2

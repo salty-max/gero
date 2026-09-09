@@ -622,6 +622,7 @@ pub fn build(b: *std.Build) void {
     // every other runtime test gero has runs natively — so this is
     // what turns "wasm32 compiles" into "wasm32 runs".
     const wasm_examples_cmd = b.addSystemCommand(&.{ "bash", "scripts/test-wasm-examples.sh" });
+    wasm_examples_cmd.setEnvironmentVariable("GERO_WASM", b.getInstallPath(.bin, "gero.wasm"));
     wasm_examples_cmd.step.dependOn(wasm_step);
     const wasm_examples_step = b.step(
         "test-wasm-examples",
@@ -674,7 +675,14 @@ pub fn build(b: *std.Build) void {
     // `.expected` file. Depends on the install step so the binary
     // is on disk before the script runs.
 
+    // Where the scripts find what they drive. They defaulted to
+    // `./zig-out/bin/gero`, which is not the file's name on a host
+    // whose executables carry an extension.
+    const exe_ext = target.result.exeFileExt();
+    const installed_cli = b.getInstallPath(.bin, b.fmt("gero{s}", .{exe_ext}));
+
     const test_examples_cmd = b.addSystemCommand(&.{ "bash", "scripts/test-examples.sh" });
+    test_examples_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
     test_examples_cmd.step.dependOn(b.getInstallStep());
     const test_examples_step = b.step(
         "test-examples",
@@ -683,6 +691,7 @@ pub fn build(b: *std.Build) void {
     test_examples_step.dependOn(&test_examples_cmd.step);
 
     const test_examples_lang_cmd = b.addSystemCommand(&.{ "bash", "scripts/test-examples-lang.sh" });
+    test_examples_lang_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
     test_examples_lang_cmd.step.dependOn(b.getInstallStep());
     const test_examples_lang_step = b.step(
         "test-examples-lang",
@@ -691,6 +700,7 @@ pub fn build(b: *std.Build) void {
     test_examples_lang_step.dependOn(&test_examples_lang_cmd.step);
 
     const check_examples_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-examples.sh" });
+    check_examples_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
     check_examples_cmd.step.dependOn(b.getInstallStep());
     const check_examples_step = b.step(
         "check-examples",
@@ -699,6 +709,7 @@ pub fn build(b: *std.Build) void {
     check_examples_step.dependOn(&check_examples_cmd.step);
 
     const check_doc_asm_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-doc-asm.sh" });
+    check_doc_asm_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
     check_doc_asm_cmd.step.dependOn(b.getInstallStep());
     const check_doc_asm_step = b.step(
         "check-doc-asm",
@@ -707,6 +718,7 @@ pub fn build(b: *std.Build) void {
     check_doc_asm_step.dependOn(&check_doc_asm_cmd.step);
 
     const check_doc_gr_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-doc-gr.sh" });
+    check_doc_gr_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
     check_doc_gr_cmd.step.dependOn(b.getInstallStep());
     const check_doc_gr_step = b.step(
         "check-doc-gr",
@@ -715,6 +727,7 @@ pub fn build(b: *std.Build) void {
     check_doc_gr_step.dependOn(&check_doc_gr_cmd.step);
 
     const check_broken_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-broken.sh" });
+    check_broken_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
     check_broken_cmd.step.dependOn(b.getInstallStep());
     const check_broken_step = b.step(
         "check-broken",
@@ -723,6 +736,7 @@ pub fn build(b: *std.Build) void {
     check_broken_step.dependOn(&check_broken_cmd.step);
 
     const fmt_check_examples_cmd = b.addSystemCommand(&.{ "bash", "scripts/fmt-check-examples.sh" });
+    fmt_check_examples_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
     fmt_check_examples_cmd.step.dependOn(b.getInstallStep());
     const fmt_check_examples_step = b.step(
         "fmt-check-examples",
@@ -731,6 +745,7 @@ pub fn build(b: *std.Build) void {
     fmt_check_examples_step.dependOn(&fmt_check_examples_cmd.step);
 
     const check_examples_gr_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-examples-gr.sh" });
+    check_examples_gr_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
     check_examples_gr_cmd.step.dependOn(b.getInstallStep());
     const check_examples_gr_step = b.step(
         "check-examples-gr",
