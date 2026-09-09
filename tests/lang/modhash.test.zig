@@ -92,7 +92,7 @@ test "contentHash: it tracks the file's own text" {
     defer fx.deinit();
     try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
     try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend\n");
-    const path = try fx.tmp.dir.realPathFileAlloc(std.testing.io, "main.gr", alloc);
+    const path = try util.tmpPath(alloc, &fx.tmp, "main.gr");
     defer alloc.free(path);
 
     var before = try gero.lang.resolveUseImports(std.testing.io, alloc, path);

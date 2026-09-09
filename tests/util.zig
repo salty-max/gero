@@ -3,32 +3,40 @@ const std = @import("std");
 const builtin = @import("builtin");
 const gero = @import("gero");
 
-/// wasi has preopened directories and no `realpath`, so a fixture that
-/// canonicalizes a path it just wrote cannot work there. Every helper
-/// below needs one, so they report a skip rather than a failure — the
-/// gap itself is tracked separately, and a skipped test says "not
-/// measured here" where a passing one would lie.
-const needs_real_paths = builtin.os.tag != .wasi;
-
-/// Skip unless this target can canonicalize a path it just wrote.
+/// The path a fixture's file will canonicalize to.
 ///
-/// Every fixture that writes files and resolves them by path needs
-/// `realpath`, which wasi does not have. Skipping says "not measured
-/// here"; passing would say something untrue.
-pub fn requireRealPaths() error{SkipZigTest}!void {
-    if (!needs_real_paths) return error.SkipZigTest;
+/// This mirrors the resolver's own rule, and has to: an overlay is
+/// keyed by canonical path, so a key built any other way silently
+/// misses.
+///
+/// - Where the target has `realpath`, that is the canonical form.
+/// - wasi has none — `realPathFileAlloc` returns
+///   `OperationUnsupported` there — and the resolver normalizes
+///   lexically instead. `std.testing.tmpDir` roots at
+///   `.zig-cache/tmp/<sub_path>`, which wasmtime preopens as part of
+///   the working directory, so the same path can be built from the
+///   directory's own name.
+pub fn tmpPath(
+    allocator: std.mem.Allocator,
+    tmp: *const std.testing.TmpDir,
+    name: []const u8,
+) ![:0]u8 {
+    if (builtin.os.tag == .wasi) {
+        return std.fmt.allocPrintSentinel(
+            allocator,
+            ".zig-cache/tmp/{s}/{s}",
+            .{ &tmp.sub_path, name },
+            0,
+        );
+    }
+    return tmp.dir.realPathFileAlloc(std.testing.io, name, allocator);
 }
 
-/// A throwaway directory of `.gr` modules, compiled and run through
-/// the real multi-file path — include resolution, per-module
-/// type-check, codegen, VM. Specs that need more than one module
-/// share this rather than each growing its own tmpdir plumbing.
 pub const ModuleFixture = struct {
     tmp: std.testing.TmpDir,
     alloc: std.mem.Allocator = std.testing.allocator,
 
     pub fn init() !ModuleFixture {
-        try requireRealPaths();
         return .{ .tmp = std.testing.tmpDir(.{}) };
     }
 
@@ -40,16 +48,15 @@ pub const ModuleFixture = struct {
         try self.tmp.dir.writeFile(std.testing.io, .{ .sub_path = name, .data = body });
     }
 
-    /// Canonical path of a file written into the fixture. Caller owns
-    /// the result.
+    /// Path of a file written into the fixture. Caller owns the result.
     pub fn pathOf(self: *ModuleFixture, name: []const u8) ![:0]u8 {
-        return self.tmp.dir.realPathFileAlloc(std.testing.io, name, self.alloc);
+        return tmpPath(self.alloc, &self.tmp, name);
     }
 
     /// Compile `entry` with its `use` graph and run it, asserting on
     /// what the program printed.
     pub fn expectRuns(self: *ModuleFixture, entry: []const u8, expected: []const u8) !void {
-        const path = try self.tmp.dir.realPathFileAlloc(std.testing.io, entry, self.alloc);
+        const path = try self.pathOf(entry);
         defer self.alloc.free(path);
 
         var fused = try gero.lang.resolveUseImports(std.testing.io, self.alloc, path);

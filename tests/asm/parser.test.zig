@@ -158,7 +158,6 @@ test "parser: label span covers exactly `ident + :`" {
 // ---------- end-to-end with include resolver ----------
 
 test "parser: consumes the resolveIncludes output for a multi-file program" {
-    try util.requireRealPaths();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "lib.gas", .data = "lib_label:\n" });
@@ -171,7 +170,7 @@ test "parser: consumes the resolveIncludes output for a multi-file program" {
         ,
     });
 
-    const main_path = try tmp.dir.realPathFileAlloc(std.testing.io, "main.gas", alloc);
+    const main_path = try util.tmpPath(alloc, &tmp, "main.gas");
     defer alloc.free(main_path);
 
     var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, main_path);

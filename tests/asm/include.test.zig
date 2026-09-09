@@ -7,8 +7,7 @@ const alloc = std.testing.allocator;
 const Fixture = struct {
     tmp: std.testing.TmpDir,
 
-    fn init() error{SkipZigTest}!Fixture {
-        try util.requireRealPaths();
+    fn init() Fixture {
         return .{ .tmp = std.testing.tmpDir(.{}) };
     }
 
@@ -25,7 +24,7 @@ const Fixture = struct {
     }
 
     fn pathOf(self: *Fixture, name: []const u8) ![:0]u8 {
-        return self.tmp.dir.realPathFileAlloc(std.testing.io, name, alloc);
+        return util.tmpPath(alloc, &self.tmp, name);
     }
 };
 
@@ -47,7 +46,7 @@ fn occurrences(haystack: []const u8, needle: []const u8) usize {
 // ---------- happy path ----------
 
 test "include: root file with no includes round-trips its bytes" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("main.gas", "hlt\n");
 
@@ -63,7 +62,7 @@ test "include: root file with no includes round-trips its bytes" {
 }
 
 test "include: single include splices the target's bytes and elides the directive" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("lib.gas", "nop\n");
     try fx.write("main.gas",
@@ -90,7 +89,7 @@ test "include: single include splices the target's bytes and elides the directiv
 }
 
 test "include: nested 3-deep include resolves in order" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("c.gas", "c_ident\n");
     try fx.write("b.gas",
@@ -121,7 +120,7 @@ test "include: nested 3-deep include resolves in order" {
 // ---------- textual splice (re-include emits every time) ----------
 
 test "include: diamond — utils is spliced TWICE per asm tradition" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("utils.gas", "u_ident\n");
     try fx.write("a.gas", "include \"utils.gas\"\n");
@@ -143,7 +142,7 @@ test "include: diamond — utils is spliced TWICE per asm tradition" {
 }
 
 test "include: two direct includes of the same file emit its bytes twice" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("shared.gas", "s_ident\n");
     try fx.write("main.gas",
@@ -165,7 +164,7 @@ test "include: two direct includes of the same file emit its bytes twice" {
 // ---------- include matcher edge cases ----------
 
 test "include: directive inside a comment is NOT processed" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("lib.gas", "lib_body\n");
     try fx.write("main.gas",
@@ -185,7 +184,7 @@ test "include: directive inside a comment is NOT processed" {
 }
 
 test "include: 'include' literal inside a string is NOT processed" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("main.gas",
         \\data8 msg = "include \"x.gas\""
@@ -208,7 +207,7 @@ test "include: 'include' literal inside a string is NOT processed" {
 // ---------- cycle / depth / missing ----------
 
 test "include: direct self-include detected as cycle (E012)" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("main.gas", "include \"main.gas\"\n");
 
@@ -227,7 +226,7 @@ test "include: direct self-include detected as cycle (E012)" {
 }
 
 test "include: indirect cycle a→b→a detected (E012)" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("a.gas", "include \"b.gas\"\n");
     try fx.write("b.gas", "include \"a.gas\"\n");
@@ -247,7 +246,7 @@ test "include: indirect cycle a→b→a detected (E012)" {
 }
 
 test "include: missing target produces E015-shape error" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("main.gas", "include \"nope.gas\"\n");
 
@@ -263,7 +262,7 @@ test "include: missing target produces E015-shape error" {
 }
 
 test "include: deep chain exceeding 32 levels is rejected (E013)" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     var name_buf: [32]u8 = undefined;
     var next_buf: [32]u8 = undefined;
@@ -297,7 +296,7 @@ test "include: deep chain exceeding 32 levels is rejected (E013)" {
 // ---------- SourceMap + format helper ----------
 
 test "include: SourceMap.lookup resolves offsets back to their file" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("lib.gas", "lib_ident\n");
     try fx.write("main.gas",
@@ -322,7 +321,7 @@ test "include: SourceMap.lookup resolves offsets back to their file" {
 }
 
 test "include: formatDiagnostic produces path:line:col prefix" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("main.gas", "include \"nope.gas\"\n");
 
@@ -344,7 +343,7 @@ test "include: formatDiagnostic produces path:line:col prefix" {
 }
 
 test "include: formatPretty emits a caret line under the column" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("main.gas", "include \"nope.gas\"\n");
 
@@ -370,7 +369,7 @@ test "include: formatPretty emits a caret line under the column" {
 }
 
 test "include: formatPretty with ansi style emits ANSI escapes" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("main.gas", "include \"nope.gas\"\n");
 
@@ -391,7 +390,7 @@ test "include: formatPretty with ansi style emits ANSI escapes" {
 }
 
 test "resolveIncludesOverlaid: an overlaid file is read instead of the one on disk" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     // The two versions differ only in the body, so the marker found
     // in the fused source says which one was read.
@@ -415,7 +414,7 @@ test "resolveIncludesOverlaid: an overlaid file is read instead of the one on di
 }
 
 test "resolveIncludesOverlaid: a file absent from the overlay still comes from disk" {
-    var fx = try Fixture.init();
+    var fx = Fixture.init();
     defer fx.deinit();
     try fx.write("shared.gas", "target:\n  mov $11, r1\n  hlt\n");
     try fx.write("main.gas", "include \"shared.gas\"\nstart:\n  jmp @target\n");
