@@ -211,3 +211,155 @@ test "snapshot: restoring a banked capture into an unbanked VM is rejected" {
     defer plain.deinit();
     try std.testing.expectError(error.BankShapeMismatch, plain.restore(snap));
 }
+
+// ---------- embedding: more than one VM in one process ----------
+
+test "VM: two instances in one process do not observe each other" {
+    // gtx-16 embeds this as a Zig dependency, and a console plus a
+    // debugger's replay is two VMs in one process. Nothing in the type
+    // forbids that; this pins that nothing in the implementation does
+    // either — output, memory, registers and cycle counts all have to
+    // stay on their own instance.
+    var a = VM.init(alloc);
+    defer a.deinit();
+    var b = VM.init(alloc);
+    defer b.deinit();
+
+    var out_a = std.Io.Writer.Allocating.init(alloc);
+    defer out_a.deinit();
+    var out_b = std.Io.Writer.Allocating.init(alloc);
+    defer out_b.deinit();
+    a.host = .{ .out = &out_a.writer };
+    b.host = .{ .out = &out_b.writer };
+
+    // The same address in each holds a different program: `int
+    // $10` is print_char, and each writes r1's low byte.
+    for ([_]*VM{ &a, &b }) |vm| {
+        vm.regs.write(.ip, 0x1000);
+        vm.writeByte(0x1000, 0xFC); // int
+        vm.writeByte(0x1001, 0x10); // print_char
+    }
+    a.regs.write(.r1, 'A');
+    b.regs.write(.r1, 'B');
+
+    // Interleaved, because a shared buffer or cursor would show up as
+    // ordering rather than as a wrong value.
+    const host_int = gero.vm.host_int;
+    try std.testing.expectEqual(host_int.Outcome.printed, try host_int.handle(&a));
+    try std.testing.expectEqual(host_int.Outcome.printed, try host_int.handle(&b));
+
+    try std.testing.expectEqualStrings("A", out_a.written());
+    try std.testing.expectEqualStrings("B", out_b.written());
+    try std.testing.expectEqual(@as(u16, 0x1002), a.regs.read(.ip));
+    try std.testing.expectEqual(@as(u16, 0x1002), b.regs.read(.ip));
+}
+
+test "VM: instances hold their own memory at the same address" {
+    var a = VM.init(alloc);
+    defer a.deinit();
+    var b = VM.init(alloc);
+    defer b.deinit();
+
+    a.writeByte(0x2000, 0xAA);
+    b.writeByte(0x2000, 0xBB);
+    a.writeWord(0x3000, 0x1234);
+    b.writeWord(0x3000, 0x5678);
+
+    try std.testing.expectEqual(@as(u8, 0xAA), a.readByte(0x2000));
+    try std.testing.expectEqual(@as(u8, 0xBB), b.readByte(0x2000));
+    try std.testing.expectEqual(@as(u16, 0x1234), a.readWord(0x3000));
+    try std.testing.expectEqual(@as(u16, 0x5678), b.readWord(0x3000));
+}
+
+test "VM: a fault in one instance leaves the other running" {
+    var faulting = VM.init(alloc);
+    defer faulting.deinit();
+    var healthy = VM.init(alloc);
+    defer healthy.deinit();
+
+    // No ISR is installed, so an illegal opcode stops this one where
+    // it stands. `last_fault` is per-instance state, and a shared one
+    // would stop the other too.
+    faulting.regs.write(.ip, 0x1000);
+    faulting.writeByte(0x1000, 0x00); // no handler is bound here
+
+    healthy.regs.write(.ip, 0x1000);
+    healthy.writeByte(0x1000, 0xFF); // hlt
+
+    try std.testing.expectEqual(gero.vm.StepResult.halted_on_fault, gero.vm.step(&faulting));
+    try std.testing.expect(faulting.last_fault != null);
+
+    try std.testing.expectEqual(gero.vm.StepResult.halted, gero.vm.step(&healthy));
+    try std.testing.expectEqual(@as(?gero.vm.Vector, null), healthy.last_fault);
+}
+
+/// A sink that steps a second VM while the first is mid-instruction.
+///
+/// The buffer is empty so every write reaches `drain` immediately,
+/// which is what makes the nesting real rather than deferred to a
+/// flush.
+const ReentrantSink = struct {
+    writer: std.Io.Writer,
+    other: *VM,
+    other_result: ?gero.vm.StepResult = null,
+    byte: ?u8 = null,
+
+    fn init(other: *VM) ReentrantSink {
+        return .{
+            .writer = .{ .vtable = &.{ .drain = drain }, .buffer = &.{} },
+            .other = other,
+        };
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *ReentrantSink = @fieldParentPtr("writer", w);
+        for (data) |chunk| {
+            if (chunk.len > 0) {
+                self.byte = chunk[0];
+                break;
+            }
+        }
+        // The nested call: the outer VM has not finished its
+        // instruction, and this drives another one to completion.
+        self.other_result = gero.vm.step(self.other);
+        // The last slice repeats `splat` times, per the vtable's
+        // contract; reporting fewer bytes than were consumed would
+        // make the writer retry them.
+        var total: usize = 0;
+        for (data[0 .. data.len - 1]) |chunk| total += chunk.len;
+        total += data[data.len - 1].len * splat;
+        return total;
+    }
+};
+
+test "VM: stepping one instance from inside another's host callback is safe" {
+    // gtx-16's console will call back into host code mid-instruction,
+    // and that host code may drive a second VM. The dispatch loop
+    // therefore may not hold state across a handler call.
+    var outer = VM.init(alloc);
+    defer outer.deinit();
+    var inner = VM.init(alloc);
+    defer inner.deinit();
+
+    inner.regs.write(.ip, 0x1000);
+    inner.writeByte(0x1000, 0xFF); // hlt
+
+    var sink = ReentrantSink.init(&inner);
+    outer.host = .{ .out = &sink.writer };
+    outer.regs.write(.ip, 0x1000);
+    outer.writeByte(0x1000, 0xFC); // int
+    outer.writeByte(0x1001, 0x10); // print_char
+    outer.regs.write(.r1, 'Z');
+
+    const host_int = gero.vm.host_int;
+    try std.testing.expectEqual(host_int.Outcome.printed, try host_int.handle(&outer));
+
+    // The outer instruction completed correctly despite the nesting.
+    try std.testing.expectEqual(@as(u16, 0x1002), outer.regs.read(.ip));
+    try std.testing.expectEqual(@as(?u8, 'Z'), sink.byte);
+
+    // And the inner one ran to its own halt inside that call.
+    try std.testing.expectEqual(gero.vm.StepResult.halted, sink.other_result.?);
+    try std.testing.expectEqual(@as(u64, 1), inner.cycles);
+    try std.testing.expectEqual(@as(u64, 0), outer.cycles); // `handle` is not `step`
+}
