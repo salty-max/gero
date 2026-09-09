@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const terminal = @import("terminal.zig");
+
 /// Outcome of one `readLine` call.
 pub const Action = union(enum) {
     /// User pressed Enter. Owns the line text (no trailing `\n`).
@@ -22,11 +24,11 @@ pub const Editor = struct {
     history: std.ArrayList([]const u8),
     /// `true` when stdin is a TTY and raw mode is workable.
     is_tty: bool,
-    /// Saved termios for restore-on-exit. `null` when raw mode is
-    /// inactive (either because stdin isn't a TTY or `restore`
-    /// already ran).
-    saved_termios: ?std.posix.termios,
-    stdin_fd: std.posix.fd_t,
+    /// The terminal mode found before raw mode, for restore-on-exit.
+    /// `null` when raw mode is inactive — either because stdin isn't a
+    /// TTY or because `restoreTerminal` already ran.
+    saved_mode: ?terminal.Saved,
+    stdin: std.Io.File,
     /// Lazily-initialized cooked-mode reader. Only used when
     /// `is_tty == false`.
     cooked: ?CookedReader,
@@ -44,21 +46,21 @@ pub const Editor = struct {
         io: std.Io,
         stdout: *std.Io.Writer,
     ) Editor {
-        const fd = std.posix.STDIN_FILENO;
-        const is_tty = std.Io.File.stdin().isTty(io) catch false;
+        const stdin = std.Io.File.stdin();
+        const is_tty = stdin.isTty(io) catch false;
         return .{
             .arena = arena,
             .io = io,
             .stdout = stdout,
             .history = .empty,
             .is_tty = is_tty,
-            .saved_termios = null,
-            .stdin_fd = fd,
+            .saved_mode = null,
+            .stdin = stdin,
             .cooked = null,
         };
     }
 
-    /// Release editor-owned resources and restore termios.
+    /// Release editor-owned resources and restore the terminal.
     pub fn deinit(self: *Editor) void {
         self.restoreTerminal();
         self.history.deinit(self.arena);
@@ -69,24 +71,20 @@ pub const Editor = struct {
     /// active.
     pub fn enableRawMode(self: *Editor) !void {
         if (!self.is_tty) return;
-        if (self.saved_termios != null) return;
-        const cur = try std.posix.tcgetattr(self.stdin_fd);
-        self.saved_termios = cur;
-        var raw = cur;
-        raw.lflag.ICANON = false;
-        raw.lflag.ECHO = false;
-        raw.lflag.ISIG = true; // keep Ctrl-C / Ctrl-Z delivered as bytes
-        raw.iflag.ICRNL = false; // raw \r vs \n distinction
-        raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
-        raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
-        try std.posix.tcsetattr(self.stdin_fd, .NOW, raw);
+        if (self.saved_mode != null) return;
+        self.saved_mode = try terminal.enableRaw(self.stdin.handle);
+        // `redraw` writes CSI sequences, which a Windows console only
+        // interprets once virtual-terminal processing is on. The
+        // standard library owns that switch; a console that refuses it
+        // still edits, it just redraws the whole line.
+        std.Io.File.stdout().enableAnsiEscapeCodes(self.io) catch {};
     }
 
-    /// Restore the saved termios. Safe to call repeatedly.
+    /// Restore the mode raw mode replaced. Safe to call repeatedly.
     pub fn restoreTerminal(self: *Editor) void {
-        if (self.saved_termios) |t| {
-            std.posix.tcsetattr(self.stdin_fd, .NOW, t) catch {};
-            self.saved_termios = null;
+        if (self.saved_mode) |mode| {
+            terminal.restore(self.stdin.handle, mode);
+            self.saved_mode = null;
         }
     }
 
@@ -107,7 +105,13 @@ pub const Editor = struct {
     /// Up/Down history navigation.
     pub fn readLine(self: *Editor, prompt: []const u8) !Action {
         if (!self.is_tty) return self.readLineCooked(prompt);
-        try self.enableRawMode();
+        // A terminal that will not go raw can still be read. Losing
+        // line editing is worth a degraded prompt; losing the REPL is
+        // not.
+        self.enableRawMode() catch {
+            self.is_tty = false;
+            return self.readLineCooked(prompt);
+        };
         try self.stdout.writeAll(prompt);
         try self.stdout.flush();
 
@@ -124,7 +128,7 @@ pub const Editor = struct {
 
         while (true) {
             var one: [1]u8 = undefined;
-            const n = std.posix.read(self.stdin_fd, &one) catch return .eof;
+            const n = self.stdin.readStreaming(self.io, &.{&one}) catch return .eof;
             if (n == 0) return .eof;
             const b = one[0];
 
@@ -154,7 +158,7 @@ pub const Editor = struct {
                 0x1B => {
                     // CSI sequence — `\x1b [ X`.
                     var seq: [2]u8 = undefined;
-                    const n2 = std.posix.read(self.stdin_fd, &seq) catch continue;
+                    const n2 = self.stdin.readStreaming(self.io, &.{&seq}) catch continue;
                     if (n2 < 2 or seq[0] != '[') continue;
                     switch (seq[1]) {
                         'A' => try self.recallPrev(&buf, &hist_pos, &saved_live, prompt),
