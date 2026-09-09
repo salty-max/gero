@@ -98,6 +98,11 @@ pub const Host = struct {
 
 /// The VM. Owns the register file, the memory mapper, and an
 /// optional bank pool backing the `0xC000..0xFEFF` window.
+///
+/// Every instance owns all of its state: any number of them may run
+/// in one process without observing each other, and one may be
+/// stepped from inside another's host callback. Nothing here reads a
+/// global, and the dispatch table is comptime-constant.
 /// A captured VM state: everything execution can change, and nothing
 /// the host owns.
 ///
