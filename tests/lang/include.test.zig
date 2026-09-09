@@ -6,13 +6,15 @@
 
 const std = @import("std");
 const gero = @import("gero");
+const util = @import("util");
 
 const alloc = std.testing.allocator;
 
 const Fixture = struct {
     tmp: std.testing.TmpDir,
 
-    fn init() Fixture {
+    fn init() error{SkipZigTest}!Fixture {
+        try util.requireRealPaths();
         return .{ .tmp = std.testing.tmpDir(.{}) };
     }
 
@@ -51,7 +53,7 @@ test "include: module reachable through the barrel" {
 }
 
 test "resolveUseImports: a file reached by two `use` sites fuses once" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("io.gr",
         \\class display
@@ -90,7 +92,7 @@ test "resolveUseImports: a file reached by two `use` sites fuses once" {
 }
 
 test "resolveUseImports: a `use X as Y from` rename is captured as an alias" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("io.gr",
         \\class input
@@ -130,7 +132,7 @@ fn firstError(fused: gero.lang.FusedSource, kind: gero.lang.IncludeErrorKind) ?g
 }
 
 test "resolveUseImports: a `use` cycle is reported, not silently fused" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("a.gr", "use \"./b\"\ndef fa() -> i16\n  return 1\nend\n");
     try fx.write("b.gr", "use \"./a\"\ndef fb() -> i16\n  return 2\nend\n");
@@ -146,7 +148,7 @@ test "resolveUseImports: a `use` cycle is reported, not silently fused" {
 }
 
 test "resolveUseImports: `from` inside a trailing comment isn't parsed as a directive" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("io.gr", "class display\n  @static\n  def clear()\n  end\nend\n");
     try fx.write("main.gr",
@@ -169,7 +171,7 @@ test "resolveUseImports: `from` inside a trailing comment isn't parsed as a dire
 }
 
 test "resolveUseImports: a tab-delimited `use ... from` resolves" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("io.gr", "class display\n  @static\n  def clear()\n  end\nend\n");
     try fx.write("main.gr", "use display\tfrom\t\"./io\"\ndef main()\n  display.clear()\nend\n");
@@ -185,7 +187,7 @@ test "resolveUseImports: a tab-delimited `use ... from` resolves" {
 }
 
 test "resolveUseImports: one alias bound to two different targets errors" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("m1.gr", "def one() -> i16\n  return 1\nend\n");
     try fx.write("m2.gr", "def two() -> i16\n  return 2\nend\n");
@@ -212,7 +214,7 @@ test "resolveUseImports: one alias bound to two different targets errors" {
 // ---------- module graph (§5) ----------
 
 test "resolveUseImports: a `use` records an edge from importer to imported" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
     try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend\n");
@@ -228,7 +230,7 @@ test "resolveUseImports: a `use` records an edge from importer to imported" {
 }
 
 test "resolveUseImports: fileIdAt maps an offset back to its module" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
     try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend\n");
@@ -251,7 +253,7 @@ test "resolveUseImports: fileIdAt maps an offset back to its module" {
 }
 
 test "resolveUseImports: a diamond records an edge for each importer" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("base.gr", "def shared() -> i16\n  return 1\nend\n");
     try fx.write("a.gr", "use \"./base\"\ndef from_a() -> i16\n  return shared()\nend\n");
@@ -270,7 +272,7 @@ test "resolveUseImports: a diamond records an edge for each importer" {
 }
 
 test "resolveUseImportsOverlaid: an overlaid file is read instead of the one on disk" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     // The two versions differ only in the body, so the marker found
     // in the fused source says which one was read.
@@ -297,7 +299,7 @@ test "resolveUseImportsOverlaid: an overlaid file is read instead of the one on 
 }
 
 test "resolveUseImportsOverlaid: the entry file itself can be overlaid" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
     try fx.write("main.gr", "def main()\n  print 0\nend\n");
@@ -319,7 +321,7 @@ test "resolveUseImportsOverlaid: the entry file itself can be overlaid" {
 }
 
 test "resolveUseImportsOverlaid: a null overlay resolves exactly as `resolveUseImports`" {
-    var fx = Fixture.init();
+    var fx = try Fixture.init();
     defer fx.deinit();
     try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
     try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend\n");

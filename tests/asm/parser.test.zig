@@ -1,5 +1,6 @@
 const std = @import("std");
 const gero = @import("gero");
+const util = @import("util");
 
 const alloc = std.testing.allocator;
 
@@ -157,6 +158,7 @@ test "parser: label span covers exactly `ident + :`" {
 // ---------- end-to-end with include resolver ----------
 
 test "parser: consumes the resolveIncludes output for a multi-file program" {
+    try util.requireRealPaths();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "lib.gas", .data = "lib_label:\n" });
