@@ -153,6 +153,12 @@ pub const LoadFailedError = error{LoadFailed};
 
 const testing = std.testing;
 
+/// The host's separator, so the joins below assert what
+/// `std.fs.path.join` actually produces rather than what a POSIX host
+/// produces. `joinUnderRoot` walks real directories, so following the
+/// host is the behaviour, not a portability wart.
+const sep = std.fs.path.sep_str;
+
 test "joinUnderRoot: empty root keeps the path verbatim" {
     const out = try joinUnderRoot(testing.allocator, "", "src/main.gas");
     defer testing.allocator.free(out);
@@ -162,7 +168,7 @@ test "joinUnderRoot: empty root keeps the path verbatim" {
 test "joinUnderRoot: parent root prefixes correctly" {
     const out = try joinUnderRoot(testing.allocator, "..", "tests/");
     defer testing.allocator.free(out);
-    try testing.expectEqualStrings("../tests/", out);
+    try testing.expectEqualStrings(".." ++ sep ++ "tests/", out);
 }
 
 test "Outcome union: pattern-matches cleanly" {

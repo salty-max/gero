@@ -268,6 +268,12 @@ pub fn joinUnderRoot(arena: std.mem.Allocator, project_root: []const u8, rel: []
 
 const testing = std.testing;
 
+/// The host's separator, so the joins below assert what
+/// `std.fs.path.join` actually produces rather than what a POSIX host
+/// produces. `joinUnderRoot` walks real directories, so following the
+/// host is the behaviour, not a portability wart.
+const sep = std.fs.path.sep_str;
+
 test "joinUnderRoot: empty root keeps the relative path verbatim" {
     const out = try joinUnderRoot(testing.allocator, "", "src/main.gas");
     defer testing.allocator.free(out);
@@ -277,13 +283,13 @@ test "joinUnderRoot: empty root keeps the relative path verbatim" {
 test "joinUnderRoot: parent root prefixes correctly" {
     const out = try joinUnderRoot(testing.allocator, "..", "src/main.gas");
     defer testing.allocator.free(out);
-    try testing.expectEqualStrings("../src/main.gas", out);
+    try testing.expectEqualStrings(".." ++ sep ++ "src/main.gas", out);
 }
 
 test "joinUnderRoot: deeper root prefixes correctly" {
     const out = try joinUnderRoot(testing.allocator, "../..", "out/");
     defer testing.allocator.free(out);
-    try testing.expectEqualStrings("../../out/", out);
+    try testing.expectEqualStrings("../.." ++ sep ++ "out/", out);
 }
 
 test "build: a `.gr` entry routes to the lang front-end" {
