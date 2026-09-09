@@ -276,6 +276,15 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-repl",
         .root_module = repl_mod,
     });
+    const terminal_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/terminal.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const terminal_test = b.addTest(.{
+        .name = "test-cli-terminal",
+        .root_module = terminal_mod,
+    });
     const line_editor_mod = b.createModule(.{
         .root_source_file = b.path("apps/gero-cli/line_editor.zig"),
         .target = target,
@@ -389,6 +398,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(build_cache_test).step);
     test_step.dependOn(&b.addRunArtifact(compile_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(repl_test).step);
+    test_step.dependOn(&b.addRunArtifact(terminal_test).step);
     test_step.dependOn(&b.addRunArtifact(line_editor_test).step);
     test_step.dependOn(&b.addRunArtifact(gr_diagnostics_test).step);
     test_step.dependOn(&b.addRunArtifact(lsp_protocol_test).step);
