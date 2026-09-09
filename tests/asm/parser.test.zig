@@ -1305,3 +1305,35 @@ test "parser: struct comment capture releases everything under OOM" {
         pt.deinit();
     }
 }
+
+// ---------- line terminators ----------
+
+test "parser: CRLF terminates a statement the same way LF does" {
+    // asm.md §2: "CRLF and LF are both accepted". The lexer honoured
+    // that and the parser is a separate path over the same bytes, so
+    // this pins the two agreeing — a Windows editor's output has to
+    // parse into the same program.
+    const lf = "main:\n  mov $2A, r1\n  int $10\n  hlt\n";
+    const crlf = "main:\r\n  mov $2A, r1\r\n  int $10\r\n  hlt\r\n";
+
+    var lf_tree = try parseSource(lf);
+    defer lf_tree.deinit();
+    var crlf_tree = try parseSource(crlf);
+    defer crlf_tree.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), lf_tree.errors.len);
+    try std.testing.expectEqual(@as(usize, 0), crlf_tree.errors.len);
+    try std.testing.expectEqual(
+        lf_tree.program.statements.len,
+        crlf_tree.program.statements.len,
+    );
+}
+
+test "parser: a bare CR is not a line terminator" {
+    // The other half of the same rule: "classic-Mac CR is not"
+    // accepted. Skipping it as whitespace would silently join two
+    // statements into one.
+    var tree = try parseSource("main:\r  hlt\r");
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+}

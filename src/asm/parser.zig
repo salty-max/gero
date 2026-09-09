@@ -684,8 +684,11 @@ fn skipStructSeparators(
 ) std.mem.Allocator.Error!void {
     while (state.index < state.input.len) {
         const b = state.input[state.index];
-        if (b == ' ' or b == '\t' or b == '\n') {
+        const nl = lineBreakLen(state.input, state.index);
+        if (b == ' ' or b == '\t') {
             state.advance(1);
+        } else if (nl != 0) {
+            state.advance(nl);
         } else if (b == ';') {
             const start = state.index;
             while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
@@ -1157,10 +1160,21 @@ fn tryParseInstruction(
 /// True if the cursor sits on a statement terminator (newline,
 /// EOF, or a `;`-comment start). Used to recognize zero-operand
 /// instructions like `hlt` without parsing further.
+/// How many bytes of line terminator sit at `i`, or 0 for none.
+///
+/// CRLF and LF are both terminators; a bare CR is not (asm.md §2). A
+/// lone CR therefore returns 0 and is left for the caller to refuse,
+/// rather than being skipped as though it were whitespace.
+fn lineBreakLen(input: []const u8, i: usize) usize {
+    if (input[i] == '\n') return 1;
+    if (input[i] == '\r' and i + 1 < input.len and input[i + 1] == '\n') return 2;
+    return 0;
+}
+
 fn atStatementEnd(state: *core.ParseState) bool {
     if (state.index >= state.input.len) return true;
     const b = state.input[state.index];
-    return b == '\n' or b == ';';
+    return b == ';' or lineBreakLen(state.input, state.index) != 0;
 }
 
 fn parseOperand(
@@ -1635,8 +1649,11 @@ fn skipBlanksInLine(state: *core.ParseState) void {
 fn skipSeparators(state: *core.ParseState) void {
     while (state.index < state.input.len) {
         const b = state.input[state.index];
-        if (b == ' ' or b == '\t' or b == '\n') {
+        const nl = lineBreakLen(state.input, state.index);
+        if (b == ' ' or b == '\t') {
             state.advance(1);
+        } else if (nl != 0) {
+            state.advance(nl);
         } else if (b == ';') {
             while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
         } else {
@@ -1654,8 +1671,11 @@ fn skipSeparatorsCapturingComments(
 ) std.mem.Allocator.Error!void {
     while (state.index < state.input.len) {
         const b = state.input[state.index];
-        if (b == ' ' or b == '\t' or b == '\n') {
+        const nl = lineBreakLen(state.input, state.index);
+        if (b == ' ' or b == '\t') {
             state.advance(1);
+        } else if (nl != 0) {
+            state.advance(nl);
         } else if (b == ';') {
             const start = state.index;
             while (state.index < state.input.len and state.input[state.index] != '\n') state.advance(1);
