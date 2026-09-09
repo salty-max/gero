@@ -1,4 +1,5 @@
 const std = @import("std");
+const include_paths = @import("../include_paths.zig");
 
 const Io = std.Io;
 const Dir = Io.Dir;
@@ -217,6 +218,14 @@ pub const Source = union(enum) {
     virtual: *const Overlay,
 };
 
+/// Which path grammar this run's files are addressed by.
+fn pathKind(ctx: *const Context) include_paths.Kind {
+    return switch (ctx.source) {
+        .disk => .host,
+        .virtual => .virtual,
+    };
+}
+
 const Context = struct {
     source: Source,
     allocator: std.mem.Allocator,
@@ -356,12 +365,15 @@ fn resolveOne(
         break :blk owned_requested.?;
     };
 
-    const absolute = if (std.fs.path.isAbsolute(with_ext))
+    // The virtual set is addressed by POSIX-shaped keys on every
+    // host; joining with a backslash would miss every one of them.
+    const kind = pathKind(ctx);
+    const absolute = if (include_paths.isAbsolute(kind, with_ext))
         try ctx.allocator.dupe(u8, with_ext)
     else if (base_dir) |dir|
-        try std.fs.path.join(ctx.allocator, &.{ dir, with_ext })
+        try include_paths.join(kind, ctx.allocator, &.{ dir, with_ext })
     else
-        try std.fs.path.join(ctx.allocator, &.{ ".", with_ext });
+        try include_paths.join(kind, ctx.allocator, &.{ ".", with_ext });
     defer ctx.allocator.free(absolute);
 
     const canonical = (try canonicalize(ctx, absolute)) orelse {
@@ -550,7 +562,7 @@ fn processSource(
                 file_id,
                 @intCast(line_start),
             );
-            const this_dir = std.fs.path.dirname(canonical) orelse ".";
+            const this_dir = include_paths.dirname(pathKind(ctx), canonical) orelse ".";
             if (try resolveOne(ctx, target, this_dir, depth + 1, sentinel_start)) |target_id| {
                 try ctx.imports.append(ctx.allocator, .{ .from = file_id, .to = target_id });
             }
