@@ -1,4 +1,5 @@
 const std = @import("std");
+const include_paths = @import("../include_paths.zig");
 const knit = @import("knit");
 const core = knit.core;
 
@@ -276,6 +277,14 @@ pub const Source = union(enum) {
     virtual: *const Overlay,
 };
 
+/// Which path grammar this run's files are addressed by.
+fn pathKind(ctx: *const Context) include_paths.Kind {
+    return switch (ctx.source) {
+        .disk => .host,
+        .virtual => .virtual,
+    };
+}
+
 const Context = struct {
     source: Source,
     allocator: std.mem.Allocator,
@@ -438,12 +447,15 @@ fn resolveOne(
         return;
     }
 
-    const absolute = if (std.fs.path.isAbsolute(requested))
+    // The virtual set is addressed by POSIX-shaped keys on every
+    // host; joining with a backslash would miss every one of them.
+    const kind = pathKind(ctx);
+    const absolute = if (include_paths.isAbsolute(kind, requested))
         try ctx.allocator.dupe(u8, requested)
     else if (base_dir) |dir|
-        try std.fs.path.join(ctx.allocator, &.{ dir, requested })
+        try include_paths.join(kind, ctx.allocator, &.{ dir, requested })
     else
-        try std.fs.path.join(ctx.allocator, &.{ ".", requested });
+        try include_paths.join(kind, ctx.allocator, &.{ ".", requested });
     defer ctx.allocator.free(absolute);
 
     const canonical = (try canonicalize(ctx, absolute)) orelse {
@@ -565,7 +577,7 @@ fn processSource(
                 file_id,
                 @intCast(line_start),
             );
-            const this_dir = std.fs.path.dirname(canonical) orelse ".";
+            const this_dir = include_paths.dirname(pathKind(ctx), canonical) orelse ".";
             try resolveOne(ctx, target, this_dir, depth + 1, sentinel_start);
             // Advance past the include directive's newline (if any).
             const after_newline = if (i < content.len) i + 1 else i;

@@ -18,6 +18,11 @@ pub const gx = @import("gx.zig");
 /// Virtual machine: register file, memory, dispatch.
 pub const vm = @import("vm/vm.zig");
 
+/// How a set of source files is addressed. An embedder supplying a
+/// virtual overlay builds its keys the way both front-ends resolve
+/// them: POSIX-shaped, on every host.
+pub const include_paths = @import("include_paths.zig");
+
 /// Assembler: `.gas` source → `.gx` bytecode.
 pub const asm_ = @import("asm.zig");
 
