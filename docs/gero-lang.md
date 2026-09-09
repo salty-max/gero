@@ -2566,6 +2566,12 @@ use abs as absolute from math  -- selective + rename
 Resolution:
 - Bare name (`math`) → look up in stdlib first, then in current dir
 - Quoted path (`"./foo"`) → relative to the importing file
+- **Case-sensitive on every host**, whatever the filesystem does.
+  macOS and Windows volumes usually ignore case, so `use "./Lib"`
+  would find `lib.gr` there and nothing on Linux; that mismatch is
+  `E_USE_CASE_MISMATCH` instead, reported where it is written. Absolute
+  paths are exempt — they are the author's own, and may traverse a
+  symlink whose real name differs.
 - No transitive re-exports — if you import a module, only its direct
   exports are visible
 

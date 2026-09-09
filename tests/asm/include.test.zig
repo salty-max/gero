@@ -431,3 +431,40 @@ test "resolveIncludesOverlaid: a file absent from the overlay still comes from d
 
     try std.testing.expect(std.mem.indexOf(u8, fused.source, "$11") != null);
 }
+
+// ---------- spelling ----------
+
+test "include: a mis-cased target is refused, not resolved" {
+    // macOS and Windows volumes answer `Utils.gas` with `utils.gas`,
+    // so without this a program assembles here and fails on Linux.
+    // On a case-sensitive volume the file is simply absent, and the
+    // refusal is the same either way.
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("utils.gas", "utils:\n  ret\n");
+    try fx.write("main.gas", "include \"Utils.gas\"\nmain:\n  hlt\n");
+
+    const path = try fx.pathOf("main.gas");
+    defer alloc.free(path);
+    var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, path);
+    defer fused.deinit();
+
+    try std.testing.expect(fused.errors.len > 0);
+    const code = fused.errors[0].code;
+    try std.testing.expect(code == .include_case_mismatch or code == .include_not_found);
+}
+
+test "include: the spelling the file actually has still resolves" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("utils.gas", "utils:\n  ret\n");
+    try fx.write("main.gas", "include \"utils.gas\"\nmain:\n  hlt\n");
+
+    const path = try fx.pathOf("main.gas");
+    defer alloc.free(path);
+    var fused = try gero.asm_.resolveIncludes(std.testing.io, alloc, path);
+    defer fused.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), fused.errors.len);
+    try std.testing.expect(std.mem.indexOf(u8, fused.source, "utils:") != null);
+}

@@ -186,6 +186,11 @@ pub const ErrorCode = enum(u8) {
     /// window. Either way the bump allocator would hand out addresses
     /// that get overwritten (loader invariant — ISA §7.1).
     invalid_heap_base = 20,
+    /// E021: `include` target resolved to a file spelled differently —
+    /// a case-insensitive filesystem answering a request the spelling
+    /// does not match. Refused, so a program that assembles on one
+    /// host assembles on every host.
+    include_case_mismatch = 21,
 
     /// Map a lexer-level `ParseError.message` to the asm spec §7
     /// code, or `null` when the message isn't one of the four
@@ -203,7 +208,7 @@ pub const ErrorCode = enum(u8) {
         return null;
     }
 
-    /// Render as `E001`..`E016`. Caller owns nothing — the
+    /// Render as `E001`..`E021`. Caller owns nothing — the
     /// returned slice has static storage.
     pub fn shortLabel(self: ErrorCode) []const u8 {
         // Map by value rather than a giant switch to keep the
@@ -230,6 +235,7 @@ pub const ErrorCode = enum(u8) {
             .unmatched_endif => "E018",
             .unclosed_conditional => "E019",
             .invalid_heap_base => "E020",
+            .include_case_mismatch => "E021",
         };
     }
 };
@@ -420,6 +426,27 @@ fn hasFilesystem() bool {
     return canonicalization != .none;
 }
 
+/// Whether `path`'s parent directory holds an entry spelled exactly
+/// like its basename.
+///
+/// A case-insensitive volume answers `access("Utils.gas")` for a file
+/// named `utils.gas`, which is the trap the spelling rule exists to
+/// close. Listing the directory is the only way to see the name the
+/// filesystem actually stored.
+fn namedExactly(io: Io, path: []const u8) !bool {
+    const name = std.fs.path.basenamePosix(path);
+    if (name.len == 0) return false;
+    const parent = std.fs.path.dirnamePosix(path) orelse ".";
+
+    var dir = Dir.cwd().openDir(io, parent, .{ .iterate = true }) catch return false;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch return false) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return true;
+    }
+    return false;
+}
+
 fn canonicalize(ctx: *Context, absolute: []const u8) ResolveError!?[:0]u8 {
     switch (ctx.source) {
         .disk => |d| {
@@ -428,15 +455,13 @@ fn canonicalize(ctx: *Context, absolute: []const u8) ResolveError!?[:0]u8 {
             if (comptime canonicalization == .none) unreachable;
             if (comptime canonicalization == .lexical) {
                 const normalized = try std.fs.path.resolvePosix(ctx.allocator, &.{absolute});
-                errdefer ctx.allocator.free(normalized);
-                // `realpath` reported a missing file as FileNotFound;
-                // lexical normalization touches nothing, so existence
-                // has to be asked for separately.
-                Dir.cwd().access(d.io, normalized, .{}) catch {
-                    ctx.allocator.free(normalized);
-                    return null;
-                };
                 defer ctx.allocator.free(normalized);
+                // Lexical normalization echoes the spelling it was
+                // given, so unlike `realpath` it cannot report either
+                // "missing" or "spelled differently" on its own. The
+                // directory answers both: an entry has to exist under
+                // exactly this name.
+                if (!(try namedExactly(d.io, normalized))) return null;
                 return try ctx.allocator.dupeZ(u8, normalized);
             }
             return Dir.cwd().realPathFileAlloc(d.io, absolute, ctx.allocator) catch |err| switch (err) {
@@ -499,6 +524,24 @@ fn resolveOne(
         });
         return;
     };
+    // Only a relative request resolved against a parent: an absolute
+    // path is the user's own, and may legitimately traverse a symlink
+    // whose real name differs (`/tmp` is `/private/tmp` on macOS). The
+    // portability hazard is the spelling written in source text.
+    const check_spelling = base_dir != null and !include_paths.isAbsolute(pathKind(ctx), requested);
+    if (check_spelling and !include_paths.spellingMatches(pathKind(ctx), requested, canonical)) {
+        ctx.allocator.free(canonical);
+        try ctx.errors.append(ctx.allocator, .{
+            .code = .include_case_mismatch,
+            .parse_error = core.parseError(
+                "include",
+                include_site_offset,
+                "include target is spelled differently on disk",
+                .{ .expected = "the file's own spelling", .actual = requested, .kind = .semantic },
+            ),
+        });
+        return;
+    }
 
     for (ctx.in_progress.items) |p| {
         if (std.mem.eql(u8, p, canonical)) {

@@ -40,3 +40,41 @@ pub fn dirname(kind: Kind, path: []const u8) ?[]const u8 {
         .virtual => std.fs.path.dirnamePosix(path),
     };
 }
+
+/// Whether `requested` names the file the way the filesystem spells it.
+///
+/// A case-insensitive volume resolves `Utils.gas` to `utils.gas`, so a
+/// program builds on macOS and Windows and fails on Linux with a
+/// diagnostic about a file that plainly exists. Comparing the request
+/// against what canonicalization returned catches that at the point of
+/// the include rather than on someone else's machine.
+///
+/// Only the components the request actually supplied are compared, and
+/// only those after its last `.` or `..` — everything before one is
+/// cancelled by it, and everything outside the request came from the
+/// filesystem and is already spelled correctly by construction.
+pub fn spellingMatches(kind: Kind, requested: []const u8, canonical: []const u8) bool {
+    var tail = requested;
+    // Walk past the last traversal segment; what follows it appears
+    // verbatim in the canonical path.
+    var walk = componentsOf(kind, requested);
+    var consumed: usize = 0;
+    while (walk.next()) |part| {
+        consumed += part.len + 1;
+        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) {
+            tail = requested[@min(consumed, requested.len)..];
+        }
+    }
+    if (tail.len == 0) return true;
+
+    // The canonical path has to end with exactly that spelling, at a
+    // component boundary.
+    if (!std.mem.endsWith(u8, canonical, tail)) return false;
+    if (canonical.len == tail.len) return true;
+    const boundary = canonical[canonical.len - tail.len - 1];
+    return boundary == '/' or (kind == .host and boundary == std.fs.path.sep);
+}
+
+fn componentsOf(kind: Kind, path: []const u8) std.mem.SplitIterator(u8, .any) {
+    return std.mem.splitAny(u8, path, if (kind == .host) "/\\" else "/");
+}

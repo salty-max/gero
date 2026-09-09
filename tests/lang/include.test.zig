@@ -335,3 +335,36 @@ test "resolveUseImportsOverlaid: a null overlay resolves exactly as `resolveUseI
 
     try std.testing.expectEqualStrings(plain.source, overlaid.source);
 }
+
+test "resolveUseImports: a mis-cased target is refused, not resolved" {
+    // The same rule as asm, for the same reason: a case-insensitive
+    // volume would resolve this and Linux would not, so a program that
+    // compiles here has to compile there.
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
+    try fx.write("main.gr", "use \"./Lib\"\ndef main()\n  print helper()\nend\n");
+
+    const path = try fx.pathOf("main.gr");
+    defer alloc.free(path);
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, path);
+    defer fused.deinit();
+
+    try std.testing.expect(fused.errors.len > 0);
+    const kind = fused.errors[0].kind;
+    try std.testing.expect(kind == .case_mismatch or kind == .not_found);
+}
+
+test "resolveUseImports: the spelling the file actually has still resolves" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
+    try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend\n");
+
+    const path = try fx.pathOf("main.gr");
+    defer alloc.free(path);
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, path);
+    defer fused.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), fused.errors.len);
+}

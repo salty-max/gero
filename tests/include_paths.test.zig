@@ -46,3 +46,36 @@ test "include_paths.dirname: a virtual key splits on forward slashes only" {
         include_paths.dirname(.virtual, "banks\\bank0.gas"),
     );
 }
+
+test "include_paths.spellingMatches: a mis-cased request does not match" {
+    // The property: what builds on a case-insensitive volume has to be
+    // what builds on a case-sensitive one, so the spelling is compared
+    // rather than left to the filesystem.
+    try testing.expect(include_paths.spellingMatches(.host, "utils.gas", "/proj/utils.gas"));
+    try testing.expect(!include_paths.spellingMatches(.host, "Utils.gas", "/proj/utils.gas"));
+    try testing.expect(!include_paths.spellingMatches(.host, "utils.GAS", "/proj/utils.gas"));
+}
+
+test "include_paths.spellingMatches: only the components the request supplied" {
+    // The parent's own directories came from the filesystem and are
+    // already spelled correctly — comparing them would reject every
+    // include on a path with a capital letter in it.
+    try testing.expect(include_paths.spellingMatches(.host, "utils.gas", "/Users/Max/proj/utils.gas"));
+    try testing.expect(include_paths.spellingMatches(.host, "banks/bank0.gas", "/Proj/banks/bank0.gas"));
+    try testing.expect(!include_paths.spellingMatches(.host, "Banks/bank0.gas", "/Proj/banks/bank0.gas"));
+}
+
+test "include_paths.spellingMatches: traversal cancels what precedes it" {
+    // `..` collapses the segment before it, so that segment's spelling
+    // never reaches the canonical path and cannot be compared.
+    try testing.expect(include_paths.spellingMatches(.host, "../lib/util.gas", "/proj/lib/util.gas"));
+    try testing.expect(!include_paths.spellingMatches(.host, "../lib/Util.gas", "/proj/lib/util.gas"));
+    try testing.expect(include_paths.spellingMatches(.host, "./util.gas", "/proj/util.gas"));
+    try testing.expect(include_paths.spellingMatches(.host, "WRONG/../util.gas", "/proj/util.gas"));
+}
+
+test "include_paths.spellingMatches: a component boundary is required" {
+    // "tils.gas" ends the canonical path too; a suffix match that
+    // ignored boundaries would accept it.
+    try testing.expect(!include_paths.spellingMatches(.host, "tils.gas", "/proj/utils.gas"));
+}
