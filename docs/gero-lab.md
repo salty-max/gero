@@ -130,7 +130,7 @@ retries rather than meeting an instance that has to be discarded.
 | `gero_compile(name_ptr, name_len) -> Result` | `.gr` → `.gx`, resolving `use` imports from the virtual file set (§4.2) |
 | `gero_check(name_ptr, name_len, lang) -> Result` | Diagnostics only, no image — the editor's fast path |
 | `gero_format(src_ptr, src_len, lang) -> Result` | Canonical formatting of one buffer, matching `gero fmt` |
-| `gero_disasm(gx_ptr, gx_len, bank) -> Result` | `.gx` → annotated assembly; `bank` of `0xFFFFFFFF` selects the base image |
+| `gero_disasm(gx_ptr, gx_len, bank, show_bytes) -> Result` | `.gx` → annotated assembly; `bank` of `0xFFFFFFFF` selects the base image, and a non-zero `show_bytes` adds the hex column beside each instruction |
 | `gero_debug_info(gx_ptr, gx_len) -> Result` | The symbol and line tables (§6) as JSON |
 
 A `Result` carries a status, an optional payload (`.gx` bytes or
