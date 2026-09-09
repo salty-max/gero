@@ -127,8 +127,11 @@ jobs:
           key: zig-${{ runner.os }}-wasi-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'apps/**', 'tests/**') }}
           restore-keys: |
             zig-${{ runner.os }}-wasi-
+      # `--summary all` because a gate whose point is "it executed
+      # somewhere new" must show how much it executed. A silent pass
+      # and a pass that skipped everything look identical otherwise.
       - name: test-wasi (run the suite under wasmtime)
-        run: zig build test-wasi -fwasmtime -freference-trace
+        run: zig build test-wasi -fwasmtime -freference-trace --summary all
 
   examples:
     name: Examples (${{ matrix.os }})
