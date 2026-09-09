@@ -179,7 +179,12 @@ fn entryPath(fused: gero.lang.FusedSource) []const u8 {
 /// The annotations are what make the text addressable — a debugger
 /// maps a click to a breakpoint through the gutter, and a plain
 /// instruction listing gives it nothing to map.
-pub fn disassemble(image: []const u8, bank: u32) *const Result {
+///
+/// `show_bytes` adds the hex column beside each instruction. It has to
+/// come from here: the gutter carries CPU addresses, so a host holding
+/// the `.gx` cannot slice an instruction's bytes out of it without
+/// knowing where the image section starts.
+pub fn disassemble(image: []const u8, bank: u32, show_bytes: bool) *const Result {
     const arena = session.allocator();
     const header = gero.disasm.parseHeader(image) catch return session.fail(.bad_argument);
 
@@ -200,6 +205,7 @@ pub fn disassemble(image: []const u8, bank: u32) *const Result {
     var out = std.Io.Writer.Allocating.init(arena);
     gero.disasm.writeBytesPretty(arena, &out.writer, region, .{
         .base_addr = if (base_image) 0x0000 else abi.bank_window_base,
+        .show_bytes = show_bytes,
         .entry_addr = if (base_image) header.entry_point else null,
         .symbols = symbols,
     }) catch return session.fail(.out_of_memory);
@@ -390,7 +396,7 @@ test "disassemble: the base image renders with an address gutter, symbols and th
     defer testing.allocator.free(image);
 
     session.init(0);
-    const r = disassemble(image, abi.no_bank);
+    const r = disassemble(image, abi.no_bank, false);
     try testing.expectEqual(@intFromEnum(Status.ok), r.status);
     const text = session.payloadOf(r);
 
@@ -416,6 +422,28 @@ test "disassemble: bank 0 is a window, not a request for the base image" {
     // way to ask for the base image.
     try testing.expectEqual(
         @intFromEnum(Status.bad_argument),
-        disassemble(image, 0).status,
+        disassemble(image, 0, false).status,
     );
+}
+
+test "disassemble: the byte column is what a host cannot reconstruct itself" {
+    session.init(0);
+    try session.putFile("main.gas", "start:\n  mov $0041, r1\n  hlt\n");
+    const built = buildGas("main.gas", .image);
+    const image = try testing.allocator.dupe(u8, session.payloadOf(built));
+    defer testing.allocator.free(image);
+
+    session.init(0);
+    const plain = try testing.allocator.dupe(u8, session.payloadOf(disassemble(image, abi.no_bank, false)));
+    defer testing.allocator.free(plain);
+
+    session.init(0);
+    const with_bytes = session.payloadOf(disassemble(image, abi.no_bank, true));
+
+    // The gutter carries CPU addresses, not offsets into the `.gx`, so
+    // a host holding the file cannot slice an instruction's bytes out
+    // of it — the column has to come from here.
+    try testing.expect(with_bytes.len > plain.len);
+    try testing.expect(std.mem.indexOf(u8, with_bytes, "10 41 00 02") != null);
+    try testing.expect(std.mem.indexOf(u8, plain, "10 41 00 02") == null);
 }

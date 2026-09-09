@@ -159,11 +159,14 @@ export fn gero_format(src_ptr: u32, src_len: u32, lang: u32) *const Result {
 }
 
 /// Disassemble a `.gx` into annotated assembly. `bank` selects a bank
-/// window, or `abi.no_bank` for the base image.
-export fn gero_disasm(gx_ptr: u32, gx_len: u32, bank: u32) *const Result {
+/// window, or `abi.no_bank` for the base image. A non-zero `show_bytes`
+/// adds the hex column `gero disasm --show-bytes` prints, which a host
+/// cannot reconstruct: the addresses are CPU addresses, not offsets
+/// into the file it holds.
+export fn gero_disasm(gx_ptr: u32, gx_len: u32, bank: u32, show_bytes: u32) *const Result {
     if (session.begin()) |status| return session.fail(status);
     const image = session.slice(gx_ptr, gx_len) orelse return session.fail(.bad_argument);
-    return toolchain.disassemble(image, bank);
+    return toolchain.disassemble(image, bank, show_bytes != 0);
 }
 
 /// The debug tables from a `.gx`, as JSON: the symbols that drive a
