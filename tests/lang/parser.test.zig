@@ -1600,7 +1600,7 @@ test "parseAllModules: each module gets its own tree" {
     try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
     try fx.write("main.gr", "use \"./lib\"\n\ndef main()\n  print helper()\nend\n");
 
-    const path = try fx.tmp.dir.realPathFileAlloc(std.testing.io, "main.gr", std.testing.allocator);
+    const path = try util.tmpPath(std.testing.allocator, &fx.tmp, "main.gr");
     defer std.testing.allocator.free(path);
 
     var fused = try gero.lang.resolveUseImports(std.testing.io, std.testing.allocator, path);
@@ -1627,7 +1627,7 @@ test "parseAllModules: a span still resolves to the file that owns it" {
     try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
     try fx.write("main.gr", "use \"./lib\"\n\ndef main()\n  print helper()\nend\n");
 
-    const path = try fx.tmp.dir.realPathFileAlloc(std.testing.io, "main.gr", std.testing.allocator);
+    const path = try util.tmpPath(std.testing.allocator, &fx.tmp, "main.gr");
     defer std.testing.allocator.free(path);
 
     var fused = try gero.lang.resolveUseImports(std.testing.io, std.testing.allocator, path);

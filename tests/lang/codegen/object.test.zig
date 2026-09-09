@@ -362,7 +362,7 @@ test "skip_bodies: skipping a clean module's bodies builds the same image" {
         \\end
         \\
     );
-    const path = try fx.tmp.dir.realPathFileAlloc(std.testing.io, "main.gr", alloc);
+    const path = try util.tmpPath(alloc, &fx.tmp, "main.gr");
     defer alloc.free(path);
 
     var full = try buildGraph(path, &.{}, &.{}, &.{});

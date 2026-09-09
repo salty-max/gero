@@ -457,14 +457,30 @@ fn readContent(ctx: *Context, canonical: []const u8) ResolveError![]u8 {
 /// not exist. On disk that is its real path; in a virtual set it is the
 /// requested path with `.` and `..` folded out, since the set's keys
 /// are already the canonical names.
-/// Whether this target has a filesystem the resolver can reach.
+/// How this target turns a path into a file's identity.
 ///
-/// A freestanding build has none — `std.Io.Dir` does not even define
-/// `PATH_MAX` there — so the `.disk` branch below is compiled out
-/// rather than merely unused. Zig analyzes both arms of a runtime
-/// switch, so an ordinary `if` would not be enough.
+/// Identity is what the include graph is keyed on: two spellings of
+/// one file have to canonicalize equal, or the diamond case splices
+/// twice and the depth limit never terminates.
+///
+/// - `realpath` — the filesystem answers. Symlinks and `..` collapse,
+///   and aliasing is detected.
+/// - `lexical` — wasi, whose filesystem is preopened directories with
+///   no `realpath`. `.` and `..` collapse textually; two paths that
+///   reach one file through a symlink read as two files.
+/// - `none` — freestanding has no filesystem at all, so the `.disk`
+///   arm is compiled out rather than merely unused. Zig analyzes both
+///   arms of a runtime switch, so an ordinary `if` would not do.
+const Canonicalization = enum { realpath, lexical, none };
+
+const canonicalization: Canonicalization = switch (@import("builtin").target.os.tag) {
+    .freestanding => .none,
+    .wasi => .lexical,
+    else => .realpath,
+};
+
 fn hasFilesystem() bool {
-    return @import("builtin").target.os.tag != .freestanding;
+    return canonicalization != .none;
 }
 
 fn canonicalize(ctx: *Context, absolute: []const u8) ResolveError!?[:0]u8 {
@@ -472,7 +488,20 @@ fn canonicalize(ctx: *Context, absolute: []const u8) ResolveError!?[:0]u8 {
         .disk => |d| {
             // unreachable: a freestanding build never constructs `.disk`,
             // and the comptime guard keeps this arm out of that build.
-            if (comptime !hasFilesystem()) unreachable;
+            if (comptime canonicalization == .none) unreachable;
+            if (comptime canonicalization == .lexical) {
+                const normalized = try std.fs.path.resolvePosix(ctx.allocator, &.{absolute});
+                errdefer ctx.allocator.free(normalized);
+                // `realpath` reported a missing file as FileNotFound;
+                // lexical normalization touches nothing, so existence
+                // has to be asked for separately.
+                Dir.cwd().access(d.io, normalized, .{}) catch {
+                    ctx.allocator.free(normalized);
+                    return null;
+                };
+                defer ctx.allocator.free(normalized);
+                return try ctx.allocator.dupeZ(u8, normalized);
+            }
             return Dir.cwd().realPathFileAlloc(d.io, absolute, ctx.allocator) catch |err| switch (err) {
                 error.FileNotFound => null,
                 else => err,
