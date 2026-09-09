@@ -457,6 +457,29 @@ pub fn build(b: *std.Build) void {
             const t = makeTest(b, gero_mod, examples_opts, rel, cross_target, optimize);
             test_all.dependOn(&t.step);
         }
+
+        // The library's tests are not the thing users install. Compiling
+        // only those let the CLI's terminal handling stay POSIX-only
+        // while this gate reported every target green.
+        const cross_gero = b.createModule(.{
+            .root_source_file = b.path("src/gero.zig"),
+            .target = cross_target,
+            .optimize = optimize,
+        });
+        cross_gero.addImport("knit", knit_mod);
+        cross_gero.addOptions("build_options", lib_options);
+        const cross_cli = b.createModule(.{
+            .root_source_file = b.path("apps/gero-cli/main.zig"),
+            .target = cross_target,
+            .optimize = optimize,
+        });
+        cross_cli.addImport("gero", cross_gero);
+        cross_cli.addOptions("build_options", cli_options);
+        const cross_exe = b.addExecutable(.{
+            .name = b.fmt("gero-{s}-{s}", .{ @tagName(tq.cpu_arch.?), @tagName(tq.os_tag.?) }),
+            .root_module = cross_cli,
+        });
+        test_all.dependOn(&cross_exe.step);
     }
 
     // ----- Lint ------------------------------------------------------------
