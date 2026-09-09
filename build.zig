@@ -482,6 +482,21 @@ pub fn build(b: *std.Build) void {
         test_all.dependOn(&cross_exe.step);
     }
 
+    // ----- wasm32-wasi runtime tests ---------------------------------------
+    //
+    // `test-all` compiles for wasi and stops. Compiling proves the
+    // library builds for a target; it says nothing about how it behaves
+    // on one, and every other runtime test here runs natively. Needs
+    // `-fwasmtime` and wasmtime on PATH; without them the run step says
+    // so rather than silently passing.
+
+    const wasi_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
+    const test_wasi = b.step("test-wasi", "Run the test suite under wasmtime for wasm32-wasi");
+    for (test_files) |rel| {
+        const t = makeTest(b, gero_mod, examples_opts, rel, wasi_target, optimize);
+        test_wasi.dependOn(&b.addRunArtifact(t).step);
+    }
+
     // ----- Lint ------------------------------------------------------------
     //
     // The whole-tree lint runs through a single Zig binary that reads
