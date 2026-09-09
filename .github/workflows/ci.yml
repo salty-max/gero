@@ -35,14 +35,14 @@ jobs:
         run: zig build lint
 
   test:
-    name: Test (Linux, ${{ matrix.mode }})
-    runs-on: ubuntu-latest
-    # gero is pure Zig with no OS-specific I/O — runtime divergence
-    # across OSes is vanishingly rare. Cross-target *compile* on macOS,
-    # Windows, and wasm32-wasi is covered by the `cross-targets` job
-    # below; that catches platform-level breakage without paying for
-    # full test runs everywhere. If a consumer ever surfaces a
-    # macOS/Windows runtime regression, add OS cells back here.
+    name: Test (${{ matrix.os }}, ${{ matrix.mode }})
+    runs-on: ${{ matrix.os }}
+    # The VM is pure computation, but the CLI is not: include
+    # resolution, the manifest loader, the build cache and `gero init`
+    # all reach std.fs. Compiling for a target says nothing about how
+    # those behave on it, so Linux carries every release mode and the
+    # other two hosts carry Debug — enough to catch a path, line-ending
+    # or case-sensitivity divergence without quadrupling the matrix.
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +53,16 @@ jobs:
         # path takes review feedback from ~20 min to ~4 while every
         # mode still gates `main` on merge.
         mode: ${{ github.event_name == 'pull_request' && fromJSON('["Debug","ReleaseSmall"]') || fromJSON('["Debug","ReleaseSafe","ReleaseFast","ReleaseSmall"]') }}
+        os: [ubuntu-latest]
+        # macOS and Windows run Debug only. A release-mode difference
+        # that is also OS-specific is not a shape this codebase can
+        # produce — the modes differ in optimization, the hosts differ
+        # in filesystem behaviour, and Debug exercises the second.
+        include:
+          - os: macos-latest
+            mode: Debug
+          - os: windows-latest
+            mode: Debug
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
