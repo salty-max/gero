@@ -105,6 +105,31 @@ jobs:
       - name: test-all (compile-only on extra targets)
         run: zig build test-all -freference-trace
 
+  wasi:
+    name: wasm32-wasi runtime
+    runs-on: ubuntu-latest
+    # `cross-targets` compiles for wasi; this runs what it built.
+    # Every other runtime gate here executes natively, so without this
+    # the only evidence wasi works is that it type-checks.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: bytecodealliance/actions/wasmtime/setup@v1
+      - run: wasmtime --version
+      - name: Restore Zig cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            zig-out
+          key: zig-${{ runner.os }}-wasi-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'apps/**', 'tests/**') }}
+          restore-keys: |
+            zig-${{ runner.os }}-wasi-
+      - name: test-wasi (run the suite under wasmtime)
+        run: zig build test-wasi -fwasmtime -freference-trace
+
   examples:
     name: Examples (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
