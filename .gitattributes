@@ -1,0 +1,16 @@
+# Line endings are content in this repository, not formatting.
+#
+# `gero init` writes the files under apps/gero-cli/templates/ into a
+# user's project byte-for-byte, example programs are diffed against
+# their `.expected` output, and the golden corpus is compared byte-for-
+# byte against blessed images. A checkout that translated line endings
+# would change the bytes a user receives, not just how they look — on
+# Windows it emits a `tests/smoke.expected` the smoke test can never
+# match.
+
+* text=auto eol=lf
+
+# Compiled images and grammar artifacts: never translated, and never
+# diffed as text.
+*.gx binary
+*.wasm binary
