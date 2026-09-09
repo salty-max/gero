@@ -360,6 +360,12 @@ Rules:
 - Paths are resolved relative to the directory of the `.gas` file
   doing the include. No search path / no system include directory
   .
+- Resolution is **case-sensitive on every host**, whatever the
+  filesystem does. macOS and Windows volumes usually ignore case, so
+  `include "Utils.gas"` would find `utils.gas` there and nothing on
+  Linux; that mismatch is `E021` instead, reported where it is written.
+  Absolute paths are exempt — they are the author's own, and may
+  traverse a symlink whose real name differs.
 
 **Re-include semantics:** every `include` directive splices in
 the target's tokens, every time. If two files both `include
@@ -850,5 +856,6 @@ Common errors:
 | `E018` | `endif` without a matching `ifdef` / `ifndef` |
 | `E019` | `ifdef` / `ifndef` block left open at EOF (missing `endif`) |
 | `E020` | `heap $ADDR` points somewhere the program does not own — inside the emitted image, or inside the bank window of a banked program (loader invariant) |
+| `E021` | `include` target is spelled differently on disk — a case-insensitive filesystem answered a request that would not resolve elsewhere |
 
 Errors print with caret-style snippets (knit's `formatParseErrorPretty`).

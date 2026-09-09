@@ -134,18 +134,9 @@ fn includeDiagnostics(arena: std.mem.Allocator, fused: gero.lang.FusedSource) *c
     for (fused.errors) |e| {
         out.append(arena, .{
             .severity = .fatal,
-            .code = switch (e.kind) {
-                .cycle => "E_USE_CYCLE",
-                .depth_exceeded => "E_USE_DEPTH",
-                .not_found => "E_USE_NOT_FOUND",
-                .duplicate_alias => "E_USE_DUPLICATE_ALIAS",
-            },
-            .message = switch (e.kind) {
-                .cycle => "`use` cycle detected",
-                .depth_exceeded => "`use` depth exceeds 32 — likely runaway recursion",
-                .not_found => "`use` target is not in the file set",
-                .duplicate_alias => "import alias is bound to two different targets",
-            },
+            .code = gero.lang.includeErrorCode(e.kind),
+            .message = gero.lang.includeErrorMessage(arena, e.kind, e.requested) catch
+                return session.fail(.out_of_memory),
             .span = .{ .start = e.site_offset, .end = e.site_offset },
         }) catch return session.fail(.out_of_memory);
     }

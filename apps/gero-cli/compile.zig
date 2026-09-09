@@ -351,18 +351,8 @@ fn renderIncludeErrors(
 ) !void {
     var diags_list: std.ArrayList(gero.lang.Diagnostic) = .empty;
     for (fused.errors) |e| {
-        const code: []const u8 = switch (e.kind) {
-            .cycle => "E_USE_CYCLE",
-            .depth_exceeded => "E_USE_DEPTH",
-            .not_found => "E_USE_NOT_FOUND",
-            .duplicate_alias => "E_USE_DUPLICATE_ALIAS",
-        };
-        const msg = switch (e.kind) {
-            .cycle => try std.fmt.allocPrint(arena, "`use` cycle detected on `{s}`", .{e.requested}),
-            .depth_exceeded => try std.fmt.allocPrint(arena, "`use` depth exceeds 32 on `{s}` — likely runaway recursion", .{e.requested}),
-            .not_found => try std.fmt.allocPrint(arena, "`use` target file not found: `{s}`", .{e.requested}),
-            .duplicate_alias => try std.fmt.allocPrint(arena, "import alias `{s}` is bound to two different targets", .{e.requested}),
-        };
+        const code = gero.lang.includeErrorCode(e.kind);
+        const msg = try gero.lang.includeErrorMessage(arena, e.kind, e.requested);
         try diags_list.append(arena, .{
             .severity = .fatal,
             .code = code,

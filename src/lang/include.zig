@@ -144,7 +144,42 @@ pub const IncludeErrorKind = enum {
     /// `use X as Y` and `use Z as Y` bind the same alias `Y` to two
     /// different targets.
     duplicate_alias,
+    /// The target resolved to a file spelled differently — a
+    /// case-insensitive filesystem answering a request whose spelling
+    /// does not match. Refused, so a program that compiles on one host
+    /// compiles on every host.
+    case_mismatch,
 };
+
+/// The `E_USE_*` code a kind renders as, per lang-diagnostics.md.
+///
+/// Lives here rather than at each call site: the CLI reports these
+/// from two places and the codes are a documented contract, so one
+/// spelling of them is the point.
+pub fn includeErrorCode(kind: IncludeErrorKind) []const u8 {
+    return switch (kind) {
+        .cycle => "E_USE_CYCLE",
+        .depth_exceeded => "E_USE_DEPTH",
+        .not_found => "E_USE_NOT_FOUND",
+        .duplicate_alias => "E_USE_DUPLICATE_ALIAS",
+        .case_mismatch => "E_USE_CASE_MISMATCH",
+    };
+}
+
+/// The user-facing text for one include error. Caller owns the result.
+pub fn includeErrorMessage(
+    allocator: std.mem.Allocator,
+    kind: IncludeErrorKind,
+    requested: []const u8,
+) std.mem.Allocator.Error![]u8 {
+    return switch (kind) {
+        .cycle => std.fmt.allocPrint(allocator, "`use` cycle detected on `{s}`", .{requested}),
+        .depth_exceeded => std.fmt.allocPrint(allocator, "`use` depth exceeds 32 on `{s}` — likely runaway recursion", .{requested}),
+        .not_found => std.fmt.allocPrint(allocator, "`use` target file not found: `{s}`", .{requested}),
+        .duplicate_alias => std.fmt.allocPrint(allocator, "import alias `{s}` is bound to two different targets", .{requested}),
+        .case_mismatch => std.fmt.allocPrint(allocator, "`use` target `{s}` is spelled differently on disk — this filesystem ignores case, another will not", .{requested}),
+    };
+}
 
 /// One error from the include-resolution phase. Carries the
 /// fused-source offset of the offending `use` directive so the
@@ -380,6 +415,16 @@ fn resolveOne(
         try recordError(ctx, .not_found, site_offset, requested);
         return null;
     };
+    // Only a relative request resolved against a parent: an absolute
+    // path is the user's own, and may legitimately traverse a symlink
+    // whose real name differs (`/tmp` is `/private/tmp` on macOS). The
+    // portability hazard is the spelling written in source text.
+    const check_spelling = base_dir != null and !include_paths.isAbsolute(pathKind(ctx), with_ext);
+    if (check_spelling and !include_paths.spellingMatches(pathKind(ctx), with_ext, canonical)) {
+        ctx.allocator.free(canonical);
+        try recordError(ctx, .case_mismatch, site_offset, requested);
+        return null;
+    }
 
     // Cycle check first — a file in `emitted` is also in `in_progress`
     // mid-recursion, so a cyclic re-entry must be caught here before the
@@ -483,6 +528,27 @@ fn hasFilesystem() bool {
     return canonicalization != .none;
 }
 
+/// Whether `path`'s parent directory holds an entry spelled exactly
+/// like its basename.
+///
+/// A case-insensitive volume answers `access("Utils.gas")` for a file
+/// named `utils.gas`, which is the trap the spelling rule exists to
+/// close. Listing the directory is the only way to see the name the
+/// filesystem actually stored.
+fn namedExactly(io: Io, path: []const u8) !bool {
+    const name = std.fs.path.basenamePosix(path);
+    if (name.len == 0) return false;
+    const parent = std.fs.path.dirnamePosix(path) orelse ".";
+
+    var dir = Dir.cwd().openDir(io, parent, .{ .iterate = true }) catch return false;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch return false) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return true;
+    }
+    return false;
+}
+
 fn canonicalize(ctx: *Context, absolute: []const u8) ResolveError!?[:0]u8 {
     switch (ctx.source) {
         .disk => |d| {
@@ -491,15 +557,13 @@ fn canonicalize(ctx: *Context, absolute: []const u8) ResolveError!?[:0]u8 {
             if (comptime canonicalization == .none) unreachable;
             if (comptime canonicalization == .lexical) {
                 const normalized = try std.fs.path.resolvePosix(ctx.allocator, &.{absolute});
-                errdefer ctx.allocator.free(normalized);
-                // `realpath` reported a missing file as FileNotFound;
-                // lexical normalization touches nothing, so existence
-                // has to be asked for separately.
-                Dir.cwd().access(d.io, normalized, .{}) catch {
-                    ctx.allocator.free(normalized);
-                    return null;
-                };
                 defer ctx.allocator.free(normalized);
+                // Lexical normalization echoes the spelling it was
+                // given, so unlike `realpath` it cannot report either
+                // "missing" or "spelled differently" on its own. The
+                // directory answers both: an entry has to exist under
+                // exactly this name.
+                if (!(try namedExactly(d.io, normalized))) return null;
                 return try ctx.allocator.dupeZ(u8, normalized);
             }
             return Dir.cwd().realPathFileAlloc(d.io, absolute, ctx.allocator) catch |err| switch (err) {

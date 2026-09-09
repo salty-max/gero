@@ -112,6 +112,12 @@ pub const Located = include_mod.Located;
 pub const IncludeError = include_mod.IncludeError;
 /// Discriminator for `IncludeError`.
 pub const IncludeErrorKind = include_mod.IncludeErrorKind;
+
+/// The `E_USE_*` code an include error renders as (lang-diagnostics.md).
+pub const includeErrorCode = include_mod.includeErrorCode;
+
+/// The user-facing text for one include error. Caller owns the result.
+pub const includeErrorMessage = include_mod.includeErrorMessage;
 /// Walk the `use "..."` graph from `root_path`, returning fused
 /// source + source map.
 pub const resolveUseImports = include_mod.resolveUseImports;

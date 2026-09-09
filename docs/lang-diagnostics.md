@@ -181,6 +181,31 @@ exactly one suggestion or none.
 Every diagnostic carries one of the codes below. Codes are stable
 across compiler versions; renaming requires a deprecation cycle.
 
+### 5.0 Module resolution (E_USE_*)
+
+Errors raised while resolving the `use` graph, before any file is
+parsed. They name the path as written, since that is what the author
+has to change.
+
+| Code | Meaning |
+|------|---------|
+| `E_USE_NOT_FOUND` | The target does not exist, or is outside the file set. |
+| `E_USE_CYCLE` | The target imports the importer, transitively. |
+| `E_USE_DEPTH` | The graph is deeper than 32 — a runaway import chain. |
+| `E_USE_DUPLICATE_ALIAS` | `use X as Y` and `use Z as Y` bind one alias to two targets. |
+| `E_USE_CASE_MISMATCH` | The target exists but is spelled differently on disk. |
+
+`E_USE_CASE_MISMATCH` is the portability one. macOS and Windows
+volumes usually ignore case, so `use "./Lib"` finds `lib.gr` there and
+nothing on Linux. Resolution is therefore case-sensitive on every host:
+a program that compiles anywhere compiles everywhere, and a mis-cased
+import is refused where it is written rather than on someone else's
+machine.
+
+It applies to relative imports — the spelling in source text. An
+absolute path is the author's own and may traverse a symlink whose real
+name differs.
+
 ### 5.1 Parser (E_SYNTAX_*)
 
 Errors raised during tokenization or recursive-descent parsing.
