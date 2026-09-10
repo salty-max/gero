@@ -171,8 +171,8 @@ test "boot: banked program installs the bank pool" {
     try std.testing.expect(vm.banks != null);
     try std.testing.expectEqual(@as(u8, 2), vm.banks.?.bank_count);
     try std.testing.expectEqual(@as(u8, 1), vm.banks.?.sram_bank_count);
-    try std.testing.expectEqual(@as(u8, 0xAA), vm.banks.?.readByte(0, 0xC000));
-    try std.testing.expectEqual(@as(u8, 0xBB), vm.banks.?.readByte(1, 0xC000));
+    try std.testing.expectEqual(@as(u8, 0xAA), vm.banks.?.readByte(0, 0xBE00));
+    try std.testing.expectEqual(@as(u8, 0xBB), vm.banks.?.readByte(1, 0xBE00));
 }
 
 test "boot + run: nop nop hlt program executes and halts" {
@@ -267,19 +267,19 @@ test "loader: heap_base zero means no heap, not an overlap" {
 test "loader: rejects a banked program's heap_base inside the bank window" {
     var buf: [24]u8 = undefined;
     const gx = buildGx(&buf, 0x0004, 0x0001, 0, 8, 1, 0);
-    setHeapBase(gx, 0xC000);
+    setHeapBase(gx, 0xBE00);
     // The bank window mirrors bank `mb`; a switch would replace every
     // allocation living there.
     try std.testing.expectError(error.HeapInBankWindow, gero.vm.parseGx(gx));
 }
 
-test "loader: an unbanked program may put its heap at 0xC000" {
+test "loader: an unbanked program may put its heap at 0xBE00" {
     var buf: [24]u8 = undefined;
     const gx = buildGx(&buf, 0x0004, 0, 0, 8, 0, 0);
-    setHeapBase(gx, 0xC000);
+    setHeapBase(gx, 0xBE00);
     // With no banks the window is plain RAM, so the address is fine.
     const loaded = try gero.vm.parseGx(gx);
-    try std.testing.expectEqual(@as(u16, 0xC000), loaded.header.heap_base);
+    try std.testing.expectEqual(@as(u16, 0xBE00), loaded.header.heap_base);
 }
 
 test "loader: the accepted version is the one producers stamp" {

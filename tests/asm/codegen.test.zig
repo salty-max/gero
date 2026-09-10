@@ -462,8 +462,9 @@ test "codegen: org inside `bank N` targeting the window is accepted" {
 }
 
 test "codegen: labels inside `bank N` resolve to bank-window addresses" {
-    // `call greet` should emit a `call $C000` (the greet label
-    // sits at offset 0 of bank 0 → CPU $C000 when mb = $00).
+    // `call greet` emits a call to the window base: the greet label
+    // sits at offset 0 of bank 0, which is where the window starts
+    // when mb = $00.
     var out = try assemble(
         \\main:
         \\  call greet
@@ -474,10 +475,11 @@ test "codegen: labels inside `bank N` resolve to bank-window addresses" {
         \\
     , .{});
     defer out.deinit();
-    // image[0..3] = call $C000 → 0xA0 LE($C000)
     try std.testing.expectEqual(@as(u8, 0xA0), out.cg.image[16]);
-    try std.testing.expectEqual(@as(u8, 0x00), out.cg.image[17]);
-    try std.testing.expectEqual(@as(u8, 0xC0), out.cg.image[18]);
+    try std.testing.expectEqual(
+        @as(u16, gero.vm.bank_window_base),
+        @as(u16, out.cg.image[17]) | (@as(u16, out.cg.image[18]) << 8),
+    );
 }
 
 // ---------- debug symbols (issue #100) ----------

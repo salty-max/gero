@@ -1,5 +1,6 @@
 const std = @import("std");
 const gero = @import("gero");
+const util = @import("util");
 const VM = gero.vm.VM;
 
 fn loadProgram(vm: *VM, bytes: []const u8) void {
@@ -66,7 +67,7 @@ test "stack: push x then pop r round-trips the value" {
     _ = gero.vm.step(&vm); // pop
     try std.testing.expectEqual(@as(u16, 0x1234), vm.regs.read(.r1));
     // sp returns to its original boot value after balanced push/pop.
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.sp));
 }
 
 test "stack: LIFO ordering across multiple pushes and pops" {
@@ -92,26 +93,28 @@ test "stack: LIFO ordering across multiple pushes and pops" {
     try std.testing.expectEqual(@as(u16, 0x3333), vm.regs.read(.r4));
     try std.testing.expectEqual(@as(u16, 0x2222), vm.regs.read(.r5));
     try std.testing.expectEqual(@as(u16, 0x1111), vm.regs.read(.r6));
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.sp));
 }
 
 test "stack: underflow wraps silently (not a fault)" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
-    // Pop with sp = 0xFFFE (boot, empty stack). Reads garbage
-    // and wraps sp upward; permissive behavior, NOT a fault.
+    // Pop from the boot stack, which is empty: reads whatever is
+    // there and moves `sp` up a word. Permissive by design, NOT a
+    // fault.
     loadProgram(&vm, &.{ 0x32, 0x02 }); // pop r1
     try std.testing.expectEqual(gero.vm.StepResult.cont, gero.vm.step(&vm));
-    try std.testing.expectEqual(@as(u16, 0x0000), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot +% 2), vm.regs.read(.sp));
 }
 
 test "stack: overflow wraps silently (not a fault)" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
 
-    // Drive sp down to 0x0000 then push once more — should wrap to
-    // 0xFFFE without faulting.
+    // Drive sp down to 0x0000 then push once more. `sp` is a u16, so
+    // it wraps to the top of the address space — not to where it
+    // booted — and no fault fires.
     vm.regs.write(.sp, 0x0000);
     vm.regs.write(.r1, 0xFACE);
     loadProgram(&vm, &.{ 0x31, 0x02 }); // push r1

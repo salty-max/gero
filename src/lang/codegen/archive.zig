@@ -11,7 +11,7 @@ pub const bank_disk_size: usize = 0x4000;
 
 /// Window base address — every banked address resolves to
 /// `window_base + offset_within_bank`.
-pub const bank_window_base: u16 = 0xC000;
+pub const bank_window_base: u16 = 0xBE00;
 
 /// Write `value` as 2 little-endian bytes into `dst`.
 pub fn writeU16Le(dst: *[2]u8, value: u16) void {

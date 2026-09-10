@@ -1,5 +1,6 @@
 const std = @import("std");
 const gero = @import("gero");
+const util = @import("util");
 const VM = gero.vm.VM;
 const Vector = gero.vm.Vector;
 
@@ -47,14 +48,14 @@ test "dispatch: fault entry pushes ip, fp, flg in spec order" {
     _ = gero.vm.step(&vm);
 
     // Pre-decrement push: each push decrements sp by 2 before
-    // writing. Starting at sp_boot=0xFFFE, the three pushes land
-    // at 0xFFFC / 0xFFFA / 0xFFF8 (top of stack = flg).
-    try std.testing.expectEqual(@as(u16, 0x1234), vm.mmap.readWord(0xFFFC));
-    try std.testing.expectEqual(@as(u16, 0xABCD), vm.mmap.readWord(0xFFFA));
+    // writing. Starting at sp_boot, the three pushes land
+    // at the first three stack slots (top of stack = flg).
+    try std.testing.expectEqual(@as(u16, 0x1234), vm.mmap.readWord(util.stackSlot(1)));
+    try std.testing.expectEqual(@as(u16, 0xABCD), vm.mmap.readWord(util.stackSlot(2)));
     // flg was 0x000F before the push; flg.I is set AFTER the push.
-    try std.testing.expectEqual(@as(u16, 0x000F), vm.mmap.readWord(0xFFF8));
+    try std.testing.expectEqual(@as(u16, 0x000F), vm.mmap.readWord(util.stackSlot(3)));
     // sp ends up 6 bytes below boot, pointing at the top (flg).
-    try std.testing.expectEqual(@as(u16, 0xFFF8), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, util.stackSlot(3)), vm.regs.read(.sp));
 }
 
 test "dispatch: raiseFault routes to the right vector slot" {
@@ -95,7 +96,7 @@ test "dispatch: bytes without a handler raise invalid-opcode" {
     inline for ([_]u8{ 0x00, 0x6F, 0xA5, 0xD0 }) |op| {
         vm.regs.write(.ip, 0x1100);
         vm.mmap.writeByte(0x1100, op);
-        vm.regs.write(.sp, 0xFFFE);
+        vm.regs.write(.sp, gero.vm.sp_boot);
         vm.regs.write(.flg, 0);
         try std.testing.expectEqual(gero.vm.StepResult.branched, gero.vm.step(&vm));
         try std.testing.expectEqual(@as(u16, 0x4000), vm.regs.read(.ip));
@@ -196,8 +197,8 @@ test "nested interrupts: cli inside ISR1 lets a second int fire and rti unwinds 
     _ = gero.vm.step(&vm); // rti (ISR1) → back to main at 0x1102
     try std.testing.expectEqual(@as(u16, 0x1102), vm.regs.read(.ip));
     // sp / fp fully unwound to pre-int state.
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.sp));
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.fp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, gero.vm.fp_boot), vm.regs.read(.fp));
 }
 
 test "dispatch: step auto-advances ip by instruction size" {

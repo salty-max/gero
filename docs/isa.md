@@ -48,7 +48,7 @@ reserved and produce an `InvalidRegister` fault when referenced.
 | 0x09 | `r8`  | General-purpose. |
 | 0x0A | `sp`  | Stack pointer. Stack grows toward lower addresses; `push` decrements then writes. |
 | 0x0B | `fp`  | Frame pointer. Set by `call`, restored by `ret`. |
-| 0x0C | `mb`  | Memory bank — selects which bank is mapped at `0xC000..0xFEFF`. |
+| 0x0C | `mb`  | Memory bank — selects which bank is mapped at `0xBE00..0xFDFF`. |
 | 0x0D | `im`  | Interrupt mask. Bit set ⇒ that vector is enabled. `0xFFFF` at boot (all enabled). |
 | 0x0E | `flg` | Status flags (see §2.1). |
 
@@ -94,15 +94,15 @@ the host's `MemoryMapper` (§3.5) can remap any region to a device.
 | Range          | Size | Role |
 |----------------|------|------|
 | `0x0000..0x00FF` | 256 B | **Zero page** — 1-byte addressing mode, fast access for lang globals and frequently-touched flags (6502-style). |
-| `0x0100..0x0FFF` | 3.75 KB | **Low RAM** — conventional stack range. `sp` initialized at `0xFFFE` but stack lives wherever the program puts it; this region is the canonical home. |
+| `0x0100..0x0FFF` | 3.75 KB | **Low RAM** — always flat, never banked and never a host register. Where a runtime keeps structures that must survive a bank switch; gero-lang puts its cross-bank save-stack here. |
 | `0x1000..0x11FF` | 512 B | **Interrupt vector table** — 256 entries × 2 bytes each, one per vector. Vector `N` lives at `0x1000 + 2*N`. |
-| `0x1200..0x7FFF` | ~27.5 KB | **User RAM** — code + data. Program image loads here at boot. |
-| `0x8000..0xBFFF` | 16 KB | **Mapped region A** — host-defined. Plain RAM by default. gtx-16 leaves this region as plain RAM and recommends carts use it for sprite-sheet storage + other large assets (the cart sets `SPRITESHEET_BASE` here). |
-| `0xC000..0xFEFF` | ~15.75 KB | **Bank window** — mirrors bank `mb` if the program is banked, otherwise plain RAM. |
-| `0xFF00..0xFFFF` | 256 B | **Mapped region B / IO page** — host-defined peripheral registers. gtx-16 maps display registers, drawing command surface, audio channels, input, RNG, timer, and KV store here. Plain RAM if no host device claims it. |
+| `0x1200..0x7FFF` | 27.5 KB | **User RAM** — code, data, heap, and the stack. The image is loaded from `0x0000`, so this is where a program's code actually begins to sit; `.gr` puts code at `0x1200` and data at `0x2000`. `sp` boots at `0x7FFE` and grows **down** toward the heap growing **up**. |
+| `0x8000..0xBDFF` | 15.5 KB | **Mapped region A** — host-defined. Plain RAM by default. gtx-16 leaves this region as plain RAM and recommends carts use it for sprite-sheet storage + other large assets (the cart sets `SPRITESHEET_BASE` here). |
+| `0xBE00..0xFDFF` | 16 KB | **Bank window** — mirrors bank `mb` if the program is banked, otherwise plain RAM. Exactly one bank wide, so every byte of a bank is addressable. |
+| `0xFE00..0xFFFF` | 512 B | **Mapped region B / IO page** — host-defined peripheral registers. gtx-16 maps display registers, drawing command surface, audio channels, input, RNG, timer, and KV store here. Plain RAM if no host device claims it. |
 
-The two **Mapped region** ranges (`0x8000..0xBFFF` and
-`0xFF00..0xFFFF`) are the convention for embedding hosts. A pure
+The two **Mapped region** ranges (`0x8000..0xBDFF` and
+`0xFE00..0xFFFF`) are the convention for embedding hosts. A pure
 "compute" program (one that never expects graphics) sees plain RAM
 there and can use it freely. A gtx-16-targeted program issues
 drawing commands via the IO page (`0xFE50..0xFE61` for the
@@ -114,7 +114,13 @@ the full mapping.
 
 If the program file declares `bank_count > 0` in its header:
 
-- The 16KB region `0xC000..0xFEFF` is mapped to bank number `mb`.
+- The window `0xBE00..0xFDFF` is mapped to bank number `mb`. It is
+  **exactly one bank wide** — 16384 bytes — so a window address reaches
+  bank offset `addr - 0xBE00` and every byte of a bank is addressable.
+  Nothing in a bank is unreachable, and a `.sav` carries no dead bytes.
+- The window sits **below** the IO page rather than against the top of
+  memory, so no host register can be swapped out from under a program
+  by a write to `mb`.
 - `mb = 0` selects the first bank, `mb = bank_count - 1` the last.
 - Writing `mb` (via `mov`) swaps the window atomically — code
   executing **from** the bank window during the swap is undefined
@@ -642,7 +648,7 @@ discipline).
 
 `mb` matters as much as the general registers in a banked program: a
 handler that selects a bank returns with a different 16 KB mapped
-through `0xC000..0xFEFF`, so the interrupted code resumes reading the
+through `0xBE00..0xFDFF`, so the interrupted code resumes reading the
 wrong memory. The cross-bank call trampoline (§3.2) restores `mb` on
 its own, so a plain call into a banked def is safe; an explicit switch
 is not.
@@ -699,7 +705,7 @@ metadata.
 | `0x0A` | image_size     | 2    | u16le base-image size in bytes (`0..65535`; max 65535-byte image — programs needing more use banks) |
 | `0x0C` | bank_count     | 1    | total number of 16KB banks (0..255) |
 | `0x0D` | sram_bank_count| 1    | how many of the **last** banks are battery-backed SRAM (0..255, must be `<= bank_count`); 0 ⇒ no save support |
-| `0x0E` | heap_base      | 2    | u16le address where the bump allocator's heap starts. `0x0000` ⇒ no heap (programs that call `sys alloc` will fault). Otherwise it **must be at or above `image_size`**, and in a banked program (`bank_count > 0`) **below the bank window at `0xC000`** — a heap inside the image would hand out addresses over live code or data, and one inside the window would lose every allocation on the next `mb` write. `sys alloc` only bounds the top of the heap, so neither is caught at run time; a loader rejects a file that violates either. Added in version `0x0002`; files declaring version `0x0001` always read `0x0000` here. |
+| `0x0E` | heap_base      | 2    | u16le address where the bump allocator's heap starts. `0x0000` ⇒ no heap (programs that call `sys alloc` will fault). Otherwise it **must be at or above `image_size`**, and in a banked program (`bank_count > 0`) **below the bank window at `0xBE00`** — a heap inside the image would hand out addresses over live code or data, and one inside the window would lose every allocation on the next `mb` write. The base image is refused on the same ground: in a banked program it may not reach into the window either, since every read there routes to a bank and those bytes could never be read back. `sys alloc` only bounds the top of the heap, so none of this is caught at run time; a loader rejects a file that violates any of it. Added in version `0x0002`; files declaring version `0x0001` always read `0x0000` here. |
 
 #### Flags bitfield
 
@@ -823,20 +829,28 @@ attribute files (no include/import map available) emits neither.
      image and are ROM-style.
 5. Initialize registers:
    - `ip ← entry_point`
-   - `sp ← 0xFFFE`
-   - `fp ← 0xFFFE`
+   - `sp ← 0x7FFE`  (top of user RAM — see below)
+   - `fp ← 0x7FFE`
    - `mb ← 0`
    - `im ← 0xFFFF`
    - `flg ← 0x0000`
    - `acu`, `r1..r8` ← 0
 6. Begin fetch-decode-execute loop.
 
+`sp` boots at the top of **user RAM**, not the top of memory. Three
+constraints meet there and only user RAM satisfies all of them: the
+region must be flat, or the stack writes into peripherals and then into
+whatever `mb` selects; it must sit above the heap, because `sys alloc`
+refuses to grow past `sp`; and it needs room to descend, which the
+distance from the image to `0x7FFE` provides. A program is still free to
+move `sp` wherever it likes as its first instruction.
+
 ---
 
 ## 9. Faults
 
-The VM raises a fault to the host via the interrupt mechanism (vectors
-`0x01..0x03` reserved). If the corresponding vector address is `0`,
+The VM raises a fault to the host via the interrupt mechanism, through
+the vectors §6.1 reserves. If the corresponding vector address is `0`,
 the VM halts with a host-visible error code.
 
 | Vector | Cause |
@@ -845,8 +859,8 @@ the VM halts with a host-visible error code.
 | `0x02` | Invalid register (operand register index `>= 0x0F`) |
 | `0x03` | Division by zero (`div` / `divs` with divisor = 0) |
 | `0x04` | Heap exhausted (`sys alloc` overflows past the available heap region) |
-| `0x06` | Program-initiated trap (`sys trap` — failed assertion, `panic`, `unreachable`, `todo`) |
 | `0x05` | Arithmetic overflow (`div` / `divs` quotient > 16 bits) |
+| `0x06` | Program-initiated trap (`sys trap` — failed assertion, `panic`, `unreachable`, `todo`) |
 
 `mb >= bank_count` and stack over/underflow are **not** faults — they
 behave permissively (read `0xFF`, write dropped; stack wraps).
@@ -876,38 +890,34 @@ incompatible versions.
 
 ---
 
-## 11. Open questions
+## 11. Settled questions
 
-None outstanding — and unlike a previous revision, that is the result
-of a line-by-line audit against the implementation rather than an
-assertion. What the audit settled:
+Nothing in this document is left open. What follows is the record of
+what the audit against the implementation settled, so a reader meeting
+an unusual choice can see it was a choice:
 
 - `mul` produces 32-bit `acu:dst` (8086 / 68000 lineage). §5.4.
-- `inc` / `dec` set Z, N, V but leave C intact (6502 / Z80 / 8086 /
-  ARM consensus). §2.1, §5.4.
-- Interrupt re-entry control is `flg.I` plus the `im` per-vector
-  mask (6502 / 8086 split). The standalone "in-ISR" bit is dropped.
-  §2.1, §6.4.
-- `div` / `divs` are spec'd and implemented. §5.4. Faults at
-  vectors `0x03` (/0) and `0x05` (overflow). §6.1, §9.
-- `image_size: u16le` ranges `0..65535` — no overload, no flag bit.
-  Programs needing more than 65535 bytes of base image use banks.
-  §7.1.
-- **The vector table holds 256 entries**, one per value of `int`'s
-  `Imm8` operand, spanning `0x1000..0x11FF`. An earlier revision
-  described 64 entries in a 256-byte region while the implementation
-  addressed all 256, so vectors above `0x7F` read their handler out of
-  user code. §3.1, §6.1.
-- **`0x00-0x0F` is permanently unassigned**, distinct from the
-  `0xD0-0xEF` reserved range. Zeroed memory must fault rather than
-  execute. §5.
-- **Reserved `flg` bits read as `0`** and are masked on write, so no
-  program can come to depend on them. §2.1.
-- **Reserved header flag bits are rejected**, not ignored, so an
+- `inc` / `dec` set Z, N, V and leave C intact (6502 / Z80 / 8086 /
+  ARM consensus), so `cmp` and a loop counter can coexist. §2.1, §5.4.
+- Interrupt re-entry is `flg.I` plus the `im` per-vector mask (the
+  6502 / 8086 split), with no separate "in-ISR" bit. §2.1, §6.4.
+- `div` / `divs` fault at vectors `0x03` (divide by zero) and `0x05`
+  (quotient wider than 16 bits). §5.4, §6.1, §9.
+- `image_size` is a plain `u16le` over `0..65535`, with no overload
+  and no flag bit. A program needing more uses banks. §7.1.
+- The vector table holds 256 entries spanning `0x1000..0x11FF`, one
+  per value of `int`'s `Imm8` operand. §3.1, §6.1.
+- `0x00-0x0F` is permanently unassigned, distinct from the reserved
+  `0xD0-0xEF` range, so zeroed memory faults instead of executing. §5.
+- Reserved `flg` bits read as `0` and are masked on write. §2.1.
+- Reserved header flag bits are rejected rather than ignored, so an
   older VM refuses a program it cannot honor. §7.1.
+- The bank window is exactly one bank wide and sits below the IO page,
+  so every bank byte is addressable and no host register can be banked
+  away. §3.1, §3.2.
+- `sp` boots at the top of user RAM: flat memory, above the heap, with
+  room to descend. §8.
 
-Future-version considerations (track outside this doc):
-
-- Saturating-arithmetic variants (`adds`, `subs`) for fixed-point
-  math in gero-lang. Not implemented yet; would be an additive minor
-  bump.
+Each of these is reserved in the sense §10 uses: a future **minor**
+version may assign a meaning, and doing so is additive because the
+current version guarantees nothing can depend on the reserved state.

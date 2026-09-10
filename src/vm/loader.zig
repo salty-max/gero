@@ -49,6 +49,11 @@ pub const LoaderError = error{
     /// data, and `sys alloc`'s bound only guards the top of the
     /// heap — nothing downstream would catch it.
     HeapInsideImage,
+    /// A banked program whose base image reaches into the bank window.
+    /// Every read there routes to the bank, so those image bytes would
+    /// be written to RAM at boot and never be readable again — the same
+    /// silent loss `HeapInBankWindow` refuses, one region over.
+    ImageInBankWindow,
     /// A banked program's `heap_base` inside the bank window. The
     /// window mirrors bank `mb`, so a switch replaces every
     /// allocation living there.
@@ -117,6 +122,9 @@ pub fn parse(bytes: []const u8) LoaderError!LoadedProgram {
     if (heap_base != 0) {
         if (heap_base < image_size) return error.HeapInsideImage;
         if (bank_count > 0 and heap_base >= banks_mod.window_base) return error.HeapInBankWindow;
+    }
+    if (bank_count > 0 and image_size > banks_mod.window_base) {
+        return error.ImageInBankWindow;
     }
     if (sram_bank_count > bank_count) return error.InvalidSramCount;
 

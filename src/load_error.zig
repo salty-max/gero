@@ -48,6 +48,7 @@ pub fn describe(
         error.InvalidSramCount => "header declares more SRAM banks than total banks — it is corrupt",
         error.HeapInsideImage => "header puts the heap inside the program image, where allocations would overwrite code (isa.md §7.1)",
         error.HeapInBankWindow => "header puts the heap inside the bank window, where a bank switch would replace every allocation (isa.md §7.1)",
+        error.ImageInBankWindow => "base image reaches into the bank window, where every read routes to a bank instead — those bytes could never be read back (isa.md §7.1)",
     };
 }
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const gero = @import("gero");
+const util = @import("util");
 const VM = gero.vm.VM;
 
 fn loadProgram(vm: *VM, bytes: []const u8) void {
@@ -18,14 +19,14 @@ test "call 0xa0 addr: pushes fp + ret-ip, sets fp = sp, jumps" {
 
     // After call: ip = target.
     try std.testing.expectEqual(@as(u16, 0x2000), vm.regs.read(.ip));
-    // Pushed values (pre-decrement push from sp_boot=0xFFFE):
-    //   mem[0xFFFC] = old fp (0xDEAD)
-    //   mem[0xFFFA] = ret-ip (0x1103, post-instruction)
-    try std.testing.expectEqual(@as(u16, 0xDEAD), vm.mmap.readWord(0xFFFC));
-    try std.testing.expectEqual(@as(u16, 0x1103), vm.mmap.readWord(0xFFFA));
-    // sp = 0xFFFA after the two pushes; fp = sp (points at ret-ip).
-    try std.testing.expectEqual(@as(u16, 0xFFFA), vm.regs.read(.sp));
-    try std.testing.expectEqual(@as(u16, 0xFFFA), vm.regs.read(.fp));
+    // Pushed values (pre-decrement push from sp_boot=0x0FFE):
+    //   mem[util.stackSlot(1)] = old fp (0xDEAD)
+    //   mem[util.stackSlot(2)] = ret-ip (0x1103, post-instruction)
+    try std.testing.expectEqual(@as(u16, 0xDEAD), vm.mmap.readWord(util.stackSlot(1)));
+    try std.testing.expectEqual(@as(u16, 0x1103), vm.mmap.readWord(util.stackSlot(2)));
+    // sp = util.stackSlot(2) after the two pushes; fp = sp (points at ret-ip).
+    try std.testing.expectEqual(@as(u16, util.stackSlot(2)), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, util.stackSlot(2)), vm.regs.read(.fp));
 }
 
 test "call 0xa1 reg: target from register, ret-ip is post-instruction (+2)" {
@@ -36,7 +37,7 @@ test "call 0xa1 reg: target from register, ret-ip is post-instruction (+2)" {
     _ = gero.vm.step(&vm);
     try std.testing.expectEqual(@as(u16, 0x3000), vm.regs.read(.ip));
     // Ret-ip pushed = ip_before + 2 = 0x1102.
-    try std.testing.expectEqual(@as(u16, 0x1102), vm.mmap.readWord(0xFFFA));
+    try std.testing.expectEqual(@as(u16, 0x1102), vm.mmap.readWord(util.stackSlot(2)));
 }
 
 test "call/ret round-trip: control returns to the instruction after call" {
@@ -54,8 +55,8 @@ test "call/ret round-trip: control returns to the instruction after call" {
     // Return to ip after call = 0x1103.
     try std.testing.expectEqual(@as(u16, 0x1103), vm.regs.read(.ip));
     // Stack and fp restored to pre-call state.
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.sp));
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.fp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.fp));
 }
 
 test "call/ret nested two levels: outer ret reaches the original caller" {
@@ -81,8 +82,8 @@ test "call/ret nested two levels: outer ret reaches the original caller" {
     _ = gero.vm.step(&vm); // outer ret → ip=0x1103
     try std.testing.expectEqual(@as(u16, 0x1103), vm.regs.read(.ip));
     // Both frames fully unwound.
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.sp));
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.fp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.fp));
 }
 
 test "ret 0xa2: unwinds locals that the callee pushed below fp" {
@@ -100,11 +101,11 @@ test "ret 0xa2: unwinds locals that the callee pushed below fp" {
     _ = gero.vm.step(&vm); // call → ip=0x2000, sp moved 4 bytes (fp+ret-ip).
     _ = gero.vm.step(&vm); // push imm16 → sp moves another 2 bytes.
     const sp_inside = vm.regs.read(.sp);
-    try std.testing.expectEqual(@as(u16, 0xFFF8), sp_inside);
+    try std.testing.expectEqual(@as(u16, util.stackSlot(3)), sp_inside);
 
     _ = gero.vm.step(&vm); // ret
     // sp ← fp drops the local; then pop ip; pop fp. Final sp = pre-call.
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.sp));
     try std.testing.expectEqual(@as(u16, 0x1103), vm.regs.read(.ip));
 }
 
