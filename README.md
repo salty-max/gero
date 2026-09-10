@@ -7,6 +7,11 @@ A 16-bit virtual machine, assembler, disassembler, and Lua-style
 language compiler — all in pure Zig. Foundation for the gtx-16 fantasy
 console and other Gero-ecosystem consumers.
 
+New here? [**Why gero-lang?**](#why-gero-lang) explains what the
+language is for, and
+[`docs/asm-vs-lang.md`](./docs/asm-vs-lang.md) explains why the
+assembler did not go away when it arrived.
+
 ## Quickstart
 
 Install via Homebrew (macOS Apple Silicon + Linux):
@@ -43,6 +48,57 @@ For editor setup (VS Code / Neovim / Helix), CI recipes
 (GitHub Actions / GitLab), and pre-commit hooks (lefthook /
 pre-commit framework / plain git), see
 [`docs/tooling.md`](./docs/tooling.md).
+
+## Why gero-lang?
+
+gero-lang is the high-level language for the gero VM. It reads like
+Lua, compiles ahead of time to the same `.gx` bytecode the assembler
+produces, and is typed where it matters. It exists because the
+alternatives each give up something a cart needs.
+
+**Against Lua on a fantasy console.** PICO-8 and TIC-80 hand you a
+scripting language and interpret it at runtime. gero-lang keeps the
+feel — `let`, `do … end`, no semicolons — and compiles instead, so
+what ships is bytecode rather than source. Types are checked before
+the cart runs: a `match` that misses an enum variant is a compile
+error, not a nil at the wrong moment. Nothing about your program is
+discovered on the player's machine.
+
+**Against C for retro targets.** CC65 and its kin give you a systems
+language on an 8-bit machine, and a type system from 1989. gero-lang
+gives you `Vec(T)`, tuples, enums with payloads, exhaustive pattern
+matching, and `T?` optionals instead of a null you have to remember to
+check — while still emitting bytecode you can read back instruction by
+instruction with `gero disasm`.
+
+**Against Zig or Rust plus an engine.** Those are better languages
+than this one, and that is not the axis. A gero cart is a `.gx`: one
+file, byte-identical on every machine that builds it, running on a VM
+whose format is frozen (`docs/versioning.md` §6). The whole toolchain
+— assembler, compiler, disassembler, formatter, test runner, bench
+runner, language server — is one binary with no dependencies. And when
+the language needs something the machine cannot do, the machine is
+right here: the ISA and the language were designed together, and
+`asm "..."` reaches the instruction directly.
+
+**What it is not.** Not self-hosting, not general-purpose, not a web
+runtime. No async, no traits, no user-defined generics, no floats.
+Those absences are choices, and
+[`docs/gero-lang.md`](./docs/gero-lang.md) §9 gives the reasoning for
+each.
+
+| | Lua on a console | C (CC65 &co) | gero-lang |
+|---|---|---|---|
+| Runs as | interpreted source | native 8-bit code | bytecode on a specified VM |
+| Errors found | at play time | at compile time, narrowly | at compile time, incl. exhaustiveness |
+| Distributes as | source | a binary per target | one `.gx`, byte-identical everywhere |
+| Drops to asm | rarely, if at all | inline asm | `asm "..."`, one instruction |
+| Toolchain | the console | assembler + linker + tools | one binary |
+
+The full language reference is
+[`docs/gero-lang.md`](./docs/gero-lang.md). For when to write asm
+instead — and the measured cost of each —
+see [`docs/asm-vs-lang.md`](./docs/asm-vs-lang.md).
 
 ## What's here
 
