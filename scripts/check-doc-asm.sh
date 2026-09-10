@@ -27,12 +27,14 @@ if [[ ! -x "$GERO_BIN" ]]; then
     printf 'check-doc-asm: %s not found — run `zig build install` first\n' "$GERO_BIN" >&2
     exit 1
 fi
+# Expand the list once: entries may be globs, and a directory with no
+# chapters in it yet is not an error. Keeping only what exists means
+# the loops below never see an unmatched pattern.
+expanded=""
 for doc in $DOCS; do
-    if [[ ! -f "$doc" ]]; then
-        printf 'check-doc-asm: %s not found\n' "$doc" >&2
-        exit 1
-    fi
+    [[ -f "$doc" ]] && expanded="$expanded $doc"
 done
+DOCS="$expanded"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

@@ -728,7 +728,9 @@ pub fn build(b: *std.Build) void {
     // A doc whose examples nothing assembles is a doc whose examples
     // rot. `DOC` took one file; the positioning doc carries worked
     // asm too, so it is checked the same way.
-    check_doc_asm_cmd.setEnvironmentVariable("DOCS", "docs/asm.md docs/asm-vs-lang.md");
+    // Globs rather than a file list: a chapter added without touching
+    // this line must not silently go unchecked.
+    check_doc_asm_cmd.setEnvironmentVariable("DOCS", "docs/asm.md docs/asm-vs-lang.md docs/book/*.md docs/machine/*.md");
     check_doc_asm_cmd.step.dependOn(b.getInstallStep());
     const check_doc_asm_step = b.step(
         "check-doc-asm",
@@ -738,7 +740,7 @@ pub fn build(b: *std.Build) void {
 
     const check_doc_gr_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-doc-gr.sh" });
     check_doc_gr_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
-    check_doc_gr_cmd.setEnvironmentVariable("DOCS", "docs/gero-lang.md docs/asm-vs-lang.md");
+    check_doc_gr_cmd.setEnvironmentVariable("DOCS", "docs/gero-lang.md docs/asm-vs-lang.md docs/book/*.md docs/machine/*.md");
     check_doc_gr_cmd.step.dependOn(b.getInstallStep());
     const check_doc_gr_step = b.step(
         "check-doc-gr",
