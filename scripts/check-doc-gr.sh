@@ -27,6 +27,16 @@ set -euo pipefail
 GERO_BIN="${GERO_BIN:-./zig-out/bin/gero}"
 DOCS="${DOCS:-docs/gero-lang.md}"
 
+# Expand the list once: entries may be globs, and a directory with no
+# chapters in it yet is not an error. Keeping only what exists means
+# the loops below never see an unmatched pattern.
+expanded=""
+for doc in $DOCS; do
+    [[ -f "$doc" ]] && expanded="$expanded $doc"
+done
+DOCS="$expanded"
+
+
 if [[ ! -x "$GERO_BIN" ]]; then
     printf 'check-doc-gr: %s not found — run `zig build install` first\n' "$GERO_BIN" >&2
     exit 1
