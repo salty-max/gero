@@ -43,6 +43,10 @@ pub fn main(init: std.process.Init) !u8 {
         switch (err) {
             error.UnknownCommand => try fallback.err("unknown subcommand: {s}. Run `gero --help` for the list.", .{bad}),
             error.UnknownFlag => try fallback.err("unknown flag: {s}", .{bad}),
+            error.FlagNotForCommand => try fallback.err(
+                "{s} is not a flag for `gero {s}` — run `gero {s} --help` for the ones it takes",
+                .{ bad, cli.commandName(diag.bad_command.?), cli.commandName(diag.bad_command.?) },
+            ),
             error.MissingFlagValue => try fallback.err("flag is missing its value: {s}", .{bad}),
             error.InvalidEnumValue => try fallback.err("flag value is not recognized: {s}", .{bad}),
             error.TooManyPositionals => try fallback.err("too many positional args (max 16): {s}", .{bad}),

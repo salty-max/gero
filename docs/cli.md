@@ -27,15 +27,30 @@ live downstream and consume `.gx` files as library inputs.
 
 ## 2. Common flags
 
-Accepted by every subcommand (where meaningful):
+Flags shared by more than one subcommand. **Each is accepted only by
+the subcommands whose own `--help` lists it** — using one elsewhere is
+a usage error (exit 2), not a silently ignored argument:
 
-| Flag | Default | Effect |
-|------|---------|--------|
-| `--help` / `-h` | — | Print help for the command and exit 0. |
-| `--quiet` / `-q` | off | Suppress non-error output. |
-| `--verbose` / `-v` | off | Extra info: timings, allocation counts, intermediate sizes. |
-| `--optimize=<mode>` | `debug` | `debug` / `release` / `size`. Mirrors Zig modes. |
-| `--out=<path>` / `-o` | (per-cmd default) | Output path for commands that produce files. |
+```
+$ gero init --lang=gr
+error: --lang=gr is not a flag for `gero init` — run `gero init --help` for the ones it takes
+```
+
+That matters because the alternative is worse than a typo. `--lang`
+is a reasonable guess for "scaffold a gero-lang project", and
+accepting it would scaffold an asm one and say nothing.
+
+| Flag | Default | Accepted by | Effect |
+|------|---------|-------------|--------|
+| `--help` / `-h` | — | every subcommand | Print help for the command and exit 0. |
+| `--color=<m>` / `-c`, `--no-color` | `auto` | every subcommand | `auto` (TTY + `NO_COLOR`) / `always` / `never`. |
+| `--quiet` / `-q` | off | all but `run`, `test`, `info`, `repl`, `lsp` | Suppress non-error output. |
+| `--verbose` / `-v` | off | `asm`, `compile`, `run`, `test`, `check`, `build` | Extra info: timings, allocation counts, intermediate sizes. |
+| `--out=<path>` / `-o` | (per-cmd default) | `asm`, `compile` | Output path. |
+| `--optimize=<mode>` / `-O` | `debug` | `compile` | `debug` / `release` / `size`. Mirrors Zig modes. |
+
+Every other flag belongs to exactly one subcommand and is documented
+with it in §3.
 
 Pass `--` to terminate flag parsing (so a file named `--bench.gx`
 can be passed as a positional).
@@ -704,7 +719,7 @@ Single source of truth for callers / CI scripts:
 |------|---------|
 | 0 | Success |
 | 1 | General error (file missing, host I/O, etc.) |
-| 2 | Usage error (bad args, unknown subcommand) |
+| 2 | Usage error (bad args, unknown subcommand, a flag the subcommand does not take) |
 | 3 | Parse / assembly error |
 | 4 | Type-check / lint error |
 | 5 | Link error (missing symbol, version mismatch) |
