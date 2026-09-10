@@ -15,6 +15,10 @@ Install via Homebrew (macOS Apple Silicon + Linux):
 brew install salty-max/tap/gero
 ```
 
+**The bytecode format is frozen at 1.0.** A `.gx` you build today runs
+on every later gero that speaks format 1 — see
+[Bytecode](#bytecode) below.
+
 Or build from source:
 
 ```bash
@@ -121,21 +125,27 @@ toolchain it demonstrates.
 
 ### Bytecode
 
-The `.gx` format is at **0.4**, and frozen from there: within a format
-major, a file runs on any gero that accepts that major — an older file
-on a newer build, and a newer file on an older one, because every minor
-bump is additive by rule.
+The `.gx` format is at **1.0**, and **frozen** from there. Within a
+format major a file runs on any gero that speaks that major — an older
+file on a newer build and a newer file on an older one, because every
+minor bump is additive by rule.
 
-A file whose major is higher is **refused**, never run and hoped for:
+A file from any other major is **refused**, never run and hoped for:
 
 ```
-built for .gx format 1.4, but this build supports up to 0.4 — upgrade gero to open it
+built for .gx format 0.4, but this build speaks 1.0 — the majors differ, so it would not run correctly
 ```
 
-The format version is independent of this package's version: one can
-move without the other. What counts as additive versus breaking, what
-the freeze commits to, and what enforces it rather than intending it
-are in [`docs/versioning.md`](./docs/versioning.md) §6.
+Both directions are refused, and the lower one is why major 1 exists.
+A `0.x` archive is well-formed; its instructions simply address a
+memory map that moved. Accepting it would mean running it wrongly, in
+silence.
+
+The format version is independent of this package's version — `gero`
+is at `0.2.0` and the format is at `1.0`, and neither implies the
+other. What counts as additive versus breaking, what the freeze
+commits to, and what enforces it rather than intending it are in
+[`docs/versioning.md`](./docs/versioning.md) §6.
 
 ## Contributing
 

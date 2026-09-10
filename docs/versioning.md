@@ -16,7 +16,7 @@ They are unrelated, and conflating them is the first mistake to avoid.
 | | Where | Means |
 |---|---|---|
 | **Package version** | `build.zig.zon` (`0.2.0` today) | The Zig package. Follows normal semver for the *library API* — `gero.vm.step`, `gero.lang.compile`, and so on. |
-| **Format version** | `.gx` header bytes `0x04..0x05` (`0x0004` today) | The bytecode container and the ISA it encodes. High byte major, low byte minor. |
+| **Format version** | `.gx` header bytes `0x04..0x05` (`0x0100` today) | The bytecode container and the ISA it encodes. High byte major, low byte minor. |
 
 A release can bump one and not the other. Renaming a public Zig
 function is a package break and no format change at all; adding an
@@ -159,47 +159,71 @@ major.** Both directions hold, and they are not the same claim:
 
 | | Behaviour | Why |
 |---|---|---|
-| Older file, newer gero | Runs | Nothing was removed; §4 is what a removal would require. |
-| Newer file, older gero, same major | Runs | Every minor bump is additive (§3), so the older VM either handles the addition or ignores metadata it can detect. |
-| Higher major | **Refused**, with the version in the message | §4 changes meaning; running it would be silently wrong. |
+| Older minor, newer gero, same major | Runs | Nothing was removed; §4 is what a removal would require. |
+| Newer minor, older gero, same major | Runs | Every minor bump is additive (§3), so the older VM either handles the addition or ignores metadata it can detect. |
+| **Any other major**, either direction | **Refused**, with both versions in the message | §4 changes meaning. A higher major means rules this build does not know; a lower one means rules it no longer follows. Running either would be silently wrong, which is the one outcome the version field exists to prevent. |
 
-That middle row is the one worth being precise about: an older VM
+The second row is the one worth being precise about: an older VM
 **accepts** a same-major newer file. It is not rejected and then
 tolerated — it is expected to run correctly, which is exactly the
 burden §3 places on every additive change. A change that an older VM
 would accept and mishandle is not additive, whatever it looks like.
 
-Verified rather than asserted: a `0.9` file runs on a `0.4` build, a
-`0.1` file runs on it too, and a `1.4` file is refused with
-`built for .gx format 1.4, but this build supports up to 0.4`.
+Verified rather than asserted: a `1.9` file runs on a `1.0` build and a
+`1.0` file runs on a `1.9` one, while a `0.4` file is refused with
+`built for .gx format 0.4, but this build speaks 1.0 — the majors
+differ, so it would not run correctly`.
 
-### Format major 0
+### Format major 1
 
-The format is at major **0**, and the promise above is not weakened by
-that. Major 0 here means "no breaking change has been needed yet", not
-"unstable" — the minor has reached 4 through four additive changes,
-each of which an older VM handles or detects.
+The format is at major **1**. It reached it once, for one reason worth
+recording because the shape recurs.
 
-A future major bump is what §4 describes and what
-`docs/isa.md` §10 would record. It is not scheduled, and the freeze
-below is a commitment not to make one casually.
+Major 0 was never "unstable" — it meant no breaking change had been
+needed, and the minor reached 4 through four additive ones. The break
+came from the memory map, not the container: the bank window, the IO
+page and the boot stack all moved (ISA §3.1, §8), and none of that is
+encoded in a `.gx` header. A `0.x` file is a perfectly well-formed
+archive whose *instructions* address a machine that no longer exists —
+writing `$C000` for the bank window, or reading the stack where it used
+to boot.
+
+That is the case §2 is about. The file would be accepted and would run
+wrongly, silently, which is exactly what a major bump prevents. It is
+also the reminder that the format version is a promise about
+**execution**, not about the bytes of the container: a change that
+touches neither the header nor an opcode encoding can still break every
+program that was built before it.
 
 ### The freeze
 
-From format **0.4** onward, the container and the ISA it encodes are
-frozen in the sense §4 defines: a change that would make an older VM
-accept a file and do the wrong thing requires a major bump, and a
-major bump is a deliberate, documented event rather than a side effect.
+From format **1.0** onward, the container and the machine it encodes
+are frozen in the sense §4 defines: a change that would make a VM
+accept a file and do the wrong thing requires a major bump, and a major
+bump is a deliberate, documented event rather than a side effect.
+
+This is a promise about the format, and it does not wait on a package
+version. `gero` is at `0.2.0` and the format is at `1.0`; §1 explains
+why those are different numbers and why neither implies the other.
 
 What enforces it, rather than merely intending it:
 
+- The loader refuses **any** other major, in either direction, naming
+  both versions. A file from a machine this build does not implement
+  does not run.
 - The golden corpus (`zig build golden`) compares emitted bytes against
   a blessed set, so a codegen change that moves bytes fails CI until
   someone says why and re-blesses.
-- `gx.version` is the single source of truth, and `loader.version_target`
-  reads from it — they drifted once, and the major-only check hid it.
-- The audited ISA (`docs/isa.md` §11) leaves no under-specified corner
-  for a later reading to disagree about.
+- `gx.version` is the single source of truth and `loader.version_target`
+  reads from it — they drifted once, and a major-only check hid it.
+- The ISA was audited against the implementation before the freeze, so
+  no under-specified corner is left for a later reading to disagree
+  about (`docs/isa.md` §11).
+
+What the freeze does **not** promise: that `gero` the tool holds its
+CLI, its library API, or its diagnostics steady. Those follow the
+package version and its own semver. The freeze is about what a `.gx`
+means.
 
 ---
 

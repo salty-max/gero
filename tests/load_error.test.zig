@@ -19,14 +19,20 @@ fn headerWith(buf: *[16]u8, version: u16) []const u8 {
     return buf;
 }
 
-test "describe: a future version names both versions and says to upgrade" {
+test "describe: a rejected version names both, in either direction" {
     var header: [16]u8 = undefined;
     var msg_buf: [max_message_len]u8 = undefined;
-    const msg = describe(&msg_buf, error.UnsupportedVersion, headerWith(&header, 0x0100));
-    // The file's version, this build's ceiling, and the action.
-    try testing.expect(std.mem.indexOf(u8, msg, "1.0") != null);
-    try testing.expect(std.mem.indexOf(u8, msg, "0.4") != null);
-    try testing.expect(std.mem.indexOf(u8, msg, "upgrade") != null);
+
+    // A reader cannot act on "wrong version" alone — it needs the
+    // file's and its own, whichever way they differ.
+    const future = describe(&msg_buf, error.UnsupportedVersion, headerWith(&header, gero.gx.version + 0x0100));
+    try testing.expect(std.mem.indexOf(u8, future, "2.0") != null);
+    try testing.expect(std.mem.indexOf(u8, future, "1.0") != null);
+
+    var past_buf: [max_message_len]u8 = undefined;
+    const past = describe(&past_buf, error.UnsupportedVersion, headerWith(&header, 0x0004));
+    try testing.expect(std.mem.indexOf(u8, past, "0.4") != null);
+    try testing.expect(std.mem.indexOf(u8, past, "1.0") != null);
 }
 
 test "describe: a version too short to read reports unknown, not garbage" {
