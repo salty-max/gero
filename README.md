@@ -101,6 +101,32 @@ const gero = b.dependency("gero", .{
 exe.root_module.addImport("gero", gero.module("gero"));
 ```
 
+Compiling a `.gr` is four steps, each one owning its output:
+
+```zig
+const gero = @import("gero");
+
+var stream = try gero.lang.tokenize(allocator, source);
+defer stream.deinit();
+
+var tree = try gero.lang.parse(allocator, source, stream);
+defer tree.deinit();
+
+var checked = try gero.lang.typecheck(allocator, source, &tree.program);
+defer checked.deinit();
+if (checked.diagnostics.len > 0) return report(checked.diagnostics);
+
+var compiled = try gero.lang.compile(allocator, source, &checked, .{});
+defer compiled.deinit();
+// compiled.image is a `.gx` — hand it to gero.vm, or write it out.
+```
+
+Diagnostics are collected rather than returned at each step, so one
+pass reports everything it found. For a multi-file program, start with
+`gero.lang.resolveUseImports` and feed its fused source to `tokenize`.
+Assembly is the same shape through `gero.asm_`, and `gero.vm` runs the
+result. Every export carries its own example.
+
 ## Status
 
 Shipped features land in [`CHANGELOG.md`](./CHANGELOG.md).

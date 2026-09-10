@@ -68,7 +68,17 @@ pub const Token = lexer_mod.Token;
 pub const TokenStream = lexer_mod.TokenStream;
 /// A captured line comment (`-- …`); carried through to the formatter.
 pub const Comment = lexer_mod.Comment;
-/// Tokenize `.gr` source.
+/// Tokenize `.gr` source. Caller owns the stream.
+///
+/// Lexical errors are collected into `stream.errors` rather than
+/// returned, so one run reports every one it found. The token slice
+/// always ends with `.eof`.
+///
+/// ```
+/// var stream = try gero.lang.tokenize(allocator, source);
+/// defer stream.deinit();
+/// if (stream.errors.len > 0) return reportLexical(stream.errors);
+/// ```
 pub const tokenize = lexer_mod.tokenize;
 
 // ---------- parser ----------
@@ -77,7 +87,19 @@ pub const tokenize = lexer_mod.tokenize;
 pub const ast = ast_mod;
 /// Parser output: program + diagnostics.
 pub const ParseTree = parser_mod.ParseTree;
-/// Parse tokens into an `ast.Program`.
+/// Parse tokens into an `ast.Program`. Caller owns the tree.
+///
+/// `source` is the same buffer the stream was tokenized from — spans
+/// index into it, so the tree borrows rather than copies. Recoverable
+/// errors land in `tree.errors`; a non-empty list means the tree is
+/// partial, not that it is unusable.
+///
+/// ```
+/// var stream = try gero.lang.tokenize(allocator, source);
+/// defer stream.deinit();
+/// var tree = try gero.lang.parse(allocator, source, stream);
+/// defer tree.deinit();
+/// ```
 pub const parse = parser_mod.parse;
 
 /// The "statement ran into the next one" diagnostic message.
@@ -90,8 +112,18 @@ pub const parseAllModules = parser_mod.parseAllModules;
 /// Per-module parse results plus a flat statement view.
 pub const ModuleParse = parser_mod.ModuleParse;
 
-/// Pretty-print an `ast.Program` to canonical `.gr`.
-/// Round-trip safe: `parse(print(parse(s))) == parse(s)`.
+/// Pretty-print an `ast.Program` to canonical `.gr` — what `gero fmt`
+/// writes.
+///
+/// Round-trip safe: `parse(print(parse(s))) == parse(s)`. Comments are
+/// passed separately because they are not AST nodes; omitting them
+/// formats the program without them.
+///
+/// ```
+/// var out: std.Io.Writer.Allocating = .init(allocator);
+/// defer out.deinit();
+/// try gero.lang.print(&out.writer, &tree.program, source, stream.comments);
+/// ```
 pub const print = print_mod.print;
 
 // ---------- include resolver (multi-file `use "..."`) ----------
@@ -119,7 +151,19 @@ pub const includeErrorCode = include_mod.includeErrorCode;
 /// The user-facing text for one include error. Caller owns the result.
 pub const includeErrorMessage = include_mod.includeErrorMessage;
 /// Walk the `use "..."` graph from `root_path`, returning fused
-/// source + source map.
+/// source + a map back to the file each region came from.
+///
+/// Everything downstream — `tokenize`, `parse`, `typecheck` — works on
+/// the fused buffer, so a multi-file program is one source string from
+/// here on. `fused.source_map` is what turns an offset in it back into
+/// a file and line for a diagnostic.
+///
+/// ```
+/// var fused = try gero.lang.resolveUseImports(io, allocator, "src/main.gr");
+/// defer fused.deinit();
+/// if (fused.errors.len > 0) return reportUseErrors(fused.errors);
+/// // fused.source is now the input to tokenize / parse.
+/// ```
 pub const resolveUseImports = include_mod.resolveUseImports;
 /// `resolveUseImports` reading overlaid buffers instead of disk for
 /// the files an editor holds unsaved.
@@ -129,6 +173,20 @@ pub const resolveUseImportsOverlaid = include_mod.resolveUseImportsOverlaid;
 pub const Overlay = include_mod.Overlay;
 /// Resolve a `use` graph entirely within a supplied file set, with no
 /// filesystem — what a browser host uses.
+///
+/// The set's keys are the paths a `use` resolves against, and they are
+/// POSIX-shaped on every host: resolution is by key, not by the host's
+/// path grammar, so the same set resolves identically everywhere. See
+/// `gero.include_paths`.
+///
+/// ```
+/// var files: gero.lang.Overlay = .{};
+/// defer files.deinit(allocator);
+/// try files.put(allocator, "main.gr", main_src);
+/// try files.put(allocator, "lib.gr", lib_src);
+/// var fused = try gero.lang.resolveUseImportsVirtual(allocator, "main.gr", &files);
+/// defer fused.deinit();
+/// ```
 pub const resolveUseImportsVirtual = include_mod.resolveUseImportsVirtual;
 /// Where a resolver finds files: the host filesystem, or a set.
 pub const IncludeSource = include_mod.Source;
@@ -141,7 +199,18 @@ pub const types = types_mod;
 pub const scope = scope_mod;
 /// Typechecker output: program + diagnostics.
 pub const CheckedProgram = typecheck_mod.CheckedProgram;
-/// Type-check an `ast.Program`.
+/// Type-check an `ast.Program`. Caller owns the result.
+///
+/// Type errors are collected into `checked.diagnostics` rather than
+/// returned — a program with errors still produces a `CheckedProgram`,
+/// so a caller reporting diagnostics gets all of them in one pass.
+/// Only pass it to `compile` when that list is empty.
+///
+/// ```
+/// var checked = try gero.lang.typecheck(allocator, source, &tree.program);
+/// defer checked.deinit();
+/// if (checked.diagnostics.len > 0) return report(checked.diagnostics);
+/// ```
 pub const typecheck = typecheck_mod.typecheck;
 /// Type-check a fused multi-file program, resolving `use X as Y`
 /// quoted-path aliases (`Y` → `X`).
@@ -184,6 +253,19 @@ pub const moduleContentHash = modhash_mod.contentHash;
 pub const moduleInterfaceHash = modhash_mod.interfaceHash;
 
 /// Modules that must be redone, given which ones changed.
+///
+/// The third of a set: `moduleContentHash` says whether a module's own
+/// bytes moved, `moduleInterfaceHash` whether what it *exports* moved,
+/// and this propagates the second along the import graph. A module
+/// whose body changed but whose interface did not leaves its importers
+/// clean, which is the whole point of hashing them separately.
+///
+/// ```
+/// // `changed[i]` is true where module i's interface hash differs
+/// // from the cached one.
+/// const dirty = try gero.lang.dirtyModules(allocator, count, fused.imports, changed);
+/// defer allocator.free(dirty);
+/// ```
 pub const dirtyModules = modhash_mod.dirtySet;
 
 /// One symbol's relocatable code — the unit a build cache stores.
@@ -193,6 +275,20 @@ pub const Fragment = codegen_mod.Fragment;
 pub const encodeFragments = cg_objfile.encode;
 
 /// Decode fragments written by `encodeFragments`.
+///
+/// The inverse of `encodeFragments`, and the reason both exist: a
+/// build cache stores per-symbol relocatable code so an unchanged
+/// module is relinked rather than recompiled.
+///
+/// `decodeFragments` allocates into an arena and hands back a slice
+/// borrowing from it, so the arena is what frees them.
+///
+/// ```
+/// const blob = try gero.lang.encodeFragments(allocator, compiled.fragments);
+/// defer allocator.free(blob);
+/// // ... later, from the cache ...
+/// const fragments = try gero.lang.decodeFragments(arena, blob);
+/// ```
 pub const decodeFragments = cg_objfile.decode;
 
 /// Codegen options (`entry_name`, `debug_symbols`, `optimize`).
@@ -201,7 +297,20 @@ pub const CompileOptions = codegen_mod.Options;
 pub const Optimize = codegen_mod.Optimize;
 /// Errors `compile` can return (semantic errors land in `Compiled.diagnostics`).
 pub const CompileError = codegen_mod.CompileError;
-/// Compile a `CheckedProgram` to a `.gx` image.
+/// Compile a `CheckedProgram` to a `.gx` image. Caller owns the result.
+///
+/// The last step of the pipeline, and the only one that needs options:
+/// `entry_name` picks the function to boot into, `debug_symbols` decides
+/// whether the image carries the tables `gero disasm` and the lab read.
+///
+/// Semantic errors land in `compiled.diagnostics`; the error set covers
+/// only what stops codegen outright.
+///
+/// ```
+/// var compiled = try gero.lang.compile(allocator, source, &checked, .{});
+/// defer compiled.deinit();
+/// try writeFile("out.gx", compiled.image);
+/// ```
 pub const compile = codegen_mod.compile;
 
 // ---------- bake (compile-time evaluator) ----------
