@@ -699,7 +699,7 @@ metadata.
 | Offset | Field          | Size | Notes |
 |--------|----------------|------|-------|
 | `0x00` | magic          | 4    | `'G' 'E' 'R' 'O'` (`0x47 0x45 0x52 0x4F`) |
-| `0x04` | version        | 2    | u16le format version — major in the high byte, minor in the low. Currently `0x0004`. Every producer stamps this same value: the header describes the file, not which front-end wrote it. |
+| `0x04` | version        | 2    | u16le format version — major in the high byte, minor in the low. Currently `0x0100`. Every producer stamps this same value: the header describes the file, not which front-end wrote it. |
 | `0x06` | flags          | 2    | u16le bitfield (see below) |
 | `0x08` | entry_point    | 2    | u16le address `ip` is set to at boot |
 | `0x0A` | image_size     | 2    | u16le base-image size in bytes (`0..65535`; max 65535-byte image — programs needing more use banks) |
@@ -869,24 +869,41 @@ behave permissively (read `0xFF`, write dropped; stack wraps).
 
 ## 10. Versioning
 
-This document specifies version `0x0004`. Which concrete edits are
-additive and which are breaking — with worked examples from this
-repository's own history — is settled in
-[`versioning.md`](versioning.md). Future ISA changes:
+This document specifies version `0x0100` — format major **1**, minor
+**0**. Which concrete edits are additive and which are breaking, with
+worked examples from this repository's own history, is settled in
+[`versioning.md`](versioning.md).
+
+**The format is frozen at 1.0.** From here, a change that would make a
+VM accept a file and do the wrong thing requires a major bump, and a
+major bump is a deliberate, documented event rather than a side effect
+of a refactor. The promise is about what a `.gx` means; it does not
+wait on any particular package version, and `gero` being at `0.x` says
+nothing about it.
+
+Future ISA changes:
 
 - **Patch-level edits to this doc** (clarifying ambiguous behavior,
   fixing typos, documenting reserved bits) do not bump the version.
 - **Backwards-compatible additions** (new opcodes in unused ranges,
-  new flag bits, new vector reservations) bump the **minor** field
-  (low byte of version): e.g. `0x0004` would still load `0x0003`
-  files.
+  new flag bits, new vector reservations) bump the **minor** field (low
+  byte): `0x0101` and `0x0100` run on each other.
 - **Breaking changes** (changing existing opcode semantics, changing
-  encoding, repurposing a register) bump the **major** field (would
-  be a future `0x0100`) and require migration tooling.
+  encoding, repurposing a register, moving a region of the memory map)
+  bump the **major** field — a future `0x0200` — and require migration
+  tooling.
 
-The VM and assembler embed the version they target. The disassembler
-reads the program file's version field and warns / refuses to disassemble
-incompatible versions.
+That last list ends where it does deliberately. Major 1 exists because
+the memory map moved: the bank window, the IO page and the boot stack
+(§3.1, §8). None of that is encoded in a `.gx` header, and a `0.x`
+archive is perfectly well-formed — its *instructions* simply address a
+machine that no longer exists. The version field is a promise about
+execution, not about the bytes of the container.
+
+The VM and assembler embed the version they target. A file from any
+other major is refused in **both** directions, naming both versions: a
+higher one means rules this build does not know, a lower one means
+rules it no longer follows.
 
 ---
 

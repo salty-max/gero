@@ -36,7 +36,7 @@ pub fn describe(
             var supported_buf: [16]u8 = undefined;
             const found = formatVersion(&file_buf, declaredVersion(bytes));
             const supported = formatVersion(&supported_buf, vm.version_target);
-            const template = "built for .gx format {s}, but this build supports up to {s} — upgrade gero to open it";
+            const template = "built for .gx format {s}, but this build speaks {s} — the majors differ, so it would not run correctly";
             // allow-strict: both versions render in under 16 bytes, so the sentence always fits `max_message_len`.
             break :blk std.fmt.bufPrint(buf, template, .{ found, supported }) catch unreachable;
         },

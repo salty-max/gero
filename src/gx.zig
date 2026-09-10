@@ -9,9 +9,15 @@ pub const magic = [4]u8{ 'G', 'E', 'R', 'O' };
 /// high byte, minor in the low. A loader rejects a higher major and
 /// accepts a higher minor, so an additive change bumps the low byte.
 ///
-/// `0x0004` added the chunked debug section (§7.3); `0x0003` the
-/// `muls` opcode the debug overflow trap on `*` relies on.
-pub const version: u16 = 0x0004;
+/// `0x0100` moved the bank window, the IO page and the boot stack
+/// (ISA §3.1, §8). A `0.x` file still loads at those old addresses in
+/// its own head — writing `$C000` expecting the window, or reading the
+/// stack where it used to boot — so an older file must be refused
+/// rather than run wrongly, which is what a major bump is for.
+///
+/// Within `0.x`: `0x0004` added the chunked debug section (§7.3);
+/// `0x0003` the `muls` opcode the debug overflow trap on `*` relies on.
+pub const version: u16 = 0x0100;
 
 /// Fixed header size in bytes — every archive starts with this many
 /// bytes before the base image.

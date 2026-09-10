@@ -97,8 +97,9 @@ fn buildGx(
 ) []u8 {
     @memset(out, 0);
     @memcpy(out[0..4], "GERO");
-    out[0x04] = 0x01;
-    out[0x05] = 0x00;
+    // Stamped from the constant so a fixture never pins an old major.
+    out[0x04] = @truncate(gero.gx.version & 0xFF);
+    out[0x05] = @truncate(gero.gx.version >> 8);
     out[0x06] = @truncate(flags & 0xFF);
     out[0x07] = @truncate(flags >> 8);
     out[0x08] = @truncate(entry & 0xFF);
@@ -123,7 +124,11 @@ test "format: unbanked program prints `banks: none` and `sram: none`" {
     try testing.expect(std.mem.indexOf(u8, written, "file:    prog.gx") != null);
     try testing.expect(std.mem.indexOf(u8, written, "size:    16 bytes") != null);
     try testing.expect(std.mem.indexOf(u8, written, "magic:   GERO") != null);
-    try testing.expect(std.mem.indexOf(u8, written, "version: 0x0001") != null);
+    {
+        var want: [24]u8 = undefined;
+        const line = try std.fmt.bufPrint(&want, "version: 0x{X:0>4}", .{gero.gx.version});
+        try testing.expect(std.mem.indexOf(u8, written, line) != null);
+    }
     try testing.expect(std.mem.indexOf(u8, written, "entry:   0x1100") != null);
     try testing.expect(std.mem.indexOf(u8, written, "image:   0 bytes") != null);
     try testing.expect(std.mem.indexOf(u8, written, "banks:   none") != null);

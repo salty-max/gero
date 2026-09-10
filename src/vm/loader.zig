@@ -33,7 +33,13 @@ pub const LoaderError = error{
     TooSmall,
     /// First four bytes aren't `'G' 'E' 'R' 'O'`.
     BadMagic,
-    /// Major version exceeds what this loader supports.
+    /// The file's format major is not the one this build speaks.
+    ///
+    /// Both directions are refused, and the lower one is the reason a
+    /// major exists: a `0.x` file addresses the memory map `1.0` moved
+    /// (ISA §3.1), so running it would place its bank window and stack
+    /// somewhere they no longer are. A newer major is refused because
+    /// this build cannot know what it means.
     UnsupportedVersion,
     /// `flags` has a reserved bit set.
     ReservedBitsSet,
@@ -104,8 +110,9 @@ pub fn parse(bytes: []const u8) LoaderError!LoadedProgram {
     if (!std.mem.eql(u8, bytes[0..4], &magic)) return error.BadMagic;
 
     const version = readU16Le(bytes, 0x04);
-    // Major check: high byte must match.
-    if ((version >> 8) > (version_target >> 8)) return error.UnsupportedVersion;
+    // A major identifies a dialect, not a floor: a file from any other
+    // one is refused rather than run against rules it was not built for.
+    if ((version >> 8) != (version_target >> 8)) return error.UnsupportedVersion;
 
     const flags = readU16Le(bytes, 0x06);
     if ((flags & ~flag_known_mask) != 0) return error.ReservedBitsSet;

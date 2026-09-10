@@ -133,8 +133,10 @@ fn buildGx(
 ) []u8 {
     @memset(out, 0);
     @memcpy(out[0..4], "GERO");
-    out[0x04] = 0x01;
-    out[0x05] = 0x00;
+    // Stamped from the constant, never a literal: a fixture pinned to
+    // an old version stops being loadable the moment the major moves.
+    out[0x04] = @truncate(gero.gx.version & 0xFF);
+    out[0x05] = @truncate(gero.gx.version >> 8);
     out[0x06] = @truncate(flags & 0xFF);
     out[0x07] = @truncate(flags >> 8);
     out[0x08] = @truncate(entry & 0xFF);

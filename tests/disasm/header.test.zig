@@ -12,8 +12,9 @@ fn buildGx(
 ) []u8 {
     @memset(out, 0);
     @memcpy(out[0..4], "GERO");
-    out[0x04] = 0x01;
-    out[0x05] = 0x00;
+    // Stamped from the constant so a fixture never pins an old major.
+    out[0x04] = @truncate(gero.gx.version & 0xFF);
+    out[0x05] = @truncate(gero.gx.version >> 8);
     out[0x06] = @truncate(flags & 0xFF);
     out[0x07] = @truncate(flags >> 8);
     out[0x08] = @truncate(entry & 0xFF);
@@ -33,7 +34,7 @@ test "header: minimal valid cart exposes fields" {
     buf[18] = 0xFF;
 
     const h = try gero.disasm.parseHeader(&buf);
-    try std.testing.expectEqual(@as(u16, 0x0001), h.version);
+    try std.testing.expectEqual(@as(u16, gero.gx.version), h.version);
     try std.testing.expectEqual(@as(u16, 0x0000), h.flags);
     try std.testing.expectEqual(@as(u16, 0x1100), h.entry_point);
     try std.testing.expectEqual(@as(u16, 3), h.image_size);
@@ -64,7 +65,7 @@ test "header: future version rejected" {
     _ = buildGx(&buf, 0, 0, 0, 0, 0);
     // Bump the major version to something past v1.
     buf[0x04] = 0x00;
-    buf[0x05] = 0x02; // big-endian-looking but version is LE → major byte = 0x02
+    buf[0x05] = @truncate((gero.gx.version >> 8) + 1); // a major past this build's
     try std.testing.expectError(error.UnsupportedVersion, gero.disasm.parseHeader(&buf));
 }
 

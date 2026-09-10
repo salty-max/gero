@@ -36,33 +36,46 @@ test "loader: rejects buffer shorter than the header" {
 
 test "loader: rejects bad magic" {
     var buf: [16]u8 = undefined;
-    _ = buildGx(&buf, 0x0001, 0, 0x1100, 0, 0, 0);
+    _ = buildGx(&buf, gero.gx.version, 0, 0x1100, 0, 0, 0);
     buf[0] = 'X';
     try std.testing.expectError(error.BadMagic, gero.vm.parseGx(&buf));
 }
 
-test "loader: rejects future major version" {
+test "loader: rejects a higher major version" {
     var buf: [16]u8 = undefined;
-    _ = buildGx(&buf, 0x0100, 0, 0x1100, 0, 0, 0);
+    _ = buildGx(&buf, gero.gx.version + 0x0100, 0, 0x1100, 0, 0, 0);
+    try std.testing.expectError(error.UnsupportedVersion, gero.vm.parseGx(&buf));
+}
+
+test "loader: rejects a lower major version" {
+    // The direction a freeze makes matter. A `0.x` file is a valid
+    // archive whose instructions address the memory map `1.0` moved,
+    // so running it would put its bank window and stack where they no
+    // longer are — accepted-and-wrong, which is what the major exists
+    // to prevent. The literal is deliberate: this asserts about a
+    // major that is gone, so it must not follow the constant.
+    var buf: [16]u8 = undefined;
+    _ = buildGx(&buf, 0x0004, 0, 0x1100, 0, 0, 0);
     try std.testing.expectError(error.UnsupportedVersion, gero.vm.parseGx(&buf));
 }
 
 test "loader: accepts same-major higher-minor version" {
     var buf: [16]u8 = undefined;
-    _ = buildGx(&buf, 0x0050, 0, 0x1100, 0, 0, 0);
+    const newer = (gero.gx.version & 0xFF00) | 0x50;
+    _ = buildGx(&buf, newer, 0, 0x1100, 0, 0, 0);
     const loaded = try gero.vm.parseGx(&buf);
-    try std.testing.expectEqual(@as(u16, 0x0050), loaded.header.version);
+    try std.testing.expectEqual(@as(u16, newer), loaded.header.version);
 }
 
 test "loader: rejects reserved flag bits" {
     var buf: [16]u8 = undefined;
-    _ = buildGx(&buf, 0x0001, 0b1000_0000, 0x1100, 0, 0, 0);
+    _ = buildGx(&buf, gero.gx.version, 0b1000_0000, 0x1100, 0, 0, 0);
     try std.testing.expectError(error.ReservedBitsSet, gero.vm.parseGx(&buf));
 }
 
 test "loader: parses heap_base from bytes 0x0E..0x0F (little-endian)" {
     var buf: [16]u8 = undefined;
-    _ = buildGx(&buf, 0x0002, 0, 0x1100, 0, 0, 0);
+    _ = buildGx(&buf, gero.gx.version, 0, 0x1100, 0, 0, 0);
     buf[0x0E] = 0x34;
     buf[0x0F] = 0x12;
     const loaded = try gero.vm.parseGx(&buf);
@@ -71,27 +84,27 @@ test "loader: parses heap_base from bytes 0x0E..0x0F (little-endian)" {
 
 test "loader: heap_base defaults to 0 when bytes 0x0E..0x0F are zero" {
     var buf: [16]u8 = undefined;
-    _ = buildGx(&buf, 0x0001, 0, 0x1100, 0, 0, 0);
+    _ = buildGx(&buf, gero.gx.version, 0, 0x1100, 0, 0, 0);
     const loaded = try gero.vm.parseGx(&buf);
     try std.testing.expectEqual(@as(u16, 0), loaded.header.heap_base);
 }
 
 test "loader: rejects sram_bank_count > bank_count" {
     var buf: [16]u8 = undefined;
-    _ = buildGx(&buf, 0x0001, 0, 0x1100, 0, 2, 3);
+    _ = buildGx(&buf, gero.gx.version, 0, 0x1100, 0, 2, 3);
     try std.testing.expectError(error.InvalidSramCount, gero.vm.parseGx(&buf));
 }
 
 test "loader: rejects image_size that doesn't fit" {
     var buf: [16]u8 = undefined;
-    _ = buildGx(&buf, 0x0001, 0, 0x1100, 100, 0, 0);
+    _ = buildGx(&buf, gero.gx.version, 0, 0x1100, 100, 0, 0);
     // No bytes after header.
     try std.testing.expectError(error.ImageSizeMismatch, gero.vm.parseGx(&buf));
 }
 
 test "loader: valid header + image returns the slice" {
     var buf: [16 + 4]u8 = undefined;
-    _ = buildGx(buf[0..16], 0x0001, 0, 0x1100, 4, 0, 0);
+    _ = buildGx(buf[0..16], gero.gx.version, 0, 0x1100, 4, 0, 0);
     buf[16] = 0xDE;
     buf[17] = 0xAD;
     buf[18] = 0xBE;
@@ -105,13 +118,13 @@ test "loader: valid header + image returns the slice" {
 
 test "loader: banked flag requires bank section to fit" {
     var buf: [16]u8 = undefined;
-    _ = buildGx(&buf, 0x0001, 0x0001, 0x1100, 0, 2, 0);
+    _ = buildGx(&buf, gero.gx.version, 0x0001, 0x1100, 0, 2, 0);
     try std.testing.expectError(error.BanksSizeMismatch, gero.vm.parseGx(&buf));
 }
 
 test "loader: banked file returns the bank slice" {
     var buf: [16 + 0x4000]u8 = undefined;
-    _ = buildGx(buf[0..16], 0x0001, 0x0001, 0x1100, 0, 1, 0);
+    _ = buildGx(buf[0..16], gero.gx.version, 0x0001, 0x1100, 0, 1, 0);
     buf[16] = 0x11; // marker at start of bank 0
     const loaded = try gero.vm.parseGx(&buf);
     try std.testing.expect(loaded.header.isBanked());
@@ -121,7 +134,7 @@ test "loader: banked file returns the bank slice" {
 
 test "loader: debug-symbols flag returns the trailing slice" {
     var buf: [16 + 4]u8 = undefined;
-    _ = buildGx(buf[0..16], 0x0001, 0x0002, 0x1100, 0, 0, 0);
+    _ = buildGx(buf[0..16], gero.gx.version, 0x0002, 0x1100, 0, 0, 0);
     buf[16] = 0x01;
     buf[17] = 0x02;
     buf[18] = 0x03;
@@ -135,7 +148,7 @@ test "loader: debug-symbols flag returns the trailing slice" {
 
 test "boot: copies the base image into RAM at 0x0000 and sets ip" {
     var buf: [16 + 5]u8 = undefined;
-    _ = buildGx(buf[0..16], 0x0001, 0, 0x1100, 5, 0, 0);
+    _ = buildGx(buf[0..16], gero.gx.version, 0, 0x1100, 5, 0, 0);
     // mov 0xABCD → r1 (4 bytes) + hlt (1 byte) — just data to copy.
     buf[16] = 0x10;
     buf[17] = 0xCD;
@@ -155,7 +168,7 @@ test "boot: copies the base image into RAM at 0x0000 and sets ip" {
 
 test "boot: banked program installs the bank pool" {
     var buf: [16 + 2 + 0x4000 * 2]u8 = undefined;
-    _ = buildGx(buf[0..16], 0x0001, 0x0001, 0x0000, 2, 2, 1);
+    _ = buildGx(buf[0..16], gero.gx.version, 0x0001, 0x0000, 2, 2, 1);
     buf[16] = 0xFF; // image[0] = hlt
     buf[17] = 0x00;
     // Bank 0 marker.
@@ -177,7 +190,7 @@ test "boot: banked program installs the bank pool" {
 
 test "boot + run: nop nop hlt program executes and halts" {
     var buf: [16 + 3]u8 = undefined;
-    _ = buildGx(buf[0..16], 0x0001, 0, 0x0000, 3, 0, 0);
+    _ = buildGx(buf[0..16], gero.gx.version, 0, 0x0000, 3, 0, 0);
     buf[16] = 0xC1; // nop
     buf[17] = 0xC1; // nop
     buf[18] = 0xFF; // hlt
@@ -239,7 +252,7 @@ fn setHeapBase(buf: []u8, heap_base: u16) void {
 
 test "loader: rejects a heap_base pointing inside the base image" {
     var buf: [24]u8 = undefined;
-    const gx = buildGx(&buf, 0x0004, 0, 0, 8, 0, 0);
+    const gx = buildGx(&buf, gero.gx.version, 0, 0, 8, 0, 0);
     // A heap starting inside the image would hand out addresses over
     // live code; `sys alloc` only bounds the top of the heap, so
     // nothing downstream would catch it.
@@ -249,7 +262,7 @@ test "loader: rejects a heap_base pointing inside the base image" {
 
 test "loader: accepts a heap_base at the image's end" {
     var buf: [24]u8 = undefined;
-    const gx = buildGx(&buf, 0x0004, 0, 0, 8, 0, 0);
+    const gx = buildGx(&buf, gero.gx.version, 0, 0, 8, 0, 0);
     // The first byte past the image is the tightest legal heap.
     setHeapBase(gx, 8);
     const loaded = try gero.vm.parseGx(gx);
@@ -258,7 +271,7 @@ test "loader: accepts a heap_base at the image's end" {
 
 test "loader: heap_base zero means no heap, not an overlap" {
     var buf: [24]u8 = undefined;
-    const gx = buildGx(&buf, 0x0004, 0, 0, 8, 0, 0);
+    const gx = buildGx(&buf, gero.gx.version, 0, 0, 8, 0, 0);
     setHeapBase(gx, 0);
     const loaded = try gero.vm.parseGx(gx);
     try std.testing.expectEqual(@as(u16, 0), loaded.header.heap_base);
@@ -266,7 +279,7 @@ test "loader: heap_base zero means no heap, not an overlap" {
 
 test "loader: rejects a banked program's heap_base inside the bank window" {
     var buf: [24]u8 = undefined;
-    const gx = buildGx(&buf, 0x0004, 0x0001, 0, 8, 1, 0);
+    const gx = buildGx(&buf, gero.gx.version, 0x0001, 0, 8, 1, 0);
     setHeapBase(gx, 0xBE00);
     // The bank window mirrors bank `mb`; a switch would replace every
     // allocation living there.
@@ -275,7 +288,7 @@ test "loader: rejects a banked program's heap_base inside the bank window" {
 
 test "loader: an unbanked program may put its heap at 0xBE00" {
     var buf: [24]u8 = undefined;
-    const gx = buildGx(&buf, 0x0004, 0, 0, 8, 0, 0);
+    const gx = buildGx(&buf, gero.gx.version, 0, 0, 8, 0, 0);
     setHeapBase(gx, 0xBE00);
     // With no banks the window is plain RAM, so the address is fine.
     const loaded = try gero.vm.parseGx(gx);
