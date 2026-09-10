@@ -38,6 +38,7 @@ guess from the codebase shape when the spec defines them.
 | [`versioning.md`](docs/versioning.md) | What counts as an additive vs breaking bytecode change, and how the package version relates to the `.gx` format version. |
 | [`lsp.md`](docs/lsp.md) | `gero lsp` — protocol scope, document sync, capabilities, per-editor wiring. |
 | [`tooling.md`](docs/tooling.md) | Project setup — installing the CLI, wiring editors, CI integration. |
+| [`asm-vs-lang.md`](docs/asm-vs-lang.md) | Which layer to write in — asm, gero-lang, or the bytecode both emit. Worked comparison with measured cycles. Positioning, not contract: it cites the specs rather than defining anything. |
 | [`asm-cookbook.md`](docs/asm-cookbook.md) | Working asm recipes — boot, IVT, banks, syscalls, etc. Reference for "how do I do X in asm?". |
 | [`gero-lab.md`](docs/gero-lab.md) | Browser playground spec — the wasm export surface (§2) is a `zig build` target here; the application (§3 onward) is out-of-repo. §10 draws the line. |
 | [`gtx-16.md`](docs/gtx-16.md) | Fantasy-console spec — consumes Gero as its CPU/VM. Out-of-repo, but the contract lives here. |

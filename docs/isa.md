@@ -5,6 +5,11 @@ This document is **the** source of truth — once a bytecode is in the
 wild, breaking changes bump the version field in the file header
 and require a documented migration.
 
+Two languages target this machine: [`asm.md`](./asm.md) and
+[`gero-lang.md`](./gero-lang.md). Both emit the bytecode specified
+here, and [`asm-vs-lang.md`](./asm-vs-lang.md) explains when to reach
+for which.
+
 ---
 
 ## 1. Philosophy

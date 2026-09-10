@@ -11,6 +11,11 @@ for J-RPG-class games and similar carts; see §1 for the philosophy.
 Diagnostic format and error-code registry live in
 [`lang-diagnostics.md`](./lang-diagnostics.md).
 
+This language does not replace the assembler — the two target the same
+bytecode and are good at different things.
+[`asm-vs-lang.md`](./asm-vs-lang.md) lays out which to reach for, with
+the same routine written both ways and the cycle counts measured.
+
 ---
 
 ## 1. Philosophy
