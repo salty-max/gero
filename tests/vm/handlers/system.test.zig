@@ -1,5 +1,6 @@
 const std = @import("std");
 const gero = @import("gero");
+const util = @import("util");
 const VM = gero.vm.VM;
 
 fn loadProgram(vm: *VM, bytes: []const u8) void {
@@ -252,9 +253,9 @@ test "int 0xFC: pushes state, jumps via vector table, sets flg.I" {
     try std.testing.expectEqual(@as(u16, 0x4000), vm.regs.read(.ip));
     try std.testing.expect(vm.regs.flagSet(.interrupt_disable));
     // Pushed in order: post-int ip (0x1102), fp, flg → top of stack = flg.
-    try std.testing.expectEqual(@as(u16, 0x1102), vm.mmap.readWord(0xFFFC));
-    try std.testing.expectEqual(@as(u16, 0xBEEF), vm.mmap.readWord(0xFFFA));
-    try std.testing.expectEqual(@as(u16, 0x000F), vm.mmap.readWord(0xFFF8));
+    try std.testing.expectEqual(@as(u16, 0x1102), vm.mmap.readWord(util.stackSlot(1)));
+    try std.testing.expectEqual(@as(u16, 0xBEEF), vm.mmap.readWord(util.stackSlot(2)));
+    try std.testing.expectEqual(@as(u16, 0x000F), vm.mmap.readWord(util.stackSlot(3)));
 }
 
 test "int 0xFC: unhandled vector halts on fault" {
@@ -269,10 +270,10 @@ test "rti 0xFD: pops flg / fp / ip in reverse push order" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     // Pre-stage the stack as if an `int` had just fired (top = flg).
-    vm.regs.write(.sp, 0xFFF8);
-    vm.mmap.writeWord(0xFFFC, 0x2222); // saved ip
-    vm.mmap.writeWord(0xFFFA, 0x3333); // saved fp
-    vm.mmap.writeWord(0xFFF8, 0x0000); // saved flg (I clear)
+    vm.regs.write(.sp, util.stackSlot(3));
+    vm.mmap.writeWord(util.stackSlot(1), 0x2222); // saved ip
+    vm.mmap.writeWord(util.stackSlot(2), 0x3333); // saved fp
+    vm.mmap.writeWord(util.stackSlot(3), 0x0000); // saved flg (I clear)
     // Pre-set flg.I to true so we can verify it's restored to clear.
     vm.regs.setFlag(.interrupt_disable, true);
 
@@ -284,7 +285,7 @@ test "rti 0xFD: pops flg / fp / ip in reverse push order" {
     try std.testing.expectEqual(@as(u16, 0x0000), vm.regs.read(.flg));
     try std.testing.expect(!vm.regs.flagSet(.interrupt_disable));
     // sp returns to pre-frame position.
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.sp));
 }
 
 test "int + rti round-trip: caller resumes at post-int ip with state intact" {
@@ -306,7 +307,7 @@ test "int + rti round-trip: caller resumes at post-int ip with state intact" {
     try std.testing.expectEqual(@as(u16, 0xBEEF), vm.regs.read(.fp));
     try std.testing.expectEqual(@as(u16, 0x000F), vm.regs.read(.flg));
     try std.testing.expect(!vm.regs.flagSet(.interrupt_disable));
-    try std.testing.expectEqual(@as(u16, 0xFFFE), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.sp));
 }
 
 test "brk 0xFE: returns breakpoint, ip advances past it for resume" {
@@ -599,7 +600,7 @@ test "sys 0xFB alloc 0x20: cursor + size colliding with sp raises heap_exhausted
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.heap_cursor = 0xFFF0;
-    vm.regs.write(.sp, 0xFFF8);
+    vm.regs.write(.sp, util.stackSlot(3));
     vm.mmap.writeWord(gero.vm.ivtSlot(.heap_exhausted), 0x5000);
     // Allocating 16 bytes would push cursor to 0x10000, past sp.
     vm.regs.write(.acu, 16);
@@ -614,7 +615,7 @@ test "sys 0xFB alloc 0x20: size that would overflow u16 raises heap_exhausted" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     vm.heap_cursor = 0xFF00;
-    vm.regs.write(.sp, 0xFFFE);
+    vm.regs.write(.sp, gero.vm.sp_boot);
     vm.mmap.writeWord(gero.vm.ivtSlot(.heap_exhausted), 0x5000);
     // cursor (0xFF00) + size (0x0200) = 0x10100 — exceeds u16.
     vm.regs.write(.acu, 0x0200);

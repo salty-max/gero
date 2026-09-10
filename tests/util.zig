@@ -3,6 +3,16 @@ const std = @import("std");
 const builtin = @import("builtin");
 const gero = @import("gero");
 
+/// The `n`th word pushed onto the boot stack.
+///
+/// `push` pre-decrements, so the first push lands at `sp_boot - 2`.
+/// Expressed against the constant rather than as an address, so a test
+/// asserting on stack contents does not also pin where the stack
+/// starts — that is boot state, and it has moved before.
+pub fn stackSlot(n: u16) u16 {
+    return gero.vm.sp_boot -% (2 * n);
+}
+
 /// The path a fixture's file will canonicalize to.
 ///
 /// This mirrors the resolver's own rule, and has to: an overlay is

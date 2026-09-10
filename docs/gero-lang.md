@@ -2713,7 +2713,7 @@ compile-time result matches the runtime bit-for-bit.
 
 | Signature | Notes |
 |---|---|
-| `bank.switch_to(n: u8)` | Set the active bank (`mb`). The program owns the `0xC000..0xFEFF` window afterward — distinct from the automatic `@bank` cross-bank-call trampoline (§7.3). Canonical use: selecting an SRAM bank for saves. |
+| `bank.switch_to(n: u8)` | Set the active bank (`mb`). The program owns the `0xBE00..0xFDFF` window afterward — distinct from the automatic `@bank` cross-bank-call trampoline (§7.3). Canonical use: selecting an SRAM bank for saves. |
 | `bank.current() -> u8` | The active bank id. |
 
 `bank.*` is runtime-only — calling it inside a `bake` body is an error.

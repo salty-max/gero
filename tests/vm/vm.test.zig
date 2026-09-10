@@ -181,14 +181,14 @@ test "snapshot: bank contents round-trip" {
     defer vm.deinit();
     try vm.installBanks(alloc, 4, 0);
     vm.regs.write(.mb, 1);
-    vm.mmap.writeByte(0xC000, 77);
+    vm.mmap.writeByte(0xBE00, 77);
 
     var snap = try vm.snapshot(alloc);
     defer snap.deinit();
 
-    vm.mmap.writeByte(0xC000, 99);
+    vm.mmap.writeByte(0xBE00, 99);
     try vm.restore(snap);
-    try std.testing.expectEqual(@as(u8, 77), vm.mmap.readByte(0xC000));
+    try std.testing.expectEqual(@as(u8, 77), vm.mmap.readByte(0xBE00));
 }
 
 test "snapshot: an unbanked VM captures no bank pool" {

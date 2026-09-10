@@ -4,6 +4,7 @@ const types_mod = @import("types.zig");
 const typecheck_mod = @import("typecheck.zig");
 const diag_mod = @import("diagnostic.zig");
 const opcodes = @import("codegen/opcodes.zig");
+const vm_mod = @import("../vm/vm.zig");
 /// Instruction decoder, re-exported so codegen submodules reach it
 /// without a deep relative import (the `@inline` size gate decodes its
 /// spliced body to count real instructions).
@@ -85,13 +86,15 @@ const bank_save_levels: u16 = 64; // max cross-bank nesting depth
 const bank_save_base: u16 = bank_save_ptr + 2; // first save-area byte
 const bank_save_top: u16 = bank_save_base + bank_save_slot_bytes * bank_save_levels; // initial save-sp (grows down)
 
-// Initial `sp` for banked programs. The boot default (`0xFFFE`) puts
-// the runtime stack in the IO page + bank window (`0xC000..0xFEFF`,
-// bank-switched) — so call frames would land in bank-mapped memory and
-// corrupt across a bank hop. Banked programs instead start the stack at
-// the top of low RAM (the ISA's canonical stack home, always flat),
-// growing down toward the save-stack at `bank_save_ptr`.
-const bank_stack_top: u16 = 0x0FFE;
+// Initial `sp` for banked programs — the ISA's own boot value.
+//
+// It used to differ: the boot default put the stack at the top of
+// memory, inside the IO page and the bank window, so a banked
+// program's call frames landed in bank-mapped memory and corrupted
+// across a bank hop. The window no longer reaches the top of memory
+// and `sp` boots into flat user RAM, so a banked program needs no
+// relocation and this simply restates where it already is.
+const bank_stack_top: u16 = vm_mod.sp_boot;
 
 // GP registers an `@interrupt` handler saves on entry + restores before
 // `rti`, so it's transparent to the interrupted code (the VM saves only

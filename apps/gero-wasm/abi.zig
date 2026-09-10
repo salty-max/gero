@@ -35,7 +35,7 @@ pub const no_bank: u32 = 0xFFFF_FFFF;
 
 /// CPU address a bank window is mapped at, so a bank disassembly reads
 /// in the addresses the program will branch to rather than in offsets.
-pub const bank_window_base: u16 = 0xC000;
+pub const bank_window_base: u16 = 0xBE00;
 
 /// Which front-end a source buffer belongs to. Passed as a `u32` so
 /// one `Result` shape serves both languages.

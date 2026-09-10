@@ -165,15 +165,18 @@ const Emit = struct {
 };
 
 /// Bank window base address per ISA §5 — banked content is
-/// addressed in CPU space at `0xC000 + offset_in_bank`.
-const bank_window_base: u16 = 0xC000;
+/// addressed in CPU space at `bank_window_base + offset_in_bank`.
+const bank_window_base: u16 = 0xBE00;
+
+/// Highest address the window covers — the window is exactly one bank.
+const bank_window_end: u16 = bank_window_base + 0x4000 - 1;
 
 /// 16 KB per bank on disk, per ISA §7.1.
 const bank_disk_size: u32 = 0x4000;
 
 /// Return the CPU address corresponding to `offset` within
 /// `bank` — base image stays at `offset` (low RAM), banks shift
-/// into the 0xC000 window.
+/// into the bank window.
 fn bankAddr(bank: ?u8, offset: u32) u16 {
     // safety: base image bounded at 64 KiB; bank offsets at
     //         15.75 KiB — the u16 cast never truncates.
@@ -418,7 +421,7 @@ fn layoutPass(
                     // (writes get shadowed at runtime, or labels
                     // resolve to the wrong CPU space) so we reject
                     // with E007 rather than silently clamping.
-                    const in_window = target >= bank_window_base and target <= 0xFEFF;
+                    const in_window = target >= bank_window_base and target <= bank_window_end;
                     const valid = if (current_bank == null) (target < bank_window_base) else in_window;
                     if (!valid) {
                         try errors.append(symbols.allocator, .{
@@ -683,7 +686,7 @@ fn emitPass(
                     // the current section's range with E007; skip
                     // the pad logic for those cases so we don't
                     // emit spurious zeros.
-                    const in_window = target >= bank_window_base and target <= 0xFEFF;
+                    const in_window = target >= bank_window_base and target <= bank_window_end;
                     const valid = if (current_bank == null) (target < bank_window_base) else in_window;
                     if (valid) {
                         const base = bankAddr(current_bank, 0);

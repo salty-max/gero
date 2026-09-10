@@ -5,7 +5,7 @@ const load_error = gero.load_error;
 const term_mod = @import("term.zig");
 
 const bank_size: usize = 0x4000;
-const bank_window_base: u16 = 0xC000;
+const bank_window_base: u16 = 0xBE00;
 
 /// Drive the disasm flow against `opts.positional()[0]`.
 pub fn execute(

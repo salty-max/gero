@@ -17,7 +17,7 @@ pub const version: u16 = 0x0004;
 /// bytes before the base image.
 pub const header_size: usize = 16;
 
-/// Per-bank disk size — 16 KiB, the size of the `0xC000..0xFEFF`
+/// Per-bank disk size — 16 KiB, exactly the size of the
 /// window in the address space. Each bank stored in the archive
 /// consumes exactly this many bytes (zero-padded).
 pub const bank_disk_size: usize = 0x4000;

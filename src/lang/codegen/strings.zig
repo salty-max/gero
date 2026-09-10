@@ -47,7 +47,7 @@ pub const StringPatch = struct {
 /// resolved address into the pool entry.
 pub fn emitStringPool(self: *Emitter) !void {
     // Strings live in the base image so banked code can still
-    // address them (banks only cover `0xC000..0xFEFF`). Save +
+    // address them (banks only cover the window). Save +
     // restore the buffer-routing so callers in a banked def
     // still emit into the base buffer here.
     const saved_bank = self.current_bank;

@@ -4,10 +4,14 @@ const std = @import("std");
 pub const bank_size: usize = 0x4000;
 
 /// Lowest address mapped into the bank window.
-pub const window_base: u16 = 0xC000;
+///
+/// The window is exactly `bank_size` bytes and ends below the IO page,
+/// so every byte of a bank is addressable and no host register can be
+/// swapped out from under a program by a write to `mb`.
+pub const window_base: u16 = 0xBE00;
 
 /// Highest address (inclusive) mapped into the bank window.
-pub const window_end: u16 = 0xFEFF;
+pub const window_end: u16 = window_base + bank_size - 1;
 
 /// Byte returned for reads through an out-of-range `mb`.
 pub const out_of_range_byte: u8 = 0xFF;
@@ -77,6 +81,10 @@ pub const Banks = struct {
 
     fn slotAt(self: Banks, mb: u16, addr: u16) ?usize {
         if (mb >= self.bank_count) return null;
+        // The window is exactly one bank, so an address outside it has
+        // no slot at all. Answering with one would index a neighbouring
+        // bank, or past the pool entirely.
+        if (!inWindow(addr)) return null;
         // @as: widen mb to usize so the bank-offset math doesn't wrap
         return (@as(usize, mb) * bank_size) + offsetOf(addr);
     }

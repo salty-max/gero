@@ -192,7 +192,7 @@ test "execute: print syscall (int 0x10) writes r1.lo to stdout" {
 }
 
 test "execute: save syscall (int 0x21) hands SRAM bytes to the sink" {
-    // mov 0xCAFE → r1, mov r1, [0xC000] (writes to bank 0 byte 0),
+    // mov 0xCAFE → r1, mov r1, [0xBE00] (writes to bank 0 byte 0),
     // int 0x21, hlt. bank_count=1, sram_bank_count=1.
     const image_size: u16 = 4 + 5 + 2 + 1; // 12
     const total = 16 + image_size + 0x4000; // header + image + 1 bank
@@ -203,11 +203,11 @@ test "execute: save syscall (int 0x21) hands SRAM bytes to the sink" {
     buf[17] = 0xFE;
     buf[18] = 0xCA;
     buf[19] = 0x02;
-    // mov r1, [0xC000] → 0x12 reg, addr
+    // mov r1, [0xBE00] → 0x12 reg, addr
     buf[20] = 0x12;
     buf[21] = 0x02; // r1
     buf[22] = 0x00;
-    buf[23] = 0xC0;
+    buf[23] = 0xBE;
     // int 0x21
     buf[24] = 0xFC;
     buf[25] = 0x21;

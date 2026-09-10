@@ -67,7 +67,7 @@ of cycles in raw gero.
 
 | Address | Field | Description |
 |---------|-------|-------------|
-| `0xFF00..0xFFFF` (host) | `master_palette` | 256 × 4 bytes (RGB + reserved). Initialized at cart load; can be modified at runtime. |
+| host-side | `master_palette` | 256 × 4 bytes (RGB + reserved), 1 KiB — larger than any CPU-addressable page, so it lives host-side and is reached through the palette registers rather than mapped. Initialized at cart load; can be modified at runtime. |
 | `0xFE00..0xFE3F` | `display_palette` | 64 × 1 byte. Each entry maps a "visible color N" to a "master palette index M". Changing this remaps colors on-screen without redrawing. |
 
 **Color tables (LUTs):** Picotron-style. A color table is a 64-byte
@@ -645,10 +645,12 @@ covers every case PICO-8 has lived with for years.
 
 ## 14. Memory map summary
 
-The host claims the following gero IO page ranges:
+The host claims the following ranges of gero's IO page
+(`0xFE00..0xFFFF`, ISA §3.1):
 
 | Range | Purpose | §  |
 |-------|---------|----|
+| `0xFE00..0xFE3F` | Display palette | §1.2 |
 | `0xFE40..0xFE4B` | Display registers | §1.3 |
 | `0xFE50..0xFE61` | Drawing command surface | §2 |
 | `0xFE70..0xFE72` | Sprite sheet config | §2.3 |
@@ -661,8 +663,10 @@ The host claims the following gero IO page ranges:
 | `0xFF10..0xFF13` | Timing | §6 |
 | `0xFF20..0xFF27` | KV store | §7 |
 
-Total: ~192 bytes of IO page used; ~64 bytes reserved for the
-next round of additions.
+Total: 296 of the page's 512 bytes claimed, leaving 216 for later
+additions. Every one of these sits in the IO page rather than the bank
+window below it, so a cart may switch banks freely without its display,
+audio or input registers moving.
 
 ---
 

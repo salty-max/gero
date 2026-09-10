@@ -29,6 +29,14 @@ fn compileSource(source: []const u8) !gero.lang.Compiled {
     return gero.lang.compile(alloc, source, &checked, .{});
 }
 
+/// The `n`th frame slot below the boot frame pointer, where a
+/// function's first local lands. Expressed against `fp_boot` rather
+/// than as an address so these tests do not pin where the stack
+/// happens to start.
+fn frameSlot(n: u16) u16 {
+    return gero.vm.fp_boot -% (2 * n);
+}
+
 test "codegen: empty `def main() end` compiles to a valid .gx" {
     var compiled = try compileSource(
         \\def main() end
@@ -159,8 +167,8 @@ test "codegen: let with int-literal initializer stores into fp-relative slot" {
     var vm = try runWith(compiled.image, &writer);
     defer vm.deinit();
 
-    // x lives at [fp - 2] = mem[0xFFFC..0xFFFE].
-    const slot = vm.mmap.readWord(0xFFFC);
+    // x lives at [fp - 2] = the first frame slot.
+    const slot = vm.mmap.readWord(frameSlot(1));
     try std.testing.expectEqual(@as(u16, 42), slot);
 }
 
@@ -179,7 +187,7 @@ test "codegen: binary add of two literals computes 5 + 3 = 8" {
     var vm = try runWith(compiled.image, &writer);
     defer vm.deinit();
 
-    const slot = vm.mmap.readWord(0xFFFC);
+    const slot = vm.mmap.readWord(frameSlot(1));
     try std.testing.expectEqual(@as(u16, 8), slot);
 }
 
@@ -198,7 +206,7 @@ test "codegen: binary sub respects operand order (10 - 3 = 7)" {
     var vm = try runWith(compiled.image, &writer);
     defer vm.deinit();
 
-    try std.testing.expectEqual(@as(u16, 7), vm.mmap.readWord(0xFFFC));
+    try std.testing.expectEqual(@as(u16, 7), vm.mmap.readWord(frameSlot(1)));
 }
 
 test "codegen: unary neg flips sign" {
@@ -217,7 +225,7 @@ test "codegen: unary neg flips sign" {
     defer vm.deinit();
 
     // -7 as u16 = 0xFFF9
-    try std.testing.expectEqual(@as(u16, 0xFFF9), vm.mmap.readWord(0xFFFC));
+    try std.testing.expectEqual(@as(u16, 0xFFF9), vm.mmap.readWord(frameSlot(1)));
 }
 
 test "codegen: ident load + arithmetic across slots (x + y = 8)" {
@@ -237,9 +245,9 @@ test "codegen: ident load + arithmetic across slots (x + y = 8)" {
     var vm = try runWith(compiled.image, &writer);
     defer vm.deinit();
 
-    try std.testing.expectEqual(@as(u16, 5), vm.mmap.readWord(0xFFFC)); // x
-    try std.testing.expectEqual(@as(u16, 3), vm.mmap.readWord(0xFFFA)); // y
-    try std.testing.expectEqual(@as(u16, 8), vm.mmap.readWord(0xFFF8)); // z
+    try std.testing.expectEqual(@as(u16, 5), vm.mmap.readWord(frameSlot(1))); // x
+    try std.testing.expectEqual(@as(u16, 3), vm.mmap.readWord(frameSlot(2))); // y
+    try std.testing.expectEqual(@as(u16, 8), vm.mmap.readWord(frameSlot(3))); // z
 }
 
 test "codegen: mul + nested precedence (2 * (3 + 4) = 14)" {
@@ -257,7 +265,7 @@ test "codegen: mul + nested precedence (2 * (3 + 4) = 14)" {
     var vm = try runWith(compiled.image, &writer);
     defer vm.deinit();
 
-    try std.testing.expectEqual(@as(u16, 14), vm.mmap.readWord(0xFFFC));
+    try std.testing.expectEqual(@as(u16, 14), vm.mmap.readWord(frameSlot(1)));
 }
 
 test "codegen: print of int literal writes decimal + newline" {
@@ -458,7 +466,7 @@ test "codegen: @addr global is read from the pinned address" {
     _ = gero.vm.run(&vm);
 
     // x's local slot = mem[fp-2] = mem[0xFFFC]; should hold 0x55.
-    try std.testing.expectEqual(@as(u16, 0x55), vm.mmap.readWord(0xFFFC));
+    try std.testing.expectEqual(@as(u16, 0x55), vm.mmap.readWord(frameSlot(1)));
 }
 
 test "codegen: @addr global accepts assignment (MMIO write)" {
@@ -776,10 +784,11 @@ test "codegen: cross-bank call returning a struct preserves the sret ABI" {
     , "10\n32\n");
 }
 
-test "codegen: banked program relocates the stack out of the bank window" {
-    // The boot sp (0xFFFE) would place call frames in the IO page +
-    // bank window (0xC000..0xFEFF, bank-switched); a banked program's
-    // entry must move the stack into low RAM as its first instruction.
+test "codegen: a banked program's stack stays out of the bank window" {
+    // Call frames must never land in bank-mapped memory, or they would
+    // corrupt across a bank hop. The boot `sp` already sits in flat
+    // user RAM, so the entry's prologue lands both `sp` and `fp`
+    // there — `fp` too, since the entry's own locals are fp-relative.
     var compiled = try compileSource(
         \\@bank 2
         \\def town() -> i16
@@ -796,12 +805,11 @@ test "codegen: banked program relocates the stack out of the bank window" {
     defer vm.deinit();
     const loaded = try gero.vm.parseGx(compiled.image);
     try vm.boot(alloc, loaded);
-    // Both sp and fp move into low RAM — the entry's own locals are
-    // fp-relative, so fp must move too or they'd stay in the IO page.
-    _ = gero.vm.step(&vm); // mov #bank_stack_top, sp
+    _ = gero.vm.step(&vm); // mov #stack_top, sp
     _ = gero.vm.step(&vm); // mov sp, fp
-    try std.testing.expectEqual(@as(u16, 0x0FFE), vm.regs.read(.sp));
-    try std.testing.expectEqual(@as(u16, 0x0FFE), vm.regs.read(.fp));
+    try std.testing.expectEqual(@as(u16, gero.vm.sp_boot), vm.regs.read(.sp));
+    try std.testing.expectEqual(@as(u16, gero.vm.fp_boot), vm.regs.read(.fp));
+    try std.testing.expect(vm.regs.read(.sp) < gero.vm.bank_window_base);
 }
 
 test "codegen: cross-bank call in a loop keeps the save-stack balanced" {
@@ -3139,7 +3147,7 @@ test "codegen/class: instance pointer is freshly heap-allocated (acu = heap_base
     // `let p` lives at [fp - 2] (first local). Should hold the
     // heap-allocated instance address; heap starts at data_base
     // when no globals are placed.
-    const p_addr = vm.mmap.readWord(0xFFFC);
+    const p_addr = vm.mmap.readWord(frameSlot(1));
     try std.testing.expectEqual(@as(u16, gero.lang.codegen.data_base), p_addr);
 }
 
@@ -3165,7 +3173,7 @@ test "codegen/class: vtable_ptr at instance[0] points at the class's vtable" {
     defer vm.deinit();
 
     // p is at [fp - 2] = 0xFFFC.
-    const p_addr = vm.mmap.readWord(0xFFFC);
+    const p_addr = vm.mmap.readWord(frameSlot(1));
     // [p+0] = vtable address. Vtable address must be non-zero
     // (lives in the base image past code + strings).
     const vtable_addr = vm.mmap.readWord(p_addr);
@@ -5431,13 +5439,13 @@ test "codegen/math: fixed_sin (Bhaskara) over the circle, Q8.8 raw" {
     var vm = try runWith(compiled.image, &writer);
     defer vm.deinit();
 
-    // Locals sit at descending fp-relative slots from fp = 0xFFFE.
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFFC)); // sin(0) = 0
-    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(0xFFFA)); // sin(90) = 1.0
-    try std.testing.expectEqual(@as(u16, 128), vm.mmap.readWord(0xFFF8)); // sin(30) = 0.5
-    try std.testing.expectEqual(@as(u16, 0xFF00), vm.mmap.readWord(0xFFF6)); // sin(270) = -1.0
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFF4)); // sin(180) = 0
-    try std.testing.expectEqual(@as(u16, 180), vm.mmap.readWord(0xFFF2)); // sin(45) ≈ 0.707
+    // Locals sit at descending fp-relative slots from fp = 0x0FFE.
+    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(frameSlot(1))); // sin(0) = 0
+    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(frameSlot(2))); // sin(90) = 1.0
+    try std.testing.expectEqual(@as(u16, 128), vm.mmap.readWord(frameSlot(3))); // sin(30) = 0.5
+    try std.testing.expectEqual(@as(u16, 0xFF00), vm.mmap.readWord(frameSlot(4))); // sin(270) = -1.0
+    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(frameSlot(5))); // sin(180) = 0
+    try std.testing.expectEqual(@as(u16, 180), vm.mmap.readWord(frameSlot(6))); // sin(45) ≈ 0.707
 }
 
 test "codegen/math: sqrt_fixed (bit-by-bit isqrt) Q8.8 raw" {
@@ -5464,13 +5472,13 @@ test "codegen/math: sqrt_fixed (bit-by-bit isqrt) Q8.8 raw" {
     var vm = try runWith(compiled.image, &writer);
     defer vm.deinit();
 
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFFC)); // √0 = 0
-    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(0xFFFA)); // √1 = 1.0
-    try std.testing.expectEqual(@as(u16, 512), vm.mmap.readWord(0xFFF8)); // √4 = 2.0
-    try std.testing.expectEqual(@as(u16, 768), vm.mmap.readWord(0xFFF6)); // √9 = 3.0
-    try std.testing.expectEqual(@as(u16, 362), vm.mmap.readWord(0xFFF4)); // √2 ≈ 1.414
-    try std.testing.expectEqual(@as(u16, 128), vm.mmap.readWord(0xFFF2)); // √0.25 = 0.5
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(0xFFF0)); // √negative = 0
+    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(frameSlot(1))); // √0 = 0
+    try std.testing.expectEqual(@as(u16, 256), vm.mmap.readWord(frameSlot(2))); // √1 = 1.0
+    try std.testing.expectEqual(@as(u16, 512), vm.mmap.readWord(frameSlot(3))); // √4 = 2.0
+    try std.testing.expectEqual(@as(u16, 768), vm.mmap.readWord(frameSlot(4))); // √9 = 3.0
+    try std.testing.expectEqual(@as(u16, 362), vm.mmap.readWord(frameSlot(5))); // √2 ≈ 1.414
+    try std.testing.expectEqual(@as(u16, 128), vm.mmap.readWord(frameSlot(6))); // √0.25 = 0.5
+    try std.testing.expectEqual(@as(u16, 0), vm.mmap.readWord(frameSlot(7))); // √negative = 0
 }
 
 test "codegen/math: fixed_sin range-reduces a large angle" {
@@ -5492,8 +5500,8 @@ test "codegen/math: fixed_sin range-reduces a large angle" {
     var vm = try runWith(compiled.image, &writer);
     defer vm.deinit();
 
-    try std.testing.expectEqual(@as(u16, 221), vm.mmap.readWord(0xFFFC)); // sin(30000°)
-    try std.testing.expectEqual(@as(u16, 221), vm.mmap.readWord(0xFFFA)); // sin(120°)
+    try std.testing.expectEqual(@as(u16, 221), vm.mmap.readWord(frameSlot(1))); // sin(30000°)
+    try std.testing.expectEqual(@as(u16, 221), vm.mmap.readWord(frameSlot(2))); // sin(120°)
 }
 
 test "codegen/math: rng — deterministic Galois LFSR sequence" {

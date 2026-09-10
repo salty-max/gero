@@ -77,11 +77,20 @@ pub const Header = loader_mod.Header;
 /// Loader error set.
 pub const LoaderError = loader_mod.LoaderError;
 
-/// Boot value for `sp`: top of memory minus one word.
-pub const sp_boot: u16 = 0xFFFE;
+/// Boot value for `sp`: the top word of user RAM (ISA §3.1).
+///
+/// Three constraints meet here, and only user RAM satisfies all of
+/// them. The region must be **flat** — the top of the address space is
+/// the IO page, and below it the bank window, so a stack booted there
+/// writes into peripherals and then into whatever `mb` selects. It must
+/// sit **above the heap**, because `sys alloc` refuses to grow the heap
+/// past `sp`; low RAM is below the image, so a stack there makes the
+/// first allocation fault. And it must leave room to descend, which the
+/// 24 KiB between the image and here provides.
+pub const sp_boot: u16 = 0x7FFE;
 
 /// Boot value for `fp`: same as `sp_boot`.
-pub const fp_boot: u16 = 0xFFFE;
+pub const fp_boot: u16 = 0x7FFE;
 
 /// Boot value for `im`: every maskable vector enabled.
 pub const im_boot: u16 = 0xFFFF;
@@ -97,7 +106,7 @@ pub const Host = struct {
 };
 
 /// The VM. Owns the register file, the memory mapper, and an
-/// optional bank pool backing the `0xC000..0xFEFF` window.
+/// optional bank pool backing the `0xBE00..0xFDFF` window.
 ///
 /// Every instance owns all of its state: any number of them may run
 /// in one process without observing each other, and one may be
@@ -141,7 +150,7 @@ pub const RestoreError = error{
 };
 
 /// The VM. Owns the register file, the memory mapper, and an
-/// optional bank pool backing the `0xC000..0xFEFF` window.
+/// optional bank pool backing the `0xBE00..0xFDFF` window.
 pub const VM = struct {
     regs: Registers,
     mmap: MemoryMapper,

@@ -3,9 +3,9 @@ const gero = @import("gero");
 const VM = gero.vm.VM;
 const Banks = gero.vm.Banks;
 
-test "banks: window base + end are 0xC000 / 0xFEFF" {
-    try std.testing.expectEqual(@as(u16, 0xC000), gero.vm.bank_window_base);
-    try std.testing.expectEqual(@as(u16, 0xFEFF), gero.vm.bank_window_end);
+test "banks: window base + end are 0xBE00 / 0xFDFF" {
+    try std.testing.expectEqual(@as(u16, 0xBE00), gero.vm.bank_window_base);
+    try std.testing.expectEqual(@as(u16, 0xFDFF), gero.vm.bank_window_end);
     try std.testing.expectEqual(@as(usize, 0x4000), gero.vm.bank_size);
 }
 
@@ -13,30 +13,30 @@ test "banks: zero pool has every byte at 0 across every bank" {
     var b = try Banks.init(std.testing.allocator, 4, 0);
     defer b.deinit();
     for ([_]u16{ 0, 1, 2, 3 }) |mb| {
-        try std.testing.expectEqual(@as(u8, 0), b.readByte(mb, 0xC000));
-        try std.testing.expectEqual(@as(u8, 0), b.readByte(mb, 0xFEFF));
+        try std.testing.expectEqual(@as(u8, 0), b.readByte(mb, 0xBE00));
+        try std.testing.expectEqual(@as(u8, 0), b.readByte(mb, 0xFDFF));
     }
 }
 
 test "banks: write reads back from same bank, isolated from others" {
     var b = try Banks.init(std.testing.allocator, 4, 0);
     defer b.deinit();
-    b.writeByte(2, 0xC000, 0x42);
-    try std.testing.expectEqual(@as(u8, 0x42), b.readByte(2, 0xC000));
+    b.writeByte(2, 0xBE00, 0x42);
+    try std.testing.expectEqual(@as(u8, 0x42), b.readByte(2, 0xBE00));
     // Other banks unaffected.
-    try std.testing.expectEqual(@as(u8, 0), b.readByte(0, 0xC000));
-    try std.testing.expectEqual(@as(u8, 0), b.readByte(1, 0xC000));
-    try std.testing.expectEqual(@as(u8, 0), b.readByte(3, 0xC000));
+    try std.testing.expectEqual(@as(u8, 0), b.readByte(0, 0xBE00));
+    try std.testing.expectEqual(@as(u8, 0), b.readByte(1, 0xBE00));
+    try std.testing.expectEqual(@as(u8, 0), b.readByte(3, 0xBE00));
 }
 
 test "banks: out-of-range mb reads 0xFF, writes are dropped" {
     var b = try Banks.init(std.testing.allocator, 4, 0);
     defer b.deinit();
-    try std.testing.expectEqual(@as(u8, 0xFF), b.readByte(255, 0xC000));
-    b.writeByte(255, 0xC000, 0x42); // dropped
-    try std.testing.expectEqual(@as(u8, 0xFF), b.readByte(255, 0xC000));
+    try std.testing.expectEqual(@as(u8, 0xFF), b.readByte(255, 0xBE00));
+    b.writeByte(255, 0xBE00, 0x42); // dropped
+    try std.testing.expectEqual(@as(u8, 0xFF), b.readByte(255, 0xBE00));
     // Real banks untouched.
-    try std.testing.expectEqual(@as(u8, 0), b.readByte(0, 0xC000));
+    try std.testing.expectEqual(@as(u8, 0), b.readByte(0, 0xBE00));
 }
 
 test "banks: initWithImage rejects size mismatch + bad sram count" {
@@ -52,7 +52,7 @@ test "banks: sramSlice exposes last N banks; empty when sram_bank_count = 0" {
     defer b.deinit();
     // Write a marker at the very start of the SRAM region (= start
     // of bank 2 = byte offset 2 * 0x4000).
-    b.writeByte(2, 0xC000, 0x55);
+    b.writeByte(2, 0xBE00, 0x55);
     const sram = b.sramSlice();
     try std.testing.expectEqual(@as(usize, 0x4000 * 2), sram.len);
     try std.testing.expectEqual(@as(u8, 0x55), sram[0]);
@@ -65,10 +65,10 @@ test "banks: sramSlice exposes last N banks; empty when sram_bank_count = 0" {
 test "banks: word reads / writes are little-endian within a bank" {
     var b = try Banks.init(std.testing.allocator, 1, 0);
     defer b.deinit();
-    b.writeWord(0, 0xC000, 0xABCD);
-    try std.testing.expectEqual(@as(u8, 0xCD), b.readByte(0, 0xC000));
-    try std.testing.expectEqual(@as(u8, 0xAB), b.readByte(0, 0xC001));
-    try std.testing.expectEqual(@as(u16, 0xABCD), b.readWord(0, 0xC000));
+    b.writeWord(0, 0xBE00, 0xABCD);
+    try std.testing.expectEqual(@as(u8, 0xCD), b.readByte(0, 0xBE00));
+    try std.testing.expectEqual(@as(u8, 0xAB), b.readByte(0, 0xBE01));
+    try std.testing.expectEqual(@as(u16, 0xABCD), b.readWord(0, 0xBE00));
 }
 
 // ---------- VM-level integration ----------
@@ -77,23 +77,23 @@ test "vm.readByte unbanked: bank window falls through to plain RAM" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     // No banks installed → window is plain RAM.
-    vm.mmap.writeByte(0xC000, 0x42);
-    try std.testing.expectEqual(@as(u8, 0x42), vm.readByte(0xC000));
+    vm.mmap.writeByte(0xBE00, 0x42);
+    try std.testing.expectEqual(@as(u8, 0x42), vm.readByte(0xBE00));
 }
 
-test "vm.readByte banked: 0xC000 routes to bank mb" {
+test "vm.readByte banked: 0xBE00 routes to bank mb" {
     var vm = VM.init(std.testing.allocator);
     defer vm.deinit();
     try vm.installBanks(std.testing.allocator, 4, 0);
     // Seed bank 2 directly so we can verify mb-switching.
-    vm.banks.?.writeByte(2, 0xC000, 0xAA);
-    vm.banks.?.writeByte(0, 0xC000, 0x11);
+    vm.banks.?.writeByte(2, 0xBE00, 0xAA);
+    vm.banks.?.writeByte(0, 0xBE00, 0x11);
 
     vm.regs.write(.mb, 0);
-    try std.testing.expectEqual(@as(u8, 0x11), vm.readByte(0xC000));
+    try std.testing.expectEqual(@as(u8, 0x11), vm.readByte(0xBE00));
 
     vm.regs.write(.mb, 2);
-    try std.testing.expectEqual(@as(u8, 0xAA), vm.readByte(0xC000));
+    try std.testing.expectEqual(@as(u8, 0xAA), vm.readByte(0xBE00));
 }
 
 test "vm.writeByte banked: routes to bank mb, leaves RAM untouched" {
@@ -101,11 +101,11 @@ test "vm.writeByte banked: routes to bank mb, leaves RAM untouched" {
     defer vm.deinit();
     try vm.installBanks(std.testing.allocator, 2, 0);
     vm.regs.write(.mb, 1);
-    vm.writeByte(0xC000, 0x99);
+    vm.writeByte(0xBE00, 0x99);
     // Bank received it.
-    try std.testing.expectEqual(@as(u8, 0x99), vm.banks.?.readByte(1, 0xC000));
-    // Underlying RAM at 0xC000 stays zero — banking intercepts.
-    try std.testing.expectEqual(@as(u8, 0), vm.mmap.mem.readByte(0xC000));
+    try std.testing.expectEqual(@as(u8, 0x99), vm.banks.?.readByte(1, 0xBE00));
+    // Underlying RAM at 0xBE00 stays zero — banking intercepts.
+    try std.testing.expectEqual(@as(u8, 0), vm.mmap.mem.readByte(0xBE00));
 }
 
 test "vm.readByte: out-of-window addresses bypass banking" {
@@ -124,11 +124,12 @@ test "vm.readWord: low byte and high byte route independently across window edge
     try vm.installBanks(std.testing.allocator, 1, 0);
     vm.regs.write(.mb, 0);
 
-    // Word at 0xFEFF: low byte is in window (bank), high byte is
-    // at 0xFF00 (outside the window → mmap).
-    vm.banks.?.writeByte(0, 0xFEFF, 0xAA);
-    vm.mmap.writeByte(0xFF00, 0xBB);
-    try std.testing.expectEqual(@as(u16, 0xBBAA), vm.readWord(0xFEFF));
+    // Word at the window's last byte: the low half is in the window
+    // (so it comes from the bank) and the high half is the first byte
+    // of the IO page above it (so it comes from plain memory).
+    vm.banks.?.writeByte(0, 0xFDFF, 0xAA);
+    vm.mmap.writeByte(0xFE00, 0xBB);
+    try std.testing.expectEqual(@as(u16, 0xBBAA), vm.readWord(0xFDFF));
 }
 
 test "sram round-trip via the host: save slice, install on new VM, read back" {
@@ -139,7 +140,7 @@ test "sram round-trip via the host: save slice, install on new VM, read back" {
         defer vm.deinit();
         try vm.installBanks(std.testing.allocator, 2, 1); // bank 1 is SRAM
         vm.regs.write(.mb, 1);
-        vm.writeWord(0xC000, 0xBEEF);
+        vm.writeWord(0xBE00, 0xBEEF);
         @memcpy(&saved, vm.sramSlice());
     }
 
@@ -150,7 +151,7 @@ test "sram round-trip via the host: save slice, install on new VM, read back" {
     try vm2.installBanks(std.testing.allocator, 2, 1);
     @memcpy(vm2.sramSliceMut(), &saved);
     vm2.regs.write(.mb, 1);
-    try std.testing.expectEqual(@as(u16, 0xBEEF), vm2.readWord(0xC000));
+    try std.testing.expectEqual(@as(u16, 0xBEEF), vm2.readWord(0xBE00));
 }
 
 test "installBanks rejects sram_bank_count > bank_count" {
@@ -169,9 +170,9 @@ test "installBanksWithImage seeds banks from the provided image" {
     try vm.installBanksWithImage(std.testing.allocator, &image, 2, 0);
 
     vm.regs.write(.mb, 0);
-    try std.testing.expectEqual(@as(u8, 0x11), vm.readByte(0xC000));
+    try std.testing.expectEqual(@as(u8, 0x11), vm.readByte(0xBE00));
     vm.regs.write(.mb, 1);
-    try std.testing.expectEqual(@as(u8, 0x22), vm.readByte(0xC000));
+    try std.testing.expectEqual(@as(u8, 0x22), vm.readByte(0xBE00));
 }
 
 test "mov 0x14 imm16,addr: bank-aware write lands in the active bank" {
@@ -180,16 +181,16 @@ test "mov 0x14 imm16,addr: bank-aware write lands in the active bank" {
     try vm.installBanks(std.testing.allocator, 2, 0);
     vm.regs.write(.mb, 1);
 
-    // `mov 0xCAFE, [0xC000]` — bytecode `[0x14, lo, hi, addr_lo, addr_hi]`.
+    // `mov 0xCAFE, [0xBE00]` — bytecode `[0x14, lo, hi, addr_lo, addr_hi]`.
     vm.regs.write(.ip, 0x1100);
     vm.mmap.writeByte(0x1100, 0x14);
     vm.mmap.writeByte(0x1101, 0xFE);
     vm.mmap.writeByte(0x1102, 0xCA);
     vm.mmap.writeByte(0x1103, 0x00);
-    vm.mmap.writeByte(0x1104, 0xC0);
+    vm.mmap.writeByte(0x1104, 0xBE);
 
     _ = gero.vm.step(&vm);
-    try std.testing.expectEqual(@as(u16, 0xCAFE), vm.banks.?.readWord(1, 0xC000));
-    // RAM at 0xC000 untouched.
-    try std.testing.expectEqual(@as(u16, 0), vm.mmap.mem.readWord(0xC000));
+    try std.testing.expectEqual(@as(u16, 0xCAFE), vm.banks.?.readWord(1, 0xBE00));
+    // RAM at 0xBE00 untouched.
+    try std.testing.expectEqual(@as(u16, 0), vm.mmap.mem.readWord(0xBE00));
 }
