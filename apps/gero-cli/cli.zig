@@ -114,6 +114,10 @@ pub const Parsed = struct {
 pub const ParseError = error{
     UnknownCommand,
     UnknownFlag,
+    /// A flag the CLI defines, used under a subcommand that does not
+    /// take it. Distinct from `UnknownFlag` because the fix differs:
+    /// the name is not a typo, it belongs somewhere else.
+    FlagNotForCommand,
     MissingFlagValue,
     InvalidEnumValue,
     /// More than `max_positionals` non-flag tokens after the
@@ -132,6 +136,9 @@ pub const Diagnostic = struct {
     /// `UnknownCommand`, `--color=neon` for `InvalidEnumValue`).
     /// `null` until the parser hits an error.
     bad_token: ?[]const u8 = null,
+    /// The subcommand a `FlagNotForCommand` was written under, so the
+    /// message can point at the right `--help`.
+    bad_command: ?Command = null,
 };
 
 fn commandFromStr(s: []const u8) ?Command {
@@ -490,6 +497,39 @@ fn parseLang(s: []const u8) ParseError!Lang {
 
 const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, stdin, format, target, werror, lang, iter };
 
+/// Which flags a subcommand accepts.
+///
+/// The parser resolves a flag name against one table for the whole
+/// CLI, so `--lang` parses under every subcommand even though only
+/// `fmt` reads it. Without this, `gero init --lang=gr` exits 0 having
+/// scaffolded an *asm* project: the flag is a reasonable guess, it is
+/// silently dropped, and the user gets the wrong language with no
+/// signal.
+///
+/// The rows mirror each subcommand's own `--help`, which is what a
+/// user reads. `--help` and the colour flags are accepted everywhere;
+/// `--version` is answered before a subcommand is resolved.
+fn accepts(cmd: Command, kind: FlagKind) bool {
+    return switch (kind) {
+        .help, .color, .no_color, .version => true,
+        .quiet => switch (cmd) {
+            .run, .test_, .info, .repl, .lsp => false,
+            else => true,
+        },
+        .verbose => switch (cmd) {
+            .asm_, .compile, .run, .test_, .check, .build => true,
+            else => false,
+        },
+        .out => cmd == .asm_ or cmd == .compile,
+        .optimize => cmd == .compile,
+        .iter => cmd == .bench,
+        .check, .stdin, .lang => cmd == .fmt,
+        .format, .werror => cmd == .check,
+        .target => cmd == .build,
+        .bank, .show_bytes, .no_show_bytes, .check_roundtrip => cmd == .disasm,
+    };
+}
+
 fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "help")) return .help;
     if (std.mem.eql(u8, s, "version")) return .version;
@@ -583,6 +623,9 @@ pub fn parse(args: []const []const u8) ParseError!Parsed {
 /// no context.
 pub fn parseWithDiagnostic(args: []const []const u8, diag: ?*Diagnostic) ParseError!Parsed {
     var opts: Options = .{};
+    // The token each flag was written as, so the refusal can quote it
+    // back rather than naming a canonical spelling the user never used.
+    var seen = std.EnumMap(FlagKind, []const u8){};
     var cmd: ?Command = null;
 
     var i: usize = 0;
@@ -637,6 +680,7 @@ pub fn parseWithDiagnostic(args: []const []const u8, diag: ?*Diagnostic) ParseEr
                     }
                     break :blk args[i];
                 };
+                seen.put(kind, a);
                 applyFlag(&opts, kind, v) catch |err| {
                     if (diag) |d| d.bad_token = a;
                     return err;
@@ -646,6 +690,7 @@ pub fn parseWithDiagnostic(args: []const []const u8, diag: ?*Diagnostic) ParseEr
                     if (diag) |d| d.bad_token = a;
                     return error.InvalidEnumValue;
                 }
+                seen.put(kind, a);
                 applyFlag(&opts, kind, null) catch |err| {
                     if (diag) |d| d.bad_token = a;
                     return err;
@@ -663,11 +708,13 @@ pub fn parseWithDiagnostic(args: []const []const u8, diag: ?*Diagnostic) ParseEr
                     if (diag) |d| d.bad_token = a;
                     return error.MissingFlagValue;
                 }
+                seen.put(kind, a);
                 applyFlag(&opts, kind, args[i]) catch |err| {
                     if (diag) |d| d.bad_token = a;
                     return err;
                 };
             } else {
+                seen.put(kind, a);
                 applyFlag(&opts, kind, null) catch |err| {
                     if (diag) |d| d.bad_token = a;
                     return err;
@@ -676,6 +723,21 @@ pub fn parseWithDiagnostic(args: []const []const u8, diag: ?*Diagnostic) ParseEr
         } else {
             if (diag) |d| d.bad_token = a;
             return error.UnknownFlag;
+        }
+    }
+
+    // Flags may precede the subcommand, so this is the first point
+    // where "does this command take that flag" can be asked.
+    if (cmd) |c| {
+        for (std.enums.values(FlagKind)) |kind| {
+            const token = seen.get(kind) orelse continue;
+            if (!accepts(c, kind)) {
+                if (diag) |d| {
+                    d.bad_token = token;
+                    d.bad_command = c;
+                }
+                return error.FlagNotForCommand;
+            }
         }
     }
 
@@ -753,12 +815,14 @@ test "parse: long flag with separate value" {
 }
 
 test "parse: short flags" {
-    const args = [_][]const u8{ "run", "-q", "-v", "-o", "out.gx", "game.gx" };
+    // `asm` is used because it takes all three; `run` documents none
+    // of them, and a subcommand no longer accepts another's flags.
+    const args = [_][]const u8{ "asm", "-q", "-v", "-o", "out.gx", "game.gas" };
     const p = try parse(&args);
     try testing.expect(p.options.quiet);
     try testing.expect(p.options.verbose);
     try testing.expectEqualStrings("out.gx", p.options.out.?);
-    try testing.expectEqualStrings("game.gx", p.options.positional()[0]);
+    try testing.expectEqualStrings("game.gas", p.options.positional()[0]);
 }
 
 test "parse: -- terminator captures trailing positionals" {
@@ -767,6 +831,51 @@ test "parse: -- terminator captures trailing positionals" {
     try testing.expectEqual(@as(?Command, .run), p.command);
     try testing.expectEqual(@as(usize, 1), p.options.positional().len);
     try testing.expectEqualStrings("--game.gx", p.options.positional()[0]);
+}
+
+test "parse: a flag belonging to another subcommand is refused" {
+    // The parser resolves names against one table for the whole CLI,
+    // so every one of these parses. Accepting them means the flag is
+    // silently dropped — `gero init --lang=gr` scaffolding an asm
+    // project is the case that made this visible.
+    const cases = [_]struct { cmd: []const u8, flag: []const u8 }{
+        .{ .cmd = "init", .flag = "--lang=gr" },
+        .{ .cmd = "new", .flag = "--check" },
+        .{ .cmd = "check", .flag = "--stdin" },
+        .{ .cmd = "disasm", .flag = "--lang=gr" },
+        .{ .cmd = "asm", .flag = "--format=json" },
+        .{ .cmd = "run", .flag = "--out=x.gx" },
+    };
+    for (cases) |c| {
+        const args = [_][]const u8{ c.cmd, c.flag };
+        try testing.expectError(error.FlagNotForCommand, parse(&args));
+    }
+}
+
+test "parse: the refusal names the flag and the subcommand" {
+    // A reader has to know both to act: the flag is not a typo, it
+    // belongs somewhere else.
+    var diag: Diagnostic = .{};
+    const args = [_][]const u8{ "init", "--lang=gr" };
+    try testing.expectError(error.FlagNotForCommand, parseWithDiagnostic(&args, &diag));
+    try testing.expectEqualStrings("--lang=gr", diag.bad_token.?);
+    try testing.expectEqual(Command.init, diag.bad_command.?);
+}
+
+test "parse: a flag every subcommand takes is accepted under any of them" {
+    for ([_][]const u8{ "init", "run", "disasm", "lsp" }) |cmd| {
+        const args = [_][]const u8{ cmd, "--no-color" };
+        const p = try parse(&args);
+        try testing.expectEqual(ColorChoice.never, p.options.color);
+    }
+}
+
+test "parse: a flag may still precede its subcommand" {
+    // Validation runs after the loop, because this is legal.
+    const args = [_][]const u8{ "--quiet", "asm", "prog.gas" };
+    const p = try parse(&args);
+    try testing.expect(p.options.quiet);
+    try testing.expectEqual(Command.asm_, p.command.?);
 }
 
 test "parse: unknown flag errors" {
@@ -796,7 +905,9 @@ test "parseWithDiagnostic: populates bad_token on InvalidEnumValue" {
 }
 
 test "parse: --optimize=release accepted" {
-    const args = [_][]const u8{ "asm", "--optimize=release" };
+    // `compile` is the subcommand that takes it; `asm` emits at one
+    // level and documents no `--optimize`.
+    const args = [_][]const u8{ "compile", "--optimize=release" };
     const p = try parse(&args);
     try testing.expectEqual(Optimize.release, p.options.optimize);
 }
