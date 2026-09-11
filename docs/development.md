@@ -155,6 +155,13 @@ is covered without touching `build.zig` — a teaching example that
 quietly stopped working is worse than none, because a beginner cannot
 tell whether the book or their typing is wrong.
 
+`scripts/check-diag-registry.sh` (also on `verify`) diffs every
+`E_*` / `W_*` code three ways: meaning table, registry table, emit
+site in `src/`. A documented code with no emission site is a promise
+nothing keeps; an emitted code with no row is a diagnostic a reader
+cannot look up. The same script checks that the Vec / str operations
+tables in `gero-lang.md` name only methods the typechecker implements.
+
 `zig build test-wasi` runs the whole suite under `wasmtime` for
 wasm32-wasi. It needs `-fwasmtime` and `wasmtime` on PATH, so it is
 not part of the local `ci` aggregate — GitHub Actions installs the

@@ -3683,3 +3683,63 @@ test "typecheck: a variadic parameter needs no annotation" {
         \\end
     );
 }
+
+test "typecheck: `break` outside a loop is refused" {
+    try expectCode(
+        \\def main()
+        \\  break
+        \\end
+    , "E_LOOP_OUTSIDE");
+}
+
+test "typecheck: `continue` outside a loop is refused" {
+    try expectCode(
+        \\def main()
+        \\  continue
+        \\end
+    , "E_LOOP_OUTSIDE");
+}
+
+test "typecheck: unlabeled `break` inside a loop is accepted" {
+    try expectClean(
+        \\def main()
+        \\  while true
+        \\    break
+        \\  end
+        \\end
+    );
+}
+
+test "typecheck: a labeled `break` that matches an enclosing loop is accepted" {
+    try expectClean(
+        \\def main()
+        \\  while true :outer
+        \\    for i in 0..3
+        \\      break :outer
+        \\    end
+        \\  end
+        \\end
+    );
+}
+
+test "typecheck: a labeled `break` with no matching loop is refused" {
+    try expectCode(
+        \\def main()
+        \\  while true :inner
+        \\    break :outer
+        \\  end
+        \\end
+    , "E_LOOP_UNKNOWN_LABEL");
+}
+
+test "typecheck: `break` inside a nested `def` cannot target the caller's loop" {
+    try expectCode(
+        \\def main()
+        \\  while true
+        \\    def inner()
+        \\      break
+        \\    end
+        \\  end
+        \\end
+    , "E_LOOP_OUTSIDE");
+}

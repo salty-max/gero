@@ -215,7 +215,6 @@ Errors raised during tokenization or recursive-descent parsing.
 | `E_SYNTAX_UNEXPECTED_TOKEN` | Token doesn't fit the grammar at this position. |
 | `E_SYNTAX_MISSING_TOKEN` | Required token absent — `expected )`, `expected end`. |
 | `E_SYNTAX_MALFORMED_LITERAL` | Bad escape, bad hex digit, bad fixed-point form. |
-| `E_SYNTAX_AMBIGUOUS_EXPR` | Grammar would accept two readings; user must parenthesize. |
 | `E_SYNTAX_HEX_PREFIX` | `0x...` rejected — use `$...`. |
 | `E_SYNTAX_ANNOTATION_PLACEMENT` | Annotation doesn't attach to a following decl. |
 
@@ -252,6 +251,7 @@ Raised by the typechecker after parsing succeeds.
 
 | Code | Meaning |
 |------|---------|
+| `E_UNDEFINED_SYMBOL` | A name that does not resolve to any binding in scope. |
 | `E_TYPE_MISMATCH` | A value of type X is used where type Y is required. |
 | `E_TYPE_UNDEFINED` | Type name doesn't resolve to a declaration. |
 | `E_TYPE_UNDEFINED_FIELD` | Field name doesn't exist on the receiver's type. |
@@ -279,7 +279,6 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_ARG_COUNT` | Wrong number of args at a call site. |
 | `E_TYPE_AMBIGUOUS_INFER` | Inference can't pin a single type. |
 | `E_TYPE_RECURSIVE_NO_RET` | Recursive fn missing return annotation. |
-| `E_TYPE_INVALID_CAST` | `as T` between incompatible types. |
 | `E_TYPE_NOT_ITERABLE` | `for x in e` where `e` isn't a range, `[T; N]`, `Vec(T)`, `str`, or a class with `next(self) -> T?` (§4.5.3). |
 | `E_TYPE_BAD_FORMAT_SPEC` | A `$(expr:fmt)` format spec (§3.2.2) is malformed, applied to a non-scalar, or its type letter / precision doesn't fit the value's type. |
 
@@ -400,8 +399,6 @@ note: see §3.4.1 for the two nullable layouts
 |------|---------|
 | `E_MATCH_NON_EXHAUSTIVE` | Enum scrutinee missing a variant arm. |
 | `E_MATCH_UNREACHABLE_ARM` | An arm can never match (covered by earlier arm). |
-| `E_MATCH_REDUNDANT_GUARD` | `when` guard whose negation is impossible. |
-| `E_MATCH_BIND_TYPE` | Pattern binds a payload of the wrong type. |
 
 **Mockup — non-exhaustive:**
 
@@ -631,7 +628,6 @@ help: simplify the computation, or precompute the table with a
 | `E_VAR_INLINE` | A variadic `def` is marked `@inline` — it already specializes per call-site arity, so the two are mutually exclusive (§4.6.2). |
 | `E_VAR_VIRTUAL` | A variadic method is `@override` or `@abstract` — variadic methods are non-virtual (statically dispatched per arity), so they can't be virtual (§4.6.2). |
 | `E_VAR_OVERRIDE` | A method collides with an ancestor method where one side is variadic — a variadic method can't participate in overriding (§4.6.2). |
-| `E_VAR_NO_DEFAULT` | Variadic parameter declared with a default value. |
 
 **Mockup — heterogeneous call:**
 
@@ -817,7 +813,6 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_SYNTAX_UNEXPECTED_TOKEN` | Parser | v0.3 |
 | `E_SYNTAX_MISSING_TOKEN` | Parser | v0.3 |
 | `E_SYNTAX_MALFORMED_LITERAL` | Parser | v0.3 |
-| `E_SYNTAX_AMBIGUOUS_EXPR` | Parser | v0.3 |
 | `E_SYNTAX_HEX_PREFIX` | Parser | v0.3 |
 | `E_SYNTAX_ANNOTATION_PLACEMENT` | Parser | v0.3 |
 | `E_TYPE_MISMATCH` | Typechecker | v0.3 |
@@ -846,7 +841,6 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_ARG_COUNT` | Typechecker | v0.3 |
 | `E_TYPE_AMBIGUOUS_INFER` | Typechecker | v0.3 |
 | `E_TYPE_RECURSIVE_NO_RET` | Typechecker | v0.3 |
-| `E_TYPE_INVALID_CAST` | Typechecker | v0.3 |
 | `E_TYPE_NOT_ITERABLE` | Typechecker | v0.3 |
 | `E_TYPE_BAD_FORMAT_SPEC` | Typechecker | v0.3 |
 | `E_NULL_DEREF` | Nullable | v0.3 |
@@ -854,8 +848,6 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_NULL_NIL_TO_NONNULL` | Nullable | v0.3 |
 | `E_MATCH_NON_EXHAUSTIVE` | Match | v0.3 |
 | `E_MATCH_UNREACHABLE_ARM` | Match | v0.3 |
-| `E_MATCH_REDUNDANT_GUARD` | Match | v0.3 |
-| `E_MATCH_BIND_TYPE` | Match | v0.3 |
 | `E_REF_STACK_LIFETIME` | References | v0.3 |
 | `E_REF_TEMPORARY` | References | v0.3 |
 | `E_REF_DOUBLE` | References | v0.3 |
@@ -892,7 +884,6 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_VAR_INLINE` | Variadic | v0.3 |
 | `E_VAR_VIRTUAL` | Variadic | v0.3 |
 | `E_VAR_OVERRIDE` | Variadic | v0.3 |
-| `E_VAR_NO_DEFAULT` | Variadic | v0.3 |
 | `E_CAST_INVALID` | Casts | v0.3 |
 | `E_CAST_PRECISION_LOSS` | Casts | v0.3 |
 | `E_LOOP_UNKNOWN_LABEL` | Loop labels | v0.3 |
@@ -925,6 +916,19 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_CODEGEN_LAMBDA_NOT_ANALYZED` | Codegen | v0.3 |
 | `E_CODEGEN_UNBOUND_CAPTURE` | Codegen | v0.3 |
 | `E_CODEGEN_NONPROMOTED_CAPTURE_WRITE` | Codegen | v0.3 |
+| `E_USE_NOT_FOUND` | Module resolution | v0.3 |
+| `E_USE_CYCLE` | Module resolution | v0.3 |
+| `E_USE_DEPTH` | Module resolution | v0.3 |
+| `E_USE_DUPLICATE_ALIAS` | Module resolution | v0.3 |
+| `E_USE_CASE_MISMATCH` | Module resolution | v0.3 |
+| `E_TYPE_UNDEFINED_VARIANT` | Typechecker | v0.3 |
+| `E_BAKE_TYPE` | Bake | v0.3 |
+| `E_BAKE_UNSUPPORTED` | Bake | v0.3 |
+| `E_BAKE_ARG_COUNT` | Bake | v0.3 |
+| `E_BAKE_INDEX_OUT_OF_BOUNDS` | Bake | v0.3 |
+| `E_BAKE_UNDEFINED_FIELD` | Bake | v0.3 |
+| `E_BAKE_DIV_BY_ZERO` | Bake | v0.3 |
+| `E_CODEGEN_BAD_INTERRUPT_VECTOR` | Codegen | v0.3 |
 
 ---
 

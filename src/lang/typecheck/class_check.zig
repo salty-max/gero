@@ -110,6 +110,11 @@ pub fn walkDefBody(
     self.fn_locals = .{};
     defer self.fn_locals = saved_locals;
 
+    // A nested `def` cannot `break` a loop in the caller.
+    const saved_loops = self.loop_stack;
+    self.loop_stack = .empty;
+    defer self.loop_stack = saved_loops;
+
     // Bake context: `bake def` body satisfies bake rules.
     // Nested non-bake defs reset the flag for the inner body.
     const saved_bake = self.in_bake;
