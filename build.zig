@@ -748,6 +748,13 @@ pub fn build(b: *std.Build) void {
     );
     check_doc_gr_step.dependOn(&check_doc_gr_cmd.step);
 
+    const check_diag_registry_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-diag-registry.sh" });
+    const check_diag_registry_step = b.step(
+        "check-diag-registry",
+        "Fail if lang-diagnostics.md lists a code the compiler never emits, or the reverse",
+    );
+    check_diag_registry_step.dependOn(&check_diag_registry_cmd.step);
+
     const check_broken_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-broken.sh" });
     check_broken_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
     check_broken_cmd.step.dependOn(b.getInstallStep());
@@ -791,6 +798,7 @@ pub fn build(b: *std.Build) void {
     verify_step.dependOn(&check_examples_cmd.step);
     verify_step.dependOn(&check_doc_asm_cmd.step);
     verify_step.dependOn(&check_doc_gr_cmd.step);
+    verify_step.dependOn(&check_diag_registry_cmd.step);
     verify_step.dependOn(&check_broken_cmd.step);
     verify_step.dependOn(&fmt_check_examples_cmd.step);
     verify_step.dependOn(&check_examples_gr_cmd.step);

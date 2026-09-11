@@ -208,6 +208,7 @@ pub fn typecheckGraph(
         .tuple_correlations = .{},
         .in_bake = false,
         .in_no_capture = false,
+        .loop_stack = .empty,
         .lambda_locals = null,
         .expr_types = &expr_types,
         .import_aliases = import_aliases,
@@ -482,6 +483,10 @@ pub const Checker = struct {
     in_bake: bool,
     /// Walker is inside a `@no_capture` def body.
     in_no_capture: bool,
+    /// Enclosing loop labels, innermost last. `null` is an unlabeled
+    /// loop. A nested `def` / lambda starts a fresh stack — `break`
+    /// cannot target a loop in the caller.
+    loop_stack: std.ArrayListUnmanaged(?[]const u8),
     /// Names declared inside the current lambda body. `null` when
     /// not under a `@no_capture`-tracked lambda. Drives capture-
     /// mutation checks.
@@ -718,7 +723,8 @@ pub const Checker = struct {
             .repeat_stmt => |rs| try self.checkRepeat(rs),
             .match_stmt => |ms| try self.checkMatch(ms),
             .return_stmt => |rs| try self.checkReturn(rs),
-            .break_stmt, .continue_stmt => {},
+            .break_stmt => |j| try self.checkLoopJump(j, "break"),
+            .continue_stmt => |j| try self.checkLoopJump(j, "continue"),
             .print_stmt => |ps| {
                 for (ps.args) |a| _ = try self.inferExpr(a, null);
             },
@@ -1457,6 +1463,8 @@ pub const Checker = struct {
         defer self.current_scope = saved;
         if (ws.let_pattern) |pat| try self.registerBindingsFromType(pat, let_ty);
         if (ws.let_guard) |g| try self.requireBool(g);
+        try self.pushLoop(ws.label);
+        defer self.popLoop();
         try self.walkStatementSequence(ws.body);
     }
 
@@ -1507,6 +1515,8 @@ pub const Checker = struct {
             .decl_span = fs.binding,
             .ty = elem_ty,
         });
+        try self.pushLoop(fs.label);
+        defer self.popLoop();
         try self.walkStatementSequence(fs.body);
     }
 
@@ -1551,8 +1561,41 @@ pub const Checker = struct {
     }
 
     fn checkRepeat(self: *Checker, rs: ast.RepeatStmt) WalkError!void {
+        try self.pushLoop(rs.label);
+        defer self.popLoop();
         try self.walkInScope(rs.body);
         try self.requireBool(rs.cond);
+    }
+
+    fn pushLoop(self: *Checker, label: ?ast.Span) WalkError!void {
+        try self.loop_stack.append(self.arena, if (label) |s| self.lexeme(s) else null);
+    }
+
+    fn popLoop(self: *Checker) void {
+        _ = self.loop_stack.pop();
+    }
+
+    /// `break` / `continue` must land in an enclosing loop of this
+    /// function. A labeled jump that matches no frame is
+    /// `E_LOOP_UNKNOWN_LABEL`; a jump with no frame at all is
+    /// `E_LOOP_OUTSIDE`.
+    fn checkLoopJump(self: *Checker, j: ast.LoopJumpStmt, kind: []const u8) WalkError!void {
+        if (self.loop_stack.items.len == 0) {
+            const msg = try std.fmt.allocPrint(self.arena, "`{s}` outside any loop", .{kind});
+            try self.emitSpan("E_LOOP_OUTSIDE", j.span, msg);
+            return;
+        }
+        const label_span = j.label orelse return;
+        const want = self.lexeme(label_span);
+        var i = self.loop_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.loop_stack.items[i]) |have| {
+                if (std.mem.eql(u8, have, want)) return;
+            }
+        }
+        const msg = try std.fmt.allocPrint(self.arena, "no enclosing loop labeled `:{s}`", .{want});
+        try self.emitSpan("E_LOOP_UNKNOWN_LABEL", label_span, msg);
     }
 
     /// Reject a struct that contains itself by value (directly or
@@ -2172,6 +2215,11 @@ pub const Checker = struct {
                 const saved_locals = self.lambda_locals;
                 if (self.in_no_capture) self.lambda_locals = .{};
                 defer self.lambda_locals = saved_locals;
+
+                // A lambda cannot `break` a loop in the enclosing fn.
+                const saved_loops = self.loop_stack;
+                self.loop_stack = .empty;
+                defer self.loop_stack = saved_loops;
 
                 // Bidirectional hint: when the lambda flows into
                 // a function-typed slot (`let f: fn(...) -> R = ||
