@@ -40,9 +40,33 @@ boundary, you must say. That asymmetry is deliberate: the signature is
 what a caller reads, and a caller should not have to read the body to
 know what to pass.
 
+Leave a parameter unannotated and the compiler stops you:
+
+```
+error: parameter `a` needs a type — write `a: i16` or whichever type it takes [E_TYPE_PARAM_UNANNOTATED]
+```
+
+The annotation is what it checks an argument against. Without one,
+every call would pass — `add("Ryu", 3)` would compile, and the machine
+would add the address of the string to 3.
+
+The return type is required as soon as you return a value. Leave off
+the `-> i16` and the compiler stops you too:
+
+```
+error: returning a value from a function with no return type — add `-> T` to its signature, or drop the value (§4.6) [E_TYPE_RETURN_FROM_VOID]
+```
+
+A `def` with no arrow returns nothing, so a `return x` inside one has
+nowhere to put `x`.
+
 It also means an error lands where the mistake is. Call
 `damage_from("Ryu", 5)` and the compiler objects at that line, rather
-than somewhere inside the subtraction.
+than somewhere inside the subtraction:
+
+```
+error: type mismatch: expected `i16`, found `str` [E_TYPE_MISMATCH]
+```
 
 ## Returning more than one thing
 
