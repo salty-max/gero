@@ -49,8 +49,8 @@ That prints `wounded`. `MAX_HP / 4` is 7 and `MAX_HP / 2` is 15, so 12
 falls in the third arm.
 
 Integer division truncates: `30 / 4` is 7, not 7.5. There is no
-rounding and no error. If that is not what you want, chapter 9 has
-`fixed`.
+rounding and no error. If that is not what you want, `fixed` is
+the type with a fractional part.
 
 ## `while`
 
@@ -74,9 +74,8 @@ it to -5.
 
 `hp -= 7` is shorthand for `hp = hp - 7`. The compound assignments
 (`+=`, `-=`, `*=`, `/=`) are statements, not expressions: you cannot
-write `let x = hp -= 7`. Nor is there `++`. This is on purpose —
-[`lang.md`](../lang.md) §9 explains the reasoning, which is
-that the ambiguity is not worth what it buys.
+write `let x = hp -= 7`. Nor is there `++`. A standalone `++` is
+fine; `x++ + ++x` is not a puzzle this language wants to set.
 
 ## `for` and ranges
 

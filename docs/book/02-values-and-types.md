@@ -55,13 +55,12 @@ end
 ```
 
 There are eight primitive types, and the whole list fits in a
-paragraph. `i8` and `u8` are one byte. `i16` (spelled `int` if you
-prefer) and `u16` are two. `char` is one byte holding an ASCII code —
-`'A'` is 65. `bool` is one byte. `str` is a pointer to text. And
-`fixed` is a number with a fractional part, which needs its own
-section.
-
-[`lang.md`](../lang.md) §3.1 has the exact ranges.
+paragraph. `i8` is -128 to 127; `u8` is 0 to 255; both are one byte.
+`i16` (spelled `int` if you prefer) is -32768 to 32767; `u16` is 0
+to 65535; both are two bytes. `char` is one byte holding an ASCII
+code — `'A'` is 65. `bool` is one byte. `str` is a two-byte pointer
+to text. And `fixed` is a number with a fractional part, which needs
+its own section.
 
 ## Why the sizes are in the table
 
@@ -104,8 +103,6 @@ The trade is real and you should know its shape. `fixed` cannot hold
 speeds and percentages it is the right tool. For anything needing more
 range or exactness, integers and a chosen unit are better: store
 tenths of a percent as an `int` and divide when you display.
-
-Chapter 9 comes back to this with a worked case.
 
 ## Text
 

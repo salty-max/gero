@@ -95,8 +95,7 @@ end
 `7`. The `let (hit, dmg) = ...` destructures the returned pair into
 two bindings.
 
-This is the Go shape rather than the Rust one, and
-[`lang.md`](../lang.md) §9 says why: a `Result` type wants
+This is the Go shape rather than the Rust one. A `Result` type wants
 generics and a propagation operator, and both cost more than they are
 worth on a machine this size. An explicit check at the call site is
 the trade.
@@ -145,9 +144,8 @@ end
 see it. A top-level `const` is visible to everything in the file.
 
 Every piece is now named and testable on its own. `severity` does not
-know about the fight; `attack` does not know about hit points. That is
-what makes chapter 10's tests possible, and what makes it reasonable
-to add a second character in chapter 5.
+know about the fight; `attack` does not know about hit points. That
+is the shape a second character — and a test — can plug into.
 
 ## Recursion works
 
@@ -164,13 +162,10 @@ def main()
 end
 ```
 
-`55`. Each call gets its own frame on the stack. Chapter 5 of
-[The Gero Machine](../machine/README.md) shows what a frame actually
-is; here it is enough to know the depth is bounded by memory, and 64
-KB is not a lot of it.
+`55`. Each call gets its own frame on the stack. The depth is bounded
+by memory, and 64 KB is not a lot of it.
 
 ---
 
-**Next:** chapters 5 onward — collections, enums and `match`, classes,
-modules. The character stops being four loose variables and starts
-being a thing.
+The character is still four loose variables and a couple of functions.
+That is as far as this part goes.

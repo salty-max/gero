@@ -69,10 +69,10 @@ the same format version will run identically.
 Identically is a strong word and it is meant literally. The same
 source compiles to the same bytes on Linux, macOS and Windows — CI
 checks that on every change against a corpus of blessed images. The
-format is frozen at 1.0, so a cart built today runs on later versions
-of the VM, and one built for an incompatible machine is refused rather
-than run wrongly. [`versioning.md`](../versioning.md) §6 is the exact
-promise.
+format is frozen at 1.0: a cart built today runs on later versions of
+the VM, and one built for an incompatible machine is refused rather
+than run wrongly. An older VM seeing a newer *major* stops; a newer
+minor it just runs.
 
 For a cart, that matters more than it might sound. You are shipping an
 artifact, not a build recipe.
@@ -113,10 +113,8 @@ sum_to:
 Both of those sum `1..n`. The assembly version is about three times
 faster and a fifth the size, and the Gero version is the one you
 would rather read six months from now. Neither is the "real" one —
-[`asm-vs-lang.md`](../asm-vs-lang.md) has the measured numbers and the
-rule for choosing.
-
-This book stays in Gero until chapter 11, where the two meet.
+[Gero and assembly](addendum-b-assembly.md) has the measured numbers
+and the rule for choosing. This book stays in Gero.
 
 ## The tools
 
@@ -147,9 +145,10 @@ read back.
 brew install salty-max/tap/gero
 ```
 
-or build from source — [`tooling.md`](../tooling.md) covers editor
-setup for syntax highlighting and inline errors, which is worth ten
-minutes before chapter 2.
+or build from source. [Installing Gero](addendum-a-installing.md)
+covers the rest of the binary, and editor setup for syntax
+highlighting and inline errors, which is worth ten minutes before
+the next chapter.
 
 ---
 
