@@ -108,9 +108,10 @@ fn collect(io: std.Io, arena: std.mem.Allocator) ![]const Entry {
         while (try walker.next(io)) |it| {
             if (it.kind != .file) continue;
             if (!std.mem.endsWith(u8, it.path, src.suffix)) continue;
-            // An asm example split across `include`s has one entry
-            // point; the included fragments are not programs.
+            // An asm example split across `include`s, or a Gero
+            // module imported with `use`, is not an entry point.
             if (try isIncludeFragment(io, arena, src.dir, it.path)) continue;
+            if (try isUseFragment(io, arena, src.dir, it.path)) continue;
             try out.append(arena, .{
                 .source = try std.fs.path.join(arena, &.{ src.dir, it.path }),
                 .golden = try goldenName(arena, src.dir, it.path),
@@ -140,6 +141,37 @@ fn isIncludeFragment(io: std.Io, arena: std.mem.Allocator, dir: []const u8, rel:
         const path = try std.fs.path.join(arena, &.{ dir, it.path });
         const text = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch continue;
         if (mentionsInclude(text, base)) return true;
+    }
+    return false;
+}
+
+/// True when `rel` is pulled in by a sibling's `use` rather than
+/// being a program of its own.
+fn isUseFragment(io: std.Io, arena: std.mem.Allocator, dir: []const u8, rel: []const u8) !bool {
+    if (!std.mem.endsWith(u8, rel, ".gr")) return false;
+    const base = std.fs.path.basename(rel);
+    const stem = base[0 .. base.len - ".gr".len];
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{ .iterate = true });
+    defer d.close(io);
+    var walker = try d.walk(arena);
+    while (try walker.next(io)) |it| {
+        if (it.kind != .file) continue;
+        if (std.mem.eql(u8, it.path, rel)) continue;
+        if (!std.mem.endsWith(u8, it.path, ".gr")) continue;
+        const path = try std.fs.path.join(arena, &.{ dir, it.path });
+        const text = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch continue;
+        if (mentionsUse(text, stem)) return true;
+    }
+    return false;
+}
+
+/// True when `text` has a `use` of `./stem` (with or without `.gr`).
+fn mentionsUse(text: []const u8, stem: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (!std.mem.startsWith(u8, trimmed, "use ")) continue;
+        if (std.mem.indexOf(u8, trimmed, stem) != null) return true;
     }
     return false;
 }

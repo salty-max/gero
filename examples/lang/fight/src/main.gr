@@ -1,0 +1,12 @@
+use Fighter from "./fighter"
+use Item from "./items"
+use describe from "./items"
+
+def main()
+  let ryu = Fighter("Ryu", 30)
+  ryu.take_damage(7)
+  print ryu.hp
+  ryu.heal(15)
+  print ryu.hp
+  print describe(Item.Potion(15))
+end

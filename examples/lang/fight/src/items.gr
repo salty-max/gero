@@ -1,0 +1,11 @@
+enum Item
+  case Potion(amount: i16)
+  case Ether
+end
+
+def describe(item: Item) -> str
+  match item
+    case Item.Potion(_) => return "potion"
+    case Item.Ether => return "ether"
+  end
+end

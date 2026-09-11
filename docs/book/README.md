@@ -31,6 +31,12 @@ to know what the machine is doing.
 3. [Control flow](03-control-flow.md) — `if`, `while`, `for`, ranges.
 4. [Functions](04-functions.md) — parameters, returns, and returning
    more than one thing.
+5. [Collections](05-collections.md) — tuples, arrays, `Vec`, and what
+   each costs.
+6. [Enums and match](06-enums-and-match.md) — payloads, and a missing
+   arm as a compile error.
+7. [Classes](07-classes.md) — fields, methods, `self`.
+8. [Modules](08-modules.md) — `use`, `gero.toml`, `gero build`.
 
 Addenda: [Installing Gero](addendum-a-installing.md),
 [Gero and assembly](addendum-b-assembly.md).
