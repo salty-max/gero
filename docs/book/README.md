@@ -37,6 +37,12 @@ to know what the machine is doing.
    arm as a compile error.
 7. [Classes](07-classes.md) — fields, methods, `self`.
 8. [Modules](08-modules.md) — `use`, `gero.toml`, `gero build`.
+9. [Numbers that are not integers](09-fixed.md) — `fixed`, and where
+   integer division loses the answer.
+10. [Testing and measuring](10-testing.md) — `@test`, `@bench`.
+11. [Reaching the machine](11-reaching-the-machine.md) — `asm`,
+    `@bank`, `@interrupt`.
+12. [A cart, end to end](12-a-cart.md) — the fight, shipped.
 
 Addenda: [Installing Gero](addendum-a-installing.md),
 [Gero and assembly](addendum-b-assembly.md).
