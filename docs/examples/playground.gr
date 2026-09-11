@@ -98,7 +98,9 @@ end
 
 def main()
   let xs = [1, 2, 3, 4]
-  let doubled = xs.map(|x| x * 2)
-  let total = doubled.fold(0, |acc, x| acc + x)
+  let total = 0
+  for x in xs
+    total += x * 2
+  end
   print total
 end
