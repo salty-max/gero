@@ -264,6 +264,7 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_INDEX_OOR` | A constant array index `arr[N]` is negative or past the array's length. |
 | `E_TYPE_REFUTABLE_LET` | A `let` binding uses a refutable pattern (a literal / range / or-pattern, or a multi-variant enum) that can fail to match — use `if let` / `match` instead (§4.2). |
 | `E_TYPE_TOP_LEVEL_STATEMENT` | An executable statement sits at module scope. A module body is declarations only (§7.1) — execution begins at `main`, so the statement would never run. |
+| `E_TYPE_UNDEFINED_VARIANT` | A variant name the enum does not declare — `E.Nope` where `E` has no `Nope`. |
 | `E_TYPE_RETURN_FROM_VOID` | `return <value>` in a function with no `-> T` in its signature. An unannotated `def` is a void return (§4.6), so the value has nowhere to go and no caller can read it. |
 | `E_TYPE_TERNARY_BOOL` | A bare `a and b or c` whose branches are `bool` (§4.2.3). The shape reads both as the conditional expression and as the boolean chain `(a and b) or c`, and they disagree when `a` holds and `b` does not — parenthesize the chain, or write `if a b else c end`. |
 | `E_TYPE_MATCH_ARM_MISMATCH` | The arms of a value `match` produce different types (§4.8.4). All arms share one type, so an arm ending in a statement (type `nil`) mismatches an arm ending in an expression. |
@@ -315,17 +316,19 @@ note: `draw` declared at src/render.gr:5:1
 **Mockup — ambiguous inference:**
 
 ```
-error: cannot infer type for parameter `n` [E_TYPE_AMBIGUOUS_INFER]
-  --> src/util.gr:3:13
+error: cannot infer `Vec` element type — annotate the binding [E_TYPE_AMBIGUOUS_INFER]
+  --> src/util.gr:3:11
    |
-3  | def double(n)
-   |            ^ used as `i16` and as `u8` at different call sites
+3  | let v = Vec.new()
+   |         ^ nothing here says what it holds
    |
-note: called with `i16` at src/main.gr:7:3
-note: called with `u8` at src/main.gr:9:3
-help: add an explicit annotation: `def double(n: i16)` or
-      `def double(n: u8)`
+help: write the type: `let v: Vec(i16) = Vec.new()`
 ```
+
+This fires where a construction carries no element type and none can
+be read off the initializer. It is **not** about function parameters:
+those are annotated (gero-lang.md §3.5), so there is nothing to infer
+and nothing to be ambiguous about.
 
 **Mockup — recursive without return type:**
 
@@ -548,6 +551,12 @@ Compile-time evaluator restrictions. Per spec §3.8.
 
 | Code | Meaning |
 |------|---------|
+| `E_BAKE_TYPE` | A value in a `bake` body has the wrong type for its use — an `if` condition that is not `bool`, an operand the evaluator cannot apply the operator to. |
+| `E_BAKE_UNSUPPORTED` | A statement form the compile-time evaluator does not implement. Distinct from `E_BAKE_FORBIDDEN_CALL`: the construct is not disallowed, it is not built. |
+| `E_BAKE_ARG_COUNT` | A call inside `bake` passing the wrong number of arguments. |
+| `E_BAKE_INDEX_OUT_OF_BOUNDS` | A constant index outside the array's bounds, or negative. `bake` evaluates at compile time, so this is caught there rather than faulting at `$02`. |
+| `E_BAKE_UNDEFINED_FIELD` | A field access inside `bake` naming a field the struct does not have. |
+| `E_BAKE_DIV_BY_ZERO` | Integer divide or modulo by a zero the evaluator can see. The runtime counterpart faults at vector `$03`. |
 | `E_BAKE_MMIO_ACCESS` | Reading / writing an `@addr` binding inside `bake`. |
 | `E_BAKE_NON_BAKEABLE_VALUE` | Result type can't be baked (Vec, class, etc.). |
 | `E_BAKE_ASM_INSIDE` | `asm "..."` inside a `bake` body. |

@@ -99,7 +99,7 @@ pub fn rejectPrivateOutsideClass(self: *Checker, anns: []const ast.Annotation) W
     for (anns) |a| {
         if (!std.mem.eql(u8, self.lexeme(a.name), "private")) continue;
         try self.emitSpan(
-            "E_ANN_TARGET",
+            "E_ANN_BAD_TARGET",
             a.name,
             "`@private` applies to class members (§3.7.6) — for module-level visibility use the `local` keyword (§5.1)",
         );

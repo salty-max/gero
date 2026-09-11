@@ -3418,7 +3418,7 @@ test "typecheck: `@private` on a top-level def is rejected" {
         \\def main()
         \\  print hidden()
         \\end
-    , "E_ANN_TARGET");
+    , "E_ANN_BAD_TARGET");
 }
 
 test "typecheck: `@private` on a top-level let is rejected" {
@@ -3429,7 +3429,7 @@ test "typecheck: `@private` on a top-level let is rejected" {
         \\def main()
         \\  print g
         \\end
-    , "E_ANN_TARGET");
+    , "E_ANN_BAD_TARGET");
 }
 
 test "typecheck: `@private` on a class member is still accepted" {

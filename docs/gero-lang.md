@@ -256,7 +256,7 @@ Mutable byte buffers are `[u8; N]` (fixed size).
 | `s != other`      | `bool` | No |
 | `s < other` etc.  | `bool` (lex ordering) | No |
 | `s.cmp(other)`    | `i16` (byte-wise ordering: `< 0`, `0`, `> 0`) | No |
-| `s.slice(a, b)`   | `str` (substring view, exclusive end) | No — borrowed view; lifetime ≤ `s`'s. |
+| `s.slice(a, b)`   | `str` (substring view, exclusive end) | No — borrowed view; lifetime ≤ `s`'s. **Not yet implemented** — see the tracking issue; `Vec.slice` is the built counterpart. |
 
 Allocation lives in the parse / runtime allocator (typically the
 gero VM's general-purpose allocator). Long-lived dynamic strings
@@ -1896,7 +1896,7 @@ Functions are **first-class** — they're values like any other:
 
 - **Assign** to variables: `let op = add`
 - **Pass** as arguments: `apply(add, 1, 2)`
-- **Return** from functions: `def make_adder(n) -> fn(i16) -> i16 …`
+- **Return** from functions: `def make_adder(n: i16) -> fn(i16) -> i16 …`
 - **Store** in arrays / struct fields / collections
 
 ```gero
@@ -2590,7 +2590,7 @@ solves one concrete need:
 |--------|------|
 | `math` | `abs`, `min`, `max`, `clamp`, `sqrt_fixed`, fixed-point helpers, `rng()` |
 | `mem`  | typed peek / poke / memcpy / memset / `addr_of` — see §5.3.1 |
-| `str`  | `len`, `at`, `cmp`, `format(fmt, args)` (allocates), `format_into(dst, fmt, args)` (does not — §5.4) |
+| `str`  | `format(fmt, args)` (allocates), `format_into(dst, fmt, args)` (does not — §5.4). `len` / `at` / `cmp` are methods on a `str` **value** (§3.2.1), not functions of this module. |
 | `bank` | `switch_to(N)`, `current()` — bank manipulation |
 | `test` | `assert_eq(a, b)`, `assert_ne(a, b)` — used in `@test` functions |
 
