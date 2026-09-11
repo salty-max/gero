@@ -168,7 +168,8 @@ not part of the local `ci` aggregate — GitHub Actions installs the
 runtime and gates it there.
 
 `zig build wasm` builds `gero.wasm` (`docs/gero-lab.md` §2) and emits
-the sample corpus alongside it. `zig build test-wasm-examples` runs
+the sample corpus and The Gero Book (`book.json`, packed from
+`docs/book/`) alongside it. `zig build test-wasm-examples` runs
 every example through that module and diffs against the same
 `.expected` files the native gates use.
 

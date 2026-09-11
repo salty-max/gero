@@ -508,6 +508,14 @@ them by URL and cannot unpack an archive:
 |---|---|
 | `gero.wasm` | The module, built `ReleaseSmall` for `wasm32-freestanding` |
 | `samples.json` | The manifest: `{ version, samples: [{ name, lang, entry, files }] }`, where `files` maps a name to its source. A multi-file sample is one entry with several `files` — `examples/asm/banks` is one program in three. |
+| `book.json` | The Gero Book, packed from `docs/book/`: `{ version, title, chapters: [{ slug, title, file, body }] }`. Front matter uses an empty `slug`. The application renders it; it does not vendor the chapters. |
+
+The book is teaching source that must stay in lockstep with the
+compiler — every fenced block is already gated here — so it ships
+beside the module for the same reason the samples do. A ` ```gero `
+block that declares `main` can be opened in the playground; CLI
+walkthroughs (`gero compile`, `brew install`) stay in the markdown
+until the chapters grow a lab-shaped telling.
 
 ---
 
