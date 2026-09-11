@@ -628,10 +628,12 @@ pub fn build(b: *std.Build) void {
     // The artifact carries the sample corpus (§9, §10), so the
     // application consumes it rather than keeping a copy that drifts.
     const samples_cmd = b.addSystemCommand(&.{ "node", "scripts/emit-samples.mjs", "zig-out/samples" });
+    const book_cmd = b.addSystemCommand(&.{ "node", "scripts/emit-book.mjs", "zig-out/book" });
 
     const wasm_step = b.step("wasm", "Build the gero.wasm module for browser hosts");
     wasm_step.dependOn(&wasm_install.step);
     wasm_step.dependOn(&samples_cmd.step);
+    wasm_step.dependOn(&book_cmd.step);
 
     // The runtime gate. `wasm32` is otherwise only compile-checked —
     // every other runtime test gero has runs natively — so this is
