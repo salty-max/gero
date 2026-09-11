@@ -10,15 +10,14 @@ chapter needs one of those ideas, it explains it.
 
 ## The other book
 
-[**The Gero Machine**](../machine/README.md) teaches the VM itself and
-its assembly language: registers, addressing, interrupts, banking,
-counting cycles.
+**The Gero Machine** teaches the VM itself and its assembly language:
+registers, addressing, interrupts, banking, counting cycles.
 
-**It is not the sequel to this one.** The two languages are peers —
-they compile to the same bytecode, and
-[`asm-vs-lang.md`](../asm-vs-lang.md) has the measured comparison. If
-what you want is to understand how an 8- or 16-bit machine actually
-works, start there instead. Nothing in this book is a prerequisite.
+It is not the sequel to this one. The two languages are peers — they
+compile to the same bytecode. [Gero and assembly](addendum-b-assembly.md)
+has the measured comparison. If what you want is to understand how an
+8- or 16-bit machine actually works, start there instead. Nothing in
+this book is a prerequisite.
 
 Read this one if you want to make something. Read that one if you want
 to know what the machine is doing.
@@ -33,17 +32,12 @@ to know what the machine is doing.
 4. [Functions](04-functions.md) — parameters, returns, and returning
    more than one thing.
 
-*Chapters 5–12 are outlined in the tracking issue and land next: collections,
-enums and `match`, classes, modules, fixed-point, testing, reaching
-the machine, and the finished cart.*
+Addenda: [Installing Gero](addendum-a-installing.md),
+[Gero and assembly](addendum-b-assembly.md).
 
 ## How to read it
 
 Type the code. Every block in this book is compiled by CI on every
 change, so if something here does not work, the book is wrong and not
-you — and the build would have caught it.
-
-When a chapter needs a rule stated precisely — the exact grammar, the
-full list of operators, every diagnostic code — it links to
-[`lang.md`](../lang.md) rather than repeating it. That spec
-is the authority; this book is the path through it.
+you — and the build would have caught it. In the lab, **Run** on a
+block is the same loop.
