@@ -156,18 +156,18 @@ Single-quoted single-byte literals are sugar for their ASCII value:
 
 ```gero
 -- fragment: elided body
-let c: u8 = 'A'              -- $41
-let nl: u8 = '\n'            -- $0A
-if s.at(0) == 'A'            -- byte compare reads naturally
+let c: char = 'A'            -- $41
+let nl: char = '\n'          -- $0A
+if s.at(0) as char == 'A'    -- `s.at` returns `u8`; `'A'` is `char`
   ...
 end
 ```
 
-The token's type is `u8`. Same escape table as strings (`\n` `\t`
-`\r` `\0` `\\` `\'` `\xHH`). `'A'` and `$41` compile to identical
-bytecode — char literals exist purely for source readability. Mirrors
-the asm spec's `'A'` (asm §1.4) so byte literals look the same across
-both languages.
+The token's type is `char`. Same escape table as strings (`\n` `\t`
+`\r` `\0` `\\` `\'` `\xHH`). `'A'` and `$41` compile to the same
+byte — char literals exist for source readability. Mirrors the asm
+spec's `'A'` (asm §1.4) so byte literals look the same across both
+languages. `u8` ↔ `char` is a no-op cast (§3.5.1).
 
 ### 2.6 Keywords (reserved)
 
@@ -212,8 +212,10 @@ expression has a concrete type known at compile time — there is no
 `any`, no dynamic value, and no implicit escape hatch. Where a type
 can't be resolved (an unbound payload, an unannotated empty
 collection, a missing inference), that's a **type error**, not a
-silent fallback. Conversions across types are always explicit (`as`,
-§3.5.1).
+silent fallback. Integer widening (`u8 → i16`, `i8 → i16`, `u8 →
+u16`) is implicit. Everything else — narrowing, sign flips at the
+same width, the integer / `fixed` boundary — is an explicit `as`
+(§3.5.1). Narrowing without `as` is `E_CAST_PRECISION_LOSS`.
 
 ### 3.1 Primitive types
 
@@ -231,10 +233,11 @@ silent fallback. Conversions across types are always explicit (`as`,
 `int` / `uint` are the defaults — `let x = 0` gives `int`.
 
 Those eight are every type an annotation may name. `nil` is the unit
-type — the type of a `def` with no `-> T` and of the `nil` literal —
-but it is internal: `let x: nil` and `-> nil` are both syntax errors.
-Compound types (`[T; N]`, tuples, `fn`, `T?`, `&T`, `Vec(T)`) are
-§3.3 onward; `class`, `struct` and `enum` declare their own.
+type — the type of a `def` with no `-> T` and of the `nil` literal.
+A `let x: nil` binding is legal and useless; there is nothing to
+store in it. Compound types (`[T; N]`, tuples, `fn`, `T?`, `&T`,
+`Vec(T)`) are §3.3 onward; `class`, `struct` and `enum` declare their
+own.
 
 ### 3.2 String type
 
@@ -258,7 +261,6 @@ Mutable byte buffers are `[u8; N]` (fixed size).
 | `s != other`      | `bool` | No |
 | `s < other` etc.  | `bool` (lex ordering) | No |
 | `s.cmp(other)`    | `i16` (byte-wise ordering: `< 0`, `0`, `> 0`) | No |
-| `s.slice(a, b)`   | `str` (substring view, exclusive end) | No — borrowed view; lifetime ≤ `s`'s. **Not yet implemented** — see the tracking issue; `Vec.slice` is the built counterpart. |
 
 Allocation lives in the parse / runtime allocator (typically the
 gero VM's general-purpose allocator). Long-lived dynamic strings
@@ -488,7 +490,7 @@ end
 
 let (n, err) = parse_int(input)
 if err != nil
-  log(err)
+  print err
   return
 end
 use(n)        -- compiler tracks: on this path err was nil,
@@ -802,9 +804,9 @@ same place, for the same reason.
 
 #### 3.5.1 Type casts
 
-When inference can't bridge a type gap — narrowing, widening, or
-crossing the integer / `fixed` boundary — use `as` to force the
-conversion:
+Integer widening is implicit. When inference can't bridge any other
+gap — narrowing, a same-width sign flip, or the integer / `fixed`
+boundary — use `as` to force the conversion:
 
 ```gero
 let small: u8 = (raw & $FF) as u8
@@ -954,23 +956,18 @@ Multiple annotations stack. Order matters only when explicitly noted.
 
 | Annotation | Applies to | Effect |
 |------------|------------|--------|
-| `@bank N` | `def`, `let`, `const`, **file** | Place compiled output in bank `N` (compiler emits cross-bank trampolines for calls — §7.3). See precedence note below. |
+| `@bank N` | `def`, `let`, `const` | Place this declaration's compiled output in bank `N` (compiler emits cross-bank trampolines for calls — §7.3). |
 | `@zero_page` | `let` | Place this global in the zero-page region (`$0000..$00FF`) — 1-byte addressing mode, faster + smaller code. Slot pressure is high (256 bytes shared); compiler errors on overflow. |
 | `@addr $1234` | `let` | Pin this global at the given absolute address. Use for binding to memory-mapped IO registers or fixed-position state. The compiler reserves no other RAM at that address. |
-| `@volatile` | `let` | Treat every read of this binding as a real memory load (never cached in a register). Pair with `@addr` for memory-mapped IO registers whose value changes outside the compiler's view (vblank flag, input port, RNG tap). |
+| `@volatile` | `let` | Marks this binding as MMIO-facing. Pair with `@addr` for registers whose value changes outside the compiler's view (vblank flag, input port, RNG tap). Every `@addr` load is already a memory access; `@volatile` records that intent on the declaration. |
 | `@align(N)` | `let`, `const`, `struct` | Force `N`-byte alignment of the placement. `N` must be a power of two (1, 2, 4, 8, 16, …). Necessary when the hardware demands aligned data — sprite sheets at 16-byte boundaries, tile maps at page boundaries (256), audio buffers at 4 bytes. |
 
-**`@bank` precedence.** `@bank N` may appear at either:
-- **File scope** — the first non-comment token in a `.gr` file.
-  Applies to every declaration in the file unless overridden.
-- **Declaration scope** — directly above a `def` / `let` / `const`.
-  Applies to that declaration only.
-
-Per-declaration `@bank` always wins over the file-level default. A
-declaration inside a file with `@bank 5` at the top can opt out
-back to the base image with `@bank 0`. Declarations that appear
-without any `@bank` annotation (and no file-level default) land
-in the base image (bank-less area before `$C000`).
+`@bank N` attaches to the declaration that follows it, the same as
+every other annotation. There is no file-level form — a leftover
+annotation at EOF is `E_SYNTAX_ANNOTATION_PLACEMENT`. Declarations
+without `@bank` land in the base image (the bank-less area before
+`$C000`). To put a whole module in one bank, annotate each
+declaration (or each `def` that owns the code).
 
 ```gero
 @zero_page
@@ -1011,9 +1008,9 @@ def fast_clamp(x: i16, min: i16, max: i16) -> i16
 end
 
 @cold
-def panic_oob(addr: u16) -> noreturn
+def panic_oob(addr: u16)
   print "PANIC: out-of-bounds @ ", addr
-  hlt
+  asm "hlt"
 end
 
 @no_capture
@@ -1052,32 +1049,28 @@ helpers where a hidden alloc is unacceptable.
 
 | Annotation | Applies to | Effect |
 |------------|------------|--------|
-| `@noreturn` | `def` | Asserts the function never returns normally (it must `hlt`, infinite-loop, or call another `@noreturn`). The compiler treats calls as diverging — usable in `match` bail arms with otherwise non-exhaustive shape. The return type, if specified, must be `noreturn`. |
+| `@noreturn` | `def` | Asserts the function never returns normally (it must `asm "hlt"`, infinite-loop, or call another `@noreturn`). The compiler treats calls as diverging — usable in `match` bail arms with otherwise non-exhaustive shape. There is no `noreturn` type; do not write `-> noreturn`. |
 
 ```gero
 @noreturn
-def panic(msg: str) -> noreturn
+def abort(msg: str)
   print "PANIC: ", msg
-  hlt
+  asm "hlt"
 end
 
 def use_potion(item: Action)
   match item
     case Action.Heal(n) => heal(n)
-    case _              => panic("not a healing item")
+    case _              => abort("not a healing item")
   end
 end
 ```
-
-`noreturn` is a special return type — only `@noreturn` functions
-may declare it. It's not a value type; you can't have a variable
-of type `noreturn`.
 
 Module-level visibility is controlled by the `local` keyword
 (§5.1) — declarations are exported by default, prefix with
 `local` to keep private. Class-member visibility uses `@private`
 (§3.7.6); `@private` on a top-level `def` or `let` is rejected
-(`E_ANN_TARGET`), since a module has no members to hide.
+(`E_ANN_BAD_TARGET`), since a module has no members to hide.
 
 #### 3.7.4 Interrupt handlers
 
@@ -1204,10 +1197,12 @@ palette ramps, RNG seeds, mip levels) without hand-encoding the
 bytes, and without a separate build script that emits `.gr` files.
 
 ```gero
-bake def make_sin_table() -> [i16; 256]
-  let t: [i16; 256] = [0; 256]
+use math
+
+bake def make_sin_table() -> [fixed; 256]
+  let t: [fixed; 256] = [0.0; 256]
   for i in 0..256
-    t[i] = fixed_sin(i * 360 / 256)
+    t[i] = math.fixed_sin(i * 360 / 256)
   end
   return t
 end
@@ -1216,9 +1211,8 @@ const SIN_TABLE = make_sin_table()
 -- 512 bytes of static data; no runtime cost
 ```
 
-(`fixed_sin` is part of the `math` stdlib — §5.3. A bake body may
-equally inline its own approximation or build a simpler table such as
-`make_squares_table`.)
+(`math.fixed_sin` — §5.3. A bake body may equally inline its own
+approximation or build a simpler table such as `make_squares_table`.)
 
 `bake do` is the same idea inline, without a named function:
 
@@ -1474,13 +1468,12 @@ side effects and discard the result:
 
 ```gero
 _ = expensive_call()           -- explicitly ignore the return
-_ = items.push(x)              -- ignore the new length
+items.push(x)                  -- `push` returns `nil`; nothing to discard
 ```
 
-The compiler **errors** on a non-`nil` expression result that's not
-assigned, used, or discarded. This forces side-effecting calls that
-return a value to either capture it (`let x = …`) or explicitly
-discard (`_ = …`) — no silent value loss.
+A non-`nil` expression used as a statement is allowed — the value
+is dropped. `_ =` is the explicit form when you want a reader to
+see that the result was considered and ignored.
 
 #### 4.2.3 Conditional expression (`and` / `or`)
 
@@ -1678,20 +1671,14 @@ values.
 
 #### 4.5.1 Range values
 
-Range expressions (`0..10`, `0..=10`, `0..=100 step 5`) are
-first-class **built-in values** with the conceptual layout:
-
-```
-start: <int type>
-end:   <int type>
-step:  <int type>     -- 1 by default
-inclusive: bool       -- true for ..=, false for ..
-```
+Range expressions (`0..10`, `0..=10`) are **operands of `for` and
+`match`**, not first-class values. You cannot store one, pass one,
+or call methods on one. `step` belongs on the `for` header
+(`for i in 0..=100 step 5`), not on the range itself.
 
 Ranges work over any integer type — `i8`, `u8`, `i16`, `u16`. The
-inner type is the same as `start`'s type; `end` and `step` are
-checked to match. Runtime slot: 4 × `sizeof(T)` + 1 byte for the
-inclusive flag (padded to the next 2-byte boundary).
+loop variable takes `start`'s type; `end` and `step` are checked to
+match.
 
 ```gero
 -- fragment: bare `for` heads, shown for their range types
@@ -1700,15 +1687,7 @@ for byte_val in FIRST..=255              -- a u8 range: the inner type is `start
 for tile_id in first_tile..=tile_count
 ```
 
-Methods:
-
-| Form | Returns | Notes |
-|------|---------|-------|
-| `r.contains(x)` | `bool` | True if `x` falls inside `[start, end)` (or `[start, end]` if inclusive), accounting for step. |
-| `r.empty()` | `bool` | True if no elements would be produced (e.g. `5..=2`). |
-| `r.len()` | `u16` | Number of elements that would be visited. |
-
-`for x in r` is special-cased by the compiler — no allocation,
+`for x in 0..n` is special-cased by the compiler — no allocation,
 no iterator object. User-defined iterables ship via the iterator
 protocol; see §4.5.3.
 
@@ -1751,6 +1730,7 @@ type; iteration stops when `next()` returns `nil`. No declaration,
 no trait, no `iter()` indirection — Lua-style convention.
 
 ```gero
+-- fragment: illustrative iterator; Item is declared by the surrounding prose
 class Inventory
   let items: [Item; 64]
   let count: u16
@@ -1766,7 +1746,7 @@ class Inventory
   end
 end
 
-let inv = Inventory.new()
+let inv = Inventory()
 for item in inv
   consume(item)
 end                  -- terminates when inv.next() returns nil
@@ -1944,14 +1924,12 @@ Only the postfix forms are affected. Keyword-introduced parentheses —
 A detached bracket is a syntax error rather than a silent reinterpretation
 in every position where a call was plainly intended.
 
-#### 4.6.1 Tail-call optimization
+#### 4.6.1 Recursion
 
-When a function's last action before returning is `return f(args)`
-where `f` is either the current function (self) or another function
-of the same parameter shape (sibling), the compiler reuses the
-current stack frame instead of pushing a new one. This is **the
-only** tail-call shape optimized — full Scheme-style TCO across all
-call positions is out of scope.
+Every call pushes a frame, including `return f(args)` in tail
+position. There is no tail-call reuse. Deep recursion will overflow
+the gero VM stack (typically `$0100..$0FFF`, 4 KB); rewrite as a
+loop when depth is unbounded.
 
 ```gero
 def count_down(n: i16)
@@ -1959,36 +1937,9 @@ def count_down(n: i16)
     return
   end
   print n
-  return count_down(n - 1)        -- TCO: reuses frame, no stack growth
-end
-
-def alt_a(n: i16) -> i16
-  if n == 0
-    return 0
-  end
-  return alt_b(n - 1)             -- sibling TCO: same param shape
-end
-def alt_b(n: i16) -> i16
-  if n == 0
-    return 1
-  end
-  return alt_a(n - 1)
+  count_down(n - 1)
 end
 ```
-
-TCO does **not** apply to:
-
-- `return f(args) + 1` — there is work after the call.
-- `return f(args)` where `f` has a different parameter shape — the
-  frame layout differs.
-- Function-pointer calls (`return op(x)` where `op` is a variable) —
-  the target isn't known at compile time.
-
-Use `gero check --verbose` to confirm a tail call was optimized.
-Non-tail recursion (`fib`-style) is unaffected — each call still
-pushes a frame. Deep non-tail recursion will overflow the gero VM
-stack (typically `$0100..$0FFF`, 4 KB); rewrite as a loop when
-depth is unbounded.
 
 #### 4.6.2 Variadic parameters
 
@@ -1996,7 +1947,7 @@ The last parameter of a `def` may be variadic, spelled `args: ...`:
 
 ```gero
 def log(level: u8, fmt: str, args: ...)
-  print level, " ", format(fmt, args)
+  print level, " ", str.format(fmt, args)
 end
 
 log(1, "player at $(d:3d), $(d:3d)", x, y)
@@ -2008,9 +1959,9 @@ the arity at each call site and emits a per-call specialization
 sharing the function body. The arity must be ≥ 0 (zero variadic
 args is allowed).
 
-The format-spec language (§3.2.2) understands varargs: `format(fmt,
-args)` forwards a varargs tuple positionally. User-defined helpers
-follow the same convention.
+The format-spec language (§3.2.2) understands varargs:
+`str.format(fmt, args)` forwards a varargs tuple positionally.
+User-defined helpers follow the same convention.
 
 A **method** may be variadic too (`def m(self, …, args: ...)`), with
 one consequence: a variadic method is **non-virtual** — it is
@@ -2026,8 +1977,9 @@ take a tuple or `Vec` parameter instead of varargs.
 Restrictions:
 
 - Only the **last** parameter may be variadic.
-- A variadic parameter has **no default value** — caller supplies
-  zero or more positional args of the expected type.
+- Parameters have no default values, variadic or otherwise — the
+  caller supplies every argument. A variadic slot may be empty
+  (zero args).
 - All variadic args must be **the same statically-known type** (or
   satisfy a common annotation). Mixed-type varargs aren't supported;
   for heterogeneous data, pass a tuple or struct explicitly.
@@ -2048,10 +2000,10 @@ A `.` at the **start** of the next line continues the chain — useful
 for fluent-style transformations:
 
 ```gero
-let damaged_alive = monsters
-  .filter(alive)
-  .map(deal_damage)
-  .filter(still_alive)
+let hp = hero
+  .current_hp()
+let drawn = display
+  .sprite(0, x, y)
 ```
 
 The newline-then-leading-`.` rule is the only line-continuation
@@ -2075,44 +2027,44 @@ unnamed and inline.
 
 #### 4.7.1 Short lambda form
 
-For single-expression lambdas (the common case in `map`, `filter`,
-`fold`), gero-lang accepts a Rust-style short form:
+For single-expression lambdas, gero-lang accepts a Rust-style short
+form:
 
 ```gero
-|x| x * 2                           -- one param, expression body
-|x, y| x + y                        -- multiple params
+|x: i16| x * 2                      -- one param, expression body
+|x: i16, y: i16| x + y              -- multiple params
 || read_input()                     -- zero params
-|x: i16| -> i16  x * 2              -- explicit types (rare; usually inferred)
+|x: i16| -> i16  x * 2              -- return type written when it helps
 ```
 
 The body is a **single expression**, not a block — there is no
 `return` keyword, no `end` terminator. The expression's value is the
-lambda's return value.
+lambda's return value. Parameter types follow §3.5: written, or
+taken from a function-typed slot the lambda flows into.
 
 ```gero
-let doubled = xs.map(|x| x * 2)
-let evens   = xs.filter(|x| x % 2 == 0)
-let total   = xs.fold(0, |acc, x| acc + x)
+let double: fn(i16) -> i16 = |x| x * 2
+print double(21)                    -- 42
 ```
 
 For multi-statement bodies, drop back to the long form:
 
 ```gero
-let summary = items.map(lambda (item: Item) -> str
+let describe = lambda (item: Item) -> str
   let n = format_count(item.count)
   let name = item.display_name()
   return name + " x" + n
-end)
+end
 ```
 
 Or wrap the work in a `do … end` expression so the short form still
 applies:
 
 ```gero
-let labels = items.map(|item| do
+let describe: fn(Item) -> str = |item| do
   let n = format_count(item.count)
   item.display_name() + " x" + n
-end)
+end
 ```
 
 Both lambda forms have identical capture semantics (see §4.7.2).
@@ -2148,8 +2100,7 @@ the closure), it stays on the stack and the closure copies the value
 at construction. Zero heap overhead for the common read-only case.
 
 The promotion decision is automatic — the programmer doesn't
-annotate. To inspect the choice, `gero check --verbose` reports
-which `let` bindings were promoted.
+annotate.
 
 #### 4.7.3 Inline scoped computation: use `do … end`
 
@@ -2246,10 +2197,10 @@ match flag
 end
 ```
 
-Add a `case _ => ...` to discharge the warning, OR list every
-variant / bool case explicitly. For other primitive scrutinees
-(integers, strings), exhaustiveness can't be checked — the
-compiler requires a wildcard arm or warns.
+Add a `case _ => ...` to cover the rest, OR list every variant /
+bool case explicitly. For other primitive scrutinees (integers,
+strings) exhaustiveness is not checked — the set is not closed,
+and a missing arm falls through at runtime.
 
 #### 4.8.4 `match` as an expression
 
@@ -2266,9 +2217,8 @@ end
 
 Two requirements make that total:
 
-- **The arms must be exhaustive** (§4.8.3). An unmatched scrutinee has
-  no value to produce, so the rule that is a warning-shaped design
-  choice for the statement form is a hard requirement here.
+- **The arms must be exhaustive** (§4.8.3) when the scrutinee is an
+  enum or `bool`. An unmatched scrutinee has no value to produce.
 - **Every arm produces the same type**
   (`E_TYPE_MATCH_ARM_MISMATCH`). An arm ending in a statement has type
   `nil`, so it mismatches an arm ending in an expression — which
@@ -2341,10 +2291,10 @@ end
 | Want guards with multiple cases | `match` (single-case guards work in `if let` too) |
 | Single pattern but failure should bail (return / break) | `match` with `case _ => return` (or @noreturn helper) |
 
-In short: `match` is the dispatcher; `if let` / `while let` / `let
-else` are sugar for the single-pattern shapes. Reach for `match`
-the moment you have ≥ 2 cases or want exhaustiveness; otherwise the
-shorter form reads better.
+In short: `match` is the dispatcher; `if let` / `while let` are
+sugar for the single-pattern shapes. Reach for `match` the moment
+you have ≥ 2 cases or want exhaustiveness; otherwise the shorter
+form reads better. There is no `let else`.
 
 ### 4.9 Print
 
@@ -2626,15 +2576,15 @@ shadow check ever runs.
 
 Four more diverging / introspection builtins are always in scope:
 
-- `panic(msg: str) -> noreturn` — print `msg` via the host print
-  channel and halt the VM. Use when a runtime invariant has been
+- `panic(msg: str)` — print `msg` via the host print channel and
+  halt the VM. Diverges; use when a runtime invariant has been
   violated and there's no sensible recovery.
-- `unreachable() -> noreturn` — print `"unreachable code reached"`
-  and halt. Use to mark branches the compiler should be able to
+- `unreachable()` — print `"unreachable code reached"` and halt.
+  Diverges. Use to mark branches the compiler should be able to
   prove are dead (exhaustive `match` fallthroughs, post-validation
   arms). Helps the reader and traps cleanly if reached.
-- `todo(msg: str?) -> noreturn` — print `"TODO"` (or `"TODO: <msg>"`)
-  and halt. Scaffold for incremental development.
+- `todo(msg: str?)` — print `"TODO"` (or `"TODO: <msg>"`) and halt.
+  Diverges. Scaffold for incremental development.
 - `sizeof(T) -> u16` — compile-time byte width of a type. Resolves
   at codegen to a `u16` literal. Works on every type form:
   primitives (`sizeof(i16)` = 2), arrays (`sizeof([i16; 64])` =
@@ -2767,7 +2717,7 @@ What does not:
 
 | Construct | Why |
 |---|---|
-| `log "$(x) …"` | each piece goes straight to the host writer |
+| `print "$(x) …"` | each piece goes straight to the host writer |
 | `str.format_into(dst, fmt, args)` | writes into a buffer you own |
 | `Vec` push within its existing capacity | the store is already there |
 | a closure that only reads its captures | captured by value |
@@ -2958,18 +2908,21 @@ $FF00..$FFFF  IO page tail (RNG, timing, KV store, mouse)
 
 ### 7.3 Banked modules
 
-Per-module banking via `@bank N` (§3.7.1). A whole-file annotation
-sits at the top:
+Per-declaration banking via `@bank N` (§3.7.1). Annotate each
+declaration that should live in a bank:
 
 ```gero
 -- file: dialogs/town.gr
 @bank 5
-
 const INTRO = "Welcome to Mistwood..."
--- … 4 KB of dialog strings …
+
+@bank 5
+def town_intro() -> str
+  return INTRO
+end
 ```
 
-The compiler places this module's compiled output in bank 5. Cross-
+The compiler places those declarations' compiled output in bank 5. Cross-
 bank calls are **transparent**: parameters, return values, and struct
 / tuple passing follow the same ABI as a direct call. The compiler
 routes each cross-bank call through a shared `__call_bank` trampoline
@@ -3099,10 +3052,24 @@ and the compiler simple; the absence isn't a missing feature.
   inheritance (§6) or enum variants (§3.6). The J-RPG / cart use
   case doesn't need structural polymorphism; adding it would force
   vtable indirection on every class.
-- **User-defined generics.** `Vec(T)`, `Range`, `[T; N]`, and
-  tuples are compiler-known; user types can't take type parameters.
-  If you need typed containers beyond those, wrap them in a class
-  with the right interface for your use case.
+- **User-defined generics.** `Vec(T)`, `[T; N]`, and tuples are
+  compiler-known; user types can't take type parameters. If you
+  need typed containers beyond those, wrap them in a class with
+  the right interface for your use case.
+- **`Vec.map` / `.filter` / `.fold`.** A `for` loop does all
+  three. `map` would allocate a second `Vec` on a 64 KB machine —
+  a cost this language otherwise keeps in the open. Lambdas still
+  exist for passing a function; they are not a hidden iteration
+  protocol.
+- **First-class ranges, `str.slice`.** A range is a `for` / `match`
+  operand, not a value you can store or call methods on. A `str`
+  is a 16-bit pointer to a null-terminated buffer, so a substring
+  that isn't terminated at `b` cannot be a `str` without allocating;
+  `Vec(u8).slice` is the borrowed-view form.
+- **Tail-call reuse.** Every call pushes a frame. Rewrite unbounded
+  recursion as a loop.
+- **`let else`, default parameter values.** Failure is `if let` /
+  `match`; every argument is written at the call site.
 - **Block comments.** `--` to EOL is the only comment syntax —
   matches the asm `;` family in spirit (no `--[[ ... ]]`).
 - **Decimal floats.** The VM is integer-only; `fixed` (Q8.8) covers
