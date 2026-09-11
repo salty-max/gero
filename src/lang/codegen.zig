@@ -2669,8 +2669,8 @@ pub const Emitter = struct {
     }
 
     /// Emit the debug section. Carries a symbols chunk of resolved fn
-    /// addresses (kind 0) and globals (kind 1); compiler-internal
-    /// labels are filtered out.
+    /// addresses (kind 0) and data (kind 1: globals, interned strings,
+    /// vtables); compiler-internal code labels are filtered out.
     ///
     /// The chunk framing is ISA §7.3; the symbols payload is
     /// `[u16 count]` then `[u16 address][u8 kind][u8 name_len][name]`
@@ -2699,6 +2699,36 @@ pub const Emitter = struct {
         var g_it = self.globals.iterator();
         while (g_it.next()) |entry| {
             try appendDebugSymbol(self.allocator, &payload, entry.value_ptr.address, 1, entry.key_ptr.*);
+            count += 1;
+        }
+
+        // Interned string pool — each entry is a null-terminated
+        // byte run after the code. Without a data symbol the
+        // disassembler walks into those bytes and decodes them as
+        // instructions (`inc r?65` for `'H' 'e'`).
+        for (self.strings.items, 0..) |s, i| {
+            const name = try std.fmt.allocPrint(self.arena, "str_{d}", .{i});
+            try appendDebugSymbol(self.allocator, &payload, s.ref.addr(), 1, name);
+            count += 1;
+        }
+
+        // Vtables sit after the string pool. A symbol at each one
+        // stops the last `str_N` data block from swallowing them.
+        var vtables: std.ArrayList(struct { addr: u16, name: []const u8 }) = .empty;
+        defer vtables.deinit(self.allocator);
+        var cl_it = self.class_layouts.iterator();
+        while (cl_it.next()) |entry| {
+            const r = entry.value_ptr.vtable_ref orelse continue;
+            try vtables.append(self.allocator, .{ .addr = r.addr(), .name = entry.key_ptr.* });
+        }
+        std.mem.sort(@TypeOf(vtables.items[0]), vtables.items, {}, struct {
+            fn less(_: void, a: @TypeOf(vtables.items[0]), b: @TypeOf(vtables.items[0])) bool {
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.less);
+        for (vtables.items) |v| {
+            const name = try std.fmt.allocPrint(self.arena, "vtable_{s}", .{v.name});
+            try appendDebugSymbol(self.allocator, &payload, v.addr, 1, name);
             count += 1;
         }
 

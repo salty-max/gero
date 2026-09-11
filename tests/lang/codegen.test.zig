@@ -10057,3 +10057,32 @@ test "codegen/if_expr: an `if let` binder is in scope for the branch value" {
         \\end
     , "14\n");
 }
+
+test "codegen: interned print strings are data symbols, not decoded as code" {
+    // `print "Hello, gero!"` lays the bytes after `hlt`. Without a
+    // data symbol the disassembler walks into `'H' 'e'` and emits
+    // `inc r?65`.
+    var compiled = try compileSource(
+        \\def main()
+        \\  print "Hello, gero!"
+        \\end
+    );
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    const header = try gero.disasm.parseHeader(compiled.image);
+    const symbols = try gero.disasm.parseSymbols(alloc, header.debug);
+    defer symbols.deinit(alloc);
+
+    var allocating = std.Io.Writer.Allocating.init(alloc);
+    defer allocating.deinit();
+    try gero.disasm.writeBytesPretty(alloc, &allocating.writer, header.image, .{
+        .base_addr = 0x0000,
+        .entry_addr = header.entry_point,
+        .symbols = symbols,
+    });
+    const out = allocating.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "r?") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "data8 str_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "; \"Hello, gero!\"") != null);
+}

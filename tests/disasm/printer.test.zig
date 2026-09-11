@@ -108,6 +108,26 @@ test "printer: data symbol switches to data-mode rendering" {
     try std.testing.expect(std.mem.indexOf(u8, out, "hlt") != null);
 }
 
+test "printer: a null-terminated printable data block annotates the string" {
+    // "Hi!\0" — interned lang strings look like this. Binary data8
+    // without a trailing NUL stays hex-only (the test above).
+    const bytes = [_]u8{ 'H', 'i', '!', 0 };
+    const entries = [_]gero.disasm.Symbol{
+        .{ .address = 0x0000, .kind = .data, .name = "str_0" },
+    };
+    const symbols: gero.disasm.Symbols = .{ .entries = &entries };
+
+    var allocating = std.Io.Writer.Allocating.init(alloc);
+    defer allocating.deinit();
+    try gero.disasm.writeBytesPretty(alloc, &allocating.writer, &bytes, .{
+        .base_addr = 0x0000,
+        .symbols = symbols,
+    });
+    const out = allocating.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "data8 str_0 = $48, $69, $21, $00") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "; \"Hi!\"") != null);
+}
+
 test "printer: unmatched address stays as &XXXX" {
     const bytes = [_]u8{ 0x90, 0x22, 0x00 }; // jmp &0022
     const entries = [_]gero.disasm.Symbol{.{ .address = 0x0021, .kind = .label, .name = "fib" }};

@@ -242,7 +242,37 @@ fn writeDataBlock(
         first = false;
         try writer.print("{s}${X:0>2}{s}", .{ opts.style.literal, bytes[i], opts.style.reset });
     }
+    const slice = bytes[offset..end];
+    if (cStringBody(slice)) |body| {
+        try writer.print("  {s}; \"", .{opts.style.comment});
+        try writeAsciiEscaped(writer, body);
+        try writer.print("\"{s}", .{opts.style.reset});
+    }
     try writer.writeByte('\n');
+}
+
+/// The interior of a null-terminated printable-ASCII run, or `null`
+/// when `bytes` isn't one. Interned lang strings look like this;
+/// binary `data8` blobs do not, so they stay hex-only.
+fn cStringBody(bytes: []const u8) ?[]const u8 {
+    if (bytes.len < 2 or bytes[bytes.len - 1] != 0) return null;
+    const body = bytes[0 .. bytes.len - 1];
+    for (body) |b| {
+        if (b < 0x20 and b != '\t' and b != '\n' and b != '\r') return null;
+        if (b >= 0x7F) return null;
+    }
+    return body;
+}
+
+fn writeAsciiEscaped(writer: *std.Io.Writer, body: []const u8) std.Io.Writer.Error!void {
+    for (body) |b| switch (b) {
+        '"' => try writer.writeAll("\\\""),
+        '\\' => try writer.writeAll("\\\\"),
+        '\n' => try writer.writeAll("\\n"),
+        '\r' => try writer.writeAll("\\r"),
+        '\t' => try writer.writeAll("\\t"),
+        else => try writer.writeByte(b),
+    };
 }
 
 /// Walk while `bytes[i] == 0`, stopping at the next labeled
