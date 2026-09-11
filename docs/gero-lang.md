@@ -29,10 +29,12 @@ the same routine written both ways and the cycle counts measured.
   type, less visual noise. (Modern Lua, Go, Python convention.)
 - **Mutable `let` by default** — `let x = 0` is mutable, `const X = 0`
   is immutable. Style follows Lua / JS / BASIC.
-- **Typed at the variable / function boundary** — every `let` /
-  parameter / return type gets an annotation OR is inferred from
-  context. Once compiled, types are erased — runtime is fully
-  dynamic-feeling but the compiler enforces consistency.
+- **Typed at the variable / function boundary** — a `let` takes its
+  type from its initializer; every parameter is annotated, and a
+  return type is written whenever the body returns a value. Inference
+  is local (§3.5): a signature is never deduced from its call sites.
+  Once compiled, types are erased — runtime is fully dynamic-feeling
+  but the compiler enforces consistency.
 - **Imports are first-class modules** — `use math`, files cleanly
   separated, functions exported by default.
 - **Compiles to gero bytecode** — strings live in static data,
@@ -758,42 +760,45 @@ compiler check field access for you.
 
 ### 3.5 Inference
 
-Type annotations are **optional everywhere** the compiler can deduce
-them. Annotate when you want precision, public-API clarity, or
-better error messages — skip when the type is obvious from context.
+Inference is **local**. A binding takes its type from what it is
+initialized with; a signature says what it takes and returns. Nothing
+is deduced from call sites.
 
 ```gero
 let x = 0          -- inferred int
 let s = "hi"       -- inferred str
 let p: i16? = nil  -- explicit because nil alone has no type
 
-def greet(name)              -- params + return inferred from call sites
-  print "hi, " + name
-end
-
-def precise(x: i16) -> i16   -- annotations available when useful
+def precise(x: i16) -> i16
   return x * 2
 end
 ```
 
-Inference rules:
+Rules:
 
-- **`let`** initializer's type is the binding's type. If only `let
-  x: T` (no init), `T` is required.
-- **Function params + return** are inferred from call sites and
-  body usage. If a function is called with multiple incompatible
-  types (one call passes `i16`, another passes `str`), the compiler
-  errors with "ambiguous; add explicit annotation".
-- **Recursive functions** must annotate the return type — the
-  compiler can't infer through self-reference. Params can still
-  be inferred from initial call sites.
-- **Public-API functions** (exported, called from another module)
-  benefit from explicit annotations — error messages at call sites
-  point at named types instead of inferred-from-context.
+- **`let`** takes the initializer's type. With no initializer
+  (`let x: T`), `T` is required.
+- **Parameters are annotated.** Every one, always — omitting the
+  annotation is `E_TYPE_PARAM_UNANNOTATED`. The annotation is what
+  gives the compiler something to check an argument against, so a
+  signature without it would promise less than it appears to.
+- **Return types are written** whenever the body returns a value;
+  a `def` with no `-> T` returns nothing, and `return x` inside one
+  is `E_TYPE_RETURN_FROM_VOID`.
+- **`self` needs no annotation.** Its type is the class the method is
+  declared in — known from context, not from a call site.
+- **A variadic parameter** (`name: ...`, §4.6.2) carries its form
+  rather than a type.
 
-Style convention: annotate functions in stdlib, public modules, and
-anywhere the type's intent matters more than terseness. Skip in
-private helpers and obvious cases.
+**Why parameters are not inferred from call sites.** It would make a
+function's type depend on every module that calls it. Declarations are
+exported by default (§5.1), so that is whole-program inference — and
+this compiler is built the other way, around separately compiled
+modules whose interfaces are known from their own text. The build
+cache hashes a module's signatures to decide which importers are
+stale; an interface that lived partly in its callers could not be
+hashed that way. Rust, Go, Swift and Kotlin all draw the line in the
+same place, for the same reason.
 
 #### 3.5.1 Type casts
 

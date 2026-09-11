@@ -3633,3 +3633,53 @@ test "matchExprType: a `match` statement produces nothing and needs no arms to a
         \\end
     );
 }
+
+// ---------- parameter annotations ----------
+
+test "typecheck: an unannotated parameter is refused" {
+    // There is no call-site inference, so an unannotated parameter
+    // would leave every argument unchecked — `add("Ryu", 3)` would
+    // compile and add the string's address to 3.
+    try expectCode(
+        \\def add(a, b) -> i16
+        \\  return a + b
+        \\end
+    , "E_TYPE_PARAM_UNANNOTATED");
+}
+
+test "typecheck: an annotated parameter checks its argument" {
+    // The other half of the same rule: the annotation is what makes
+    // the call site catchable.
+    try expectCode(
+        \\def add(a: i16, b: i16) -> i16
+        \\  return a + b
+        \\end
+        \\def main()
+        \\  print add("Ryu", 3)
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "typecheck: `self` needs no annotation" {
+    // Its type is the class the method is declared in — known from
+    // context, not from a call site.
+    try expectClean(
+        \\class Player
+        \\  let hp: i16
+        \\
+        \\  def get_hp(self) -> i16
+        \\    return self.hp
+        \\  end
+        \\end
+    );
+}
+
+test "typecheck: a variadic parameter needs no annotation" {
+    // `name: ...` carries its form rather than a type; the `variadic`
+    // flag is what says so.
+    try expectClean(
+        \\def total(first: i16, rest: ...) -> i16
+        \\  return first
+        \\end
+    );
+}

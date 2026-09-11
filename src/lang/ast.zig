@@ -769,10 +769,12 @@ pub const SizeofExpr = struct {
 /// One parameter of a `def` / `lambda` / class method.
 pub const Param = struct {
     name: Span,
-    /// `null` when the parameter has no explicit type — inference
-    /// will pin it from call-site usage (§3.5). For a variadic
-    /// parameter (`name: ...`) the type is also `null`; the
-    /// `variadic` flag carries the intent.
+    /// `null` for the two parameters that legitimately carry no
+    /// annotation: a variadic one (`name: ...`, where the `variadic`
+    /// flag carries the intent) and a method's `self`, whose type is
+    /// the enclosing class. Any other unannotated parameter is
+    /// `E_TYPE_PARAM_UNANNOTATED` — there is no call-site inference
+    /// (§3.5).
     type_ann: ?*TypeAnn,
     /// `true` for the variadic last parameter (`name: ...`, §4.6.2).
     /// Only the last param of a list may be variadic; the parser

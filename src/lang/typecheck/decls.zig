@@ -178,10 +178,28 @@ pub fn signatureFromDef(self: *Checker, d: ast.DefDecl) WalkError!*const types.T
     var param_types: std.ArrayList(*const types.Type) = .empty;
     errdefer param_types.deinit(self.arena);
     for (d.params) |p| {
+        // `self` carries no annotation and needs none: its type is
+        // the class the method is declared in, which is known from
+        // context rather than from a call site. A variadic parameter
+        // is the other legitimately unannotated form — the `variadic`
+        // flag is what carries its intent.
+        const is_self = std.mem.eql(u8, self.lexeme(p.name), "self");
+        if (p.type_ann == null and !p.variadic and !is_self) {
+            // Without an annotation there is nothing to compare an
+            // argument against, so every call would type-check by
+            // default — the one place the language would promise less
+            // than it appears to.
+            const msg = try std.fmt.allocPrint(
+                self.arena,
+                "parameter `{s}` needs a type — write `{s}: i16` or whichever type it takes",
+                .{ self.lexeme(p.name), self.lexeme(p.name) },
+            );
+            try self.emitSpan("E_TYPE_PARAM_UNANNOTATED", p.name, msg);
+        }
         const pt: *const types.Type = if (p.type_ann) |t|
             try type_resolve.resolveType(self, t)
         else
-            try self.primitive(.nil_); // unknown until call-site inference
+            try self.primitive(.nil_);
         try param_types.append(self.arena, pt);
     }
     const ret_ty: *const types.Type = if (d.ret_type) |r|
