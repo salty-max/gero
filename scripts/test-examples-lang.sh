@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Drive every gero-lang example under examples/lang/ through the `gero`
+# Drive every Gero example under examples/lang/ through the `gero`
 # CLI — `compile` to a `.gx`, `run` it, and diff stdout against the
 # golden `.expected` file alongside it. The lang counterpart to
 # `test-examples.sh` (which covers asm); wired into `zig build

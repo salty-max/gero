@@ -209,7 +209,7 @@ fn formatStdinGas(
     return emitStdin(stdout, src, allocating.written(), check_mode);
 }
 
-/// Lang stdin path: tokenize + parse via the gero-lang front-end,
+/// Lang stdin path: tokenize + parse via the Gero front-end,
 /// re-emit through the AST printer. `parse` folds lexer errors into
 /// `tree.errors`, so a single pass over it covers both phases.
 fn formatStdinGr(

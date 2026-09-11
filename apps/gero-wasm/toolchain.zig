@@ -203,7 +203,7 @@ pub fn disassemble(image: []const u8, bank: u32, show_bytes: bool) *const Result
     return session.finish(out.written(), null, 0);
 }
 
-/// Encode gero-lang diagnostics as the JSON array a host renders in
+/// Encode Gero diagnostics as the JSON array a host renders in
 /// its gutter.
 ///
 /// The objects come from `gero.diagnostics_json`, the same writer

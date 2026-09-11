@@ -71,7 +71,7 @@ error: type mismatch: expected `i16`, found `str` [E_TYPE_MISMATCH]
 ## Returning more than one thing
 
 Some questions have two answers. Did the attack land, and for how
-much? gero-lang has no exceptions and no `Result` type; a function
+much? Gero has no exceptions and no `Result` type; a function
 that answers two things returns two things:
 
 ```gero
@@ -96,7 +96,7 @@ end
 two bindings.
 
 This is the Go shape rather than the Rust one, and
-[`gero-lang.md`](../gero-lang.md) §9 says why: a `Result` type wants
+[`lang.md`](../lang.md) §9 says why: a `Result` type wants
 generics and a propagation operator, and both cost more than they are
 worth on a machine this size. An explicit check at the call site is
 the trade.

@@ -82,7 +82,7 @@ pub fn execute(
     var failures: std.ArrayList(FileEntry) = .empty;
     var gr_files: std.ArrayList(GrFile) = .empty;
     for (files.items) |path| {
-        // `.gr` files route through the gero-lang pipeline. Files
+        // `.gr` files route through the Gero pipeline. Files
         // with diagnostics collect into `gr_files`, are rendered
         // via `gero.lang.render.pretty` after the loop, and the
         // `is_failure` flag drives the exit-code computation

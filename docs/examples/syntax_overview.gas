@@ -3,7 +3,7 @@
 ;
 ; A near-complete tour of gero's assembly syntax. Read top-to-bottom
 ; to see every construct from `docs/asm.md` at least once. Companion
-; to `docs/examples/syntax_overview.gr` (the gero-lang side).
+; to `docs/examples/syntax_overview.gr` (the Gero side).
 ;
 ; This file is documentation — every construct it exercises is also
 ; verified by `zig build check-examples` so editor highlight files

@@ -182,13 +182,13 @@ require("nvim-treesitter.configs").setup({
 })
 ```
 
-### 2.3 Neovim — gero-lang
+### 2.3 Neovim — Gero
 
 [`tree-sitter-gero-lang`](https://github.com/salty-max/tree-sitter-gero-lang)
 ships the same three query files for `.gr`.
 
 **It differs from the asm grammar in one way that matters here:** it has
-an external scanner, because gero-lang terminates statements at a
+an external scanner, because Gero terminates statements at a
 newline (§2.1). The compile step must include `src/scanner.c` alongside
 `src/parser.c` — the asm snippet above compiles one file, and copying it
 with the names swapped fails at link time.

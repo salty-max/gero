@@ -29,5 +29,5 @@ pub const asm_ = @import("asm.zig");
 /// Disassembler: `.gx` bytecode → `.gas` source.
 pub const disasm = @import("disasm.zig");
 
-/// Gero-lang: `.gr` source → `.gx` bytecode.
+/// Gero: `.gr` source → `.gx` bytecode.
 pub const lang = @import("lang.zig");

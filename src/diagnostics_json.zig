@@ -79,7 +79,7 @@ pub fn writeAsm(
     try jw.endObject();
 }
 
-/// Write one gero-lang diagnostic as a JSON object.
+/// Write one Gero diagnostic as a JSON object.
 pub fn writeLang(
     jw: *std.json.Stringify,
     file: lang.render.FileDiagnostics,

@@ -1,8 +1,8 @@
-# Gero Language — Spec
+# Gero — Language spec
 
-The high-level language that compiles to [Gero bytecode](./isa.md).
-Source file extension `.gr`. Compiler is a Zig program in this repo
-(`src/lang/`).
+Gero is the high-level language. It compiles to
+[Gero bytecode](./isa.md) on the Gero VM. Source files use `.gr`.
+The compiler lives in this repo (`src/lang/`).
 
 The language reads like Lua / BASIC, types at the variable + function
 boundary, integer-only arithmetic, compiles to gero bytecode. Designed
@@ -207,7 +207,7 @@ See §3.7 for the canonical list.
 
 ## 3. Type system
 
-gero-lang is **strongly, statically typed**. Every binding and every
+Gero is **strongly, statically typed**. Every binding and every
 expression has a concrete type known at compile time — there is no
 `any`, no dynamic value, and no implicit escape hatch. Where a type
 can't be resolved (an unbound payload, an unannotated empty
@@ -671,7 +671,7 @@ The `&` prefix produces a reference; the callee's parameter type is
 
 **Mutability.** A reference is always mutating through the binding.
 There is no `&const T` / `&mut T` distinction (no borrow checker in
-gero-lang). To document "read-only", pass by value (with the copy
+Gero). To document "read-only", pass by value (with the copy
 cost) or follow a naming convention. The trade-off is intentional:
 the borrow checker adds compile-time complexity that the target
 audience doesn't need and the cart target doesn't reward.
@@ -719,7 +719,7 @@ not a typed reference" escape hatch.
 
 #### 3.4.5 Memory access patterns — when to use which
 
-gero-lang gives you four ways to touch memory at different
+Gero gives you four ways to touch memory at different
 abstraction levels. Picking the right one is mostly about the
 question you're answering:
 
@@ -843,7 +843,7 @@ won't get less surprising the longer you stare at it.
 
 **Three ways to inspect a value's type — when to use which.**
 
-gero-lang separates *converting* a value, *testing* a value's tag,
+Gero separates *converting* a value, *testing* a value's tag,
 and *destructuring* it. Same value, three distinct questions:
 
 | Form | Question | Returns |
@@ -2027,7 +2027,7 @@ unnamed and inline.
 
 #### 4.7.1 Short lambda form
 
-For single-expression lambdas, gero-lang accepts a Rust-style short
+For single-expression lambdas, Gero accepts a Rust-style short
 form:
 
 ```gero
@@ -2105,7 +2105,7 @@ annotate.
 #### 4.7.3 Inline scoped computation: use `do … end`
 
 Older lang traditions use Immediately Invoked Lambda Expressions
-(IILEs) for "compute a value with some scratch state". gero-lang
+(IILEs) for "compute a value with some scratch state". Gero
 uses **`do … end` as an expression** instead (§4.3) — same effect,
 half the syntax:
 
@@ -2446,7 +2446,7 @@ end
 ```
 
 **Substitution.** Operands inside `{name}` braces resolve to the
-gero-lang local with that name. The compiler validates that the
+Gero local with that name. The compiler validates that the
 local exists and emits its stack-slot addressing reference at the
 asm slot — so `{name}` operands target instructions that accept a
 memory operand (e.g. `mov`); a register-only instruction needs an
@@ -2459,7 +2459,7 @@ explicit register (`asm "swap r1, r2"`).
   in source order if needed.
 - **Substituted operands must be of a type the instruction accepts**
   — the assembler validates this at lowering time. Type mismatch
-  is a compile error pointing at the gero-lang local, not the asm
+  is a compile error pointing at the Gero local, not the asm
   string.
 - **No control-flow into / out of an `asm` statement.** The asm
   instruction must complete normally; no embedded branches, no
@@ -2537,7 +2537,7 @@ Resolution:
 
 ### 5.3 Standard library
 
-The stdlib is intentionally tiny — gero-lang programs targeting
+The stdlib is intentionally tiny — Gero programs targeting
 cartridges shouldn't carry incidental complexity. Each module
 solves one concrete need:
 
@@ -3043,10 +3043,10 @@ end
 These design choices are deliberate. They keep the language small
 and the compiler simple; the absence isn't a missing feature.
 
-- **Async / coroutines.** gero-lang programs are single-threaded.
+- **Async / coroutines.** Gero programs are single-threaded.
   Cooperative multitasking is the host's job — gtx-16 carts run an
   asm-level interrupt loop and dispatch work from there, or build a
-  game state machine in pure gero-lang. No `async` / `await`,
+  game state machine in pure Gero. No `async` / `await`,
   no generators.
 - **Traits / interfaces.** Polymorphism dispatches through class
   inheritance (§6) or enum variants (§3.6). The J-RPG / cart use

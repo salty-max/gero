@@ -8,7 +8,7 @@ diffing stdout against a golden `.expected` file alongside it.
 | Directory | Language | Gate |
 |---|---|---|
 | [`asm/`](asm) | gero-asm (`.gas`) | `zig build test-examples` — assemble → run → diff → disasm round-trip |
-| [`lang/`](lang) | gero-lang (`.gr`) | `zig build test-examples-lang` — compile → run → diff |
+| [`lang/`](lang) | Gero (`.gr`) | `zig build test-examples-lang` — compile → run → diff |
 
 Both suites are also format-checked: `*.gas` via `zig build
 fmt-check-examples`, `*.gr` via `zig build check-examples-gr` (which

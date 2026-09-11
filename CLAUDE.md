@@ -32,13 +32,13 @@ guess from the codebase shape when the spec defines them.
 |---|---|
 | [`isa.md`](docs/isa.md) | Bytecode ISA — opcodes, registers, memory map, `.gx` header, faults, interrupts. The contract between VM / asm / disasm. |
 | [`asm.md`](docs/asm.md) | Asm language spec — surface syntax, directives, addressing modes, label rules. Targets the ISA above. |
-| [`gero-lang.md`](docs/gero-lang.md) | High-level language spec — types, statements, expressions, classes (§6), annotations (§3.7), the works. The lang compiler targets the ISA. |
+| [`lang.md`](docs/lang.md) | High-level language spec — types, statements, expressions, classes (§6), annotations (§3.7), the works. The lang compiler targets the ISA. |
 | [`lang-diagnostics.md`](docs/lang-diagnostics.md) | Diagnostic shape + every error code the parser / typecheck / codegen can emit. The contract for E\_-codes. |
 | [`cli.md`](docs/cli.md) | `gero` CLI — subcommands (`gero check` / `compile` / `disasm` / `asm` / etc.), flags, exit codes. |
 | [`versioning.md`](docs/versioning.md) | What counts as an additive vs breaking bytecode change, and how the package version relates to the `.gx` format version. |
 | [`lsp.md`](docs/lsp.md) | `gero lsp` — protocol scope, document sync, capabilities, per-editor wiring. |
 | [`tooling.md`](docs/tooling.md) | Project setup — installing the CLI, wiring editors, CI integration. |
-| [`asm-vs-lang.md`](docs/asm-vs-lang.md) | Which layer to write in — asm, gero-lang, or the bytecode both emit. Worked comparison with measured cycles. Positioning, not contract: it cites the specs rather than defining anything. |
+| [`asm-vs-lang.md`](docs/asm-vs-lang.md) | Which layer to write in — asm, Gero, or the bytecode both emit. Worked comparison with measured cycles. Positioning, not contract: it cites the specs rather than defining anything. |
 | [`asm-cookbook.md`](docs/asm-cookbook.md) | Working asm recipes — boot, IVT, banks, syscalls, etc. Reference for "how do I do X in asm?". |
 | [`gero-lab.md`](docs/gero-lab.md) | Browser playground spec — the wasm export surface (§2) is a `zig build` target here; the application (§3 onward) is out-of-repo. §10 draws the line. |
 | [`gtx-16.md`](docs/gtx-16.md) | Fantasy-console spec — consumes Gero as its CPU/VM. Out-of-repo, but the contract lives here. |

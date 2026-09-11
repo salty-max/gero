@@ -181,7 +181,7 @@ pub fn commandName(cmd: Command) []const u8 {
 fn commandSummary(cmd: Command) []const u8 {
     return switch (cmd) {
         .asm_ => "Assemble a .gas file into a .gx image",
-        .compile => "Compile a gero-lang module into a .gx",
+        .compile => "Compile a Gero module into a .gx",
         .run => "Execute a .gx",
         .test_ => "Run asm-level tests",
         .new => "Scaffold a new gero project",
@@ -192,7 +192,7 @@ fn commandSummary(cmd: Command) []const u8 {
         .build => "Resolve + asm + compile a project",
         .disasm => "Disassemble a .gx into asm",
         .info => "Print the .gx file header",
-        .repl => "Interactive gero-lang prompt",
+        .repl => "Interactive Gero prompt",
         .lsp => "Serve diagnostics + formatting over LSP",
     };
 }
@@ -344,7 +344,7 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero fmt src/{s}                   {s}# recurse + format every .gas / .gr{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero fmt --check src/{s}           {s}# CI mode — exit 8 if any file would change{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}cat prog.gas | gero fmt --stdin{s} {s}# editor format-on-save (stdin → stdout){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
-            try out.print("  {s}cat prog.gr | gero fmt --stdin --lang=gr{s} {s}# format gero-lang from stdin{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}cat prog.gr | gero fmt --stdin --lang=gr{s} {s}# format Gero from stdin{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .lsp => {
             try out.print("  {s}gero lsp{s}\n\n", .{ a.cyan, a.reset });

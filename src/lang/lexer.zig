@@ -473,7 +473,7 @@ fn lexInteger(state: *State, negative: bool) !void {
     if (state.index + 1 < state.source.len and state.source[state.index] == '0' and
         (state.source[state.index + 1] == 'x' or state.source[state.index + 1] == 'X'))
     {
-        // `0x...` is no longer accepted — gero-lang uses `$...` for
+        // `0x...` is no longer accepted — Gero uses `$...` for
         // hex literals (§2.4). Consume the digits so the error spans
         // the whole would-be literal, then report.
         state.index += 2;

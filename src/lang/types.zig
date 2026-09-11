@@ -74,7 +74,7 @@ fn eqlSlices(a: []const *const Type, b: []const *const Type) bool {
 }
 
 /// Built-in scalar types. Names match the surface keywords from
-/// `docs/gero-lang.md` §3.1–3.3, with `_` suffixes on the few that
+/// `docs/lang.md` §3.1–3.3, with `_` suffixes on the few that
 /// would otherwise collide with Zig keywords (`bool`, `nil`).
 pub const Primitive = enum {
     i8,

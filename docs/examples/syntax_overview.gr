@@ -1,6 +1,6 @@
 -- syntax_overview.gr
 --
--- A near-complete tour of gero-lang syntax. Compiles to a minimal
+-- A near-complete tour of Gero syntax. Compiles to a minimal
 -- turn-based monster-battle harness — picked because it exercises
 -- most language features in one cohesive program.
 --

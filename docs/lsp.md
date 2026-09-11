@@ -41,7 +41,7 @@ large is a desynchronized stream.
 | Suffix | Front-end |
 |--------|-----------|
 | `.gas` | assembler |
-| `.gr` | gero-lang |
+| `.gr` | Gero |
 | anything else | ignored — the server publishes an empty diagnostic list and formats nothing |
 
 Sync is **full text**: `textDocumentSync` is `1`, and every
@@ -51,7 +51,7 @@ payoff.
 
 ### Unsaved buffers
 
-Analysis resolves the whole `use` (gero-lang) or `.include` (asm)
+Analysis resolves the whole `use` (Gero) or `.include` (asm)
 graph rooted at the document. Every file the editor holds open is read
 from **its buffer** rather than from disk. Editing a library reddens
 its importers on the next keystroke, with no save in between.
@@ -116,7 +116,7 @@ Exactly what `gero check` reports for the same tree, mapped to LSP:
 | `source` | Always `"gero"` |
 | `message` | The human-readable summary |
 
-Both front-ends run every phase before reporting: gero-lang parses,
+Both front-ends run every phase before reporting: Gero parses,
 type-checks, and codegen-validates; asm parses **and** resolves
 opcodes. An unknown mnemonic or register parses cleanly and only fails
 at resolution, so a server that stopped at the parse would show

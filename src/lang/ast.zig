@@ -46,7 +46,7 @@ pub const Annotation = struct {
 // `->` in `def name(...) -> T`, and in `fn(T1, T2) -> T3` types.
 // =====================================================================
 
-/// Type expression — parses the surface syntax of `docs/gero-lang.md`
+/// Type expression — parses the surface syntax of `docs/lang.md`
 /// §3.1 (primitives), §3.2 (`str`), §3.3 (`fixed`), §3.4 (compound
 /// types), §3.4.1 (nullable suffix `?`), §3.4.3 (`Vec(T)`).
 pub const TypeAnn = union(enum) {
@@ -284,7 +284,7 @@ pub const StructPatternField = struct {
 
 // =====================================================================
 // Expressions — every value-producing form. Pratt precedence per
-// `docs/gero-lang.md` §3.3.
+// `docs/lang.md` §3.3.
 // =====================================================================
 
 /// Every value-producing form in the language. Each variant

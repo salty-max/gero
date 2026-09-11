@@ -61,7 +61,7 @@ prefer) and `u16` are two. `char` is one byte holding an ASCII code —
 `fixed` is a number with a fractional part, which needs its own
 section.
 
-[`gero-lang.md`](../gero-lang.md) §3.1 has the exact ranges.
+[`lang.md`](../lang.md) §3.1 has the exact ranges.
 
 ## Why the sizes are in the table
 

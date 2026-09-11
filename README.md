@@ -7,7 +7,7 @@ A 16-bit virtual machine, assembler, disassembler, and Lua-style
 language compiler — all in pure Zig. Foundation for the gtx-16 fantasy
 console and other Gero-ecosystem consumers.
 
-New here? [**Why gero-lang?**](#why-gero-lang) explains what the
+New here? [**Why Gero?**](#why-gero) explains what the
 language is for, and
 [`docs/asm-vs-lang.md`](./docs/asm-vs-lang.md) explains why the
 assembler did not go away when it arrived.
@@ -49,15 +49,15 @@ For editor setup (VS Code / Neovim / Helix), CI recipes
 pre-commit framework / plain git), see
 [`docs/tooling.md`](./docs/tooling.md).
 
-## Why gero-lang?
+## Why Gero?
 
-gero-lang is the high-level language for the gero VM. It reads like
+Gero is the high-level language for the gero VM. It reads like
 Lua, compiles ahead of time to the same `.gx` bytecode the assembler
 produces, and is typed where it matters. It exists because the
 alternatives each give up something a cart needs.
 
 **Against Lua on a fantasy console.** PICO-8 and TIC-80 hand you a
-scripting language and interpret it at runtime. gero-lang keeps the
+scripting language and interpret it at runtime. Gero keeps the
 feel — `let`, `do … end`, no semicolons — and compiles instead, so
 what ships is bytecode rather than source. Types are checked before
 the cart runs: a `match` that misses an enum variant is a compile
@@ -65,7 +65,7 @@ error, not a nil at the wrong moment. Nothing about your program is
 discovered on the player's machine.
 
 **Against C for retro targets.** CC65 and its kin give you a systems
-language on an 8-bit machine, and a type system from 1989. gero-lang
+language on an 8-bit machine, and a type system from 1989. Gero
 gives you `Vec(T)`, tuples, enums with payloads, exhaustive pattern
 matching, and `T?` optionals instead of a null you have to remember to
 check — while still emitting bytecode you can read back instruction by
@@ -84,10 +84,10 @@ right here: the ISA and the language were designed together, and
 **What it is not.** Not self-hosting, not general-purpose, not a web
 runtime. No async, no traits, no user-defined generics, no floats.
 Those absences are choices, and
-[`docs/gero-lang.md`](./docs/gero-lang.md) §9 gives the reasoning for
+[`docs/lang.md`](./docs/lang.md) §9 gives the reasoning for
 each.
 
-| | Lua on a console | C (CC65 &co) | gero-lang |
+| | Lua on a console | C (CC65 &co) | Gero |
 |---|---|---|---|
 | Runs as | interpreted source | native 8-bit code | bytecode on a specified VM |
 | Errors found | at play time | at compile time, narrowly | at compile time, incl. exhaustiveness |
@@ -96,7 +96,7 @@ each.
 | Toolchain | the console | assembler + linker + tools | one binary |
 
 The full language reference is
-[`docs/gero-lang.md`](./docs/gero-lang.md). For when to write asm
+[`docs/lang.md`](./docs/lang.md). For when to write asm
 instead — and the measured cost of each —
 see [`docs/asm-vs-lang.md`](./docs/asm-vs-lang.md).
 
@@ -107,14 +107,14 @@ see [`docs/asm-vs-lang.md`](./docs/asm-vs-lang.md).
 | `gero new <name>` / `gero init` | Scaffold a fresh project / initialize the cwd (cargo-style) |
 | `gero build` | Project-aware compile — reads `gero.toml`, writes `out/<optimize>/<name>.gx` |
 | `gero asm <file.gas>` | One-shot assemble — `.gas` source → `.gx` bytecode image |
-| `gero compile <file.gr>` | Compile a gero-lang module (and its `use` imports) → `.gx` |
+| `gero compile <file.gr>` | Compile a Gero module (and its `use` imports) → `.gx` |
 | `gero run <file.gx>` | Execute a `.gx` until `hlt` |
 | `gero check [paths…]` | Parse + codegen-validate without writing a `.gx` (LSP-style smoke) |
 | `gero fmt [paths…]` | Canonical formatter for `.gas` + `.gr` (`--check` for CI) |
 | `gero test [pattern]` | Walk `[test].include`, diff stdout vs `.expected` golden files |
 | `gero disasm <file.gx>` | `.gx` → asm (round-trip-safe; CI-gated) |
 | `gero info <file.gx>` | Pretty-print a `.gx` header |
-| `gero repl` | Interactive gero-lang prompt — declarations persist across inputs |
+| `gero repl` | Interactive Gero prompt — declarations persist across inputs |
 | `gero lsp` | Language server for `.gas` + `.gr` — diagnostics and format-on-save over stdio |
 
 Run `gero <subcommand> --help` for per-command flags, or
@@ -136,7 +136,7 @@ Run `gero <subcommand> --help` for per-command flags, or
   per-editor wiring (Neovim, VS Code, Helix)
 - [examples/lang/](./examples/lang/) — seven worked `.gr` programs
   covering recursion, loops, payload-carrying enums, and `match`
-- [docs/gero-lang.md](./docs/gero-lang.md) — gero-lang spec (types,
+- [docs/lang.md](./docs/lang.md) — Gero spec (types,
   classes, pattern matching, annotations, the compilation model)
 - [docs/gero-lab.md](./docs/gero-lab.md) — browser playground spec —
   the wasm engine boundary, worker protocol, and debugger cockpit

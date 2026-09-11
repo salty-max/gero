@@ -37,7 +37,7 @@ error: --lang=gr is not a flag for `gero init` — run `gero init --help` for th
 ```
 
 That matters because the alternative is worse than a typo. `--lang`
-is a reasonable guess for "scaffold a gero-lang project", and
+is a reasonable guess for "scaffold a Gero project", and
 accepting it would scaffold an asm one and say nothing.
 
 | Flag | Default | Accepted by | Effect |
@@ -80,9 +80,9 @@ gero asm hello.gas --optimize=release
 
 **Exit:** 0 on success; 3 on parse / assembly error.
 
-### 3.2 `gero compile <file.gr>` — compile gero-lang
+### 3.2 `gero compile <file.gr>` — compile Gero
 
-Compiles a single gero-lang module (and its imports) into a `.gx`.
+Compiles a single Gero module (and its imports) into a `.gx`.
 
 **Default output** — precedence:
 1. `--out <path>` — explicit wins.
@@ -295,13 +295,13 @@ compile-time defaults (see below).
 
 ```bash
 gero fmt main.gas                 # format in place
-gero fmt main.gr                  # gero-lang source — same UX
+gero fmt main.gr                  # Gero source — same UX
 gero fmt --check main.gas         # check only (exit 8 if changes needed)
 gero fmt src/                     # recurse into directory (.gas + .gr)
 gero fmt a.gas b.gr src/          # any mix of files and directories
 gero fmt                          # project-aware: [build].entry + [test].include
 cat main.gas | gero fmt --stdin             # editor format-on-save (stdin → stdout)
-cat main.gr | gero fmt --stdin --lang=gr    # gero-lang from stdin
+cat main.gr | gero fmt --stdin --lang=gr    # Gero from stdin
 ```
 
 **Behavior:**
@@ -325,9 +325,9 @@ cat main.gr | gero fmt --stdin --lang=gr    # gero-lang from stdin
   carries no filename to dispatch on, so the language is explicit.
   Defaults to `gas`. Ignored outside stdin mode (path mode
   dispatches on the file extension). Editors pass `--lang=gr` when
-  formatting a gero-lang buffer on save.
+  formatting a Gero buffer on save.
 - Recurses into directories, formats every `.gas` and `.gr` found.
-  `.gr` sources parse via the gero-lang front-end and re-emit
+  `.gr` sources parse via the Gero front-end and re-emit
   through the AST printer; `.gas` round-trips through the asm
   printer.
 - `include "..."` directives round-trip verbatim — fmt doesn't
@@ -405,7 +405,7 @@ gero check main.gas               # one .gas file
 gero check src/                   # walk recursively for *.gas
 gero check a.gas b.gas src/       # any mix of files + dirs
 gero check                        # project-aware: [build].entry + [test].include
-gero check main.gr                # type-check a gero-lang source
+gero check main.gr                # type-check a Gero source
 gero check main.gas --quiet       # suppress per-file lines + summary
 gero check main.gas --verbose     # per-phase timings (single-file only)
 gero check --format=json src/     # editor-friendly JSON diagnostics
@@ -572,7 +572,7 @@ gero build --target=vm            # explicit target override
 
 **Behavior:**
 - The entry's extension picks the front-end. A `build.entry` ending
-  in `.gr` runs the gero-lang pipeline, resolving the `use` graph
+  in `.gr` runs the Gero pipeline, resolving the `use` graph
   from that file; anything else runs the asm pipeline, resolving
   `include` directives. Both share `gero compile` / `gero asm`'s
   diagnostics, so an error reads the same however it was reached.
@@ -630,9 +630,9 @@ lands.
 
 ---
 
-### 3.13 `gero repl` — interactive gero-lang prompt
+### 3.13 `gero repl` — interactive Gero prompt
 
-Read-eval-print loop for gero-lang. Reads stdin lines into a
+Read-eval-print loop for Gero. Reads stdin lines into a
 session source buffer, recompiles + runs each input on a fresh
 VM. State persists across inputs.
 

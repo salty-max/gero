@@ -25,7 +25,7 @@
 set -euo pipefail
 
 GERO_BIN="${GERO_BIN:-./zig-out/bin/gero}"
-DOCS="${DOCS:-docs/gero-lang.md}"
+DOCS="${DOCS:-docs/lang.md}"
 
 # Expand the list once: entries may be globs, and a directory with no
 # chapters in it yet is not an error. Keeping only what exists means
