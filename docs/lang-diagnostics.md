@@ -265,6 +265,7 @@ Raised by the typechecker after parsing succeeds.
 | `E_TYPE_REFUTABLE_LET` | A `let` binding uses a refutable pattern (a literal / range / or-pattern, or a multi-variant enum) that can fail to match — use `if let` / `match` instead (§4.2). |
 | `E_TYPE_TOP_LEVEL_STATEMENT` | An executable statement sits at module scope. A module body is declarations only (§7.1) — execution begins at `main`, so the statement would never run. |
 | `E_TYPE_UNDEFINED_VARIANT` | A variant name the enum does not declare — `E.Nope` where `E` has no `Nope`. |
+| `E_TYPE_PARAM_UNANNOTATED` | A parameter with no type annotation. There is no call-site inference (§3.5), so an unannotated parameter would give the compiler nothing to check an argument against and every call would pass. `self` and a variadic `name: ...` are the two forms that legitimately carry none. |
 | `E_TYPE_RETURN_FROM_VOID` | `return <value>` in a function with no `-> T` in its signature. An unannotated `def` is a void return (§4.6), so the value has nowhere to go and no caller can read it. |
 | `E_TYPE_TERNARY_BOOL` | A bare `a and b or c` whose branches are `bool` (§4.2.3). The shape reads both as the conditional expression and as the boolean chain `(a and b) or c`, and they disagree when `a` holds and `b` does not — parenthesize the chain, or write `if a b else c end`. |
 | `E_TYPE_MATCH_ARM_MISMATCH` | The arms of a value `match` produce different types (§4.8.4). All arms share one type, so an arm ending in a statement (type `nil`) mismatches an arm ending in an expression. |
@@ -822,6 +823,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_TYPE_MISMATCH` | Typechecker | v0.3 |
 | `E_TYPE_TOP_LEVEL_STATEMENT` | Typechecker | v0.3 |
 | `E_TYPE_RETURN_FROM_VOID` | Typechecker | v0.3 |
+| `E_TYPE_PARAM_UNANNOTATED` | Typechecker | v0.4 |
 | `E_TYPE_TERNARY_BOOL` | Typechecker | v0.3 |
 | `E_TYPE_MATCH_ARM_MISMATCH` | Typechecker | v0.3 |
 | `E_TYPE_IF_EXPR_NO_ELSE` | Typechecker | v0.3 |

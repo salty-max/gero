@@ -163,8 +163,8 @@ def damage(attacker: Stats, target: Stats, power: i16) -> i16
   return math.max(1, raw) -- min 1 damage
 end
 
-def short_log(name, dmg)
-  -- annotations omitted: inferred from call sites
+def short_log(name: str, dmg: i16)
+  -- every parameter is annotated; there is no call-site inference
   print "$(name) → $(dmg)"
 end
 
