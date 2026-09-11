@@ -1,0 +1,25 @@
+class Fighter
+  let name: str
+  let hp: i16
+  let max_hp: i16
+
+  def init(self, name: str, hp: i16)
+    self.name = name
+    self.hp = hp
+    self.max_hp = hp
+  end
+
+  def take_damage(self, amount: i16)
+    self.hp -= amount
+    if self.hp < 0
+      self.hp = 0
+    end
+  end
+
+  def heal(self, amount: i16)
+    self.hp += amount
+    if self.hp > self.max_hp
+      self.hp = self.max_hp
+    end
+  end
+end

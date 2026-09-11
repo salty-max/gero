@@ -10,6 +10,11 @@ diffing stdout against a golden `.expected` file alongside it.
 | [`asm/`](asm) | gero-asm (`.gas`) | `zig build test-examples` — assemble → run → diff → disasm round-trip |
 | [`lang/`](lang) | Gero (`.gr`) | `zig build test-examples-lang` — compile → run → diff |
 
+[`lang/fight/`](lang/fight) is a small multi-file cart (`gero.toml` +
+`src/`) used by the book. `gero compile` of `src/main.gr` still
+resolves the `use` graph; `gero build` from that directory is the
+same program.
+
 Both suites are also format-checked: `*.gas` via `zig build
 fmt-check-examples`, `*.gr` via `zig build check-examples-gr` (which
 also type-checks them).

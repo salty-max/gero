@@ -168,4 +168,8 @@ by memory, and 64 KB is not a lot of it.
 ---
 
 The character is still four loose variables and a couple of functions.
-That is as far as this part goes.
+
+---
+
+**Next:** [Collections](05-collections.md) — a bag, a party, and what
+each costs.
