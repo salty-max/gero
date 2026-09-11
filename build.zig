@@ -742,11 +742,11 @@ pub fn build(b: *std.Build) void {
 
     const check_doc_gr_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-doc-gr.sh" });
     check_doc_gr_cmd.setEnvironmentVariable("GERO_BIN", installed_cli);
-    check_doc_gr_cmd.setEnvironmentVariable("DOCS", "docs/gero-lang.md docs/asm-vs-lang.md docs/book/*.md docs/machine/*.md");
+    check_doc_gr_cmd.setEnvironmentVariable("DOCS", "docs/lang.md docs/asm-vs-lang.md docs/book/*.md docs/machine/*.md");
     check_doc_gr_cmd.step.dependOn(b.getInstallStep());
     const check_doc_gr_step = b.step(
         "check-doc-gr",
-        "Parse every ```gero block in docs/gero-lang.md (fails on any that can't)",
+        "Parse every ```gero block in docs/lang.md (fails on any that can't)",
     );
     check_doc_gr_step.dependOn(&check_doc_gr_cmd.step);
 

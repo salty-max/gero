@@ -8880,7 +8880,7 @@ test "stdlib: every documented call lowers" {
 }
 
 test "spec: every documented language feature compiles" {
-    // One minimal program per feature `gero-lang.md` documents. If a
+    // One minimal program per feature `lang.md` documents. If a
     // section starts describing something that no longer lowers, this
     // names it rather than only reporting that something broke.
     const Feature = struct { name: []const u8, src: []const u8 };

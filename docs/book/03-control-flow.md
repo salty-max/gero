@@ -75,7 +75,7 @@ it to -5.
 `hp -= 7` is shorthand for `hp = hp - 7`. The compound assignments
 (`+=`, `-=`, `*=`, `/=`) are statements, not expressions: you cannot
 write `let x = hp -= 7`. Nor is there `++`. This is on purpose —
-[`gero-lang.md`](../gero-lang.md) §9 explains the reasoning, which is
+[`lang.md`](../lang.md) §9 explains the reasoning, which is
 that the ambiguity is not worth what it buys.
 
 ## `for` and ranges

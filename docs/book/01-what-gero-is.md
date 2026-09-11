@@ -79,9 +79,9 @@ artifact, not a build recipe.
 
 ## The two languages
 
-Gero has two, and they produce the same bytecode.
+The machine has two languages, and they produce the same bytecode.
 
-**gero-lang** is what this book teaches. It reads like Lua, it is
+**Gero** is what this book teaches. It reads like Lua, it is
 typed at the boundaries, and it compiles ahead of time:
 
 ```gero
@@ -111,19 +111,19 @@ sum_to:
 ```
 
 Both of those sum `1..n`. The assembly version is about three times
-faster and a fifth the size, and the gero-lang version is the one you
+faster and a fifth the size, and the Gero version is the one you
 would rather read six months from now. Neither is the "real" one —
 [`asm-vs-lang.md`](../asm-vs-lang.md) has the measured numbers and the
 rule for choosing.
 
-This book stays in gero-lang until chapter 11, where the two meet.
+This book stays in Gero until chapter 11, where the two meet.
 
 ## The tools
 
 One binary does everything:
 
 ```bash
-gero compile prog.gr -o prog.gx   # gero-lang → bytecode
+gero compile prog.gr -o prog.gx   # Gero → bytecode
 gero run prog.gx                  # execute it
 gero fmt prog.gr                  # canonical formatting, no options
 gero check prog.gr                # errors without producing a file

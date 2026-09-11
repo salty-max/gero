@@ -615,7 +615,7 @@ fn processSource(
             if (b == '"') {
                 in_string = true;
             } else if (b == '-' and i + 1 < content.len and content[i + 1] == '-') {
-                // gero-lang line comment — skip the rest of the line.
+                // Gero line comment — skip the rest of the line.
                 comment_at = i;
                 while (i < content.len and content[i] != '\n') : (i += 1) {}
                 break;

@@ -160,7 +160,7 @@ tell whether the book or their typing is wrong.
 site in `src/`. A documented code with no emission site is a promise
 nothing keeps; an emitted code with no row is a diagnostic a reader
 cannot look up. The same script checks that the Vec / str operations
-tables in `gero-lang.md` name only methods the typechecker implements.
+tables in `lang.md` name only methods the typechecker implements.
 
 `zig build test-wasi` runs the whole suite under `wasmtime` for
 wasm32-wasi. It needs `-fwasmtime` and `wasmtime` on PATH, so it is
@@ -192,7 +192,7 @@ teaches wrong syntax, silently.
 | Gate | Checks | Marker for a block that cannot stand alone |
 |---|---|---|
 | `zig build check-doc-asm` | every ` ```asm ` block in `docs/asm.md` assembles | first line `; fragment: <why>` |
-| `zig build check-doc-gr` | every ` ```gero ` block in `docs/gero-lang.md` parses | first line `-- fragment: <why>` |
+| `zig build check-doc-gr` | every ` ```gero ` block in `docs/lang.md` parses | first line `-- fragment: <why>` |
 
 Both are wired into `verify`.
 

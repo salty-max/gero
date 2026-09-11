@@ -6,7 +6,7 @@ wild, breaking changes bump the version field in the file header
 and require a documented migration.
 
 Two languages target this machine: [`asm.md`](./asm.md) and
-[`gero-lang.md`](./gero-lang.md). Both emit the bytecode specified
+[`lang.md`](./lang.md). Both emit the bytecode specified
 here, and [`asm-vs-lang.md`](./asm-vs-lang.md) explains when to reach
 for which.
 
@@ -99,7 +99,7 @@ the host's `MemoryMapper` (§3.5) can remap any region to a device.
 | Range          | Size | Role |
 |----------------|------|------|
 | `0x0000..0x00FF` | 256 B | **Zero page** — 1-byte addressing mode, fast access for lang globals and frequently-touched flags (6502-style). |
-| `0x0100..0x0FFF` | 3.75 KB | **Low RAM** — always flat, never banked and never a host register. Where a runtime keeps structures that must survive a bank switch; gero-lang puts its cross-bank save-stack here. |
+| `0x0100..0x0FFF` | 3.75 KB | **Low RAM** — always flat, never banked and never a host register. Where a runtime keeps structures that must survive a bank switch; Gero puts its cross-bank save-stack here. |
 | `0x1000..0x11FF` | 512 B | **Interrupt vector table** — 256 entries × 2 bytes each, one per vector. Vector `N` lives at `0x1000 + 2*N`. |
 | `0x1200..0x7FFF` | 27.5 KB | **User RAM** — code, data, heap, and the stack. The image is loaded from `0x0000`, so this is where a program's code actually begins to sit; `.gr` puts code at `0x1200` and data at `0x2000`. `sp` boots at `0x7FFE` and grows **down** toward the heap growing **up**. |
 | `0x8000..0xBDFF` | 15.5 KB | **Mapped region A** — host-defined. Plain RAM by default. gtx-16 leaves this region as plain RAM and recommends carts use it for sprite-sheet storage + other large assets (the cart sets `SPRITESHEET_BASE` here). |
@@ -383,7 +383,7 @@ vector address is `0x0000`, the VM halts with a host-visible error.
 #### 5.4.1 Fixed-point and saturating arithmetic — no native ops
 
 The ISA deliberately has **no native fixed-point** (`fmul`, `fdiv`)
-or **saturating** (`qadd`, `qsub`) ops, despite gero-lang shipping a
+or **saturating** (`qadd`, `qsub`) ops, despite Gero shipping a
 `fixed` 8.8 type.
 
 Rationale:
@@ -399,10 +399,10 @@ Rationale:
 - **Saturating arithmetic** (clamp to ±max instead of wrap) didn't
   exist on 6502 / Z80 / 8086 / 68000 — it's a post-1990 feature
   (ARMv6, MMX/SSE). Software-emulate via `cmp` + branch + `mov MAX`
-  (4-6 bytes), or rely on the gero-lang compiler to lower
+  (4-6 bytes), or rely on the Gero compiler to lower
   `clamp(a + b, lo, hi)` patterns to that sequence.
 
-The gero-lang compiler emits the fixed-point op sequences
+The Gero compiler emits the fixed-point op sequences
 automatically — users write `let x: fixed = a * b` and never see
 the verbose form. Saturating clamps are a stdlib `math.clamp`
 call. No friction at the source level.
@@ -597,9 +597,9 @@ silent no-ops. Unknown syscall numbers raise the
 | `0x14`| `format_terminate_buf` | `r1` = dst cursor. Writes a single null byte at `[r1]` and advances `r1` by 1 (so chained terminators don't stomp the same slot). |
 | `0x15`| `format_uint_to_buf`   | `acu` = u16 value. `r1` = dst cursor. Appends the unsigned-decimal representation of `acu` at `[r1]`, then advances `r1`. (Unsigned counterpart of `format_int_to_buf`.) |
 | `0x17`| `format_runtime`       | `acu` = format string (null-terminated). `r1` = dst cursor. `r2` = base of the `args` words. `r3` = count (bits 0–7) \| element default type (bits 8–10, the `format_spec_to_buf` type codes) \| element-signed (bit 11). Backs `str.format(fmt, args)` (§3.2.2): walks `fmt`, copies literal bytes, and replaces each `{N}` / `{N:spec}` positional placeholder with `args[N]` formatted per the (runtime-parsed) spec (`{{` / `}}` are literal braces). An out-of-range / digit-less placeholder is dropped. |
-| `0x16`| `format_spec_to_buf`   | `acu` = value (or str byte-pointer for the `str` type). `r1` = dst cursor. `r2` = width (bits 0–7) \| fill char (bits 8–15). `r3` = type (bits 0–2: `0` dec, `1` hex-lower, `2` hex-upper, `3` bin, `4` oct, `5` str, `6` char, `7` fixed) \| align (bits 3–4: `0` type-default, `1` left, `2` right, `3` center) \| signed (bit 5) \| zero-pad (bit 6) \| has-precision (bit 7) \| precision (bits 8–15). Appends `acu` formatted per the gero-lang §3.2.2 format spec at `[r1]`, then advances `r1`. Numeric types render in the requested radix; zero-padding of a negative is sign-aware (`-042`). |
+| `0x16`| `format_spec_to_buf`   | `acu` = value (or str byte-pointer for the `str` type). `r1` = dst cursor. `r2` = width (bits 0–7) \| fill char (bits 8–15). `r3` = type (bits 0–2: `0` dec, `1` hex-lower, `2` hex-upper, `3` bin, `4` oct, `5` str, `6` char, `7` fixed) \| align (bits 3–4: `0` type-default, `1` left, `2` right, `3` center) \| signed (bit 5) \| zero-pad (bit 6) \| has-precision (bit 7) \| precision (bits 8–15). Appends `acu` formatted per the Gero §3.2.2 format spec at `[r1]`, then advances `r1`. Numeric types render in the requested radix; zero-padding of a negative is sign-aware (`-042`). |
 | `0x20`| `alloc`                | bump-allocate `acu` bytes on the heap. On success, sets `acu` to the address of the freshly-allocated block and advances the VM's heap cursor by the requested size. On exhaustion (cursor + size would collide with the stack or fall outside the program's heap region), raises the **heap-exhausted** fault (vector `0x04`). Faults if `heap_base = 0` (program declared no heap). |
-| `0x30`| `trap`                 | Raise the **trap** fault (vector `0x06`). No arguments. A program calls it to give up deliberately — gero-lang emits it after a failed `test.assert_*`, `panic`, `unreachable`, or `todo` has printed. With no handler installed the VM stops with `halted_on_fault`, which a host can distinguish from the `halted` a clean `hlt` produces. |
+| `0x30`| `trap`                 | Raise the **trap** fault (vector `0x06`). No arguments. A program calls it to give up deliberately — Gero emits it after a failed `test.assert_*`, `panic`, `unreachable`, or `todo` has printed. With no handler installed the VM stops with `halted_on_fault`, which a host can distinguish from the `halted` a clean `hlt` produces. |
 
 Writer failures (host stdout closed, OOM in the writer's buffer)
 raise the **invalid-opcode** fault as well. The `sys` mechanism is
@@ -630,8 +630,8 @@ Reserved vectors:
 | `0x02` | Invalid register fault. |
 | `0x03` | Division by zero (`div` / `divs` with divisor = 0). |
 | `0x04` | Heap exhausted (`sys alloc` with cursor + size colliding with the stack, exceeding the heap budget, or `heap_base = 0`). |
-| `0x05` | Arithmetic overflow. VM raises this on `div` / `divs` when the quotient exceeds 16 bits. Languages targeting gero may also software-raise it (via `int 5`) when their own overflow checks fire — gero-lang does so for `+` / `-` / `*` in debug builds. |
-| `0x06` | Program-initiated trap. Raised by `sys trap` when a program gives up deliberately — gero-lang emits it after a failed `test.assert_*`, `panic`, `unreachable`, or `todo` has printed its message. Distinct from `hlt` so a host can tell a program that gave up from one that finished. |
+| `0x05` | Arithmetic overflow. VM raises this on `div` / `divs` when the quotient exceeds 16 bits. Languages targeting gero may also software-raise it (via `int 5`) when their own overflow checks fire — Gero does so for `+` / `-` / `*` in debug builds. |
+| `0x06` | Program-initiated trap. Raised by `sys trap` when a program gives up deliberately — Gero emits it after a failed `test.assert_*`, `panic`, `unreachable`, or `todo` has printed its message. Distinct from `hlt` so a host can tell a program that gave up from one that finished. |
 | `0x07..0x1F` | Reserved (host-defined). gtx-16 uses `0x07` for its vblank IRQ. |
 | `0x20..0xFF` | Software interrupts (`int N`). |
 
@@ -658,7 +658,7 @@ wrong memory. The cross-bank call trampoline (§3.2) restores `mb` on
 its own, so a plain call into a banked def is safe; an explicit switch
 is not.
 
-The gero-lang compiler does this automatically for `@interrupt`
+The Gero compiler does this automatically for `@interrupt`
 handlers — the general registers always, and `mb` whenever the program
 declares banked defs.
 

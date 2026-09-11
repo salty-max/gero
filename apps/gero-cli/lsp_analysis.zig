@@ -385,7 +385,7 @@ test "langOf: dispatches on the URI suffix" {
     try testing.expect(langOf("file:///x/README.md") == null);
 }
 
-test "diagnose: a gero-lang type error carries a range and its code" {
+test "diagnose: a Gero type error carries a range and its code" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const diags = try diagnoseText(arena.allocator(), .gr, "def main()\n  print undefined_thing()\nend\n");
@@ -404,7 +404,7 @@ test "diagnose: a clean buffer reports nothing" {
     try testing.expectEqual(@as(usize, 0), diags.len);
 }
 
-test "diagnose: a gero-lang syntax error carries its E_SYNTAX code" {
+test "diagnose: a Gero syntax error carries its E_SYNTAX code" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const diags = try diagnoseText(arena.allocator(), .gr, "def main(\n");
@@ -540,7 +540,7 @@ test "diagnose: a missing `use` target is reported on the importer" {
     try testing.expectEqualStrings("E_USE_NOT_FOUND", result.files[0].items[0].code);
 }
 
-test "format: canonicalizes a gero-lang buffer" {
+test "format: canonicalizes a Gero buffer" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const out = (try format(arena.allocator(), .gr, "def  main()\n   print   1\nend\n")).?;

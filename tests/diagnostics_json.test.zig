@@ -10,7 +10,7 @@ const gero = @import("gero");
 
 const alloc = std.testing.allocator;
 
-/// Render one gero-lang diagnostic into `out`. The caller owns the
+/// Render one Gero diagnostic into `out`. The caller owns the
 /// writer, so the JSON stays valid for as long as it is being read.
 fn encodeLang(out: *std.Io.Writer.Allocating, src: []const u8) !void {
     var stream = try gero.lang.tokenize(alloc, src);

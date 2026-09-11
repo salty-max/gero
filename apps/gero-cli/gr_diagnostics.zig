@@ -1,4 +1,4 @@
-//! The gero-lang diagnostic pipeline for one source buffer, shared by
+//! The Gero diagnostic pipeline for one source buffer, shared by
 //! `gero check` and `gero lsp`. Keeping it in one place is what makes
 //! "the editor and the CLI agree about a buffer" a property of the
 //! code rather than a promise: both commands call this function, so
@@ -8,7 +8,7 @@
 const std = @import("std");
 const gero = @import("gero");
 
-/// Tokenize + parse + typecheck a gero-lang source into one flat
+/// Tokenize + parse + typecheck a Gero source into one flat
 /// diagnostic slice. Pure over `src` (no IO), so every caller that
 /// already holds the text can use it. Each diagnostic's `code` is the
 /// lexer/parser's stable `E_SYNTAX_*` code (see

@@ -1,4 +1,4 @@
--- fizzbuzz.gr — the classic, in gero-lang.
+-- fizzbuzz.gr — the classic, in Gero.
 --
 -- Prints 1..15, replacing multiples of 3 with "Fizz", of 5 with
 -- "Buzz", and of both with "FizzBuzz". Exercises a `for` range loop,

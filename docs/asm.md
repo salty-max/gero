@@ -482,7 +482,7 @@ number from ISA §5.13.1, and an unknown one raises the invalid-opcode
 fault at run time rather than being rejected here.
 
 `int` raises an interrupt vector, which the embedding host defines; the
-gero-lang layer uses `int $05` for a software-raised arithmetic
+Gero layer uses `int $05` for a software-raised arithmetic
 overflow, and a fantasy-console host maps its own.
 
 ### 2.4 Operand order convention

@@ -1,6 +1,6 @@
 # The Gero Book
 
-This book teaches **gero-lang** — the high-level language for the Gero
+This book teaches **Gero** — the high-level language for the Gero
 virtual machine — by building one program from nothing to something
 you could ship.
 
@@ -45,5 +45,5 @@ you — and the build would have caught it.
 
 When a chapter needs a rule stated precisely — the exact grammar, the
 full list of operators, every diagnostic code — it links to
-[`gero-lang.md`](../gero-lang.md) rather than repeating it. That spec
+[`lang.md`](../lang.md) rather than repeating it. That spec
 is the authority; this book is the path through it.

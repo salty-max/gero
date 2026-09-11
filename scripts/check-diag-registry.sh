@@ -12,7 +12,7 @@
 # Either direction fails this gate.
 #
 # Also: every `v.method(` / `s.method(` in the Vec / str operations
-# tables of gero-lang.md must be a method the typechecker implements,
+# tables of lang.md must be a method the typechecker implements,
 # so a table row cannot quietly describe a method that does not exist.
 #
 # Exit codes:
@@ -23,7 +23,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DOC="$ROOT/docs/lang-diagnostics.md"
-SPEC="$ROOT/docs/gero-lang.md"
+SPEC="$ROOT/docs/lang.md"
 SRC="$ROOT/src"
 
 if [[ ! -f "$DOC" || ! -f "$SPEC" ]]; then

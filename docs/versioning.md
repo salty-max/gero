@@ -55,7 +55,7 @@ Files declaring `0x0001` read `0x0000` there, which means "no heap" —
 so an older producer's files keep their exact meaning.
 
 **A new opcode in an unassigned slot.** `0x0003` added `muls`, used by
-gero-lang's debug overflow trap on `*`. An older VM meeting `muls`
+Gero's debug overflow trap on `*`. An older VM meeting `muls`
 raises the invalid-opcode fault (§5) — it refuses loudly rather than
 mis-decoding. That fault behavior for unassigned opcodes is *why* this
 is additive, and it is why `0x00-0x0F` and `0xD0-0xEF` must keep

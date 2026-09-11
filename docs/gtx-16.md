@@ -130,7 +130,7 @@ mov $02, &FE60         ; OPCODE_RECTFILL = 0x02
 mov $01, &FE61         ; trigger
 ```
 
-In practice, a future high-level macro layer (the `gero-lang`
+In practice, a future high-level macro layer (the `Gero`
 compiler will expose this) lets you write `rectfill(10, 20, 50, 60,
 7)` and the macro expands to the byte sequence above.
 
@@ -373,7 +373,7 @@ Header:
 ### 8.2 `.gas` / `.gr` (source carts)
 
 If the cart is shipped as source (`.gas` for asm, `.gr` for the
-future gero-lang), the shell auto-assembles / auto-compiles it at
+future Gero), the shell auto-assembles / auto-compiles it at
 `run` time. Built artifacts get cached at `/tmp/build/<hash>.gtx`
 so subsequent runs are instant.
 

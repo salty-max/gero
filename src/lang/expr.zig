@@ -9,7 +9,7 @@ const ParserError = parser_mod.ParserError;
 const Kind = lexer.Token.Kind;
 
 /// Precedence levels — higher binds tighter. Used by the Pratt
-/// loop to encode `docs/gero-lang.md` §3.3.
+/// loop to encode `docs/lang.md` §3.3.
 pub const Prec = struct {
     /// Initial level passed by callers that want the full expression.
     pub const lowest: u8 = 0;
@@ -619,7 +619,7 @@ fn parseStringLit(p: *Parser) ParserError!*ast.Expr {
                 const inner = try parseExpression(p, 0);
                 // Optional `:fmt` spec — captured verbatim as a byte
                 // span; the runtime formatter parses it per
-                // `docs/gero-lang.md` §3.2.2.
+                // `docs/lang.md` §3.2.2.
                 var fmt_span: ?ast.Span = null;
                 if (p.accept(.colon)) |colon_tok| {
                     const fmt_start = colon_tok.end;

@@ -1,11 +1,11 @@
-# Gero-lang — Diagnostics
+# Gero — Diagnostics
 
-The contract every gero-lang error message obeys. The parser, the
+The contract every Gero error message obeys. The parser, the
 typechecker, the bake interpreter, and codegen all emit diagnostics
 in the shape described here. New error categories extend this doc;
 ad-hoc message shapes are rejected at review time.
 
-This doc is paired with `docs/gero-lang.md` (the language spec).
+This doc is paired with `docs/lang.md` (the language spec).
 The spec defines what programs are legal; this defines what users
 see when their program isn't.
 
@@ -327,7 +327,7 @@ help: write the type: `let v: Vec(i16) = Vec.new()`
 
 This fires where a construction carries no element type and none can
 be read off the initializer. It is **not** about function parameters:
-those are annotated (gero-lang.md §3.5), so there is nothing to infer
+those are annotated (lang.md §3.5), so there is nothing to infer
 and nothing to be ambiguous about.
 
 **Mockup — recursive without return type:**
@@ -934,7 +934,7 @@ Codes are stable. New ones append; old ones never change meaning.
 
 ## 7. Implementation contract
 
-Every gero-lang pass that surfaces diagnostics MUST:
+Every Gero pass that surfaces diagnostics MUST:
 
 1. Build them through a shared `Diagnostic` struct that carries the
    code, severity, primary span, secondary spans (with their own

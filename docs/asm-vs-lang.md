@@ -1,4 +1,4 @@
-# asm, gero-lang, and the bytecode between them
+# asm, Gero, and the bytecode between them
 
 Three layers, and none of them replaces another. This document exists
 because the obvious reading — a high-level language arrived, so the
@@ -10,7 +10,7 @@ each layer is good at.
 ## 1. The three layers
 
 ```
-   gero-lang (.gr)          asm (.gas)
+   Gero (.gr)          asm (.gas)
           \                    /
            \                  /
             +--> bytecode <--+          the .gx image
@@ -22,7 +22,7 @@ each layer is good at.
 **Bytecode is the artifact.** A `.gx` is what the VM runs, what a cart
 distributes, and what `gero disasm` reads back. Both front-ends emit
 it, and neither is privileged: an image assembled by hand and one
-compiled from gero-lang are the same kind of file, with the same
+compiled from Gero are the same kind of file, with the same
 header and the same guarantee behind it (`docs/versioning.md` §6).
 
 **asm is the machine's own language.** One mnemonic, one instruction,
@@ -30,12 +30,12 @@ no hidden work. You write it when you need to know exactly which bytes
 run: an interrupt handler, a blitter, a routine you are counting
 cycles for, or a lesson about how a CPU actually works.
 
-**gero-lang is the application language.** Types, classes, modules,
+**Gero is the application language.** Types, classes, modules,
 pattern matching, `Vec(T)`. You write it when the program is about
 what it does rather than how the machine does it — game logic, state
 machines, the ninety per cent of a cart that is not a hot loop.
 
-The layers meet in one place: `asm "..."` (gero-lang §4.11) drops a
+The layers meet in one place: `asm "..."` (`lang.md` §4.11) drops a
 single assembly instruction into a `.gr` function. It is a bridge, not
 a scripting hatch — one instruction, no labels, no control flow.
 
@@ -71,7 +71,7 @@ sum_to:
   ret
 ```
 
-**gero-lang** — `sum.gr`:
+**Gero** — `sum.gr`:
 
 ```gero
 def sum_to(n: i16) -> i16
@@ -90,7 +90,7 @@ end
 Measured, not estimated — `gero asm sum.gas` and
 `gero compile sum.gr`, run to `hlt` on the same VM:
 
-| | asm | gero-lang |
+| | asm | Gero |
 |---|---|---|
 | Cycles to print `5050` | **509** | **1520** |
 | The routine's own bytes | **20** | **95** |
@@ -111,9 +111,9 @@ reason.
 **The image: 32 bytes against 4712.** This one is the misleading one,
 and it is worth being precise. A `.gr` that does nothing but
 `print 5050` already compiles to **4617 bytes** — that is the runtime,
-mostly integer formatting, and every gero-lang program pays it once.
-The sum routine added 95. So the honest reading is not "gero-lang is
-147× larger"; it is "gero-lang costs about 4.6 KB up front and then
+mostly integer formatting, and every Gero program pays it once.
+The sum routine added 95. So the honest reading is not "Gero is
+147× larger"; it is "Gero costs about 4.6 KB up front and then
 roughly 4× per routine". On a cart with banks (`docs/isa.md` §3.2),
 the up-front cost is paid once and the per-routine cost is what
 matters.
@@ -124,16 +124,16 @@ matters.
 
 | You are writing | Reach for | Because |
 |---|---|---|
-| A J-RPG, its battle system, its save format | gero-lang | The program is about rules, not registers. Classes, enums with payloads, and exhaustive `match` are the shape of that problem. |
+| A J-RPG, its battle system, its save format | Gero | The program is about rules, not registers. Classes, enums with payloads, and exhaustive `match` are the shape of that problem. |
 | A sprite blitter, a chiptune player, a scanline effect | asm | You are counting cycles, and 3× is the difference between fitting in the frame and not. |
-| An interrupt handler | asm, or gero-lang's `@interrupt` | Short handlers in asm; longer ones in gero-lang, which saves and restores the registers a handler must not clobber. |
-| Cross-bank code on a banked cart | either | gero-lang's `@bank` emits the trampoline for you; asm gives you the `mb` write and the responsibility. |
-| One instruction the compiler will not emit | `asm "..."` inside gero-lang | The bridge exists for exactly this, and stops at one instruction on purpose. |
+| An interrupt handler | asm, or Gero's `@interrupt` | Short handlers in asm; longer ones in Gero, which saves and restores the registers a handler must not clobber. |
+| Cross-bank code on a banked cart | either | Gero's `@bank` emits the trampoline for you; asm gives you the `mb` write and the responsibility. |
+| One instruction the compiler will not emit | `asm "..."` inside Gero | The bridge exists for exactly this, and stops at one instruction on purpose. |
 | Learning how an 8/16-bit machine felt | asm | That is the point of the exercise. The ISA is small enough to hold in your head (`docs/isa.md` §5). |
 
-The two mix freely inside one program: gero-lang calls into asm
+The two mix freely inside one program: Gero calls into asm
 through `asm "..."`, and an asm program can `include` a file that a
-gero-lang build also uses for its constants. They produce the same
+Gero build also uses for its constants. They produce the same
 bytecode, so nothing is lost at the boundary.
 
 ---
@@ -161,6 +161,6 @@ languages are ways of writing for it.
 
 - [`isa.md`](isa.md) — the machine both languages target
 - [`asm.md`](asm.md) — the assembly language
-- [`gero-lang.md`](gero-lang.md) — the high-level language, and §9 for
+- [`lang.md`](lang.md) — the high-level language, and §9 for
   what it deliberately is not
 - [`asm-cookbook.md`](asm-cookbook.md) — worked asm recipes

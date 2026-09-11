@@ -302,7 +302,7 @@ fn mkDiag(index: u32) gero.asm_.Diagnostic {
     };
 }
 
-test "printJsonReport: a gero-lang diagnostic lands in the object's array" {
+test "printJsonReport: a Gero diagnostic lands in the object's array" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
     var out = std.Io.Writer.Allocating.fromArrayList(std.testing.allocator, &buf);
