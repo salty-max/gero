@@ -108,6 +108,8 @@ fn collect(io: std.Io, arena: std.mem.Allocator) ![]const Entry {
         while (try walker.next(io)) |it| {
             if (it.kind != .file) continue;
             if (!std.mem.endsWith(u8, it.path, src.suffix)) continue;
+            // `gero test` modules live under tests/; they are not carts.
+            if (std.mem.indexOf(u8, it.path, "tests/") != null) continue;
             // An asm example split across `include`s, or a Gero
             // module imported with `use`, is not an entry point.
             if (try isIncludeFragment(io, arena, src.dir, it.path)) continue;

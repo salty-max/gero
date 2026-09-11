@@ -124,3 +124,8 @@ you want to read it as a directory rather than as fences.
 
 Ryu is a class, his items are an enum, the program is three files
 and a manifest. That is a program, not a script.
+
+---
+
+**Next:** [Numbers that are not integers](09-fixed.md) — a quarter
+of seven damage.

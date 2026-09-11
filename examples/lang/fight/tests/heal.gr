@@ -1,0 +1,17 @@
+use Fighter from "../src/fighter"
+use test
+
+@test
+def heal_caps_at_max()
+  let ryu = Fighter("Ryu", 30)
+  ryu.take_damage(7)
+  test.assert_eq(ryu.hp, 23)
+  ryu.heal(15)
+  test.assert_eq(ryu.hp, 30)
+end
+
+@bench
+def bench_take_damage()
+  let ryu = Fighter("Ryu", 30)
+  ryu.take_damage(7)
+end
