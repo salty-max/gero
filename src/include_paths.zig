@@ -54,27 +54,21 @@ pub fn dirname(kind: Kind, path: []const u8) ?[]const u8 {
 /// cancelled by it, and everything outside the request came from the
 /// filesystem and is already spelled correctly by construction.
 pub fn spellingMatches(kind: Kind, requested: []const u8, canonical: []const u8) bool {
-    var tail = requested;
-    // Walk past the last traversal segment; what follows it appears
-    // verbatim in the canonical path.
-    var walk = componentsOf(kind, requested);
-    var consumed: usize = 0;
-    while (walk.next()) |part| {
-        consumed += part.len + 1;
-        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) {
-            tail = requested[@min(consumed, requested.len)..];
-        }
+    // Compare trailing components, not a byte suffix: on Windows the
+    // canonical path uses `\`, the `use` string uses `/`, and a suffix
+    // match on `src/fighter.gr` would reject a file spelled correctly.
+    var request = componentsBackwardsOf(kind, requested);
+    var resolved = componentsBackwardsOf(kind, canonical);
+    while (request.next()) |part| {
+        if (part.len == 0) continue;
+        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return true;
+        var actual = resolved.next() orelse return false;
+        while (actual.len == 0) actual = resolved.next() orelse return false;
+        if (!std.mem.eql(u8, part, actual)) return false;
     }
-    if (tail.len == 0) return true;
-
-    // The canonical path has to end with exactly that spelling, at a
-    // component boundary.
-    if (!std.mem.endsWith(u8, canonical, tail)) return false;
-    if (canonical.len == tail.len) return true;
-    const boundary = canonical[canonical.len - tail.len - 1];
-    return boundary == '/' or (kind == .host and boundary == std.fs.path.sep);
+    return true;
 }
 
-fn componentsOf(kind: Kind, path: []const u8) std.mem.SplitIterator(u8, .any) {
-    return std.mem.splitAny(u8, path, if (kind == .host) "/\\" else "/");
+fn componentsBackwardsOf(kind: Kind, path: []const u8) std.mem.SplitBackwardsIterator(u8, .any) {
+    return std.mem.splitBackwardsAny(u8, path, if (kind == .host) "/\\" else "/");
 }

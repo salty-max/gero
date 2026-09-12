@@ -79,3 +79,52 @@ test "include_paths.spellingMatches: a component boundary is required" {
     // ignored boundaries would accept it.
     try testing.expect(!include_paths.spellingMatches(.host, "tils.gas", "/proj/utils.gas"));
 }
+
+test "include_paths.spellingMatches: host separators in the canonical path" {
+    // Windows canonicalize returns `\`. The `use` string is still `/`.
+    // Comparing a byte suffix would reject `../src/fighter.gr`.
+    try testing.expect(include_paths.spellingMatches(
+        .host,
+        "../src/fighter.gr",
+        "D:\\a\\gero\\examples\\lang\\fight\\src\\fighter.gr",
+    ));
+    try testing.expect(!include_paths.spellingMatches(
+        .host,
+        "../src/Fighter.gr",
+        "D:\\a\\gero\\examples\\lang\\fight\\src\\fighter.gr",
+    ));
+    try testing.expect(!include_paths.spellingMatches(
+        .host,
+        "../Src/fighter.gr",
+        "D:\\a\\gero\\examples\\lang\\fight\\src\\fighter.gr",
+    ));
+    try testing.expect(include_paths.spellingMatches(
+        .host,
+        "..\\src/fighter.gr",
+        "D:\\a\\gero\\examples\\lang\\fight\\src\\fighter.gr",
+    ));
+}
+
+test "include_paths.spellingMatches: path depth does not limit spelling checks" {
+    // A single import can cross more directories than the include
+    // graph's recursion limit, without adding another include.
+    const directories = "dir/" ** 80;
+    try testing.expect(include_paths.spellingMatches(.host, directories ++ "util.gas", "/proj/" ++ directories ++ "util.gas"));
+    try testing.expect(include_paths.spellingMatches(.host, "util.gas", "/proj/" ++ directories ++ "util.gas"));
+    try testing.expect(!include_paths.spellingMatches(.host, directories ++ "Util.gas", "/proj/" ++ directories ++ "util.gas"));
+}
+
+test "include_paths.spellingMatches: virtual paths keep backslashes as literal characters" {
+    try testing.expect(include_paths.spellingMatches(.virtual, "dir\\util.gas", "/proj/dir\\util.gas"));
+    try testing.expect(!include_paths.spellingMatches(.virtual, "dir\\util.gas", "/proj/dir/util.gas"));
+    try testing.expect(!include_paths.spellingMatches(.virtual, "util.gas", "/proj/dir\\util.gas"));
+    try testing.expect(!include_paths.spellingMatches(.virtual, "Dir\\util.gas", "/proj/dir\\util.gas"));
+}
+
+test "include_paths.spellingMatches: empty components do not hide a missing directory" {
+    try testing.expect(include_paths.spellingMatches(.host, "../src//fighter.gr", "/proj/src/fighter.gr"));
+    try testing.expect(include_paths.spellingMatches(.host, "src/fighter.gr", "/proj//src/fighter.gr"));
+    try testing.expect(!include_paths.spellingMatches(.host, "src/fighter.gr", "fighter.gr"));
+    try testing.expect(!include_paths.spellingMatches(.host, "src/fighter.gr", "/fighter.gr"));
+    try testing.expect(!include_paths.spellingMatches(.host, "src/fighter.gr", ""));
+}
