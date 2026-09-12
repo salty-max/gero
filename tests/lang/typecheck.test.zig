@@ -832,6 +832,62 @@ test "typecheck: compound `+=` with wrong rhs type errors" {
     , "E_TYPE_MISMATCH");
 }
 
+test "typecheck: direct assignment to const errors" {
+    try expectCode(
+        \\def main()
+        \\  const limit = 30
+        \\  limit = 40
+        \\end
+    , "E_TYPE_ASSIGN_CONST");
+}
+
+test "typecheck: compound assignment to const errors" {
+    try expectCode(
+        \\const limit = 30
+        \\def main()
+        \\  limit += 1
+        \\end
+    , "E_TYPE_ASSIGN_CONST");
+}
+
+test "typecheck: increment of const errors" {
+    try expectCode(
+        \\def main()
+        \\  const limit = 30
+        \\  limit++
+        \\end
+    , "E_TYPE_ASSIGN_CONST");
+}
+
+test "typecheck: decrement of const errors" {
+    try expectCode(
+        \\def main()
+        \\  const limit = 30
+        \\  limit--
+        \\end
+    , "E_TYPE_ASSIGN_CONST");
+}
+
+test "typecheck: const class binding permits mutation through its reference" {
+    try expectClean(
+        \\class Counter
+        \\  let value: i16
+        \\  def init(self)
+        \\    self.value = 0
+        \\  end
+        \\  def increment(self)
+        \\    self.value += 1
+        \\  end
+        \\end
+        \\
+        \\def main()
+        \\  const counter = Counter()
+        \\  counter.value = 1
+        \\  counter.increment()
+        \\end
+    );
+}
+
 test "typecheck: class-to-class `as` cast errors with E_CAST_INVALID" {
     try expectCode(
         \\class A
