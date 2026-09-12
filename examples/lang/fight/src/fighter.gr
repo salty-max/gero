@@ -2,11 +2,17 @@ class Fighter
   let name: str
   let hp: i16
   let max_hp: i16
+  let power: i16
 
-  def init(self, name: str, hp: i16)
+  def init(self, name: str, hp: i16, power: i16)
     self.name = name
     self.hp = hp
     self.max_hp = hp
+    self.power = power
+  end
+
+  def alive(self) -> bool
+    return self.hp > 0
   end
 
   def take_damage(self, amount: i16)
@@ -22,4 +28,9 @@ class Fighter
       self.hp = self.max_hp
     end
   end
+end
+
+def reduced_damage(power: i16, blocked: fixed) -> i16
+  let remaining: fixed = 1.0 - blocked
+  return ((power as fixed) * remaining) as i16
 end

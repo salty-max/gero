@@ -45,9 +45,7 @@ gero compile lang/fizzbuzz.gr -o fizzbuzz.gx && gero run fizzbuzz.gx
 
 ## Scope of the `lang/` suite
 
-The `.gr` examples stay within what the codegen backend executes today
-— functions, recursion, `for` / `while`, `if` / `elif` / `else`,
-`match` over enums, integer arithmetic, and `print`. Data-structure
-programs (arrays, structs, classes, compound assignment) aren't here
-yet because the backend doesn't lower them; they'll join as codegen
-grows.
+The `.gr` examples exercise the codegen backend through functions,
+recursion, loops, branches, enum matches, arithmetic, and output. The
+book's multi-file fight also covers classes, `Vec`, compound assignment,
+fixed-point arithmetic, imports, tests, and benchmarks.

@@ -1,9 +1,13 @@
 # 4. Functions
 
-Chapter 3 ended with a fight loop that had the damage number wedged
-inside it. Let us give the pieces names.
+Chapter 3 made a fight work, but its rules were buried inside `main`. The
+number 7 meant Ryu's damage only because we remembered what it meant. A larger
+program cannot rely on memory like that.
 
-## Declaring one
+A **function** gives a name to an operation. It can receive values, perform
+work, and return an answer.
+
+## Declaring and calling a function
 
 ```gero
 def damage_from(power: i16, defense: i16) -> i16
@@ -11,21 +15,34 @@ def damage_from(power: i16, defense: i16) -> i16
 end
 
 def main()
-  print damage_from(12, 5)
+  let damage = damage_from(12, 5)
+  print damage
 end
 ```
 
-`7`.
+The first line declares a function named `damage_from`. Its two
+**parameters**, `power` and `defense`, are names that receive values when the
+function is called. Both must be `i16` values.
 
-`def` opens it, `end` closes it. Each parameter is annotated with its
-type — that is required, not optional. The `-> i16` after the
-parameters is the return type.
+The arrow gives the return type. `-> i16` promises that the function will send
+an `i16` answer back to its caller. `return power - defense` computes that
+answer and immediately leaves the function.
 
-A function that returns nothing simply omits the arrow:
+The expression `damage_from(12, 5)` is a **call**. The values 12 and 5 are its
+arguments. Execution moves into `damage_from` with `power` bound to 12 and
+`defense` bound to 5, computes 7, then resumes in `main` with that answer.
+
+The program prints `7`, but the named parameters let us read the meaning of
+the calculation directly from the function.
+
+## Functions that perform an action
+
+Some functions do something without calculating a value for the caller. They
+omit the return arrow:
 
 ```gero
 def announce(name: str)
-  print name
+  print "$(name) enters the fight"
 end
 
 def main()
@@ -33,46 +50,64 @@ def main()
 end
 ```
 
-## Why the annotations are mandatory
+`announce` still returns control to `main` when it reaches `end`; it simply
+does not return a value that can be stored or used in an expression.
 
-Inside a function, `let hp = 30` infers its type happily. At the
-boundary, you must say. That asymmetry is deliberate: the signature is
-what a caller reads, and a caller should not have to read the body to
-know what to pass.
+Each function has its own local bindings. The parameter `name` exists inside
+`announce`, while a binding declared inside `main` exists inside `main`. This
+separation is called **scope**. It prevents unrelated functions from
+accidentally changing each other's temporary state.
 
-Leave a parameter unannotated and the compiler stops you:
+## Signatures are contracts
 
-```
-error: parameter `a` needs a type — write `a: i16` or whichever type it takes [E_TYPE_PARAM_UNANNOTATED]
-```
+The function's name, parameters, and return type form its **signature**:
 
-The annotation is what it checks an argument against. Without one,
-every call would pass — `add("Ryu", 3)` would compile, and the machine
-would add the address of the string to 3.
-
-The return type is required as soon as you return a value. Leave off
-the `-> i16` and the compiler stops you too:
-
-```
-error: returning a value from a function with no return type — add `-> T` to its signature, or drop the value (§4.6) [E_TYPE_RETURN_FROM_VOID]
+```text
+damage_from(power: i16, defense: i16) -> i16
 ```
 
-A `def` with no arrow returns nothing, so a `return x` inside one has
-nowhere to put `x`.
+A caller can understand that contract without reading the body. Gero therefore
+requires parameter types at function boundaries, even though it can infer the
+types of many local bindings.
 
-It also means an error lands where the mistake is. Call
-`damage_from("Ryu", 5)` and the compiler objects at that line, rather
-than somewhere inside the subtraction:
+The following declaration deliberately does not compile because `power` has
+no type:
 
+```gero
+def damage_from(power, defense: i16) -> i16
+  return power - defense
+end
 ```
+
+The compiler points at the unannotated parameter:
+
+```text
+error: parameter `power` needs a type — write `power: i16` or whichever type it takes [E_TYPE_PARAM_UNANNOTATED]
+```
+
+This call also deliberately fails:
+
+```gero
+def damage_from(power: i16, defense: i16) -> i16
+  return power - defense
+end
+
+def main()
+  print damage_from("Ryu", 5)
+end
+```
+
+```text
 error: type mismatch: expected `i16`, found `str` [E_TYPE_MISMATCH]
 ```
 
-## Returning more than one thing
+The error appears at the call because the signature contains enough
+information to reject the wrong argument before the function executes.
 
-Some questions have two answers. Did the attack land, and for how
-much? Gero has no exceptions and no `Result` type; a function
-that answers two things returns two things:
+## Returning more than one answer
+
+An attack can answer two questions: did it hit, and how much damage did it do?
+A tuple groups a small fixed number of values, even when their types differ:
 
 ```gero
 def attack(power: i16, defense: i16, roll: i16) -> (bool, i16)
@@ -83,93 +118,115 @@ def attack(power: i16, defense: i16, roll: i16) -> (bool, i16)
 end
 
 def main()
-  let (hit, dmg) = attack(12, 5, 75)
+  let result = attack(12, 5, 75)
+  print result.0
+  print result.1
+end
+```
+
+The return type `(bool, i16)` promises a pair. Position `.0` holds the first
+value and `.1` holds the second.
+
+When both positions have useful names, destructure the tuple as it arrives:
+
+```gero
+def attack(power: i16, defense: i16, roll: i16) -> (bool, i16)
+  if roll < 20
+    return (false, 0)
+  end
+  return (true, power - defense)
+end
+
+def main()
+  let (hit, damage) = attack(12, 5, 75)
   if hit
-    print dmg
+    print "hit for $(damage)"
   else
     print "miss"
   end
 end
 ```
 
-`7`. The `let (hit, dmg) = ...` destructures the returned pair into
-two bindings.
+The tuple lets the function return related answers together. The explicit
+`if hit` at the call site makes the caller decide what each outcome means.
 
-This is the Go shape rather than the Rust one. A `Result` type wants
-generics and a propagation operator, and both cost more than they are
-worth on a machine this size. An explicit check at the call site is
-the trade.
-
-## The fight, rewritten
+## Naming the fight's rules
 
 ```gero
-const MAX_HP = 30
+const RYU_POWER = 12
+const KEN_DEFENSE = 5
 
-def severity(hp: i16) -> str
+def damage_from(power: i16, defense: i16) -> i16
+  let damage = power - defense
+  if damage < 1
+    return 1
+  end
+  return damage
+end
+
+def severity(hp: i16, max_hp: i16) -> str
   if hp <= 0
     return "fallen"
-  else if hp < MAX_HP / 4
+  else if hp < max_hp / 4
     return "critical"
-  else if hp < MAX_HP / 2
+  else if hp < max_hp / 2
     return "wounded"
   end
   return "healthy"
 end
 
-def attack(power: i16, defense: i16, roll: i16) -> (bool, i16)
-  if roll < 20
-    return (false, 0)
-  end
-  return (true, power - defense)
-end
-
 def main()
-  let hp = MAX_HP
-  let turn = 0
+  let ken_hp = 35
+  let damage = damage_from(RYU_POWER, KEN_DEFENSE)
+  ken_hp -= damage
 
-  while hp > 0
-    turn += 1
-    let (hit, dmg) = attack(12, 5, 75)
-    if hit
-      hp -= dmg
-    end
-    print severity(hp)
-  end
-
-  print turn
+  print "Ryu deals $(damage) damage"
+  print "Ken is $(severity(ken_hp, 35))"
 end
 ```
 
-`MAX_HP` moved out of `main` to the top level, where both functions can
-see it. A top-level `const` is visible to everything in the file.
+`damage_from` owns the rule that damage cannot fall below one. `severity` owns
+the words used for hit-point ranges. `main` coordinates them without needing
+to know their internal decisions.
 
-Every piece is now named and testable on its own. `severity` does not
-know about the fight; `attack` does not know about hit points. That
-is the shape a second character — and a test — can plug into.
+This separation is called **decomposition**: turning one large problem into
+smaller operations with names and contracts. It makes a program easier to
+read, test, and change.
 
-## Recursion works
+## Recursion
+
+A function may call itself. This is **recursion**:
 
 ```gero
-def fib(n: i16) -> i16
-  if n < 2
-    return n
+def factorial(n: i16) -> i16
+  if n <= 1
+    return 1
   end
-  return fib(n - 1) + fib(n - 2)
+  return n * factorial(n - 1)
 end
 
 def main()
-  print fib(10)
+  print factorial(5)
 end
 ```
 
-`55`. Each call gets its own frame on the stack. The depth is bounded
-by memory, and 64 KB is not a lot of it.
+Each call receives a smaller value until the condition reaches the **base
+case**, which returns 1 without another call. The waiting calls then multiply
+that result by 2, 3, 4, and 5, producing 120. Without a reachable base case,
+calls would continue until the stack ran out of memory. Loops are usually
+clearer for simple repetition; recursion becomes useful when a problem is
+naturally defined in terms of smaller versions of itself.
+
+## What you learned
+
+A function names an operation. Parameters carry information in, a return value
+carries information out, and the signature lets the compiler check the
+boundary. Functions also create scopes and let a large program be decomposed
+into rules that can be understood independently.
+
+The fight now has named rules, but its data is still a loose group of values.
 
 ---
 
-The character is still four loose variables and a couple of functions.
-
----
-
-**Next:** [Collections](05-collections.md) — a bag, a party, and what
-each costs.
+**Next:** [Collections](05-collections.md) — grouping values and choosing where
+they live.

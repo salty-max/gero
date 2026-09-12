@@ -147,9 +147,9 @@ accumulated changesets at release time.
 
 ## The wasm lane
 
-Every fenced code block in the docs is compiled: `check-doc-asm.sh`
-assembles the ```asm ones and `check-doc-gr.sh` parses the ```gero
-ones, both driven from `zig build verify`. They take a document list
+Every fenced assembly block in the docs is assembled, and every Gero block is
+parsed: `check-doc-asm.sh` handles the ```asm ones and `check-doc-gr.sh`
+handles the ```gero ones, both driven from `zig build verify`. They take a document list
 that globs `docs/book/*.md` and `docs/machine/*.md`, so a new chapter
 is covered without touching `build.zig` — a teaching example that
 quietly stopped working is worse than none, because a beginner cannot

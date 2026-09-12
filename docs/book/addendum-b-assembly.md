@@ -1,18 +1,32 @@
 # Gero and assembly
 
-The machine has two languages. They produce the same bytecode. Neither
-is the real one.
+The machine has two languages. They solve different parts of the same problem
+and produce the same `.gx` bytecode.
 
-**Gero** is what the rest of this book teaches — types, functions,
-the program as rules. **Assembly** is the machine's own language, one
-mnemonic per instruction. You write it when you need to know exactly
-which bytes run.
+**Gero** gives names to rules through types, functions, classes, and modules.
+The compiler chooses instructions for those rules. **Assembly** lets the
+programmer choose each instruction directly. That control matters when exact
+bytes or cycles matter; it adds work everywhere else.
 
-## The same routine
+A measured example makes the trade concrete.
 
-Sum `1..100` and print the result. Both of these print `5050`.
+## The same calculation
+
+Both programs below add the integers from 1 through 100 and print `5050`.
+
+The assembly version includes the setup, loop, output calls, and halt:
 
 ```asm
+const PRINT_INT = $02
+const NEWLINE   = $04
+
+main:
+  mov $0064, r1
+  call sum_to
+  sys PRINT_INT
+  sys NEWLINE
+  hlt
+
 sum_to:
   mov $0000, acu
 .loop:
@@ -24,6 +38,9 @@ sum_to:
 .done:
   ret
 ```
+
+The Gero version states the same loop with a parameter, a local binding, and an
+inclusive range:
 
 ```gero
 def sum_to(n: i16) -> i16
@@ -39,38 +56,51 @@ def main()
 end
 ```
 
-Measured on the same VM, not estimated:
+The two programs have the same observable result, but the machine performs
+different amounts of work:
 
-- **Cycles** to print `5050`: 509 in asm, 1520 in Gero. Three times
-  is a real cost in a raster interrupt and irrelevant everywhere else.
-- **The routine**: 20 bytes against 95. The same ratio, for the same
-  reason — the compiled loop goes through frame slots because it
-  cannot prove nothing else needs the registers.
-- **The image**: 32 bytes against 4712. That last number is the
-  misleading one. A Gero program that only prints `5050` is already
-  about 4.6 KB of runtime, paid once. The sum routine added 95. On a
-  cart, the up-front cost is paid once and the per-routine cost is
-  what matters.
+| Measurement | Assembly | Gero |
+|---|---:|---:|
+| Cycles through the printed result | 509 | 1520 |
+| Bytes for the sum routine | 20 | 95 |
+| Whole image | 32 | 4712 |
 
-## Which one to reach for
+The assembly loop keeps its counter and total in registers because the author
+chose those locations. The compiled loop uses a general function frame because
+the compiler must preserve the rules of arbitrary Gero functions. That
+explains much of the cycle and routine-size difference.
 
-A battle system, a save format, the rules of the game — Gero. The
-program is about what it does.
+The whole-image comparison needs more care. Even a Gero program that only
+prints `5050` includes roughly 4.6 KB of runtime code, mostly integer
+formatting. A larger program pays that base cost once. The useful comparison
+for one additional routine is therefore 20 bytes against 95, not 32 against
+4712.
 
-A sprite blitter, a chiptune player, a scanline effect — asm. You
-are counting cycles, and 3× is the difference between fitting in the
-frame and not.
+Measurements need context. A difference of a thousand cycles is irrelevant in
+a menu that waits for a button and decisive in a routine that must finish
+before the next scanline.
 
-An interrupt handler — short ones in asm; longer ones in Gero with
-`@interrupt`, which saves and restores the registers a handler must
-not clobber.
+## Choose from the problem
 
-One instruction the compiler will not emit — `asm "..."` inside a
-Gero function. One instruction, no labels, no control flow. The
-bridge exists for exactly that, and stops there on purpose.
+Use Gero when the program is mainly about relationships and rules: a battle
+system, save data, scenes, or an inventory. Names and checked boundaries save
+more work than hand-selected instructions.
 
-The two mix in one program. They produce the same `.gx`, so nothing
-is lost at the boundary.
+Use assembly when the implementation itself is the problem: a sprite blitter,
+a chiptune mixer, a small interrupt handler, or a loop with a fixed cycle
+budget.
 
-The Gero Machine — the other book — is the place that teaches
-assembly as a language, not as a comparison.
+Use `asm "..."` inside Gero when one instruction is missing from the high-level
+language. The narrow bridge lets a larger program stay readable while exposing
+the one machine operation it needs.
+
+Performance work should begin with a measurement. Write the clear version,
+benchmark the relevant operation, inspect its disassembly, and only replace it
+when the cost matters in its real context.
+
+Neither language is the real one. The cart is the artifact, and both languages
+are ways of creating it.
+
+For the complete comparison and interoperability rules, see
+[`asm-vs-lang.md`](../asm-vs-lang.md). To learn the instruction-level side from
+the beginning, continue with **The Gero Machine**.
