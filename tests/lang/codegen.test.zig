@@ -7731,6 +7731,38 @@ test "codegen/destructure: let tuple binds element-wise" {
     , "10\n20\n");
 }
 
+test "codegen/destructure: packed byte tuple binders widen by declared type" {
+    try runAndExpect(
+        \\def main()
+        \\  let pair: (bool, i16) = (true, 7)
+        \\  let (flag, wide) = pair
+        \\  let narrow: (u8, i8, char) = (250, -5, 'A')
+        \\  let (byte, signed, glyph) = narrow
+        \\  print flag
+        \\  print byte
+        \\  print signed
+        \\  print glyph
+        \\  print wide
+        \\end
+    , "1\n250\n-5\nA\n7\n");
+}
+
+test "codegen/destructure: packed byte struct binders widen by declared type" {
+    try runAndExpect(
+        \\struct Result
+        \\  hit: bool
+        \\  damage: i16
+        \\  glyph: char
+        \\end
+        \\def main()
+        \\  let Result { hit, damage, glyph } = Result { hit: true, damage: 7, glyph: 'A' }
+        \\  print hit
+        \\  print damage
+        \\  print glyph
+        \\end
+    , "1\n7\nA\n");
+}
+
 test "codegen/destructure: let struct binds named fields" {
     try runAndExpect(
         \\struct Pos
