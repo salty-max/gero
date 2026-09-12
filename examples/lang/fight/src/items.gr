@@ -3,6 +3,13 @@ enum Item
   case Ether
 end
 
+def heal_from(item: Item) -> i16
+  match item
+    case Item.Potion(amount) => return amount
+    case Item.Ether => return 0
+  end
+end
+
 def describe(item: Item) -> str
   match item
     case Item.Potion(_) => return "potion"

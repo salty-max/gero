@@ -1,8 +1,12 @@
 # 3. Control flow
 
-Our character has stats. Now the program has to decide something.
+The programs so far execute every statement once, from top to bottom. A fight
+needs more control. It must choose what happens when hit points reach zero and
+repeat turns while both fighters can act.
 
-## `if`
+The order in which statements execute is called **control flow**.
+
+## Making a decision with `if`
 
 ```gero
 def main()
@@ -16,17 +20,22 @@ def main()
 end
 ```
 
-Two things to notice, and both are deliberate.
+The expression `hp <= 0` is a **condition**. It produces a `bool`: either
+`true` or `false`. Because 12 is not less than or equal to zero, the condition
+is false and the `else` branch runs.
 
-There is no `then`. The condition ends where the line ends, and the
-body starts on the next one. There is also no parenthesis around the
-condition — `if (hp <= 0)` parses, but the parentheses are grouping an
-expression, not part of the `if`.
+```text
+Ryu fights on
+```
 
-Every block closes with `end`. No braces, no significant indentation:
-indentation is for you, `end` is for the compiler.
+Only one branch runs. The other is skipped. If you change `hp` to `0` and run
+the program again, the first branch runs instead.
 
-`else if` chains as you would expect:
+There is no `then` keyword. The condition ends at the newline and the body
+begins on the next line. Parentheses are unnecessary because `if` already
+expects a condition. Every branch closes at the shared `end`.
+
+More than two outcomes can be expressed with an `else if` chain:
 
 ```gero
 def main()
@@ -45,14 +54,37 @@ def main()
 end
 ```
 
-That prints `wounded`. `MAX_HP / 4` is 7 and `MAX_HP / 2` is 15, so 12
-falls in the third arm.
+Conditions are checked from top to bottom. The first true condition wins.
+Here, `30 / 4` is 7 and `30 / 2` is 15. Twelve is not at most zero and not
+less than seven, but it is less than fifteen, so the program prints
+`wounded`.
 
-Integer division truncates: `30 / 4` is 7, not 7.5. There is no
-rounding and no error. If that is not what you want, `fixed` is
-the type with a fractional part.
+Integer division discards the fractional remainder: `30 / 4` is 7. That rule
+will matter when we introduce fixed-point arithmetic.
 
-## `while`
+## Combining conditions
+
+Use `and` when both conditions must be true, `or` when either is enough, and
+`not` to reverse a Boolean value:
+
+```gero
+def main()
+  let hp = 8
+  let potions = 1
+
+  if hp > 0 and hp <= 10 and potions > 0
+    print "drink a potion"
+  end
+end
+```
+
+This program prints because all three facts are true. Conditions let the
+program turn state into behavior.
+
+## Repeating work with `while`
+
+A `while` loop checks a condition, runs its body when the condition is true,
+then checks again:
 
 ```gero
 def main()
@@ -68,49 +100,62 @@ def main()
 end
 ```
 
-`5`. Seven damage a turn against 30 hit points takes five turns, the
-last one overshooting — after four turns hp is 2, and the fifth takes
-it to -5.
+The loop changes two pieces of state. Tracing them makes the repetition
+visible:
 
-`hp -= 7` is shorthand for `hp = hp - 7`. The compound assignments
-(`+=`, `-=`, `*=`, `/=`) are statements, not expressions: you cannot
-write `let x = hp -= 7`. Nor is there `++`. A standalone `++` is
-fine; `x++ + ++x` is not a puzzle this language wants to set.
+| After turn | `hp` | `turns` | Will the loop continue? |
+|---:|---:|---:|---|
+| 1 | 23 | 1 | yes |
+| 2 | 16 | 2 | yes |
+| 3 | 9 | 3 | yes |
+| 4 | 2 | 4 | yes |
+| 5 | -5 | 5 | no |
 
-## `for` and ranges
+The program prints `5`. The fifth subtraction overshoots zero, but the loop
+does not check again until the body has finished.
 
-Counting is common enough to have its own form:
+`hp -= 7` and `turns += 1` are **compound assignments**. They update a binding
+using its current value. Gero also has `*=`, `/=`, and `%=`. These are
+statements, so `let result = hp -= 7` is invalid. The `++` and `--` operators
+are statements too: `turn++` can stand on its own, but it cannot be embedded
+inside a larger expression.
+
+A loop must eventually make its condition false or leave in some other way.
+If the body above never changed `hp`, `hp > 0` would remain true forever. That
+is an **infinite loop**.
+
+## Counting with `for` and ranges
+
+When the program needs a sequence of values, a `for` loop is clearer:
 
 ```gero
 def main()
-  for i in 1..=5
-    print i
+  for turn in 1..=5
+    print turn
   end
 end
 ```
 
-`1` through `5`, one per line. The `..=` is **inclusive** — it
-includes 5. There is also `..`, which excludes it:
+`1..=5` is an inclusive range, so it produces 1, 2, 3, 4, and 5. The loop
+binds each value to `turn` and runs once for each value.
+
+The range `0..3` excludes its upper bound:
 
 ```gero
 def main()
-  for i in 0..3
-    print i
+  for index in 0..3
+    print index
   end
 end
 ```
 
-`0`, `1`, `2`. Three iterations.
+It produces 0, 1, and 2. Half-open ranges are useful for indexes because a
+collection with three elements has exactly those three positions.
 
-The two forms exist because both are natural somewhere. `0..n` is
-right for indexing a collection of `n` things; `1..=n` is right for
-counting, which is what a person does out loud. Picking the wrong one
-is the classic off-by-one, and having both spellings visible in the
-source makes it easier to see which you meant.
+## Leaving a loop early
 
-## Leaving early
-
-`break` stops a loop; `continue` skips to the next iteration.
+`break` ends the nearest loop. `continue` skips the rest of the current
+iteration and starts the next one.
 
 ```gero
 def main()
@@ -136,46 +181,54 @@ def main()
 end
 ```
 
-`11`. Worth following, because the number is not obvious: 30 hit
-points at 7 damage a turn runs out on turn 5, and the potion puts him
-back to 15. Fifteen lasts until turn 8, and the second potion buys
-another three turns. On turn 11 there is nothing left to drink and
-`break` ends it.
+This loop has no condition that can become false: `true` is always true.
+Instead, `break` supplies its exit. Following the state explains the result.
+Ryu reaches zero on turn 5, drinks, reaches zero again on turn 8, drinks again,
+and finally falls on turn 11 with no potion left.
 
-`while true` with a `break` inside is idiomatic here. There is no
-`repeat` / `until` and no `loop` keyword.
+```text
+11
+```
 
-## Where the fight is now
+Use this shape when the decision to stop naturally happens in the middle of a
+loop. When a simple condition describes the whole lifetime of the loop, put it
+after `while` instead.
+
+## The fight so far
 
 ```gero
 def main()
-  const MAX_HP = 30
-
-  let name: str = "Ryu"
-  let hp: i16 = MAX_HP
+  let ryu_hp = 30
+  let ken_hp = 35
   let turn = 0
 
-  while hp > 0
+  while ryu_hp > 0 and ken_hp > 0
     turn += 1
-    hp -= 7
+    ken_hp -= 7
 
-    if hp < MAX_HP / 4
-      print "critical"
+    if ken_hp > 0
+      ryu_hp -= 6
     end
   end
 
-  print name
-  print turn
+  print "the fight lasted $(turn) turns"
+  print "Ryu: $(ryu_hp) hp"
+  print "Ken: $(ken_hp) hp"
 end
 ```
 
-It works, and it is already showing the strain. The damage number `7`
-is buried in the loop. The "how hurt is he" test is inline. If a second
-character joins, all of it gets copied.
+The program now has a real process: each iteration is one turn. It also has a
+problem. The damage rules are loose arithmetic inside `main`, where they will
+become hard to find and harder to reuse. We need to give operations names.
 
-That is what functions are for.
+## What you learned
+
+An `if` selects one path using a Boolean condition. A loop repeats a path while
+a condition remains true or across the values in a range. Both forms derive
+behavior from state, and tracing how that state changes is the reliable way to
+understand them.
 
 ---
 
-**Next:** [Functions](04-functions.md) — naming the pieces, and
-returning more than one thing.
+**Next:** [Functions](04-functions.md) — naming the rules of the fight and
+passing values into them.

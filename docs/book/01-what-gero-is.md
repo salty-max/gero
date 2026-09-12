@@ -1,8 +1,12 @@
 # 1. What Gero is
 
+The quickest way to understand a programming language is to make it do
+something. We will begin with a complete program, run it, and then take it
+apart.
+
 ## Run something first
 
-Make a file called `hello.gr`:
+Create a file named `hello.gr` and put this in it:
 
 ```gero
 def main()
@@ -10,147 +14,142 @@ def main()
 end
 ```
 
-Compile it and run it:
+There are three parts to this program.
+
+`def main()` declares a **function** named `main`. A function is a named group
+of instructions. `main` has a special job: it is where the program begins.
+The empty parentheses mean that it needs no information from whoever starts
+it.
+
+`print "Hello, gero!"` is the instruction inside the function. `print` sends a
+value to the program's output. The quotation marks make `"Hello, gero!"` a
+piece of text rather than a name or an instruction.
+
+`end` marks the end of the function. Indentation makes the shape easier for a
+person to see; `end` tells the compiler where the shape finishes.
+
+Compile the source file:
 
 ```bash
 gero compile hello.gr -o hello.gx
+```
+
+Then run the file that command created:
+
+```bash
 gero run hello.gx
 ```
 
-```
+The program prints:
+
+```text
 Hello, gero!
 ```
 
-That is the whole loop. Source in, one file out, run the file.
+That is the basic loop: write source, compile it, run the result.
 
-## What just happened
+Before reading further, change the message and run the two commands again.
+The change is small, but it establishes something important: the source file
+is yours, and the output follows from what you wrote.
 
-`gero compile` did not produce a program your computer can run. Open
-`hello.gx` and you will not find machine code for your laptop. It is
-**bytecode** — instructions for a machine that does not physically
-exist, and that `gero run` pretends to be.
+## Source and carts
 
-That machine is small enough to describe in a paragraph. It has
-sixteen registers, each holding a 16-bit number. It has 64 KB of
-memory, addressed `0x0000` to `0xFFFF`, and that is all the memory
-there will ever be. It executes about a hundred instructions, one at a
-time, until it hits `hlt`.
+The two files have different jobs.
 
-That is it. There is no operating system underneath, no filesystem, no
-processes, no dynamic linking. When your program starts, the machine
-has been zeroed, your program has been copied into memory at address
-zero, and execution begins.
+`hello.gr` is **source code**. It is written for people as well as for the
+compiler. Names, line breaks, and comments help explain the program.
 
-## Why do it this way
+`hello.gx` is a **cart**. It contains bytecode: compact instructions for the
+Gero virtual machine. Your laptop cannot execute those instructions directly,
+so `gero run` creates the virtual machine in software and asks it to execute
+the cart.
 
-Because the constraint is the point.
+The compiler is the translator between the two:
 
-Modern programming rests on abstractions that are worth having and
-that also hide the machine completely. You allocate without thinking
-about where. You call a library without thinking about its size. The
-computer is fast enough that you are usually right not to care.
-
-Gero takes that away deliberately. 64 KB is not a lot. When your cart
-grows past it you cannot ask for more — you switch a bank, which means
-deciding what is worth having in memory at a given moment. When a loop
-is slow you cannot wait for a faster machine; you count the
-instructions and make it shorter.
-
-This is how games were written for the machines this VM is modelled
-on — the 6502, the Z80, the 68000. The claim is not that it was better.
-It is that the constraint produces a different kind of thinking, and
-that thinking is worth having.
-
-## What a cart is
-
-`hello.gx` is a **cart**: one file, self-contained, that any Gero of
-the same format version will run identically.
-
-Identically is a strong word and it is meant literally. The same
-source compiles to the same bytes on Linux, macOS and Windows — CI
-checks that on every change against a corpus of blessed images. The
-format is frozen at 1.0: a cart built today runs on later versions of
-the VM, and one built for an incompatible machine is refused rather
-than run wrongly. An older VM seeing a newer *major* stops; a newer
-minor it just runs.
-
-For a cart, that matters more than it might sound. You are shipping an
-artifact, not a build recipe.
-
-## The two languages
-
-The machine has two languages, and they produce the same bytecode.
-
-**Gero** is what this book teaches. It reads like Lua, it is
-typed at the boundaries, and it compiles ahead of time:
-
-```gero
-def sum_to(n: i16) -> i16
-  let total: i16 = 0
-  for i in 1..=n
-    total += i
-  end
-  return total
-end
+```text
+hello.gr  -- gero compile -->  hello.gx  -- gero run -->  output
 ```
 
-**Assembly** is the machine's own language, one mnemonic per
-instruction:
+When compilation fails, no useful cart is produced. That is helpful. The
+compiler can point to a problem while the program is still text you can edit,
+rather than letting the machine guess what you meant.
 
-```asm
-sum_to:
-  mov $0000, acu
-.loop:
-  cmp r1, $0000
-  jeq .done
-  add r1, acu
-  dec r1
-  jmp .loop
-.done:
-  ret
-```
+## The machine in one page
 
-Both of those sum `1..n`. The assembly version is about three times
-faster and a fifth the size, and the Gero version is the one you
-would rather read six months from now. Neither is the "real" one —
-[Gero and assembly](addendum-b-assembly.md) has the measured numbers
-and the rule for choosing. This book stays in Gero.
+The virtual machine is a deliberately small computer. It has sixteen
+registers, each wide enough to hold a 16-bit number, and 64 KB of directly
+addressable memory. It executes one instruction after another until the
+program reaches `hlt`.
 
-## The tools
+You do not need to understand registers or `hlt` to write Gero. For now, the
+useful fact is that the machine has firm limits. Memory is a finite place where
+the program and its data must fit. Instructions are work that takes time.
+Later chapters will make both costs visible when a programming decision
+depends on them.
 
-One binary does everything:
+There is no operating system inside the VM, no process tree, and no dynamic
+linker. A host such as `gero run` can provide output and persistence, but the
+cart itself sees the same machine wherever it runs.
+
+The constraint is the point.
+
+Modern computers hide many physical details because most programs should not
+have to care about them. Gero lets you work at a higher level too, but on a
+machine small enough that you can still understand the cost of your choices.
+The goal is not to claim that older computers were better. It is to make their
+kind of reasoning available in a controlled place.
+
+## Two ways to program it
+
+The machine has two languages. Both produce `.gx` carts.
+
+**Gero** is the language this book teaches. It gives you types, functions,
+classes, modules, and collections. You describe the rules of the program, and
+the compiler chooses the machine instructions.
+
+**Assembly** exposes those instructions directly. It is useful when the exact
+bytes or cycle count matter, and it is the language taught in The Gero
+Machine.
+
+Neither language produces a more real cart. They are two ways of writing for
+the same machine. [Gero and assembly](addendum-b-assembly.md) compares the two
+when you are ready; nothing there is needed for the next chapter.
+
+## The tools you need now
+
+The first chapters use four commands:
 
 ```bash
-gero compile prog.gr -o prog.gx   # Gero → bytecode
-gero run prog.gx                  # execute it
-gero fmt prog.gr                  # canonical formatting, no options
-gero check prog.gr                # errors without producing a file
-gero disasm prog.gx               # bytecode → readable assembly
-gero test                         # run @test functions
+gero compile hello.gr -o hello.gx  # create a cart
+gero run hello.gx                  # run the cart
+gero check hello.gr                # check without creating a cart
+gero fmt hello.gr                  # format the source consistently
 ```
 
-`gero disasm` is worth trying now, even though nothing in it will mean
-much yet:
+`gero check` is useful while writing because it reports errors without doing
+the final build. `gero fmt` rewrites whitespace into the standard style, so
+you do not have to invent formatting rules.
+
+One more command will become useful later:
 
 ```bash
 gero disasm hello.gx
 ```
 
-Nothing is hidden. Whatever the compiler did to your program, you can
-read back.
+It translates bytecode back into readable assembly. The output will not mean
+much yet. The important promise is that the compiler's work can be inspected.
 
-## What you need
+## What you learned
 
-```bash
-brew install salty-max/tap/gero
-```
+A Gero program begins in `main`. The `.gr` file is source for people and the
+compiler; `gero compile` turns it into a `.gx` cart; `gero run` executes that
+cart on the virtual machine. You have already completed the whole development
+loop once.
 
-or build from source. [Installing Gero](addendum-a-installing.md)
-covers the rest of the binary, and editor setup for syntax
-highlighting and inline errors, which is worth ten minutes before
-the next chapter.
+If Gero is not installed yet, [Installing Gero](addendum-a-installing.md)
+covers the binary and editor setup.
 
 ---
 
-**Next:** [Values and types](02-values-and-types.md) — what a program
-can hold, and why there are no floating-point numbers.
+**Next:** [Values and types](02-values-and-types.md) — giving names to the
+information a program remembers.
