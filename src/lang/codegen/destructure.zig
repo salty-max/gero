@@ -1,11 +1,10 @@
 // Pattern destructuring (§4.2 / §4.4.1 / §4.5.2 / §4.8.1) — shared by
 // `let` binds, `if let` / `while let`, and `match` arms. The scrutinee is
 // materialized into a frame slot; the matcher walks the pattern against
-// that slot, binding idents (an inline binder aliases the slot sub-region
-// directly; an enum payload — behind the value's `[tag|payload]` pointer —
-// loads into a fresh slot) and emitting tests for refutable shapes (each
-// mismatch pushes a skip-jump patch the caller resolves to the else /
-// loop-exit / next-arm).
+// that slot, binding idents (a word-sized inline binder aliases the slot
+// sub-region; a packed byte binder and an enum payload load into a fresh
+// word slot) and emitting tests for refutable shapes (each mismatch pushes a
+// skip-jump patch the caller resolves to the else / loop-exit / next-arm).
 
 const std = @import("std");
 const ast = @import("../ast.zig");
@@ -78,8 +77,17 @@ pub fn emitMatchPattern(self: *Emitter, pat: *const ast.Pattern, ofs: i8, ty: ?*
     switch (pat.*) {
         .wildcard => {},
         .ident => |ip| {
-            // Inline binder: alias the slot sub-region — no load, no slot.
             const name = try self.arena.dupe(u8, self.source[ip.name.start..ip.name.end]);
+            // Locals are read as words. A byte packed into a tuple or struct
+            // may have another element in its neighboring byte, so
+            // widen it into a private word slot before registering the name.
+            if (ty) |t| if (self.widthOfType(t) == 1) {
+                try loadInline(self, ofs, t, Reg.acu);
+                const slot = try self.allocLocal(name);
+                try isa.movRegToRegOffset(self, Reg.acu, Reg.fp, slot);
+                return;
+            };
+            // Word-sized inline binder: alias the private scrutinee region.
             try self.locals.put(self.arena, name, ofs);
         },
         .tuple_pattern => |tp| {
