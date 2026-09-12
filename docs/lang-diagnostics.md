@@ -253,6 +253,7 @@ Raised by the typechecker after parsing succeeds.
 |------|---------|
 | `E_UNDEFINED_SYMBOL` | A name that does not resolve to any binding in scope. |
 | `E_TYPE_MISMATCH` | A value of type X is used where type Y is required. |
+| `E_TYPE_ASSIGN_CONST` | Direct assignment, compound assignment, `++`, or `--` targets an immutable `const` binding. |
 | `E_TYPE_UNDEFINED` | Type name doesn't resolve to a declaration. |
 | `E_TYPE_UNDEFINED_FIELD` | Field name doesn't exist on the receiver's type. |
 | `E_TYPE_UNDEFINED_METHOD` | Method name doesn't exist on the receiver's class (or any parent). |
@@ -816,6 +817,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_SYNTAX_HEX_PREFIX` | Parser | v0.3 |
 | `E_SYNTAX_ANNOTATION_PLACEMENT` | Parser | v0.3 |
 | `E_TYPE_MISMATCH` | Typechecker | v0.3 |
+| `E_TYPE_ASSIGN_CONST` | Typechecker | v0.4 |
 | `E_TYPE_TOP_LEVEL_STATEMENT` | Typechecker | v0.3 |
 | `E_TYPE_RETURN_FROM_VOID` | Typechecker | v0.3 |
 | `E_TYPE_PARAM_UNANNOTATED` | Typechecker | v0.4 |

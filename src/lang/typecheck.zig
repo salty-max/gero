@@ -1296,6 +1296,7 @@ pub const Checker = struct {
             _ = try self.inferExpr(a.value, null);
             return;
         }
+        try self.rejectConstReassignment(a.target);
         try self.checkNoCaptureMutation(a.target);
         const tgt_ty = try self.inferExpr(a.target, null);
         // Compound `op=` is sugar for `target = target op value`; the
@@ -1311,6 +1312,7 @@ pub const Checker = struct {
             try self.emitSpan("E_TYPE_MISMATCH", id.target.span(), "`++` / `--` target must be a place expression (ident, field, or index)");
             return;
         }
+        try self.rejectConstReassignment(id.target);
         try self.checkNoCaptureMutation(id.target);
         const tgt_ty = try self.inferExpr(id.target, null);
         if (tgt_ty) |t| {
@@ -1324,6 +1326,21 @@ pub const Checker = struct {
                 try self.emitSpan("E_TYPE_MISMATCH", id.target.span(), msg);
             }
         }
+    }
+
+    /// A const makes its binding read-only. Mutating an object reached through
+    /// a const-bound reference remains legal; only replacing the identifier's
+    /// own value is reassignment.
+    fn rejectConstReassignment(self: *Checker, target: *const ast.Expr) WalkError!void {
+        const ident = switch (target.*) {
+            .ident => |i| i,
+            else => return,
+        };
+        const name = self.lexeme(ident.span);
+        const info = self.current_scope.lookup(name) orelse return;
+        if (info.kind != .const_binding) return;
+        const msg = try std.fmt.allocPrint(self.arena, "cannot assign to const `{s}`", .{name});
+        try self.emitSpan("E_TYPE_ASSIGN_CONST", ident.span, msg);
     }
 
     /// `@no_capture` enforcement (§3.7.2): when the walker is
