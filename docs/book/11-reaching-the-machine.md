@@ -1,59 +1,114 @@
 # 11. Reaching the machine
 
-Most of a cart is Gero. A few instructions are not, because the
-compiler will not emit them, or because you have counted the
-cycles and you disagree with it.
+Gero lets us describe the fight in terms of fighters, items, and rules. The
+cart still runs as machine instructions. Most programs should let the compiler
+choose those instructions, but a small-machine language is more useful when
+the boundary remains visible.
 
-## One instruction
+This chapter introduces three ways to reach that boundary. They are specialized
+tools, not requirements for ordinary Gero programs.
 
-`asm "..."` drops a single bytecode instruction into a Gero
-function. One, not a block. Chain them if you need two.
+## Read what the compiler produced
+
+Build the fight and disassemble its cart:
+
+```bash
+gero build
+gero disasm out/debug/fight.gx
+```
+
+The output is assembly. You will see labels for functions, operations on
+registers, jumps implementing the loop, and calls into the small runtime. The
+Gero source is not stored there: the compiler has translated its meaning into
+the VM's instruction set.
+
+Disassembly answers concrete questions. Did this function become a call? How
+large is the loop? Which instructions account for a benchmark result? You do
+not need to read every line. Begin by finding a function name you recognize
+and following the instructions until its return.
+
+The Gero Machine teaches that language from the beginning. For now,
+disassembly is evidence that the high-level program and machine execution are
+two views of the same cart.
+
+## Insert one instruction with `asm`
+
+Occasionally the VM has an operation that Gero cannot express directly.
+`asm "..."` inserts one assembly instruction into a function:
+
+```gero
+def main()
+  asm "nop"
+  print "still here"
+end
+```
+
+`nop` means “no operation.” The machine spends one instruction cycle and then
+continues. It is a deliberately boring first example because it isolates the
+mechanism: control enters the inline instruction and returns immediately to
+compiled Gero.
+
+A practical use is controlling whether interrupts may run:
 
 ```gero
 def main()
   asm "cli"
-  print 1
+  print "critical work"
   asm "sei"
 end
 ```
 
-`1`. `cli` clears the interrupt flag; `sei` sets it. Together they
-are a window in which a handler will not run. The compiler does
-not spell those, because most programs never need the window.
+`cli` clears the interrupt-enable flag and `sei` sets it again. The statements
+between them form a **critical section**, where an interrupt handler cannot
+observe half-finished state.
 
-A local can be named inside the string with `{x}`. The compiler
-checks that `x` exists and that the instruction will take it. A
-register-only instruction still wants a register:
-`asm "swap r1, r2"`, not `{x}`.
+The escape hatch is intentionally narrow. One `asm` statement contains one
+instruction. It cannot define a label or hide a jump. Locals may be inserted
+with the `{name}` form when an instruction accepts their value; register-only
+instructions still name registers directly. The complete operand rules belong
+to [`lang.md`](../lang.md#411-inline-assembly), and instruction behavior
+belongs to [`isa.md`](../isa.md#5-instruction-set).
 
-There are no labels, no `jmp`, no second instruction hiding in the
-quotes. That is the bridge from the addendum: one mnemonic when
-you have to, then back.
+Inline assembly bypasses some of the compiler's understanding. Use it when you
+can name the instruction you need and explain why the language cannot express
+the operation.
 
-## A bank, a handler
+## Put code in a bank
 
-`@bank N` on a declaration puts that function or data in bank `N`
-of the cart. Calls from elsewhere go through a trampoline the
-compiler emits. You write the annotation; you do not write the
-`mb`.
+The VM can address 64 KB at once, but a cart may contain additional **banks**.
+A bank is a region of cart data that can be mapped into a window of the
+address space when needed. This lets a large cart hold more than fits in the
+machine at one moment.
+
+Gero can place a declaration in a bank:
 
 ```gero
 @bank 1
-def in_bank()
-  print 1
+def banked_message()
+  print "hello from bank 1"
 end
 
 def main()
-  in_bank()
+  banked_message()
 end
 ```
 
-`1`.
+The `@bank 1` annotation is information for the compiler. A call from another
+bank goes through generated code that changes the mapping, calls the function,
+and restores the previous mapping. The source still reads as a function call.
 
-`@interrupt N` binds a function to vector `N`. The body takes no
-parameters and returns nothing. The compiler saves and restores
-the registers a handler must not clobber, emits `rti`, and writes
-the address into the vector table at boot.
+Banking trades simplicity for capacity. Code that crosses banks performs more
+work, and data is only directly reachable while its bank is mapped. Use it
+when the cart has actually grown beyond the base image; [`isa.md`](../isa.md#32-banks)
+owns the memory-map rules.
+
+## Respond to an interrupt
+
+Normal control flow moves because the current statement chooses the next one.
+An **interrupt** begins because the machine or its host reports an event: a
+frame started, a timer fired, or a device needs attention.
+
+`@interrupt N` associates a function with one interrupt vector:
 
 ```gero
 let frame_count: i16 = 0
@@ -68,22 +123,28 @@ def main()
 end
 ```
 
-`0` — nothing in `gero run` fires vblank, so the counter stays
-put. On a console, `$07` is the start of a frame. The function is
-installed either way.
+The handler takes no parameters and returns no value. The compiler creates the
+entry and return sequence required by the VM. A fantasy-console host can fire
+vector `$07` when a frame begins.
 
-## The other book
+`gero run` does not generate that event, so this standalone example prints
+zero. The code demonstrates registration; observing the count change requires
+a host that provides vblank.
 
-None of this is the advanced course. It is the other language, on
-the same machine, producing the same `.gx`.
+Interrupt handlers can run between ordinary instructions, so they make shared
+state harder to reason about. Keep them short, avoid work that can allocate,
+and move the larger response into the normal program loop. The exact entry,
+masking, and return rules live in [`isa.md`](../isa.md#6-interrupts).
 
-**The Gero Machine** teaches that language: registers, the memory
-map, `cmp` and the jumps, the stack, the IVT, banking by hand,
-SRAM, counting cycles on a loop you wrote. Start there if what you
-wanted was to know what the CPU is doing. Start here if what you
-wanted was to make something. They are peers. This chapter is the
-doorway, not the prerequisite.
+## What you learned
+
+Disassembly reveals the instructions selected by the compiler. Inline assembly
+inserts one operation the language cannot express. Banks expand cart capacity
+through a mapped memory window, and interrupts let outside events redirect
+execution to a handler. These tools cross abstraction boundaries, so their
+costs and assumptions must remain explicit.
 
 ---
 
-**Next:** [A cart](12-a-cart.md) — the fight, shipped.
+**Next:** [A cart, end to end](12-a-cart.md) — put every part of the fight in
+place and ship the resulting image.

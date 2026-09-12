@@ -1,12 +1,32 @@
 use Fighter from "./fighter"
+use reduced_damage from "./fighter"
 use Item from "./items"
-use describe from "./items"
+use heal_from from "./items"
 
 def main()
-  let ryu = Fighter("Ryu", 30)
-  ryu.take_damage(7)
-  print ryu.hp
-  ryu.heal(15)
-  print ryu.hp
-  print describe(Item.Potion(15))
+  let ryu = Fighter("Ryu", 30, 7)
+  let ken = Fighter("Ken", 35, 10)
+  let bag: Vec(Item) = Vec.new()
+  bag.push(Item.Potion(6))
+  let turn = 0
+  while ryu.alive() and ken.alive()
+    turn += 1
+    ken.take_damage(ryu.power)
+    print "turn $(turn): $(ken.name) has $(ken.hp) hp"
+    if ken.alive()
+      ryu.take_damage(reduced_damage(ken.power, 0.25))
+    end
+    if ryu.hp <= 10 and bag.len() > 0
+      for item in bag
+        ryu.heal(heal_from(item))
+      end
+      bag.clear()
+      print "$(ryu.name) drinks a potion and has $(ryu.hp) hp"
+    end
+  end
+  if ryu.alive()
+    print "$(ryu.name) wins with $(ryu.hp) hp"
+  else
+    print "$(ken.name) wins with $(ken.hp) hp"
+  end
 end
