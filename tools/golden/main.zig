@@ -109,7 +109,7 @@ fn collect(io: std.Io, arena: std.mem.Allocator) ![]const Entry {
             if (it.kind != .file) continue;
             if (!std.mem.endsWith(u8, it.path, src.suffix)) continue;
             // `gero test` modules live under tests/; they are not carts.
-            if (std.mem.indexOf(u8, it.path, "tests/") != null) continue;
+            if (isTestModule(it.path)) continue;
             // An asm example split across `include`s, or a Gero
             // module imported with `use`, is not an entry point.
             if (try isIncludeFragment(io, arena, src.dir, it.path)) continue;
@@ -126,6 +126,22 @@ fn collect(io: std.Io, arena: std.mem.Allocator) ![]const Entry {
 
 fn lessBySource(_: void, a: Entry, b: Entry) bool {
     return std.mem.order(u8, a.source, b.source) == .lt;
+}
+
+fn isTestModule(path: []const u8) bool {
+    var components = std.mem.tokenizeAny(u8, path, "/\\");
+    while (components.next()) |part| {
+        if (std.mem.eql(u8, part, "tests")) return true;
+    }
+    return false;
+}
+
+test "isTestModule: test directories use either host separator" {
+    try std.testing.expect(isTestModule("fight/tests/heal.gr"));
+    try std.testing.expect(isTestModule("fight\\tests\\heal.gr"));
+    try std.testing.expect(isTestModule("tests/heal.gr"));
+    try std.testing.expect(!isTestModule("contests/main.gr"));
+    try std.testing.expect(!isTestModule("fight/src/tests.gr"));
 }
 
 /// True when `rel` is pulled in by a sibling's `include` rather than
