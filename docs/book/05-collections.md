@@ -1,111 +1,182 @@
 # 5. Collections
 
-Ryu is still four loose variables. Before he can carry a bag, we
-have to pick a place for the things in it to live. Gero has three,
-and they cost different amounts.
+A single binding holds one value. Programs often need several related values:
+the hit points of every party member, the items in a bag, or the two answers
+returned by an attack.
 
-## A pair you already know
+A **collection** groups values so they can be stored and processed together.
+Gero has several collection shapes because “several values” can mean different
+things.
 
-Chapter 4 returned `(bool, i16)` — did the attack land, and for how
-much. That is a **tuple**: a handful of values of mixed types, sitting
-in the same slots a local would. No heap, no length, no growing.
-Two, three, or four elements; past that, give the thing a name.
+## Tuples: a few positions with different meanings
+
+Chapter 4 returned whether an attack hit and how much damage it dealt:
 
 ```gero
 def main()
-  let hit: (bool, i16) = (true, 7)
-  print hit.0
-  print hit.1
+  let result: (bool, i16) = (true, 7)
+  print result.0
+  print result.1
 end
 ```
 
-`true` then `7`. `.0` and `.1` are the slots. You have already
-destructured one with `let (hit, dmg) = attack(...)`.
+A **tuple** has a fixed number of positions. The values may have different
+types, and the type records each position in order. Here, `(bool, i16)` means
+that position 0 is a Boolean and position 1 is a signed integer.
 
-## A row of the same thing
-
-An **array** is a fixed number of the same type. The length is part
-of the type — `[i16; 4]` is four signed integers, always, and the
-compiler knows that before the program runs.
+Positions are useful when their relationship is obvious and local. Names are
+clearer as soon as the tuple arrives:
 
 ```gero
 def main()
-  let party: [i16; 2] = [30, 30]
-  print party[0]
-  party[1] -= 7
-  print party[1]
+  let result: (bool, i16) = (true, 7)
+  let (hit, damage) = result
+  print "hit: $(hit), damage: $(damage)"
 end
 ```
 
-`30` then `23`. Assignment copies the whole array. Passing one to a
-function copies it too. Four `i16`s are eight bytes; you can know
-that without a profiler.
+The line prints `hit: 1, damage: 7`. Boolean values are written as `true` and
+`false` in source; the default output format renders them as the machine values
+1 and 0.
 
-A constant index that does not fit — `party[4]` on an array of two —
-is a compile error. A runtime index that does not fit faults.
+Gero tuples can contain up to four values. Beyond that, numeric positions make
+code hard to read; a named type is a better model.
 
-`1..=n` was the counting range; `0..n` is the indexing one. Walking
-an array is the latter:
+## Arrays: a fixed number of one type
+
+An **array** stores a fixed number of values of the same type:
 
 ```gero
 def main()
-  let scores: [i16; 3] = [10, 20, 30]
-  for s in scores
-    print s
+  let party_hp: [i16; 2] = [30, 35]
+  print party_hp[0]
+  party_hp[1] -= 7
+  print party_hp[1]
+end
+```
+
+The type `[i16; 2]` says both what each element is and how many elements exist.
+The length is known when the program is compiled and cannot change later.
+
+An **index** selects a position. Indexes begin at zero, so this array has
+positions 0 and 1. A constant index such as `party_hp[2]` cannot be valid, and
+the compiler rejects it. When an index is calculated while the program runs,
+a debug build checks it and faults if it is outside the array.
+
+You can process each value without writing an index:
+
+```gero
+def main()
+  let party_hp: [i16; 3] = [30, 35, 18]
+  for hp in party_hp
+    print hp
   end
 end
 ```
 
-`10`, `20`, `30`.
+The loop binds each element to `hp` in order. Use an index when the position
+itself matters; use direct iteration when you only need the values.
 
-Use an array when you know the count at compile time: a party of four,
-a palette of sixteen, the four directions.
+Arrays are values. Assignment and parameter passing copy all their elements:
 
-## A bag that grows
+```gero
+def hurt_first(party: [i16; 2]) -> [i16; 2]
+  party[0] -= 7
+  return party
+end
 
-A **`Vec`** is a length that is allowed to change. The value itself
-is six bytes — a pointer, a length, a capacity — and the items live
-on the heap, which on this machine is the rest of the 64 KB after
-your program.
+def main()
+  let original: [i16; 2] = [30, 35]
+  let changed = hurt_first(original)
+  print original[0]
+  print changed[0]
+end
+```
+
+The output is 30 and then 23. `hurt_first` changes its local copy and returns
+that copy; `original` remains unchanged. Copying two integers is cheap.
+Copying a large array on every function call may not be, which is one reason
+the size appears in its type.
+
+Use an array when the count is part of the program's design: four party slots,
+sixteen palette entries, or three difficulty settings.
+
+## `Vec`: a collection whose length can change
+
+An inventory grows when the player finds an item and shrinks when one is used.
+Its length is runtime state, so a fixed array is the wrong shape. A **`Vec`**
+manages a growable sequence:
 
 ```gero
 def main()
-  let bag: Vec(i16) = Vec.new()
-  bag.push(15)
-  bag.push(15)
-  print bag.len()
-  print bag.at(0)
-  for n in bag
-    print n
+  let healing: Vec(i16) = Vec.new()
+  healing.push(6)
+  healing.push(15)
+
+  print healing.len()
+  print healing.at(0)
+
+  for amount in healing
+    print amount
   end
 end
 ```
 
-`2`, `15`, then `15` and `15` again from the loop. `push` appends and
-grows the buffer when it is full (it doubles). `at` faults if the
-index is out of range; `get` returns `nil` instead. `pop` takes from
-the end and also returns `nil` when the bag is empty — more on that
-the moment we have something typed to put in it.
+`Vec(i16)` means a vector whose elements are all `i16` values. `Vec.new()` is
+empty, so the annotation tells the compiler which element type future calls
+to `push` must accept.
 
-`Vec.from([1, 2, 3])` builds one already filled. `Vec.with_capacity(64)`
-builds an empty one that will not reallocate before the sixty-fifth
-`push`.
+After two pushes, `len()` returns 2 and `at(0)` returns the first value, 6.
+Like array access, `at` checks its index in a debug build. `Vec` also provides
+`get` and `pop`, which return an **optional** value: either an element or `nil`
+to mean that no element was present. Our fight iterates known elements instead,
+so it does not need to unwrap an optional. [`lang.md`](../lang.md#341-nullable-types-t)
+defines the complete `T?` syntax.
 
-## What each costs
+A `Vec` value occupies six bytes: an address, a current length, and a
+**capacity**. The address points to a separate buffer holding the elements.
+Capacity is the number of elements that fit in the current buffer. When a
+`push` would exceed it, the vector allocates a larger buffer and moves its
+elements there.
 
-A tuple is the cheapest: it is the values, in place. An array is
-cheap if `N` is small and known — it is still the values, in place,
-copied when you pass it. A `Vec` is a 6-byte handle plus a heap
-buffer that grows. The handle copies; the buffer does not. Two
-variables holding the same `Vec` see the same items.
+This distinction is a general programming idea:
 
-On 64 KB that difference is the whole decision. A party of four hit
-points is an array. An inventory that gains and loses items is a
-`Vec`. A function that answers two questions is a tuple.
+- **Length** is how many elements the collection contains now.
+- **Capacity** is how many elements its current storage can hold before it
+  must grow.
 
-Ryu's bag is a `Vec`. Next we say what is *in* it.
+`Vec.with_capacity(16)` creates an empty vector with room for sixteen elements.
+It can avoid repeated allocation when you already know a useful upper bound.
+
+A vector owns its backing buffer. Moving a vector into another binding,
+passing it to a function, or returning it transfers that handle instead of
+copying every element. Do not read or write the old, **moved-from** vector;
+its behavior is undefined. This ownership rule keeps one authoritative length,
+capacity, and buffer while avoiding a potentially large element copy.
+
+## Choosing a shape
+
+The question is not which collection is best. The question is which fact is
+fixed.
+
+| Need | Shape |
+|---|---|
+| A few related values with different types | tuple |
+| A known number of values of one type | array |
+| A number of values that changes while running | `Vec` |
+
+Ryu's inventory changes, so it will be a `Vec`. The healing amounts inside it
+are still only numbers, though. A `6` cannot tell us whether it means a potion,
+a key, or six coins.
+
+## What you learned
+
+Collections turn many values into one value that can be stored, passed, and
+processed. Tuples distinguish positions by type, arrays fix both element type
+and length, and vectors move ownership of growable storage. Their different
+copying and allocation costs follow from those different jobs.
 
 ---
 
-**Next:** [Enums and match](06-enums-and-match.md) — a potion is not
-just a number.
+**Next:** [Enums and match](06-enums-and-match.md) — representing which kind of
+item a value is.
