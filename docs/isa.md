@@ -173,9 +173,12 @@ program file format itself.
 
 - Grows **downward**: `push` decrements `sp` by 2 then stores; `pop`
   loads then increments `sp` by 2.
-- `sp` is initialized to `0xFFFE` at boot (highest 2-aligned address).
+- `sp` is initialized to `0x7FFE` at boot — the highest 2-aligned
+  address in **user RAM**, not in memory. §8 gives the three
+  constraints that fix it there.
 - Stack overflow / underflow are **not** trapped — they wrap. A
-  program that misuses the stack corrupts the bank window. (Old-
+  program that misuses the stack corrupts user RAM, and a stack that
+  descends far enough meets the heap growing up to meet it. (Old-
   school: the 6502 stack was 256 bytes that wrapped silently.)
 - `call` pushes the return address (post-instruction `ip`); `ret`
   pops it. `call` also pushes the current `fp`, then sets `fp = sp`.
@@ -641,7 +644,7 @@ When an interrupt fires (and is not masked — see §6.4):
 4. Continue dispatch.
 
 Only `ip`, `fp`, and `flg` are saved. General-purpose registers
-(`acu`, `r1`–`r6`) and the bank selector `mb` are **not** preserved — a
+(`acu`, `r1`–`r8`) and the bank selector `mb` are **not** preserved — a
 handler must save and restore any it clobbers (6502 `pha`/`pla`
 discipline).
 
