@@ -517,8 +517,8 @@ or any flag-affecting ALU op). The 16 slots are exactly filled.
 | `0x95` | `jle`    | `Addr` | `Z = 1 ∨ N ≠ V` (signed less-or-equal) |
 | `0x96` | `jgt`    | `Addr` | `Z = 0 ∧ N = V` (signed greater) |
 | `0x97` | `jge`    | `Addr` | `N = V` (signed greater-or-equal) |
-| `0x98` | `jcc`    | `Addr` | `C = 0` (unsigned less / no carry) |
-| `0x99` | `jcs`    | `Addr` | `C = 1` (unsigned greater-or-equal / carry set) |
+| `0x98` | `jcc`    | `Addr` | `C = 0` (unsigned greater-or-equal / no borrow) |
+| `0x99` | `jcs`    | `Addr` | `C = 1` (unsigned less-than / borrow set) |
 | `0x9A` | `jvc`    | `Addr` | `V = 0` |
 | `0x9B` | `jvs`    | `Addr` | `V = 1` |
 | `0x9C` | `jz`     | `Addr` | `Z = 1` (alias for `jeq`) |
