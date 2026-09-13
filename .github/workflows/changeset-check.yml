@@ -1,9 +1,10 @@
 name: Changeset check
 
 on:
+  # No `branches` filter: it matches the base, so restricting it to
+  # `main` exempts every PR stacked on another branch.
   pull_request:
     types: [opened, synchronize, reopened, edited]
-    branches: [main]
 
 jobs:
   check:
