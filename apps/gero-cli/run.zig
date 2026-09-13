@@ -96,7 +96,13 @@ pub fn execute(
         const result = gero.vm.step(&vm);
         switch (result) {
             .cont, .branched => continue,
-            .halted => return 0,
+            .halted => {
+                // Deterministic, so this is a property of the program
+                // rather than of the machine it ran on — which is what
+                // makes two runs comparable.
+                if (opts.cycles) try term.info("cycles: {d}", .{vm.cycles});
+                return 0;
+            },
             .halted_on_fault => {
                 try term.err("gero run: unhandled fault at ip=0x{X:0>4} — {s}", .{
                     vm.regs.read(.ip),
@@ -344,6 +350,46 @@ test "execute: a save of the wrong size is refused rather than part-restored" {
     const code = try execute(testing.allocator, .{}, &out, &term, &rec.sink, &buf);
     try testing.expectEqual(@as(u8, 1), code);
     try testing.expect(std.mem.indexOf(u8, err.buffered(), "SRAM size") != null);
+}
+
+test "execute: --cycles reports one cycle per instruction executed" {
+    // mov 0x0001 → r1, hlt. Two instructions, so two cycles — the
+    // count is instructions retired, not a per-opcode cost model.
+    const image_size: u16 = 4 + 1;
+    var buf: [16 + image_size]u8 = undefined;
+    _ = buildGx(buf[0..16], 0x0000, 0x0000, image_size, 0, 0);
+    buf[16] = 0x10;
+    buf[17] = 0x01;
+    buf[18] = 0x00;
+    buf[19] = 0x02;
+    buf[20] = 0xFF;
+
+    var out_buf: [256]u8 = undefined;
+    var err_buf: [256]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
+
+    const code = try execute(testing.allocator, .{ .cycles = true }, &out, &term, null, &buf);
+    try testing.expectEqual(@as(u8, 0), code);
+    try testing.expect(std.mem.indexOf(u8, err.buffered(), "cycles: 2") != null);
+}
+
+test "execute: the cycle count is silent unless asked for" {
+    const image_size: u16 = 1;
+    var buf: [16 + image_size]u8 = undefined;
+    _ = buildGx(buf[0..16], 0x0000, 0x0000, image_size, 0, 0);
+    buf[16] = 0xFF;
+
+    var out_buf: [256]u8 = undefined;
+    var err_buf: [256]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
+
+    const code = try execute(testing.allocator, .{}, &out, &term, null, &buf);
+    try testing.expectEqual(@as(u8, 0), code);
+    try testing.expectEqual(@as(usize, 0), err.buffered().len);
 }
 
 test "execute: bad magic exits 1 with structured message" {
