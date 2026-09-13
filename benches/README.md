@@ -53,3 +53,26 @@ regression rather than a slow afternoon.
 The benches build their own `ReleaseFast` binary. A Debug VM runs
 roughly ten times slower, which is under the floor, so benching a
 Debug build would measure the build.
+
+## What the profile found
+
+The three hot paths were profiled once, and only one of them was
+actually slow.
+
+| Path | Measured | Verdict |
+|---|---|---|
+| VM execution | 0.18 M instr/sec | **Fixed** — the read path copied the 64 KB address space per byte read. Now ~50 M/sec. |
+| Assembler | 62 ms for a 64 KB source | Leave it. That is far larger than any real `.gas`; the examples here are a few hundred bytes. |
+| Compiler | 4 ms for ~500 lines of `.gr` | Leave it. |
+
+Only the VM justified a change, which is the rule this work follows:
+measure first, then optimise what the measurement says is slow. The
+assembler's ~1 MB/s of source is recorded here so a future regression
+has something to be compared against, not because it needs attention.
+
+The dispatch strategy was left alone. The VM uses a handler table
+indexed by opcode, which was never the bottleneck — the bottleneck was
+below it, in how memory was reached — and the loop is also the thing
+The Gero Machine teaches from, so rewriting it for gains that no
+measurement asked for would trade something real for something
+speculative.

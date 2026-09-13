@@ -859,6 +859,9 @@ pub fn build(b: *std.Build) void {
     ci_step.dependOn(wasm_examples_step);
     ci_step.dependOn(&check_examples_cmd.step);
     ci_step.dependOn(&check_broken_cmd.step);
+    // Kept out of `verify`: it builds its own ReleaseFast binary, which
+    // is too slow for a pre-push gate and pointless in a Debug tree.
+    ci_step.dependOn(bench_step);
     ci_step.dependOn(&fmt_check_examples_cmd.step);
     ci_step.dependOn(&check_examples_gr_cmd.step);
     ci_step.dependOn(&test_examples_cmd.step);
