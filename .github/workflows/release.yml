@@ -99,11 +99,12 @@ jobs:
         with:
           version: 0.16.0
 
-      # `gero.wasm` and its sample manifest ship as loose release assets
-      # rather than inside a target tarball: a browser host fetches them
-      # by URL and cannot unpack an archive (docs/gero-lab.md §10).
-      # The module pins its own optimize mode, so there is no flag here.
-      - name: Build the module and its sample manifest
+      # `gero.wasm`, its sample manifest and the books ship as loose
+      # release assets rather than inside a target tarball: a browser
+      # host fetches them by URL and cannot unpack an archive
+      # (docs/gero-lab.md §10). The module pins its own optimize mode,
+      # so there is no flag here.
+      - name: Build the module, its sample manifest and the books
         run: zig build wasm
 
       - name: Stage assets
@@ -112,6 +113,7 @@ jobs:
           mkdir -p dist
           cp zig-out/bin/gero.wasm dist/gero.wasm
           cp zig-out/samples/samples.json dist/samples.json
+          cp zig-out/book/books.json dist/books.json
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -120,6 +122,7 @@ jobs:
           path: |
             dist/gero.wasm
             dist/samples.json
+            dist/books.json
           if-no-files-found: error
 
   release:
@@ -165,7 +168,18 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          artifacts=(dist/*.tar.gz dist/*.zip dist/gero.wasm dist/samples.json)
+          # The loose assets are named rather than globbed, and their
+          # absence fails the release. `nullglob` drops a missing file
+          # silently, which is how a release can ship without the
+          # module a browser host fetches by URL — the tarballs alone
+          # keep the array non-empty.
+          for required in dist/gero.wasm dist/samples.json dist/books.json; do
+            if [[ ! -f "$required" ]]; then
+              echo "::error::$required is missing — a browser host fetches it by URL"
+              exit 1
+            fi
+          done
+          artifacts=(dist/*.tar.gz dist/*.zip dist/gero.wasm dist/samples.json dist/books.json)
           if [[ ${#artifacts[@]} -eq 0 ]]; then
             echo "::error::No artifacts found in dist/"
             exit 1
