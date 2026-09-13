@@ -131,7 +131,7 @@ pub const MemoryMapper = struct {
     }
 
     /// Routed byte read.
-    pub fn readByte(self: MemoryMapper, addr: u16) u8 {
+    pub fn readByte(self: *const MemoryMapper, addr: u16) u8 {
         if (self.findDevice(addr)) |dev| return dev.readByte(addr);
         return self.mem.readByte(addr);
     }
@@ -148,7 +148,7 @@ pub const MemoryMapper = struct {
     /// Routed word read. Routing is decided by `addr`; a word
     /// straddling a region boundary goes to whichever device
     /// claims `addr`.
-    pub fn readWord(self: MemoryMapper, addr: u16) u16 {
+    pub fn readWord(self: *const MemoryMapper, addr: u16) u16 {
         if (self.findDevice(addr)) |dev| return dev.readWord(addr);
         return self.mem.readWord(addr);
     }
@@ -162,7 +162,7 @@ pub const MemoryMapper = struct {
         self.mem.writeWord(addr, value);
     }
 
-    fn findDevice(self: MemoryMapper, addr: u16) ?*Device {
+    fn findDevice(self: *const MemoryMapper, addr: u16) ?*Device {
         // Newest-first: latest `map` wins on overlap.
         var i: usize = self.regions.items.len;
         while (i > 0) {

@@ -14,7 +14,7 @@ pub const Memory = struct {
     }
 
     /// Read one byte.
-    pub fn readByte(self: Memory, addr: u16) u8 {
+    pub fn readByte(self: *const Memory, addr: u16) u8 {
         return self.bytes[addr];
     }
 
@@ -25,7 +25,7 @@ pub const Memory = struct {
 
     /// Word read. Wraps at `0xFFFF` — the high byte reads from
     /// `0x0000` (matches real-bus behavior).
-    pub fn readWord(self: Memory, addr: u16) u16 {
+    pub fn readWord(self: *const Memory, addr: u16) u16 {
         const lo: u16 = self.bytes[addr];
         const hi: u16 = self.bytes[addr +% 1];
         return lo | (hi << 8);
