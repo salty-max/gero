@@ -79,7 +79,7 @@ pub const Banks = struct {
         return addr - window_base;
     }
 
-    fn slotAt(self: Banks, mb: u16, addr: u16) ?usize {
+    fn slotAt(self: *const Banks, mb: u16, addr: u16) ?usize {
         if (mb >= self.bank_count) return null;
         // The window is exactly one bank, so an address outside it has
         // no slot at all. Answering with one would index a neighbouring
@@ -91,7 +91,7 @@ pub const Banks = struct {
 
     /// Read a byte from the bank window. Out-of-range `mb`
     /// returns `0xFF`.
-    pub fn readByte(self: Banks, mb: u16, addr: u16) u8 {
+    pub fn readByte(self: *const Banks, mb: u16, addr: u16) u8 {
         if (self.slotAt(mb, addr)) |i| return self.data[i];
         return out_of_range_byte;
     }
@@ -104,7 +104,7 @@ pub const Banks = struct {
 
     /// Word read. Wraps at the top of the window, matching
     /// `Memory.readWord`.
-    pub fn readWord(self: Banks, mb: u16, addr: u16) u16 {
+    pub fn readWord(self: *const Banks, mb: u16, addr: u16) u16 {
         const lo: u16 = self.readByte(mb, addr);
         const hi: u16 = self.readByte(mb, addr +% 1);
         return lo | (hi << 8);
@@ -118,7 +118,7 @@ pub const Banks = struct {
 
     /// Read-only SRAM slice. Host persists this to disk; pass it
     /// back through `initWithImage` on the next boot.
-    pub fn sramSlice(self: Banks) []const u8 {
+    pub fn sramSlice(self: *const Banks) []const u8 {
         // @as: widen sram_bank_count to usize for the byte count
         const sram_bytes = @as(usize, self.sram_bank_count) * bank_size;
         if (sram_bytes == 0) return self.data[0..0];

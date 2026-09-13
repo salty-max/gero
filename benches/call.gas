@@ -1,0 +1,16 @@
+; call.gas — subroutine overhead.
+;
+; `call` pushes two words and sets the frame pointer; `ret` unwinds
+; both. Measured against `dispatch.gas`, the difference is what a
+; call costs over straight-line code.
+
+main:
+  mov $0100, r1
+.loop:
+  call work
+  djnz r1, .loop
+  hlt
+
+work:
+  add $0001, r2
+  ret
