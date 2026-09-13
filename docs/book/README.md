@@ -16,7 +16,8 @@ modules, tests, and finally a cart you can run and change.
 
 ## The other book
 
-**The Gero Machine** teaches the VM itself and its assembly language:
+**[The Gero Machine](../machine/README.md)** teaches the VM itself and its
+assembly language:
 registers, addressing, interrupts, banking, and counting cycles.
 
 It is a companion to this book, not its sequel. The two languages are peers
