@@ -373,6 +373,10 @@ The arithmetic operators preserve the Q16.16 scale:
   of the full product.
 - `/` computes `(a << 16) / b` with 48 restoring-division steps. Division by
   zero raises fault vector `$03`.
+- `%` is floored: the result is `a - floor(a / b) * b` and carries the sign of
+  the divisor, so `-90.0 % 360.0` is `270.0`. It runs 32 restoring-division
+  steps over the raw words and keeps the remainder. A zero divisor raises fault
+  vector `$03`.
 - Comparisons use signed 32-bit ordering across both words.
 
 Arithmetic wraps when a result leaves the Q16.16 range. Division is much more
