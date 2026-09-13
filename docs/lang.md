@@ -1412,7 +1412,7 @@ no value produced". Go uses the same rule.
 
 | Category | Operators | Notes |
 |----------|-----------|-------|
-| Arithmetic | `+` `-` `*` `/` `%` | `/` and `%` on signed → truncated toward zero. Overflow: trap in debug, wrap in release (see below). |
+| Arithmetic | `+` `-` `*` `/` `%` | `/` and `%` on signed → floored: the quotient rounds toward negative infinity and the remainder carries the divisor's sign, so `-7 / 3` is `-3` and `-7 % 3` is `2`. `a == (a / b) * b + (a % b)` holds for every sign. Unsigned is unaffected. Matches `fixed` (§3.3). Overflow: trap in debug, wrap in release (see below). |
 | Comparison | `==` `!=` `<` `<=` `>` `>=` | All return `bool` |
 | Logical | `and` `or` `not` | Short-circuit evaluation. `not` is unary. |
 | Bitwise | `&` `\|` `^` `<<` `>>` `~` | Map directly to ISA `and` / `or` / `xor` / `shl` / `shr` / `not`. `~` is unary bitwise NOT. |
