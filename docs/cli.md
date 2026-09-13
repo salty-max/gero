@@ -116,10 +116,20 @@ gero run hello.gx
 
 **Behavior:**
 - Runs the bare VM — `print` syscalls go to stdout, `int 0x21`
-  (save-flush) writes `<basename>.sav` next to the `.gx`.
+  (save-flush) writes `<basename>.sav` next to the `.gx`, and a
+  `<basename>.sav` present at startup is loaded into the program's
+  battery-backed banks before the first instruction (ISA §3.2.1).
 - Fantasy-console hosts (e.g. gtx-16) embed gero as a library
   and provide their own runtime — they're not invoked through
   `gero run`.
+
+**Flags:**
+- `--cycles` — report the cycle count once the program halts. The
+  VM advances one cycle per instruction executed, so the number is
+  instructions retired rather than a model of per-instruction cost;
+  an `int` handled by the host is the host's work and is not
+  counted. Execution is deterministic, so the figure is a property
+  of the program and two runs are directly comparable.
 
 **Exit:** 0 on `hlt` clean exit; 6 on unhandled fault (invalid
 opcode, /0, etc.); 1 on host-level error (file missing, version

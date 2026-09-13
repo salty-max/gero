@@ -66,6 +66,11 @@ pub const Options = struct {
     /// success aside from a one-line ok summary (suppressed by
     /// `--quiet`). Intended for CI use against shipped examples.
     check_roundtrip: bool = false,
+    /// `--cycles` for `gero run` — report how many cycles the
+    /// program took once it halts. The VM is deterministic, so the
+    /// number is a property of the program rather than of the run,
+    /// which is what makes a before/after comparison meaningful.
+    cycles: bool = false,
     /// `--check` for `gero fmt` — non-destructive mode. Reports
     /// files that would be reformatted (exit 8) without writing.
     /// Editor / CI use case.
@@ -303,9 +308,10 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("\nResolves `use` imports relative to the source dir. Without -o, an\nancestor gero.toml decides the path; otherwise the .gx lands next\nto the source.\n", .{});
         },
         .run => {
-            try out.print("  {s}gero run{s} <file.gx> [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("  {s}gero run{s} <file.gx> [--cycles] [--quiet]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
             try out.print("  {s}gero run prog.gx{s}                 {s}# boot + execute until hlt{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero run prog.gx --cycles{s}        {s}# report the cycle count at hlt{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .info => {
             try out.print("  {s}gero info{s} <file.gx>\n\n", .{ a.cyan, a.reset });
@@ -432,6 +438,7 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .show_bytes => .{ .sig = "--show-bytes", .desc = "(default) Show the hex-bytes column." },
         .no_show_bytes => .{ .sig = "--no-show-bytes", .desc = "Strip the hex-bytes column for a cleaner view." },
         .check_roundtrip => .{ .sig = "--check-roundtrip", .desc = "Verify asm → disasm → asm yields identical bytes (CI gate)." },
+        .cycles => .{ .sig = "--cycles", .desc = "Report the cycle count when the program halts." },
         .check => .{ .sig = "--check", .desc = "Non-destructive — exit 8 if any file would be reformatted." },
         .stdin => .{ .sig = "--stdin", .desc = "Read source from stdin, write formatted bytes to stdout." },
         .format => .{ .sig = "--format=<m>", .desc = "human (default) / json. JSON output suppresses human messages." },
@@ -448,7 +455,7 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
 fn flagsForCommand(cmd: Command) []const FlagKind {
     return switch (cmd) {
         .asm_ => &.{ .help, .out, .quiet, .verbose, .color, .no_color },
-        .run => &.{ .help, .verbose, .color, .no_color },
+        .run => &.{ .help, .verbose, .cycles, .color, .no_color },
         .info => &.{ .help, .color, .no_color },
         .disasm => &.{ .help, .bank, .no_show_bytes, .check_roundtrip, .quiet, .color, .no_color },
         .test_ => &.{ .help, .verbose, .color, .no_color },
@@ -495,7 +502,7 @@ fn parseLang(s: []const u8) ParseError!Lang {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, check, stdin, format, target, werror, lang, iter };
+const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, cycles, check, stdin, format, target, werror, lang, iter };
 
 /// Which flags a subcommand accepts.
 ///
@@ -527,6 +534,7 @@ fn accepts(cmd: Command, kind: FlagKind) bool {
         .format, .werror => cmd == .check,
         .target => cmd == .build,
         .bank, .show_bytes, .no_show_bytes, .check_roundtrip => cmd == .disasm,
+        .cycles => cmd == .run,
     };
 }
 
@@ -543,6 +551,7 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "show-bytes")) return .show_bytes;
     if (std.mem.eql(u8, s, "no-show-bytes")) return .no_show_bytes;
     if (std.mem.eql(u8, s, "check-roundtrip")) return .check_roundtrip;
+    if (std.mem.eql(u8, s, "cycles")) return .cycles;
     if (std.mem.eql(u8, s, "check")) return .check;
     if (std.mem.eql(u8, s, "stdin")) return .stdin;
     if (std.mem.eql(u8, s, "format")) return .format;
@@ -578,6 +587,7 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .show_bytes => opts.show_bytes = true,
         .no_show_bytes => opts.show_bytes = false,
         .check_roundtrip => opts.check_roundtrip = true,
+        .cycles => opts.cycles = true,
         .check => opts.check = true,
         .stdin => opts.stdin = true,
         .format => opts.format = try parseFormat(value orelse return error.MissingFlagValue),
