@@ -1,0 +1,19 @@
+# Committed performance baselines. One row per bench:
+#
+#   <program>  <cycles>  <floor M instr/sec>
+#
+# `cycles` is exact. The VM is deterministic, so the same image always
+# retires the same number of instructions — a change here means codegen
+# or the ISA moved, never measurement noise, and the gate says so.
+#
+# The floor is the opposite kind of number: wall-clock throughput is
+# noisy and machine-dependent, so it is a floor rather than a target,
+# set far enough below what any developer machine or CI runner produces
+# that it cannot flake. It exists to catch a collapse, not a slip. The
+# read path once copied the whole 64 KB address space per byte read and
+# ran at 0.18 M/sec against the ~50 these produce now, so a floor an
+# order of magnitude below observed throughput still catches a collapse
+# with room to spare on a slow runner.
+dispatch.gas   2097138   5.0
+call.gas       2097138   5.0
+memory.gas     2621418   5.0

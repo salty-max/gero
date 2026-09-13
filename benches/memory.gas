@@ -1,18 +1,20 @@
-; memory.gas — the addressing modes, at equal weight.
+; memory.gas — the addressing modes at equal weight.
 ;
-; Zero page, absolute, and indexed in one loop, so a change to how
-; any operand form is decoded shows up here.
+; Zero page, absolute and indexed in one loop, so a change to how any
+; operand form is decoded — or to how memory is reached — shows here
+; first.
 
 main:
-  mov $0080, r1
-.loop:
-  mov $1234, r2
-  mov r2, &0040
+  mov $0008, r6
+.outer:
+  mov $FFFF, r1
+.inner:
+  mov r1, &0040
   mov &0040, r3
   mov r3, &2620
-  mov &2620, r4
-  mov8 [@TABLE + r4], r5
-  djnz r1, .loop
+  mov8 [@TABLE + r2], r5
+  djnz r1, .inner
+  djnz r6, .outer
   hlt
 
 data8 TABLE = $01, $02, $03, $04, $00
