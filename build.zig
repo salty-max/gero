@@ -41,6 +41,22 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    // ----- API documentation -----------------------------------------------
+    //
+    // Generated from the `///` comments on every public declaration, so
+    // the reference cannot drift from the code: there is no second copy
+    // to update. The linter already requires those comments to exist
+    // (`rule .docs`), which is what makes the output complete rather
+    // than merely available.
+
+    const docs_install = b.addInstallDirectory(.{
+        .source_dir = lib.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs/api",
+    });
+    const docs_step = b.step("docs", "Generate the public API reference into zig-out/docs/api");
+    docs_step.dependOn(&docs_install.step);
+
     // ----- CLI binary ------------------------------------------------------
 
     const cli_mod = b.createModule(.{
@@ -862,6 +878,9 @@ pub fn build(b: *std.Build) void {
     // Kept out of `verify`: it builds its own ReleaseFast binary, which
     // is too slow for a pre-push gate and pointless in a Debug tree.
     ci_step.dependOn(bench_step);
+    // Generating the reference proves every `///` still parses; the
+    // linter proves they exist, which is the other half.
+    ci_step.dependOn(docs_step);
     ci_step.dependOn(&fmt_check_examples_cmd.step);
     ci_step.dependOn(&check_examples_gr_cmd.step);
     ci_step.dependOn(&test_examples_cmd.step);

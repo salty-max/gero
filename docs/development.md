@@ -168,10 +168,24 @@ not part of the local `ci` aggregate — GitHub Actions installs the
 runtime and gates it there.
 
 `zig build wasm` builds `gero.wasm` (`docs/gero-lab.md` §2) and emits
-the sample corpus and The Gero Book (`book.json`, packed from
-`docs/book/`) alongside it. `zig build test-wasm-examples` runs
+the sample corpus and both books (`books.json`, packed from
+`docs/book/` and `docs/machine/`) alongside it. `zig build test-wasm-examples` runs
 every example through that module and diffs against the same
 `.expected` files the native gates use.
+
+`zig build docs` generates the public API reference from the `///`
+comments into `zig-out/docs/api`. It is Zig's own autodoc, so there is
+no second copy of the API to drift: the reference *is* the source. The
+linter already requires a `///` on every public declaration, which is
+what makes the output complete rather than merely available. The
+viewer is a wasm application and fetches its sources, so serve the
+directory rather than opening `index.html` from disk.
+
+`zig build bench-check` compares the bench corpus against the
+baselines committed in `benches/baselines.txt` — exact cycle counts,
+and a floor on throughput. `benches/README.md` explains why those two
+are gated differently and what to do when either moves. It builds its
+own `ReleaseFast` binary, so it is part of `ci` rather than `verify`.
 
 That gate needs **node**. The Zig toolchain cannot execute wasm on its
 own, and a JS host is what the module is built for — so the alternative

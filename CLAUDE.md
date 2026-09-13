@@ -382,6 +382,14 @@ zig build verify  # pre-push (~3s) — quick + lint + asm example
 zig build wasm    # the gero.wasm module for browser hosts
                   # (docs/gero-lab.md §2). Part of `ci`.
 
+zig build docs    # the public API reference, from the /// comments,
+                  # into zig-out/docs/api. Part of `ci`.
+
+zig build bench-check
+                  # the bench corpus against benches/baselines.txt —
+                  # exact cycles, a floor on throughput. Part of `ci`;
+                  # builds its own ReleaseFast binary.
+
 zig build ci      # full matrix (~4s warm / ~2m cold) — verify
                   # + test-modes (Debug/Safe/Fast/Small)
                   # + test-all (linux/macos/windows/wasi)
