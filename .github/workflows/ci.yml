@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request, whatever it targets. A `branches` filter here
+  # matches the *base*, so restricting it to `main` silently exempts
+  # any PR stacked on another branch — the larger the stack, the less
+  # it is tested.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
