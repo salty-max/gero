@@ -41,6 +41,119 @@ pub fn dirname(kind: Kind, path: []const u8) ?[]const u8 {
     };
 }
 
+/// The form a source path takes inside a `.gx` debug section:
+/// relative to the directory of the root source file, with forward
+/// slashes whatever the host uses.
+///
+/// The absolute path a file was read from is a property of the machine
+/// that built the image, not of the program. Recording it makes the
+/// same sources produce different bytes in two checkouts, which costs
+/// a build its reproducibility and leaks the builder's directory
+/// layout into anything shipped. A debugger resolves what is stored
+/// here against the source tree it has, which is the tree the user is
+/// actually looking at.
+///
+/// ```
+/// // root /proj/src/main.gas, file /proj/src/banks/b0.gas
+/// const rel = try forDebugSection(alloc, "/proj/src", "/proj/src/banks/b0.gas");
+/// // rel == "banks/b0.gas"
+/// ```
+///
+/// A path already relative — the virtual file set a browser host
+/// supplies — is returned as-is; it is a key, not a location, and it
+/// is reproducible already. So is a path sharing no root with
+/// `root_dir` (a second drive on Windows), which has no relative form.
+/// Caller owns the result.
+pub fn forDebugSection(
+    allocator: std.mem.Allocator,
+    root_dir: []const u8,
+    path: []const u8,
+) std.mem.Allocator.Error![]u8 {
+    if (!namesAHostLocation(path) or !namesAHostLocation(root_dir)) {
+        return posixCopy(allocator, path);
+    }
+
+    var from = componentsOf(root_dir);
+    var to = componentsOf(path);
+    var shared: usize = 0;
+    while (true) {
+        const a = from.peek() orelse break;
+        const b = to.peek() orelse break;
+        if (!std.mem.eql(u8, a, b)) break;
+        _ = from.next();
+        _ = to.next();
+        shared += 1;
+    }
+    // Nothing in common is a path on another root, which no sequence
+    // of `..` reaches.
+    if (shared == 0) return posixCopy(allocator, path);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    while (from.next()) |_| try out.appendSlice(allocator, "../");
+    var first = true;
+    while (to.next()) |part| {
+        if (!first) try out.append(allocator, '/');
+        try out.appendSlice(allocator, part);
+        first = false;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Whether `path` names a place on a filesystem rather than a key in
+/// a virtual set. Both platforms' absolute forms count on every host:
+/// this decides how bytes are recorded, so it has to answer the same
+/// wherever it runs, not follow the machine doing the recording.
+fn namesAHostLocation(path: []const u8) bool {
+    if (std.fs.path.isAbsolutePosix(path)) return true;
+    // `C:\...` or `C:/...` — a drive letter, colon, separator.
+    return path.len >= 3 and
+        std.ascii.isAlphabetic(path[0]) and
+        path[1] == ':' and
+        (path[2] == '\\' or path[2] == '/');
+}
+
+/// Copy `path` with host separators rewritten to `/`, so an image
+/// built on Windows matches one built anywhere else.
+fn posixCopy(allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error![]u8 {
+    const out = try allocator.dupe(u8, path);
+    for (out) |*c| {
+        if (c.* == '\\') c.* = '/';
+    }
+    return out;
+}
+
+/// Forward iterator over a host path's non-empty components, with a
+/// one-component lookahead so two paths can be walked in step.
+const Components = struct {
+    it: std.mem.SplitIterator(u8, .any),
+    pending: ?[]const u8,
+
+    fn peek(self: *Components) ?[]const u8 {
+        if (self.pending == null) self.pending = self.advance();
+        return self.pending;
+    }
+
+    fn next(self: *Components) ?[]const u8 {
+        if (self.pending) |p| {
+            self.pending = null;
+            return p;
+        }
+        return self.advance();
+    }
+
+    fn advance(self: *Components) ?[]const u8 {
+        while (self.it.next()) |part| {
+            if (part.len != 0) return part;
+        }
+        return null;
+    }
+};
+
+fn componentsOf(path: []const u8) Components {
+    return .{ .it = std.mem.splitAny(u8, path, "/\\"), .pending = null };
+}
+
 /// Whether `requested` names the file the way the filesystem spells it.
 ///
 /// A case-insensitive volume resolves `Utils.gas` to `utils.gas`, so a

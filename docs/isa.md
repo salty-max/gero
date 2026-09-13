@@ -783,9 +783,23 @@ For each file:
   [path_len bytes — UTF-8 source path]
 ```
 
-Paths take a 16-bit length because an absolute path can exceed the
-255 bytes a symbol name is capped at. The order is the index space
-the `lines` chunk refers to: file `0` is the entry file.
+The order is the index space the `lines` chunk refers to: file `0` is
+the entry file.
+
+A path is stored **relative to the directory of that entry file**, with
+`/` as the separator on every host. It is not the absolute path the
+file was read from: that is a property of the machine that built the
+image rather than of the program, and recording it would make the same
+sources produce different bytes in two checkouts — costing a build its
+reproducibility and leaking the builder's directory layout into
+anything shipped. A path outside the entry file's directory climbs out
+with `..`; a virtual file set addressed by embedder-chosen keys stores
+those keys unchanged.
+
+A consumer resolves what is stored against the source tree it has,
+which is the tree the reader is looking at. Paths keep a 16-bit length
+because a deep relative path can still exceed the 255 bytes a symbol
+name is capped at.
 
 #### `0x03` — lines
 

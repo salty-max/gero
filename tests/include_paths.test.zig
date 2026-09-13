@@ -128,3 +128,49 @@ test "include_paths.spellingMatches: empty components do not hide a missing dire
     try testing.expect(!include_paths.spellingMatches(.host, "src/fighter.gr", "/fighter.gr"));
     try testing.expect(!include_paths.spellingMatches(.host, "src/fighter.gr", ""));
 }
+
+test "include_paths.forDebugSection: a path under the root loses the root" {
+    // The property: the same sources give the same bytes in any
+    // checkout, so what is stored cannot mention where the build ran.
+    const rel = try include_paths.forDebugSection(alloc, "/proj/src", "/proj/src/banks/b0.gas");
+    defer alloc.free(rel);
+    try testing.expectEqualStrings("banks/b0.gas", rel);
+
+    const same_dir = try include_paths.forDebugSection(alloc, "/proj/src", "/proj/src/main.gas");
+    defer alloc.free(same_dir);
+    try testing.expectEqualStrings("main.gas", same_dir);
+}
+
+test "include_paths.forDebugSection: a path outside the root climbs out of it" {
+    const rel = try include_paths.forDebugSection(alloc, "/proj/src", "/proj/lib/util.gas");
+    defer alloc.free(rel);
+    try testing.expectEqualStrings("../lib/util.gas", rel);
+
+    const deeper = try include_paths.forDebugSection(alloc, "/proj/a/b/c", "/proj/x.gas");
+    defer alloc.free(deeper);
+    try testing.expectEqualStrings("../../../x.gas", deeper);
+}
+
+test "include_paths.forDebugSection: host separators become forward slashes" {
+    // An image built on Windows has to match one built anywhere else,
+    // so the stored form is POSIX whatever the host writes.
+    const rel = try include_paths.forDebugSection(alloc, "C:\\proj\\src", "C:\\proj\\src\\banks\\b0.gas");
+    defer alloc.free(rel);
+    try testing.expectEqualStrings("banks/b0.gas", rel);
+}
+
+test "include_paths.forDebugSection: a virtual key is already reproducible" {
+    // A browser host's file set is addressed by keys the embedder
+    // chose. They name no location and are kept as they are.
+    const rel = try include_paths.forDebugSection(alloc, "", "banks/bank0.gas");
+    defer alloc.free(rel);
+    try testing.expectEqualStrings("banks/bank0.gas", rel);
+}
+
+test "include_paths.forDebugSection: no shared root leaves the path alone" {
+    // A second Windows drive has no relative form; `..` never reaches
+    // it, so the honest answer is the path itself.
+    const rel = try include_paths.forDebugSection(alloc, "C:\\proj", "D:\\other\\util.gas");
+    defer alloc.free(rel);
+    try testing.expectEqualStrings("D:/other/util.gas", rel);
+}
