@@ -19,7 +19,7 @@ sram_banks $01
 main:
   mov $00, mb                ; window mirrors bank 0 (the SRAM bank)
 
-  ; Write the 3-byte tag into SRAM at &C000..&C002.
+  ; Write the 3-byte tag at &C000..&C002 (bank offset $0200+).
   mov 'S', r1
   mov r1, &C000
   mov 'A', r1

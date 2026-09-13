@@ -224,7 +224,7 @@ heap-exhausted fault on its first call — assembly owns its memory
 map, so a heap appears only where the program asks for one.
 
 The address must be at or above the end of the emitted image, and
-in a banked program below the bank window at `$C000` (**E020**
+in a banked program below the bank window at `$BE00` (**E020**
 otherwise). Below the image the allocator would hand out addresses
 over live code or data; inside the window a bank switch would
 replace every allocation. `sys alloc`'s bound only guards the top
@@ -654,7 +654,7 @@ Banked programs use two directives:
   emitted into bank slot `N` (0-based) until the next `bank`
   directive or EOF. Bank slots are accessed at runtime by setting
   the `mb` register: `mov $N, mb` makes the bank window at
-  `$C000..$FEFF` mirror bank `N`.
+  `$BE00..$FDFF` mirror bank `N`.
 - `sram_banks N` — declares N battery-backed SRAM banks per ISA
   §5. SRAM banks are the **last** `N` of the cart's banks (they
   share the slot space with ROM banks; the loader treats the
@@ -667,7 +667,7 @@ Decimal isn't part of the spec (§1.4).
 
 ### Layout
 
-Each bank's content lives at CPU addresses `$C000..$FEFF` when the
+Each bank's content lives at CPU addresses `$BE00..$FDFF` when the
 window is mapped to it. Labels declared inside `bank N` resolve to
 their bank-window address, so `call <label>` and `jmp <label>`
 target the right CPU address — provided `mb` is set to `N` first.
@@ -675,11 +675,11 @@ target the right CPU address — provided `mb` is set to `N` first.
 ```asm
 main:                          ; base image — RAM 0x0000+
   mov $00, mb                  ; window now mirrors bank 0
-  call greet                   ; greet is at $C000
+  call greet                   ; greet is at $BE00
   hlt
 
 bank $00
-greet:                         ; bank 0, offset 0 → CPU $C000
+greet:                         ; bank 0, offset 0 → CPU $BE00
   mov 'H', r1
   int $10
   ret

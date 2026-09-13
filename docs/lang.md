@@ -972,7 +972,7 @@ Multiple annotations stack. Order matters only when explicitly noted.
 every other annotation. There is no file-level form — a leftover
 annotation at EOF is `E_SYNTAX_ANNOTATION_PLACEMENT`. Declarations
 without `@bank` land in the base image (the bank-less area before
-`$C000`). To put a whole module in one bank, annotate each
+`$BE00`). To put a whole module in one bank, annotate each
 declaration (or each `def` that owns the code).
 
 ```gero
@@ -984,7 +984,7 @@ let cursor_pos: u16 = 0      -- fast access, e.g. updated 60×/sec
 let DISPCTL: u8 = 0          -- bound to gtx-16 display-control IO register
 
 @align(16)
-@addr $C000
+@addr $BE00
 let sprite_sheet: [u8; 2048] -- aligned tile data, banked window
 
 @bank 5
@@ -2895,17 +2895,17 @@ functions it calls.
 
 ```
 $0000..$00FF  zero page (stdlib uses for fast globals)
-$0100..$0FFF  conventional stack range
-$1000..$10FF  IVT (compiler emits handlers if program declares them)
-$1100..       compiled code
+$0100..$0FFF  low RAM (flat, never banked)
+$1000..$11FF  IVT (compiler emits handlers if program declares them)
+$1200..       compiled code ($2000 for data)
               ↓
               user state (allocated globals, mutable data)
               ↓
-$7FFF (or wherever code ends)
+$7FFE         stack base, growing down toward the heap
 
-$8000..$BFFF  Mapped region A (plain RAM; on gtx-16, carts
+$8000..$BDFF  Mapped region A (plain RAM; on gtx-16, carts
                                   typically store sprite sheets here)
-$C000..$FEFF  bank window (compiler emits per-bank if program
+$BE00..$FDFF  bank window (compiler emits per-bank if program
                               uses banked modules)
 $FE40..$FEFF  gtx-16 IO surface (display, drawing, audio,
                                     input — see gtx-16 §14)
@@ -2939,9 +2939,11 @@ cross-bank calls — including one re-entered from an `@interrupt`
 handler — unwind correctly; its bank-switch critical sections run with
 interrupts masked.
 
-Because the bank window (`$C000..$FEFF`) is bank-switched, a banked
-program runs its stack in low RAM (the conventional stack range,
-above) so call frames never land in switched memory.
+The bank window (`$BE00..$FDFF`) is bank-switched, so call frames must
+not land in it. They do not: `sp` boots at `$7FFE`, the top of user
+RAM, which is below the window — the address space is laid out so the
+stack is already clear of switched memory and a banked program needs
+no relocation.
 
 Per-declaration banking is also supported — useful when only some
 items in a module need to live in a specific bank:
