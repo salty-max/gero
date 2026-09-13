@@ -248,7 +248,7 @@ syscalls (`int $10` print, `int $21` flush SRAM, etc.).
 const PRINT = $10
 
 main:
-  mov @my_isr, r1            ; address of the ISR (imm16)
+  mov &[@ISR_ADDR], r1       ; r1 <- the ISR's address, held as data
   mov r1, &1060              ; vector $30 lives at 0x1000 + 2*$30 = $1060
   int $30                    ; trigger — pushes ip/fp/flg, jumps to my_isr
   hlt
@@ -257,7 +257,24 @@ my_isr:
   mov '!', r1
   int PRINT
   rti                        ; pops flg/fp/ip, resumes after the int $30
+
+data16 ISR_ADDR = @my_isr
 ```
+
+`@my_isr` in operand position is an **address**, not a value (§1.6), so
+`mov @my_isr, r1` loads the word stored *at* the handler rather than the
+handler's address. The address is therefore held in a `data16` word and
+loaded from there. A handler whose address is known at assemble time can
+skip the runtime install entirely by placing the vector with `org`:
+
+```asm
+; fragment: the handler and PRINT come from the program above.
+org $1060
+data16 VECTOR_30 = @my_isr
+```
+
+That costs no instructions, at the price of an image that spans as far as
+`$1060`.
 
 **Expected**: `!`
 
