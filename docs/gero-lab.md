@@ -508,7 +508,7 @@ them by URL and cannot unpack an archive:
 |---|---|
 | `gero.wasm` | The module, built `ReleaseSmall` for `wasm32-freestanding` |
 | `samples.json` | The manifest: `{ version, samples: [{ name, lang, entry, files }] }`, where `files` maps a name to its source. A multi-file sample is one entry with several `files` — `examples/asm/banks` is one program in three. |
-| `book.json` | The Gero Book, packed from `docs/book/`: `{ version, title, chapters: [{ slug, title, file, body }] }`. Front matter uses an empty `slug`. The application renders it; it does not vendor the chapters. |
+| `books.json` | Both books, packed from `docs/book/` and `docs/machine/`: `{ version, books: [{ id, title, chapters: [{ slug, title, file, body }] }] }`. A book's `id` is what a reader's URL carries and what a cross-book link resolves against; front matter uses an empty `slug`. Books appear in reading order. The application renders them; it does not vendor the chapters. |
 
 The book is teaching source that must stay in lockstep with the
 compiler — every fenced block is already gated here — so it ships
