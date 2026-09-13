@@ -1,5 +1,5 @@
 ---
-"gero": patch
+bump: patch
 ---
 
 Reject direct, compound, increment, and decrement assignment to immutable

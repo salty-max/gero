@@ -44,6 +44,18 @@ jobs:
             | grep -v '^\.changeset/README\.md$' \
             || true)
 
+          # A file is not a changeset. `zig build version` parses these
+          # at release time, so a malformed one surfaces when cutting a
+          # release rather than on the PR that wrote it — the two this
+          # check was added for arrived in the npm changesets dialect
+          # (`"gero": patch`) and sailed through a presence-only gate.
+          for f in $added; do
+            if ! grep -qE '^bump: (major|minor|patch)$' "$f"; then
+              echo "::error file=$f::missing a 'bump: major|minor|patch' line — see .changeset/README.md"
+              exit 1
+            fi
+          done
+
           if [[ -z "$added" ]]; then
             cat >&2 <<'EOF'
           ❌ No changeset added on this branch.
