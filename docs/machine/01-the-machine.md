@@ -112,9 +112,9 @@ half of a multiplication lands; it is a survivor of an era when a processor
 had one working register and everything happened there. `ip` is the
 instruction pointer from the previous section. `sp` and `fp` manage the stack,
 which chapter 5 covers. `mb` selects which bank of memory
-is currently visible, the subject of chapter 7. `im` and
+is currently visible, the subject of [chapter 7](07-banking.md). `im` and
 `flg` control interrupts and hold the results of comparisons, which are
-chapter 6 and [chapter 4](04-loops-and-branches.md)
+[chapter 6](06-interrupts.md) and [chapter 4](04-loops-and-branches.md)
 respectively.
 
 The full table, with the index the machine uses for each register and the

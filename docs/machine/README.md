@@ -44,10 +44,16 @@ what the machine is doing while that cart runs.
    putting data in the image.
 4. [Loops and branches](04-loops-and-branches.md) — flags, comparison, and how
    a decision is actually made.
+5. [The stack and subroutines](05-the-stack.md) — why nesting forces a stack,
+   and where a calling convention comes from.
+6. [Interrupts](06-interrupts.md) — control you did not ask for, and what a
+   handler owes the code it lands on.
+7. [Banking](07-banking.md) — reaching more storage than an address can name,
+   without the floor moving under you.
+8. [Persistence](08-persistence.md) — the part of the machine that remembers.
 
-Chapters 5 through 11 continue with the stack and subroutines, interrupts,
-banking, persistence, counting cycles, talking to a host, and reading a
-program you did not write.
+Chapters 9 through 11 continue with counting cycles, talking to a host, and
+reading a program you did not write.
 
 ## How this book relates to the specifications
 
