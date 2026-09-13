@@ -5,20 +5,35 @@ const load_error = gero.load_error;
 const term_mod = @import("term.zig");
 
 /// Host interface that persists the SRAM bytes. Intrusive:
-/// hosts embed `SramSink` as a field and supply a vtable whose
-/// `write` callback recovers the parent via `@fieldParentPtr`.
-pub const SramSink = struct {
+/// hosts embed `SramStore` as a field and supply a vtable whose
+/// callbacks recover the parent via `@fieldParentPtr`.
+pub const SramStore = struct {
     vtable: *const VTable,
 
-    /// Method table — the single `write` callback receives the
-    /// same `*SramSink` the caller holds.
+    /// What a `load` can fail with. A store that holds a save of the
+    /// wrong size reports it rather than filling what it can: SRAM is
+    /// a program's own state, and a half-restored save is worse than
+    /// a missing one.
+    pub const LoadError = error{ WrongSize, Unreadable };
+
+    /// Method table — each callback receives the same `*SramStore`
+    /// the caller holds.
     pub const VTable = struct {
-        write: *const fn (self: *SramSink, bytes: []const u8) anyerror!void,
+        write: *const fn (self: *SramStore, bytes: []const u8) anyerror!void,
+        /// Fill `dst` with the persisted image. Returns `false` when
+        /// the store holds no save, which is the first-run case and
+        /// not an error.
+        load: *const fn (self: *SramStore, dst: []u8) LoadError!bool,
     };
 
     /// Forward the bytes through the vtable.
-    pub fn write(self: *SramSink, bytes: []const u8) anyerror!void {
+    pub fn write(self: *SramStore, bytes: []const u8) anyerror!void {
         return self.vtable.write(self, bytes);
+    }
+
+    /// Seed `dst` from the store, reporting whether a save existed.
+    pub fn load(self: *SramStore, dst: []u8) LoadError!bool {
+        return self.vtable.load(self, dst);
     }
 };
 
@@ -30,7 +45,7 @@ pub fn execute(
     opts: cli.Options,
     stdout: *std.Io.Writer,
     term: *term_mod.Term,
-    sram_sink: ?*SramSink,
+    sram_store: ?*SramStore,
     gx_bytes: []const u8,
 ) !u8 {
     const loaded = gero.vm.parseGx(gx_bytes) catch |err| {
@@ -42,6 +57,22 @@ pub fn execute(
     var vm = gero.vm.VM.init(allocator);
     defer vm.deinit();
     try vm.boot(allocator, loaded);
+
+    // Battery-backed banks come back from the store before the first
+    // instruction runs (ISA §3.2.1). `boot` leaves them zeroed, which
+    // is also the right state when no save exists yet.
+    if (sram_store) |store| {
+        const persistent = vm.sramSliceMut();
+        if (persistent.len > 0) {
+            _ = store.load(persistent) catch |err| {
+                try term.err("gero run: cannot restore saved data ({s})", .{switch (err) {
+                    error.WrongSize => "the save file does not match this program's SRAM size",
+                    error.Unreadable => "the save file could not be read",
+                }});
+                return 1;
+            };
+        }
+    }
     // Route lang `print` (`sys print_str` / `print_int` /
     // `print_char` / `print_newline`) through stdout. The asm-
     // level `int $10` syscall is intercepted below regardless;
@@ -56,7 +87,7 @@ pub fn execute(
         switch (try gero.vm.host_int.handle(&vm)) {
             .printed => continue,
             .sram_flush_requested => {
-                if (sram_sink) |sink| try sink.write(vm.sramSlice());
+                if (sram_store) |store| try store.write(vm.sramSlice());
                 continue;
             },
             .no => {},
@@ -102,16 +133,27 @@ fn faultName(vector: ?gero.vm.Vector) []const u8 {
 const testing = std.testing;
 
 const RecordingSink = struct {
-    sink: SramSink,
+    sink: SramStore,
     bytes: std.ArrayList(u8) = .empty,
     allocator: std.mem.Allocator,
+    /// Stands in for an existing save file; null means first run.
+    saved: ?[]const u8 = null,
 
-    const vtable: SramSink.VTable = .{ .write = writeImpl };
+    const vtable: SramStore.VTable = .{ .write = writeImpl, .load = loadImpl };
 
-    fn writeImpl(s: *SramSink, data: []const u8) anyerror!void {
+    fn writeImpl(s: *SramStore, data: []const u8) anyerror!void {
         // safety: `s` points at the `sink` field of a *RecordingSink
         const self: *RecordingSink = @fieldParentPtr("sink", s);
         try self.bytes.appendSlice(self.allocator, data);
+    }
+
+    fn loadImpl(s: *SramStore, dst: []u8) SramStore.LoadError!bool {
+        // safety: `s` points at the `sink` field of a *RecordingSink
+        const self: *RecordingSink = @fieldParentPtr("sink", s);
+        const saved = self.saved orelse return false;
+        if (saved.len != dst.len) return error.WrongSize;
+        @memcpy(dst, saved);
+        return true;
     }
 
     fn init(allocator: std.mem.Allocator) RecordingSink {
@@ -233,6 +275,75 @@ test "execute: save syscall (int 0x21) hands SRAM bytes to the sink" {
     try testing.expectEqual(@as(usize, 0x4000), rec.bytes.items.len);
     try testing.expectEqual(@as(u8, 0xFE), rec.bytes.items[0]);
     try testing.expectEqual(@as(u8, 0xCA), rec.bytes.items[1]);
+}
+
+test "execute: a saved image is restored into SRAM before the first instruction" {
+    // mov [0xBE00] → r1 (reads bank 0 byte 0), int 0x10, hlt. The
+    // program prints what the restore put there, so a byte reaching
+    // stdout is proof the save was in place before it ran.
+    const image_size: u16 = 4 + 2 + 1; // 7
+    const total = 16 + image_size + 0x4000;
+    var buf: [total]u8 = undefined;
+    _ = buildGx(buf[0..16], 0x0001, 0x0000, image_size, 1, 1);
+    // mov [0xBE00], r1 → 0x13 addr, reg
+    buf[16] = 0x13;
+    buf[17] = 0x00;
+    buf[18] = 0xBE;
+    buf[19] = 0x02; // r1
+    // int 0x10
+    buf[20] = 0xFC;
+    buf[21] = 0x10;
+    // hlt
+    buf[22] = 0xFF;
+    @memset(buf[16 + image_size ..], 0);
+
+    var saved = [_]u8{0} ** 0x4000;
+    saved[0] = 'S';
+    var rec = RecordingSink.init(testing.allocator);
+    defer rec.deinit();
+    rec.saved = &saved;
+
+    var out_buf: [256]u8 = undefined;
+    var err_buf: [256]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
+
+    const code = try execute(testing.allocator, .{}, &out, &term, &rec.sink, &buf);
+    try testing.expectEqual(@as(u8, 0), code);
+    try testing.expectEqualStrings("S", out.buffered());
+}
+
+test "execute: a save of the wrong size is refused rather than part-restored" {
+    // Same program; the store holds a save one byte short. Half a
+    // save is worse than none, so the run stops with exit 1.
+    const image_size: u16 = 4 + 2 + 1;
+    const total = 16 + image_size + 0x4000;
+    var buf: [total]u8 = undefined;
+    _ = buildGx(buf[0..16], 0x0001, 0x0000, image_size, 1, 1);
+    buf[16] = 0x13;
+    buf[17] = 0x00;
+    buf[18] = 0xBE;
+    buf[19] = 0x02;
+    buf[20] = 0xFC;
+    buf[21] = 0x10;
+    buf[22] = 0xFF;
+    @memset(buf[16 + image_size ..], 0);
+
+    var saved = [_]u8{0} ** (0x4000 - 1);
+    var rec = RecordingSink.init(testing.allocator);
+    defer rec.deinit();
+    rec.saved = &saved;
+
+    var out_buf: [256]u8 = undefined;
+    var err_buf: [256]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    var err: std.Io.Writer = .fixed(&err_buf);
+    var term = term_mod.Term{ .out = &err, .color = false };
+
+    const code = try execute(testing.allocator, .{}, &out, &term, &rec.sink, &buf);
+    try testing.expectEqual(@as(u8, 1), code);
+    try testing.expect(std.mem.indexOf(u8, err.buffered(), "SRAM size") != null);
 }
 
 test "execute: bad magic exits 1 with structured message" {
