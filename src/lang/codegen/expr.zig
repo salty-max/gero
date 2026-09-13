@@ -502,6 +502,34 @@ fn scalarOptionalNilCompare(self: *Emitter, b: ast.BinaryExpr) ?*const ast.Expr 
 
 /// Leave `1`/`0` in `acu` for `<scalar optional> == nil` (`negate` =>
 /// `!= nil`) — testing the `present` tag rather than the header address.
+/// Turn the truncated quotient in `r2` and remainder in `acu` that
+/// `divs` produces into the floored pair the language specifies
+/// (§4.2.1). `r1` holds the divisor; `r3` is clobbered.
+///
+/// `divs` rounds toward zero, so its remainder carries the dividend's
+/// sign. Floored differs from that in exactly one case: a non-zero
+/// remainder whose sign disagrees with the divisor's. There the
+/// quotient is one lower and the remainder one divisor further on,
+/// which is what lands a wrap like `i % width` inside `[0, width)`
+/// when `i` is negative.
+fn emitFlooredCorrection(self: *Emitter) !void {
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const exact = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+
+    try isa.movRegToReg(self, Reg.acu, Reg.r3);
+    try isa.xorRegReg(self, Reg.r3, Reg.r1); // dst, src — r3 = rem ^ divisor
+    try isa.shrRegImm(self, Reg.r3, 15); // 1 when the two signs disagree
+    try isa.cmpRegImm(self, Reg.r3, 0);
+    const same_sign = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+
+    try isa.subImmFromReg(self, 1, Reg.r2);
+    try isa.addRegToReg(self, Reg.r1, Reg.acu); // src, dst — rem += divisor
+
+    const done = try self.currentOffset();
+    try isa.patchJumpTo(self, exact, done);
+    try isa.patchJumpTo(self, same_sign, done);
+}
+
 fn emitScalarOptionalNilCompare(self: *Emitter, opt_expr: *const ast.Expr, negate: bool) error{OutOfMemory}!void {
     try emitExpr(self, opt_expr); // acu = optional header address
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
@@ -660,21 +688,24 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) !void {
             try isa.movRegToReg(self, Reg.r2, Reg.acu);
             if (integer_arith) try overflow.emitOverflowTrap(self, signedness);
         },
-        .div => {
-            // Signed 32÷16 divide. Dividend lives in acu:dst
-            // (high:low); the dividend is assumed to fit in
-            // 16 bits — sign-extension is not yet emitted.
+        .div, .mod => {
+            // 32÷16 divide, dividend in acu:r2 (high:low).
             try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = low half
-            try isa.movImmToReg(self, 0, Reg.acu); // high half = 0
-            try isa.divsRegReg(self, Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
-            try isa.movRegToReg(self, Reg.r2, Reg.acu);
-        },
-        .mod => {
-            // Same divs pattern as `div`, but keep `acu` (the
-            // remainder is exactly what `mod` wants).
-            try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = low half
-            try isa.movImmToReg(self, 0, Reg.acu); // high half = 0
-            try isa.divsRegReg(self, Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
+            if (signedness == .signed) {
+                // The high half is the dividend's sign, not zero — an
+                // arithmetic shift of 15 splats bit 15 across the
+                // word, so a negative dividend does not divide as a
+                // large positive one.
+                try isa.movRegToReg(self, Reg.r2, Reg.acu);
+                try isa.asrRegImm(self, Reg.acu, 15);
+                try isa.divsRegReg(self, Reg.r1, Reg.r2); // r2 = quotient, acu = remainder
+                try emitFlooredCorrection(self);
+            } else {
+                try isa.movImmToReg(self, 0, Reg.acu); // high half = 0
+                try isa.divsRegReg(self, Reg.r1, Reg.r2);
+            }
+            // `mod` wants the remainder, which is already in acu.
+            if (b.op == .div) try isa.movRegToReg(self, Reg.r2, Reg.acu);
         },
         .bit_and => try isa.andRegReg(self, Reg.acu, Reg.r1),
         .bit_or => try isa.orRegReg(self, Reg.acu, Reg.r1),

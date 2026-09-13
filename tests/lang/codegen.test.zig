@@ -2237,6 +2237,75 @@ test "codegen: fixed-point multiplication preserves the Q16.16 scale" {
         "3.750\n");
 }
 
+test "codegen: signed division and modulo are floored" {
+    try runAndExpect(
+        \\def main()
+        \\  let a: i16 = 0 - 7
+        \\  let b: i16 = 3
+        \\  print a / b
+        \\  print a % b
+        \\  let c: i16 = 0 - 3
+        \\  print 7 / c
+        \\  print 7 % c
+        \\  print a / c
+        \\  print a % c
+        \\  print 7 / b
+        \\  print 7 % b
+        \\end
+    ,
+        // The quotient rounds toward negative infinity and the
+        // remainder carries the divisor's sign.
+        "-3\n2\n-3\n-2\n2\n-1\n2\n1\n");
+}
+
+test "codegen: the division identity holds for every sign" {
+    // `a == (a / b) * b + (a % b)` is what makes the two operators
+    // answer the same question; a truncating `/` beside a floored `%`
+    // would break it.
+    try runAndExpect(
+        \\def check(a: i16, b: i16) -> i16
+        \\  return (a / b) * b + (a % b)
+        \\end
+        \\def main()
+        \\  print check(0 - 7, 3)
+        \\  print check(7, 0 - 3)
+        \\  print check(0 - 7, 0 - 3)
+        \\  print check(7, 3)
+        \\  print check(0 - 8, 2)
+        \\end
+    , "-7\n7\n-7\n7\n-8\n");
+}
+
+test "codegen: an exact signed division needs no floored correction" {
+    // The correction only applies to a non-zero remainder; applying it
+    // to an exact division would move the quotient by one.
+    try runAndExpect(
+        \\def main()
+        \\  let a: i16 = 0 - 8
+        \\  let b: i16 = 2
+        \\  print a / b
+        \\  print a % b
+        \\  let c: i16 = 0 - 2
+        \\  print 8 / c
+        \\  print 8 % c
+        \\end
+    , "-4\n0\n-4\n0\n");
+}
+
+test "codegen: unsigned division keeps the zero-extended dividend" {
+    // Zeroing the high half is what makes an unsigned value above
+    // 0x7FFF divide correctly through the signed divide, so the
+    // sign-extension path must not reach it.
+    try runAndExpect(
+        \\def main()
+        \\  let a: u16 = 50000
+        \\  let b: u16 = 3
+        \\  print a / b
+        \\  print a % b
+        \\end
+    , "16666\n2\n");
+}
+
 test "codegen: fixed-point division preserves the Q16.16 scale" {
     try runAndExpect(
         \\def main()

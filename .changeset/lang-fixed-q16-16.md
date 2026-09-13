@@ -28,8 +28,7 @@ What this changes for a program:
 - `%` is floored — the result carries the divisor's sign, so
   `-90.0 % 360.0` is `270.0` and wrapping a value into a range never
   lands outside it. It calls a runtime helper of 32 restoring-division
-  steps. A zero divisor raises the divide-by-zero fault. Integer `%`
-  does not yet agree with this and is corrected separately.
+  steps. A zero divisor raises the divide-by-zero fault.
 - Dividing by zero now raises the divide-by-zero fault (vector `$03`),
   as integer division does, rather than returning a meaningless value.
 - `math.fixed_sin` gains precision: it computes at quarter scale, which
