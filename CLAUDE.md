@@ -56,6 +56,18 @@ what the system IS, not what it WILL be.
 When a spec change is needed, the spec edit lands in the same PR
 as the implementation — never after.
 
+### Book prose
+
+The books under `docs/book/` and `docs/machine/` are teaching
+texts, with the Rust Book as the reference for depth and pacing. They teach programming concepts
+through Gero as well as teaching the language itself. Motivate each idea,
+build the reader's mental model in connected paragraphs, demonstrate it
+with a concrete program, and explain the result and the broader programming
+principle it illustrates. Do not reduce a chapter to a syntax inventory or
+a sequence of short, slogan-like sentences that encourages diagonal reading.
+Use lists when the material is genuinely parallel; use prose when one idea
+needs to lead into the next.
+
 ---
 
 ## The contract
