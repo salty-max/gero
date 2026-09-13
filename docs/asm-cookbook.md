@@ -138,7 +138,7 @@ my_func:
 ## 4. Banking — `mb` register
 
 Banks let a cart hold more than 16 KB of code by mapping different
-slots into the `$C000..$FFFF` window. The `mb` register picks which
+slots into the `$BE00..$FDFF` window. The `mb` register picks which
 bank is currently visible.
 
 ```asm
@@ -163,7 +163,7 @@ greet:
 
 The `bank $00` directive is sticky — every statement after it
 lands in bank 0's segment until another `bank N` or EOF. The
-linker resolves `greet`'s address to `$C000` (the bank-window
+linker resolves `greet`'s address to `$BE00` (the bank-window
 base), and the assembler emits the bank's bytes into the
 appropriate slot of the `.gx` file.
 
@@ -209,9 +209,9 @@ sram_banks $01               ; declare 1 SRAM-backed bank
 main:
   mov $00, mb                ; bank 0 is the SRAM bank
   mov 'O', r1
-  mov r1, &C000              ; store at SRAM[0x0000]
+  mov r1, &BE00              ; store at SRAM[0x0000]
   mov 'K', r1
-  mov r1, &C001
+  mov r1, &BE01
   int FLUSH_SRAM             ; persist to <name>.sav
   mov 'O', r1
   int PRINT
