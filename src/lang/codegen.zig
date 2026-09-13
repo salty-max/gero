@@ -27,7 +27,7 @@ const vec_builtin = @import("codegen/vec_builtin.zig");
 const variadic = @import("codegen/variadic.zig");
 const inline_asm = @import("codegen/inline_asm.zig");
 const object = @import("codegen/object.zig");
-const fixed_mod = @import("codegen/fixed.zig");
+const fixed = @import("codegen/fixed.zig");
 const stdlib = @import("codegen/stdlib.zig");
 
 /// The asm assembler, re-exported here (one level up from
@@ -324,8 +324,10 @@ pub fn compile(
         .trampoline_addr = null,
         .fixed_mul_addr = null,
         .fixed_div_addr = null,
+        .fixed_mod_addr = null,
         .needs_fixed_mul = false,
         .needs_fixed_div = false,
+        .needs_fixed_mod = false,
         .call_patches = .empty,
         .relocations = .empty,
         .fragment_spans = .empty,
@@ -572,6 +574,8 @@ pub const CallPatch = struct {
         fixed_mul,
         /// `__fixed_div` — the Q16.16 divide helper.
         fixed_div,
+        /// `__fixed_mod` — the Q16.16 floored-modulo helper.
+        fixed_mod,
     };
 };
 
@@ -798,10 +802,13 @@ pub const Emitter = struct {
     fixed_mul_addr: ?CodeRef,
     /// Address of `__fixed_div`, on the same terms.
     fixed_div_addr: ?CodeRef,
+    /// Address of `__fixed_mod`, on the same terms.
+    fixed_mod_addr: ?CodeRef,
     /// Set when a call site records a patch for the matching helper, so
     /// the finalize pass knows to emit its body.
     needs_fixed_mul: bool,
     needs_fixed_div: bool,
+    needs_fixed_mod: bool,
     /// Unresolved `call addr` sites — recorded when the callee's
     /// address isn't known yet (forward references). Rewritten at
     /// the end of `emitProgram`.
@@ -1191,7 +1198,7 @@ pub const Emitter = struct {
         // Locals + nested-body bytes the statement reserves directly...
         const own: usize = switch (stmt) {
             .let_decl => |d| self.letFrameBytes(d),
-            .const_decl => |d| alignUpU16(fixed_mod.scalarSlotWidth(self, d.init, d.type_ann), 2),
+            .const_decl => |d| alignUpU16(fixed.scalarSlotWidth(self, d.init, d.type_ann), 2),
             .block => |b| self.countFrameBytesDepth(b.body, depth),
             .if_stmt => |is_| blk: {
                 var n: usize = 0;
@@ -1440,7 +1447,7 @@ pub const Emitter = struct {
                 n += self.structSlotWidth(sname)
             else if (self.tupleElemsOf(arg)) |elems|
                 n += self.tupleSlotWidth(elems)
-            else if (fixed_mod.isFixed(self, arg))
+            else if (fixed.isFixed(self, arg))
                 n += fixed_size
             else
                 n += 2;
@@ -1488,7 +1495,7 @@ pub const Emitter = struct {
     /// tuple / struct binders alias the scrutinee slot, costing nothing.
     fn destructureFrameBytes(self: *const Emitter, pat: *const ast.Pattern, ty: ?*const Type) usize {
         const scrut: usize = if (ty) |t|
-            if (self.isInlineAggregateType(t) or fixed_mod.isFixedType(t) or
+            if (self.isInlineAggregateType(t) or fixed.isFixedType(t) or
                 (t.* == .optional and isScalarOptional(t.optional)))
                 alignUpU16(self.widthOfType(t), 2)
             else
@@ -1627,8 +1634,9 @@ pub const Emitter = struct {
 
         // Runtime fixed-point helpers, emitted only when a call site
         // asked for one — a program with no fixed multiply pays nothing.
-        if (self.needs_fixed_mul) try fixed_mod.emitMulHelper(self);
-        if (self.needs_fixed_div) try fixed_mod.emitDivHelper(self);
+        if (self.needs_fixed_mul) try fixed.emitMulHelper(self);
+        if (self.needs_fixed_div) try fixed.emitDivHelper(self);
+        if (self.needs_fixed_mod) try fixed.emitModHelper(self);
 
         // Append the interned string pool to the base image so all
         // recorded `StringPatch`es can resolve to real addresses.

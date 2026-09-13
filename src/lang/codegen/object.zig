@@ -52,6 +52,8 @@ pub const RefKind = enum {
     fixed_mul,
     /// The Q16.16 divide helper.
     fixed_div,
+    /// The Q16.16 floored-modulo helper.
+    fixed_mod,
 };
 
 /// An address slot naming something outside this fragment. Names
@@ -173,6 +175,12 @@ fn collectRefs(arena: std.mem.Allocator, emitter: *const Emitter, s: Span) ![]co
             },
             .fixed_div => .{
                 .kind = .fixed_div,
+                .patch_offset = p.code_offset - s.start,
+                .name = "",
+                .span = p.span,
+            },
+            .fixed_mod => .{
+                .kind = .fixed_mod,
                 .patch_offset = p.code_offset - s.start,
                 .name = "",
                 .span = p.span,
@@ -314,9 +322,10 @@ fn spliceRelocs(emitter: *Emitter, f: Fragment, base: usize) !void {
 
 fn spliceRefs(emitter: *Emitter, f: Fragment, base: usize) !void {
     for (f.refs) |r| switch (r.kind) {
-        .call, .trampoline, .fixed_mul, .fixed_div => {
+        .call, .trampoline, .fixed_mul, .fixed_div, .fixed_mod => {
             if (r.kind == .fixed_mul) emitter.needs_fixed_mul = true;
             if (r.kind == .fixed_div) emitter.needs_fixed_div = true;
+            if (r.kind == .fixed_mod) emitter.needs_fixed_mod = true;
             try emitter.call_patches.append(emitter.allocator, .{
                 .bank = f.bank,
                 .code_offset = base + r.patch_offset,
@@ -324,6 +333,7 @@ fn spliceRefs(emitter: *Emitter, f: Fragment, base: usize) !void {
                     .trampoline => .trampoline,
                     .fixed_mul => .fixed_mul,
                     .fixed_div => .fixed_div,
+                    .fixed_mod => .fixed_mod,
                     else => .{ .fn_name = try emitter.arena.dupe(u8, r.name) },
                 },
                 .span = r.span,
