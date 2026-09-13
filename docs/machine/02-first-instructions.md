@@ -50,7 +50,7 @@ Printing is not arithmetic; there is no wire inside a CPU that reaches a
 terminal. What `int` does is raise a **software interrupt**, which suspends
 the program and hands control to whoever is listening on that vector. By
 convention vector `$10` means "print the character in `r1`", and the `gero`
-command-line tool provides it. Chapter 6 explains the
+command-line tool provides it. [Chapter 6](06-interrupts.md) explains the
 mechanism properly; for now it is enough that this is how a program reaches
 the outside world, and that reaching the outside world is always somebody
 else's job.
