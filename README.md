@@ -122,6 +122,10 @@ Run `gero <subcommand> --help` for per-command flags, or
 
 ## Learn more
 
+- [docs/book/](./docs/book/README.md) — **The Gero Book**: learn the
+  language by building a cart across twelve chapters
+- [docs/machine/](./docs/machine/README.md) — **The Gero Machine**: learn
+  the VM and its assembly, starting from what a processor is
 - [examples/asm/](./examples/asm/) — five worked programs covering
   loops, recursion, banks, and SRAM
 - [docs/asm.md](./docs/asm.md) — assembler syntax + directives
