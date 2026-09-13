@@ -260,7 +260,7 @@ fn compileLang(io: std.Io, arena: std.mem.Allocator, path: []const u8) ![]const 
 /// *content*, because symbol order is not stable across builds even
 /// when the code is identical (`roundtrip.zig` documents the same
 /// caveat). Ordering churn must not fail the gate; a changed symbol,
-/// or a changed line table, must.
+/// a changed source path, or a changed line table must.
 fn diff(arena: std.mem.Allocator, expected: []const u8, actual: []const u8) !?[]const u8 {
     const want = gero.vm.parseGx(expected) catch return try arena.dupe(u8, "blessed image no longer parses — re-bless it");
     const got = gero.vm.parseGx(actual) catch return try arena.dupe(u8, "rebuilt image does not parse");
@@ -321,7 +321,40 @@ fn diffDebug(arena: std.mem.Allocator, want: []const u8, got: []const u8) !?[]co
         }
     }
 
+    if (try diffFiles(arena, want, got)) |msg| return msg;
     return diffLines(arena, want, got);
+}
+
+/// Compare the recorded source paths.
+///
+/// A line row names a file by index, so two images with matching rows
+/// and different paths point at different sources. Paths are relative
+/// to the root source and therefore identical in every checkout, which
+/// is what makes them comparable at all — an absolute path would fail
+/// this on any machine but the one that blessed the corpus.
+fn diffFiles(arena: std.mem.Allocator, want: []const u8, got: []const u8) !?[]const u8 {
+    const want_p = (gero.gx.findChunk(want, .files) catch null) orelse return null;
+    const got_p = (gero.gx.findChunk(got, .files) catch null) orelse
+        return try arena.dupe(u8, "blessed image names its source files and the rebuilt one does not");
+
+    const want_paths = try gero.gx.decodeFiles(arena, want_p);
+    const got_paths = try gero.gx.decodeFiles(arena, got_p);
+    if (want_paths.len != got_paths.len) {
+        return try std.fmt.allocPrint(
+            arena,
+            "source file count differs: blessed {d}, rebuilt {d}",
+            .{ want_paths.len, got_paths.len },
+        );
+    }
+    for (want_paths, got_paths, 0..) |x, y, i| {
+        if (std.mem.eql(u8, x, y)) continue;
+        return try std.fmt.allocPrint(
+            arena,
+            "source file {d} differs: blessed `{s}`, rebuilt `{s}`",
+            .{ i, x, y },
+        );
+    }
+    return null;
 }
 
 /// Compare the line tables. Rows are emitted in a deterministic order,

@@ -8,6 +8,7 @@ const parser_mod = @import("parser.zig");
 const symtab = @import("symtab.zig");
 const opres = @import("opcode_resolver.zig");
 const gx = @import("../gx.zig");
+const include_paths = @import("../include_paths.zig");
 
 /// Output of the codegen pass — the complete `.gx` byte image
 /// (header + body), the symbol table for debuggers + downstream
@@ -1367,8 +1368,21 @@ fn addLineChunks(
     if (pending.len == 0) return;
 
     var paths: std.ArrayList([]const u8) = .empty;
-    defer paths.deinit(allocator);
-    for (map.files.items) |f| try paths.append(allocator, f.path);
+    defer {
+        for (paths.items) |p| allocator.free(p);
+        paths.deinit(allocator);
+    }
+    // The debug section records where a file sits relative to the
+    // root source, never the absolute path it was read from — an
+    // image has to be the same bytes whichever checkout built it.
+    const root_dir = if (map.files.items.len > 0)
+        include_paths.dirname(.host, map.files.items[0].path) orelse ""
+    else
+        "";
+    for (map.files.items) |f| {
+        const rel = try include_paths.forDebugSection(allocator, root_dir, f.path);
+        try paths.append(allocator, rel);
+    }
 
     var rows: std.ArrayList(gx.LineRow) = .empty;
     defer rows.deinit(allocator);

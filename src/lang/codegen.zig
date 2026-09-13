@@ -11,6 +11,7 @@ const vm_mod = @import("../vm/vm.zig");
 pub const disasm_decoder = @import("../disasm/decoder.zig");
 const archive = @import("codegen/archive.zig");
 const gx = @import("../gx.zig");
+const include_paths = @import("../include_paths.zig");
 const mem_builtin = @import("codegen/mem_builtin.zig");
 const strings = @import("codegen/strings.zig");
 const pattern = @import("codegen/pattern.zig");
@@ -2825,8 +2826,21 @@ pub const Emitter = struct {
         if (self.line_rows.items.len == 0) return;
 
         var paths: std.ArrayList([]const u8) = .empty;
-        defer paths.deinit(self.allocator);
-        for (g.source_map.files.items) |f| try paths.append(self.allocator, f.path);
+        defer {
+            for (paths.items) |p| self.allocator.free(p);
+            paths.deinit(self.allocator);
+        }
+        // The debug section records where a file sits relative to the
+        // root source, never the absolute path it was read from — an
+        // image has to be the same bytes whichever checkout built it.
+        const root_dir = if (g.source_map.files.items.len > 0)
+            include_paths.dirname(.host, g.source_map.files.items[0].path) orelse ""
+        else
+            "";
+        for (g.source_map.files.items) |f| {
+            const rel = try include_paths.forDebugSection(self.allocator, root_dir, f.path);
+            try paths.append(self.allocator, rel);
+        }
 
         var rows: std.ArrayList(gx.LineRow) = .empty;
         defer rows.deinit(self.allocator);
