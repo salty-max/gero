@@ -142,26 +142,43 @@ fn envFlag(env: *std.process.Environ.Map, key: []const u8) bool {
     return env.get(key) != null;
 }
 
-const SavFileSink = struct {
-    sink: run_cmd.SramSink,
+/// The `.sav` beside the `.gx`, holding the program's battery-backed
+/// banks between runs (ISA §3.2.1).
+const SavFile = struct {
+    sink: run_cmd.SramStore,
     io: std.Io,
     dir: std.Io.Dir,
     path: []const u8,
+    arena: std.mem.Allocator,
 
-    const vtable: run_cmd.SramSink.VTable = .{ .write = writeImpl };
+    const vtable: run_cmd.SramStore.VTable = .{ .write = writeImpl, .load = loadImpl };
 
-    fn writeImpl(s: *run_cmd.SramSink, bytes: []const u8) anyerror!void {
-        // safety: `s` points at the `sink` field of a *SavFileSink
-        const self: *SavFileSink = @fieldParentPtr("sink", s);
+    fn writeImpl(s: *run_cmd.SramStore, bytes: []const u8) anyerror!void {
+        // safety: `s` points at the `sink` field of a *SavFile
+        const self: *SavFile = @fieldParentPtr("sink", s);
         try self.dir.writeFile(self.io, .{ .sub_path = self.path, .data = bytes });
     }
 
-    fn init(io: std.Io, dir: std.Io.Dir, path: []const u8) SavFileSink {
+    fn loadImpl(s: *run_cmd.SramStore, dst: []u8) run_cmd.SramStore.LoadError!bool {
+        // safety: `s` points at the `sink` field of a *SavFile
+        const self: *SavFile = @fieldParentPtr("sink", s);
+        const bytes = self.dir.readFileAlloc(self.io, self.path, self.arena, .unlimited) catch |err| switch (err) {
+            // No save yet is the first run, not a failure.
+            error.FileNotFound => return false,
+            else => return error.Unreadable,
+        };
+        if (bytes.len != dst.len) return error.WrongSize;
+        @memcpy(dst, bytes);
+        return true;
+    }
+
+    fn init(io: std.Io, dir: std.Io.Dir, path: []const u8, arena: std.mem.Allocator) SavFile {
         return .{
             .sink = .{ .vtable = &vtable },
             .io = io,
             .dir = dir,
             .path = path,
+            .arena = arena,
         };
     }
 };
@@ -186,7 +203,7 @@ fn runDispatch(
     };
 
     const sav_path = try savPathFor(arena, gx_path);
-    var sav_sink = SavFileSink.init(io, std.Io.Dir.cwd(), sav_path);
+    var sav_sink = SavFile.init(io, std.Io.Dir.cwd(), sav_path, arena);
 
     return run_cmd.execute(arena, opts, stdout, term, &sav_sink.sink, bytes);
 }
