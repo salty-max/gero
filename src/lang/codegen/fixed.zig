@@ -17,7 +17,7 @@ pub const lo = Reg.acu;
 pub fn isFixedArith(self: *const Emitter, b: ast.BinaryExpr) bool {
     if (!isFixed(self, b.lhs) or !isFixed(self, b.rhs)) return false;
     return switch (b.op) {
-        .add, .sub, .mul, .div => true,
+        .add, .sub, .mul, .div, .mod => true,
         else => false,
     };
 }
@@ -44,7 +44,8 @@ pub fn emitBinary(self: *Emitter, b: ast.BinaryExpr) error{OutOfMemory}!void {
         },
         .mul => try emitHelperCall(self, .fixed_mul, b.span),
         .div => try emitHelperCall(self, .fixed_div, b.span),
-        // allow-strict: `isFixedArith` admits only these four operators.
+        .mod => try emitHelperCall(self, .fixed_mod, b.span),
+        // allow-strict: `isFixedArith` admits only these five operators.
         else => unreachable,
     }
 }
@@ -231,6 +232,7 @@ fn emitHelperCall(self: *Emitter, target: codegen.CallPatch.Target, span: ast.Sp
     switch (target) {
         .fixed_mul => self.needs_fixed_mul = true,
         .fixed_div => self.needs_fixed_div = true,
+        .fixed_mod => self.needs_fixed_mod = true,
         else => {},
     }
     try self.emitByte(Op.call_addr);
@@ -303,6 +305,38 @@ fn emitDivStep(self: *Emitter) !void {
     try isa.patchJumpTo(self, done, try self.currentOffset());
 }
 
+/// Raise the divide-by-zero fault when the divisor in `r1`/`r2` is
+/// zero, so a fixed divide or modulo faults where the integer
+/// operations do rather than running its loop to a meaningless result.
+/// Clobbers `r3`.
+fn emitDivisorZeroGuard(self: *Emitter) !void {
+    try isa.movRegToReg(self, Reg.r1, Reg.r3);
+    try isa.orRegReg(self, Reg.r3, Reg.r2); // dst, src — r3 |= r2
+    try isa.cmpRegImm(self, Reg.r3, 0);
+    const nonzero = try isa.emitJumpPlaceholder(self, Op.jne_addr);
+    try self.emitByte(Op.int_imm8);
+    try self.emitByte(0x03);
+    try isa.patchJumpTo(self, nonzero, try self.currentOffset());
+}
+
+/// Emit the 32 restoring-division steps that feed the numerator's own
+/// bits into the remainder: `acu`/`fixed_hi` hold the numerator and
+/// take a quotient bit per step as they vacate one, `r3`/`r4` hold the
+/// remainder, `r1`/`r2` the divisor. `r6` is the step counter.
+fn emitNumeratorPhase(self: *Emitter) !void {
+    try isa.movImmToReg(self, 32, Reg.r6);
+    const top = try self.currentOffset();
+    try isa.clc(self);
+    try isa.rolRegImm(self, lo, 1);
+    try isa.rolRegImm(self, Emitter.fixed_hi, 1);
+    try isa.rolRegImm(self, Reg.r3, 1);
+    try isa.rolRegImm(self, Reg.r4, 1);
+    try emitDivStep(self);
+    try isa.subImmFromReg(self, 1, Reg.r6);
+    const back = try isa.emitJumpPlaceholder(self, Op.jne_addr);
+    try isa.patchJumpTo(self, back, top);
+}
+
 /// Emit `__fixed_div` — Q16.16 divide (§3.3).
 ///
 /// Takes `a` in `acu`/`fixed_hi` and `b` in `r1`/`r2`, and leaves the
@@ -327,16 +361,7 @@ pub fn emitDivHelper(self: *Emitter) !void {
 
     self.fixed_div_addr = .{ .bank = null, .offset = self.code.items.len };
 
-    // A zero divisor raises the same fault integer division does
-    // (vector $03), rather than running the loop to a meaningless
-    // all-ones quotient.
-    try isa.movRegToReg(self, Reg.r1, Reg.r3);
-    try isa.orRegReg(self, Reg.r3, Reg.r2); // dst, src — r3 |= r2
-    try isa.cmpRegImm(self, Reg.r3, 0);
-    const nonzero = try isa.emitJumpPlaceholder(self, Op.jne_addr);
-    try self.emitByte(Op.int_imm8);
-    try self.emitByte(0x03);
-    try isa.patchJumpTo(self, nonzero, try self.currentOffset());
+    try emitDivisorZeroGuard(self);
 
     // Result sign, parked before the operands lose theirs.
     try isa.movRegToReg(self, Emitter.fixed_hi, Reg.r3);
@@ -351,18 +376,7 @@ pub fn emitDivHelper(self: *Emitter) !void {
     try isa.movImmToReg(self, 0, Reg.r3);
     try isa.movImmToReg(self, 0, Reg.r4);
 
-    // Phase 1 — 32 steps feeding `a`'s own bits into the remainder.
-    try isa.movImmToReg(self, 32, Reg.r6);
-    const phase1 = try self.currentOffset();
-    try isa.clc(self);
-    try isa.rolRegImm(self, lo, 1);
-    try isa.rolRegImm(self, Emitter.fixed_hi, 1);
-    try isa.rolRegImm(self, Reg.r3, 1);
-    try isa.rolRegImm(self, Reg.r4, 1);
-    try emitDivStep(self);
-    try isa.subImmFromReg(self, 1, Reg.r6);
-    const back1 = try isa.emitJumpPlaceholder(self, Op.jne_addr);
-    try isa.patchJumpTo(self, back1, phase1);
+    try emitNumeratorPhase(self);
 
     // Phase 2 — 16 steps feeding the zeros the `<< 16` appended. `num`
     // now carries quotient bits, so its high end must not reach `rem`.
@@ -386,6 +400,82 @@ pub fn emitDivHelper(self: *Emitter) !void {
     try emitNegatePair(self, lo, Emitter.fixed_hi);
     try isa.patchJumpTo(self, done, try self.currentOffset());
 
+    try self.emitByte(Op.ret_op);
+}
+
+/// Emit `__fixed_mod` — Q16.16 floored modulo (§3.3).
+///
+/// Takes `a` in `acu`/`fixed_hi` and `b` in `r1`/`r2`, and leaves
+/// `a - floor(a / b) * b` in `acu`/`fixed_hi`.
+///
+/// The remainder of two Q16.16 values is the remainder of their raw
+/// 32-bit words, so this is the divide helper's first phase alone: 32
+/// shift-and-subtract steps over `a` itself, without the `<< 16` a
+/// quotient needs, keeping the remainder instead of the quotient.
+///
+/// Magnitudes go through the loop, so it yields `|a| mod |b|` and the
+/// floored sign is applied after. A remainder takes the sign of the
+/// divisor, which is what keeps a wrap inside its range: with the
+/// operands' signs differing, `r` becomes `|b| - r`, so
+/// `-90.0 % 360.0` is `270.0` rather than `-90.0`.
+pub fn emitModHelper(self: *Emitter) !void {
+    const saved_bank = self.current_bank;
+    self.current_bank = null;
+    defer self.current_bank = saved_bank;
+
+    self.fixed_mod_addr = .{ .bank = null, .offset = self.code.items.len };
+
+    try emitDivisorZeroGuard(self);
+
+    // Both signs, parked before the operands lose them.
+    try isa.movRegToReg(self, Emitter.fixed_hi, Reg.r3);
+    try isa.shrRegImm(self, Reg.r3, 15);
+    try isa.pushReg(self, Reg.r3);
+    try isa.movRegToReg(self, Reg.r2, Reg.r3);
+    try isa.shrRegImm(self, Reg.r3, 15);
+    try isa.pushReg(self, Reg.r3);
+
+    try emitAbsPair(self, lo, Emitter.fixed_hi, Reg.r3);
+    try emitAbsPair(self, Reg.r1, Reg.r2, Reg.r3);
+
+    // rem = 0. The divisor stays live in r1:r2 — a restoring step puts
+    // back what it subtracted, so it survives the loop for the
+    // correction below.
+    try isa.movImmToReg(self, 0, Reg.r3);
+    try isa.movImmToReg(self, 0, Reg.r4);
+
+    try emitNumeratorPhase(self);
+
+    // r3:r4 is `|a| mod |b|`. The quotient bits the loop shifted into
+    // acu/fixed_hi are not wanted, so both are scratch again.
+    try isa.popReg(self, Reg.r6); // sign of b
+    try isa.popReg(self, lo); // sign of a
+
+    // Zero stays zero whatever the signs are; the correction below
+    // would otherwise turn it into `|b|`.
+    try isa.movRegToReg(self, Reg.r3, Emitter.fixed_hi);
+    try isa.orRegReg(self, Emitter.fixed_hi, Reg.r4); // dst, src
+    try isa.cmpRegImm(self, Emitter.fixed_hi, 0);
+    const zero = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+
+    // Signs differ — the floored remainder is `|b| - r`.
+    try isa.xorRegReg(self, lo, Reg.r6); // dst, src — acu ^= sign of b
+    try isa.cmpRegImm(self, lo, 0);
+    const same_sign = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    try emitNegatePair(self, Reg.r3, Reg.r4);
+    try isa.addRegToReg(self, Reg.r1, Reg.r3); // src, dst
+    try isa.adcRegToReg(self, Reg.r2, Reg.r4);
+    try isa.patchJumpTo(self, same_sign, try self.currentOffset());
+
+    // The result carries the divisor's sign.
+    try isa.cmpRegImm(self, Reg.r6, 0);
+    const nonnegative = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    try emitNegatePair(self, Reg.r3, Reg.r4);
+    try isa.patchJumpTo(self, nonnegative, try self.currentOffset());
+
+    try isa.patchJumpTo(self, zero, try self.currentOffset());
+    try isa.movRegToReg(self, Reg.r3, lo);
+    try isa.movRegToReg(self, Reg.r4, Emitter.fixed_hi);
     try self.emitByte(Op.ret_op);
 }
 

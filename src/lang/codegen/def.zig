@@ -291,6 +291,7 @@ pub fn patchCalls(self: *Emitter) !void {
             .trampoline => (self.trampoline_addr orelse continue).addr(),
             .fixed_mul => (self.fixed_mul_addr orelse continue).addr(),
             .fixed_div => (self.fixed_div_addr orelse continue).addr(),
+            .fixed_mod => (self.fixed_mod_addr orelse continue).addr(),
         };
         // Resolve which buffer holds this patch — base or a bank list.
         const buf: []u8 = if (p.bank) |b|

@@ -387,6 +387,47 @@ test "fixed: multiply and divide carry the sign" {
     , "-10.000\n-10.000\n10.000\n-2.500\n");
 }
 
+test "fixed: modulo is floored" {
+    // A remainder takes the divisor's sign, so wrapping a value into a
+    // range never lands outside it — the property `angle % 360.0`
+    // depends on.
+    try expectRuns(
+        \\def main()
+        \\  let turn: fixed = 0.0 - 90.0
+        \\  print turn % 360.0
+        \\  print 7.5 % 2.0
+        \\  print 7.5 % (0.0 - 2.0)
+        \\  print (0.0 - 7.5) % (0.0 - 2.0)
+        \\  print 1.0 % 0.25
+        \\end
+        \\
+    , "270.000\n1.500\n-0.500\n-1.500\n0.000\n");
+}
+
+test "fixed: a zero remainder stays zero whatever the signs" {
+    // The floored correction rewrites a remainder to `|b| - r`, which
+    // would turn an exact division's zero into the divisor itself.
+    try expectRuns(
+        \\def main()
+        \\  print (0.0 - 8.0) % 2.0
+        \\  print 8.0 % (0.0 - 2.0)
+        \\  print 8.0 % 2.0
+        \\end
+        \\
+    , "0.000\n0.000\n0.000\n");
+}
+
+test "fixed: compound modulo assignment retains both words" {
+    try expectRuns(
+        \\def main()
+        \\  let x: fixed = 200.5
+        \\  x %= 60.0
+        \\  print x
+        \\end
+        \\
+    , "20.500\n");
+}
+
 test "fixed: baked multiplication matches runtime rounding" {
     try expectRuns(
         \\const BAKED: fixed = bake do
@@ -426,6 +467,34 @@ test "fixed: divide by zero raises the divide-by-zero fault" {
     const src =
         \\def main()
         \\  print 7.5 / 0.0
+        \\end
+        \\
+    ;
+    var stream = try gero.lang.tokenize(alloc, src);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, src, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, src, &tree.program);
+    defer checked.deinit();
+    var compiled = try gero.lang.compile(alloc, src, &checked, .{});
+    defer compiled.deinit();
+
+    const loaded = try gero.vm.parseGx(compiled.image);
+    var vm = gero.vm.VM.init(alloc);
+    defer vm.deinit();
+    try vm.boot(alloc, loaded);
+
+    var i: usize = 0;
+    while (i < 100_000) : (i += 1) {
+        if (gero.vm.step(&vm) == .halted_on_fault) break;
+    }
+    try std.testing.expectEqual(gero.vm.Vector.div_by_zero, vm.last_fault.?);
+}
+
+test "fixed: modulo by zero raises the divide-by-zero fault" {
+    const src =
+        \\def main()
+        \\  print 7.5 % 0.0
         \\end
         \\
     ;
