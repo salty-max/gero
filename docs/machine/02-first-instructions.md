@@ -84,8 +84,8 @@ A
 
 The program is six bytes of instructions. The other 187 are the container
 around them — a header, and the debug information that lets tools map bytes
-back to the lines you wrote. Chapter 11 uses that
-information; `gero asm --no-debug` omits it when size matters.
+back to the lines you wrote. Every image the toolchain produces carries it,
+and [chapter 11](11-reading-a-program.md) puts it to work.
 
 ## Reading your program back
 
@@ -204,7 +204,7 @@ program size, and you can measure it. `add r2, r1` costs a byte less than
 `add $0004, r1`, so a value you use repeatedly may be worth putting in a
 register once rather than naming as an immediate each time. On a machine whose
 whole address space is 64 KB, that reasoning is routine. We will do it
-deliberately in chapter 9, with the cycles measured
+deliberately in [chapter 9](09-counting-cycles.md), with the cycles measured
 rather than guessed.
 
 ## What you now know

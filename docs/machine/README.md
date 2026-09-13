@@ -51,9 +51,12 @@ what the machine is doing while that cart runs.
 7. [Banking](07-banking.md) — reaching more storage than an address can name,
    without the floor moving under you.
 8. [Persistence](08-persistence.md) — the part of the machine that remembers.
-
-Chapters 9 through 11 continue with counting cycles, talking to a host, and
-reading a program you did not write.
+9. [Counting cycles](09-counting-cycles.md) — measuring a program, making it
+   cheaper, and knowing what the measurement leaves out.
+10. [Talking to a host](10-talking-to-a-host.md) — the two doors out of a
+    sealed instruction set, and what a console adds.
+11. [Reading a program you did not write](11-reading-a-program.md) — working
+    out an unfamiliar disassembly, and what the debug section is worth.
 
 ## How this book relates to the specifications
 
