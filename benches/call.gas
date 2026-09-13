@@ -1,14 +1,17 @@
 ; call.gas — subroutine overhead.
 ;
-; `call` pushes two words and sets the frame pointer; `ret` unwinds
-; both. Measured against `dispatch.gas`, the difference is what a
-; call costs over straight-line code.
+; `call` pushes the frame pointer and a return address; `ret` unwinds
+; both. Against `dispatch.gas` the difference is what the stack costs,
+; which is memory traffic the flat ALU loop never touches.
 
 main:
-  mov $0100, r1
-.loop:
+  mov $0008, r6
+.outer:
+  mov $FFFF, r1
+.inner:
   call work
-  djnz r1, .loop
+  djnz r1, .inner
+  djnz r6, .outer
   hlt
 
 work:

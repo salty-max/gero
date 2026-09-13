@@ -647,6 +647,47 @@ pub fn build(b: *std.Build) void {
     );
     wasm_examples_step.dependOn(&wasm_examples_cmd.step);
 
+    // ----- Performance baselines -------------------------------------------
+    //
+    // Cycle counts are exact and wall-clock throughput is a floor; the
+    // gate's own header explains why the two are treated differently.
+    //
+    // The binary is built `ReleaseFast` rather than reusing the one the
+    // rest of the gates install. A Debug VM runs about ten times slower
+    // than a release one, which is under the floor — so benching a Debug
+    // build measures the build, and gating on it would fail every time.
+
+    const bench_cli_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/main.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const bench_gero_mod = b.createModule(.{
+        .root_source_file = b.path("src/gero.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_gero_mod.addImport("knit", knit_mod);
+    bench_gero_mod.addOptions("build_options", lib_options);
+    bench_cli_mod.addImport("gero", bench_gero_mod);
+    bench_cli_mod.addOptions("build_options", cli_options);
+    const bench_cli_exe = b.addExecutable(.{
+        .name = "gero-bench-cli",
+        .root_module = bench_cli_mod,
+    });
+
+    const bench_cli_install = b.addInstallArtifact(bench_cli_exe, .{});
+    const bench_cmd = b.addSystemCommand(&.{ "bash", "scripts/check-benches.sh" });
+    bench_cmd.setEnvironmentVariable(
+        "GERO_BIN",
+        b.getInstallPath(.bin, b.fmt("gero-bench-cli{s}", .{target.result.exeFileExt()})),
+    );
+    bench_cmd.step.dependOn(&bench_cli_install.step);
+    bench_cmd.addFileInput(b.path("scripts/check-benches.sh"));
+    bench_cmd.addFileInput(b.path("benches/baselines.txt"));
+    const bench_step = b.step("bench-check", "Compare the bench corpus against its baselines");
+    bench_step.dependOn(&bench_cmd.step);
+
     // ----- Golden bytecode corpus ------------------------------------------
     //
     // Recompiles every example and compares the bytes against the

@@ -1,14 +1,17 @@
 ; dispatch.gas — the fetch-decode-execute loop with nothing else in it.
 ;
-; A tight ALU loop over `djnz`, so the cycle count is dominated by
-; dispatch overhead rather than by any one handler. This is the bench
-; that moves if the VM's core loop changes shape.
+; A tight ALU loop, so the cycle count is dominated by dispatch rather
+; than by any one handler. This is the bench that moves when the VM's
+; core loop changes shape.
 
 main:
-  mov $0100, r1
-.loop:
+  mov $0008, r6
+.outer:
+  mov $FFFF, r1
+.inner:
   add $0001, r2
   xor r3, r3
   shl r2, $01
-  djnz r1, .loop
+  djnz r1, .inner
+  djnz r6, .outer
   hlt
