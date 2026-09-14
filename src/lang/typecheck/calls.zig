@@ -40,6 +40,7 @@ pub fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) Walk
         if (fe.receiver.* == .ident) {
             const recv = self.lexeme(fe.receiver.ident.span);
             if (stdlib.isModule(recv)) {
+                try self.recordNamedReceiver(fe.receiver.ident.span, recv, recv);
                 return try stdlib.checkCall(self, recv, fe.field, c.args, c.span);
             }
         }
@@ -51,9 +52,15 @@ pub fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) Walk
     // no longer `.imported`), so skip the route then.
     if (c.callee.* == .ident) {
         const callee_name = self.lexeme(c.callee.ident.span);
-        const still_import = if (self.current_scope.lookup(callee_name)) |info| info.kind == .imported else false;
-        if (still_import) {
+        const import_info = if (self.current_scope.lookup(callee_name)) |info|
+            (if (info.kind == .imported) info else null)
+        else
+            null;
+        if (import_info) |info| {
             if (self.selective_stdlib.get(callee_name)) |si| {
+                // The callee never reaches the generic ident arm, so
+                // the reference to the `use` item is recorded here.
+                try self.recordBinding(c.callee.ident.span, callee_name, info);
                 return try stdlib.checkCallName(self, si.module, si.name, c.callee.ident.span, c.args, c.span);
             }
         }

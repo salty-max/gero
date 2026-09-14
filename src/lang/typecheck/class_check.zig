@@ -320,10 +320,8 @@ pub fn checkClassDecl(self: *Checker, d: ast.ClassDecl) WalkError!void {
 
     if (d.extends) |ext| {
         // `extends Base` names the parent — a reference to it.
-        const parent_name = self.resolveImportAlias(self.lexeme(ext));
-        if (self.current_scope.lookup(parent_name)) |info| {
-            try self.recordBinding(ext, parent_name, info);
-        }
+        const raw = self.lexeme(ext);
+        try self.recordNamedReceiver(ext, raw, self.resolveImportAlias(raw));
     }
 
     if (d.extends) |ext| if (self.class_registry.get(self.lexeme(ext))) |parent| {
