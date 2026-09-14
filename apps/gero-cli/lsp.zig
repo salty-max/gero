@@ -755,7 +755,7 @@ fn onCodeAction(
             break;
         }
     }
-    try server.index.rebuild(io, try uri_mod.toPath(arena, uri));
+    try server.index.rebuild(io, &ov, try uri_mod.toPath(arena, uri));
     const doc_path = try uri_mod.toPath(arena, uri);
     const doc_dir = if (doc_path) |dp| std.fs.path.dirname(dp) else null;
     const actions = try symbols.codeActionsAt(arena, text, mine, &server.index, doc_dir, range.start, range.end);

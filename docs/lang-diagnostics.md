@@ -212,6 +212,13 @@ has to change.
 | `E_USE_DUPLICATE_ALIAS` | `use X as Y` and `use Z as Y` bind one alias to two targets. |
 | `E_USE_CASE_MISMATCH` | The target exists but is spelled differently on disk. |
 | `E_USE_UNDEFINED_MEMBER` | `use X from "./m"` where `m` does not export `X` — it is missing, renamed, or `local`. |
+
+`E_USE_UNDEFINED_MEMBER` carries a near-spelling `help:` line when one
+of the module's exports is within distance 2, because its caret cannot
+point at the name. A quoted-path `use` is elided from the fused buffer
+and replaced by a one-byte sentinel, so the only span a diagnostic
+about one can hold is the start of the directive — the same limit
+`E_USE_DUPLICATE_ALIAS` reports under.
 | `W_UNUSED_IMPORT` | The module never referenced the name a `use` brought into scope. Warning — the program still compiles. |
 
 An import is used when some reference binds to it. The type-checker

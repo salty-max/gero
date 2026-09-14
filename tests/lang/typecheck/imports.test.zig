@@ -218,6 +218,46 @@ test "imports: importing a name the target does not export is rejected" {
     try std.testing.expect(has(codes.items, "E_USE_UNDEFINED_MEMBER"));
 }
 
+test "imports: a misspelled import names the export it nearly matched" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\struct Vec2
+        \\  x: i16
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use Vec3 from "./lib"
+        \\def main()
+        \\  print 1
+        \\end
+        \\
+    );
+
+    const path = try fx.pathOf("main.gr");
+    defer alloc.free(path);
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, path);
+    defer fused.deinit();
+    var stream = try gero.lang.tokenize(alloc, fused.source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, fused.source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheckGraph(alloc, fused.source, &tree.program, &fused.import_aliases, .{
+        .source_map = &fused.source_map,
+        .imports = fused.imports,
+    });
+    defer checked.deinit();
+
+    for (checked.diagnostics) |d| {
+        if (!std.mem.eql(u8, d.code, "E_USE_UNDEFINED_MEMBER")) continue;
+        const help = d.help orelse return error.NoHelp;
+        try std.testing.expect(std.mem.indexOf(u8, help, "Vec2") != null);
+        return;
+    }
+    return error.MissingDiagnostic;
+}
+
 test "imports: importing a `local` declaration is rejected" {
     var fx = try util.ModuleFixture.init();
     defer fx.deinit();
