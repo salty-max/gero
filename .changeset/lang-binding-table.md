@@ -16,7 +16,10 @@ time from the AST.
 
 The table is built whether or not the program checks, because an editor
 wants hover most in a buffer that does not compile. It covers names and
-member accesses, and resolves shadowing to the inner declaration. For an
-imported name the span is the `use` that imported it and `module` names
-where to look: the checker runs per module and does not hold another
-module's table.
+member accesses, resolves shadowing to the inner declaration, and
+crosses module boundaries — a name imported with `use` points at the
+declaration in the file that declares it, not at the import.
+
+The assembler gained the same thing: a `Symbol` records where its label
+or constant was declared, so the two front ends answer the question the
+same way.

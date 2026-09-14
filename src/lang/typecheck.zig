@@ -33,10 +33,10 @@ pub const Binding = struct {
     /// that brought it into scope. `null` when it is declared in the
     /// same file as the reference.
     ///
-    /// For an imported name `decl_span` is the `use` that imported it,
-    /// not the declaration in the other file — the checker runs per
-    /// module and does not hold the other one's table. A consumer
-    /// follows `module` to reach it.
+    /// `decl_span` names the declaration itself even across a module
+    /// boundary: a graph check links each module's symbols into its
+    /// importers' scopes, so the span already points into the
+    /// declaring file's region of the fused source.
     module: ?[]const u8 = null,
 };
 

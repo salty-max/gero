@@ -2,6 +2,7 @@
 /// AND the slice-2 resolution + inference behaviors.
 const std = @import("std");
 const gero = @import("gero");
+const util = @import("util");
 
 const alloc = std.testing.allocator;
 
@@ -3944,4 +3945,51 @@ test "typecheck: a member access records the field it resolves to" {
     // Points at the field's declaration in the struct, not the use.
     const decl = std.mem.indexOf(u8, src, "y: i16").?;
     try std.testing.expectEqual(@as(u32, @intCast(decl)), b.decl_span.start);
+}
+
+test "typecheck: a cross-module reference names the declaration, not the import" {
+    // `linkImports` copies the declaring module's symbol into the
+    // importer's scope, so the binding carries that module's span —
+    // go-to-definition lands in the file that declares the name.
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+
+    try fx.write("helper.gr",
+        \\def shout(n: i16) -> i16
+        \\  return n * 2
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use shout from "./helper"
+        \\def main()
+        \\  print shout(21)
+        \\end
+        \\
+    );
+
+    const path = try fx.pathOf("main.gr");
+    defer alloc.free(path);
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, path);
+    defer fused.deinit();
+    var stream = try gero.lang.tokenize(alloc, fused.source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, fused.source, stream);
+    defer tree.deinit();
+    const graph: gero.lang.ModuleGraph = .{
+        .source_map = &fused.source_map,
+        .imports = fused.imports,
+    };
+    var checked = try gero.lang.typecheckGraph(alloc, fused.source, &tree.program, &fused.import_aliases, graph);
+    defer checked.deinit();
+
+    const use_at = std.mem.indexOf(u8, fused.source, "shout(21)").?;
+    const b = checked.bindings.get(@intCast(use_at)) orelse return error.NoBinding;
+    try std.testing.expectEqualStrings("shout", b.name);
+    try std.testing.expectEqual(gero.lang.scope.SymbolKind.function, b.kind);
+
+    // The span points at `shout` where it is declared, which is in the
+    // other file's region of the fused source — before `main.gr`'s.
+    const decl_at = std.mem.indexOf(u8, fused.source, "def shout").? + "def ".len;
+    try std.testing.expectEqual(@as(u32, @intCast(decl_at)), b.decl_span.start);
 }

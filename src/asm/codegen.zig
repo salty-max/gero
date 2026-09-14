@@ -320,7 +320,7 @@ fn layoutPass(
                     // Local label: register as `parent.name`.
                     if (parent_label) |p| {
                         const qualified = try std.fmt.allocPrint(symbols.allocator, "{s}{s}", .{ p, name });
-                        symbols.putOwned(qualified, .{ .kind = .label, .value = addr, .bank = current_bank }) catch |err| switch (err) {
+                        symbols.putOwned(qualified, .{ .kind = .label, .value = addr, .bank = current_bank, .decl_start = l.name.start }) catch |err| switch (err) {
                             error.OutOfMemory => return error.OutOfMemory,
                             error.Duplicate => {
                                 symbols.allocator.free(qualified);
@@ -347,7 +347,7 @@ fn layoutPass(
                         });
                     }
                 } else {
-                    symbols.putBorrowed(name, .{ .kind = .label, .value = addr, .bank = current_bank }) catch |err| switch (err) {
+                    symbols.putBorrowed(name, .{ .kind = .label, .value = addr, .bank = current_bank, .decl_start = l.name.start }) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.Duplicate => try errors.append(symbols.allocator, .{
                             .code = .duplicate_label,
@@ -375,7 +375,7 @@ fn layoutPass(
                 var consts = try symbols.toConstantTable();
                 defer consts.deinit();
                 switch (expr.evalExpr(c.expr, source, consts)) {
-                    .ok => |v| symbols.putBorrowed(name, .{ .kind = .const_value, .value = v }) catch |err| switch (err) {
+                    .ok => |v| symbols.putBorrowed(name, .{ .kind = .const_value, .value = v, .decl_start = c.name.start }) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         // safety: const_value never triggers Duplicate per putBorrowed's rules
                         error.Duplicate => unreachable,
@@ -386,7 +386,7 @@ fn layoutPass(
             .data8, .data16 => |d| {
                 const name = source[d.name.start..d.name.end];
                 const addr: u16 = bankAddr(current_bank, cursor_ptr.*);
-                symbols.putBorrowed(name, .{ .kind = .data, .value = addr, .bank = current_bank }) catch |err| switch (err) {
+                symbols.putBorrowed(name, .{ .kind = .data, .value = addr, .bank = current_bank, .decl_start = d.name.start }) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.Duplicate => try errors.append(symbols.allocator, .{
                         .code = .duplicate_label,

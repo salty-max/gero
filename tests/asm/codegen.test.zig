@@ -1135,3 +1135,42 @@ test "codegen: a banked program's heap may not sit in the bank window" {
     defer plain.deinit();
     try std.testing.expect(!plain.cg.hasErrors());
 }
+
+test "codegen: a label and a constant record where they were declared" {
+    // Go-to-definition on an assembly symbol needs the declaration's
+    // offset, not only the address it evaluates to.
+    const src =
+        \\const WIDTH = $0140
+        \\
+        \\main:
+        \\  mov WIDTH, r1
+        \\  hlt
+        \\
+        \\data8 TAG = $01, $00
+        \\
+    ;
+    var out = try assembleRaw(src, .{});
+    defer out.pt.deinit();
+    defer out.cg.deinit();
+
+    const width = out.cg.symbols.entries.get("WIDTH") orelse return error.NoSymbol;
+    try std.testing.expectEqual(gero.asm_.SymbolKind.const_value, width.kind);
+    try std.testing.expectEqual(
+        @as(?u32, @intCast(std.mem.indexOf(u8, src, "WIDTH").?)),
+        width.decl_start,
+    );
+
+    const main_label = out.cg.symbols.entries.get("main") orelse return error.NoSymbol;
+    try std.testing.expectEqual(gero.asm_.SymbolKind.label, main_label.kind);
+    try std.testing.expectEqual(
+        @as(?u32, @intCast(std.mem.indexOf(u8, src, "main:").?)),
+        main_label.decl_start,
+    );
+
+    const tag = out.cg.symbols.entries.get("TAG") orelse return error.NoSymbol;
+    try std.testing.expectEqual(gero.asm_.SymbolKind.data, tag.kind);
+    try std.testing.expectEqual(
+        @as(?u32, @intCast(std.mem.indexOf(u8, src, "TAG").?)),
+        tag.decl_start,
+    );
+}
