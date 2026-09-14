@@ -39,7 +39,9 @@ pub fn execute(
             try term.err("gero fmt: --stdin is mutually exclusive with positional paths", .{});
             return 2;
         }
-        return try formatStdin(io, arena, stdout, term, opts.check, opts.lang);
+        // `--stdin` has no filename to dispatch on; `gas` is the
+        // documented default for a bare `--stdin` (§3.8).
+        return try formatStdin(io, arena, stdout, term, opts.check, opts.lang orelse .gas);
     }
 
     // Always try to load gero.toml — both [fmt] overrides and the

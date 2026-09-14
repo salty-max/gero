@@ -42,8 +42,10 @@ pub fn execute(
     // an existing file. The cwd itself is allowed to be non-empty
     // (mirrors `cargo init`) — we just refuse to clobber the
     // specific files we'd write.
+    const lang = (try new_cmd.resolveLang(io, opts, stdout, term, "gero init")) orelse return 2;
+
     var conflicts: std.ArrayList([]const u8) = .empty;
-    for (new_cmd.project_files) |rel| {
+    for (new_cmd.projectFiles(lang)) |rel| {
         if (cwd.statFile(io, rel, .{})) |_| {
             try conflicts.append(arena, rel);
         } else |_| {}
@@ -60,6 +62,7 @@ pub fn execute(
         .name = name,
         .project_root = ".",
         .in_place = true,
+        .lang = lang,
     });
 
     if (!opts.quiet) {
@@ -80,6 +83,7 @@ test "init: reuses new.zig's project-name validator + file list" {
     // filesystem to exercise the conflict guard.
     try testing.expect(new_cmd.isValidProjectName("my-cart"));
     try testing.expect(!new_cmd.isValidProjectName(""));
-    try testing.expect(new_cmd.project_files.len > 0);
+    try testing.expect(new_cmd.projectFiles(.gas).len > 0);
+    try testing.expect(new_cmd.projectFiles(.gr).len > 0);
     try testing.expect(new_cmd.max_name_len > 0);
 }

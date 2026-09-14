@@ -1,6 +1,7 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const term_mod = @import("term.zig");
+const wizard = @import("wizard.zig");
 
 /// Embedded template bodies. `*.tmpl` files use `{name}` as the
 /// only placeholder; pure-asset files (`main.gas`, `smoke.gas`,
@@ -9,7 +10,10 @@ const gero_toml_tmpl: []const u8 = @embedFile("templates/gero.toml.tmpl");
 const main_gas_body: []const u8 = @embedFile("templates/main.gas");
 const smoke_gas_body: []const u8 = @embedFile("templates/smoke.gas");
 const smoke_expected_body: []const u8 = @embedFile("templates/smoke.expected");
-const readme_md_tmpl: []const u8 = @embedFile("templates/README.md.tmpl");
+const readme_gas_tmpl: []const u8 = @embedFile("templates/README.gas.md.tmpl");
+const main_gr_body: []const u8 = @embedFile("templates/main.gr");
+const smoke_gr_body: []const u8 = @embedFile("templates/smoke.gr");
+const readme_gr_tmpl: []const u8 = @embedFile("templates/README.gr.md.tmpl");
 
 /// Hard cap on project-name length. Mirrors what cargo / npm
 /// allow — keeps things sane on every filesystem we target.
@@ -52,6 +56,8 @@ pub fn execute(
         return 2;
     }
 
+    const lang = (try resolveLang(io, opts, stdout, term, "gero new")) orelse return 2;
+
     const cwd = std.Io.Dir.cwd();
     cwd.createDir(io, name, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {
@@ -64,7 +70,7 @@ pub fn execute(
         },
     };
 
-    try scaffold(io, arena, cwd, term, .{ .name = name, .project_root = name, .in_place = false });
+    try scaffold(io, arena, cwd, term, .{ .name = name, .project_root = name, .in_place = false, .lang = lang });
 
     if (!opts.quiet) {
         try term.success("    Created `{s}` project", .{name});
@@ -76,6 +82,29 @@ pub fn execute(
 /// Resolved scaffold target — what name to bake into templates and
 /// where to write the files. Shared between `gero new` (fresh
 /// sub-directory) and `gero init` (in-place).
+/// Which language a scaffold is written in. Both are first-class:
+/// `gero build` picks its front-end from the entry's extension, and
+/// `gero test` walks a project for either kind.
+pub const Lang = enum {
+    gas,
+    gr,
+
+    /// The spelling `--lang` takes, and what a wizard answer maps to.
+    pub fn parse(s: []const u8) ?Lang {
+        if (std.mem.eql(u8, s, "gas")) return .gas;
+        if (std.mem.eql(u8, s, "gr")) return .gr;
+        return null;
+    }
+
+    /// The entry path written into `[build].entry`.
+    pub fn entry(self: Lang) []const u8 {
+        return switch (self) {
+            .gas => "src/main.gas",
+            .gr => "src/main.gr",
+        };
+    }
+};
+
 pub const Target = struct {
     /// Project name written into `gero.toml` and the README. For
     /// `gero init` this is the cwd basename.
@@ -85,17 +114,66 @@ pub const Target = struct {
     project_root: []const u8,
     /// True when scaffolding into the current directory.
     in_place: bool,
+    /// Which language to lay down.
+    lang: Lang,
 };
 
-/// Canonical list of files the scaffolder writes — single source
-/// of truth for the write loop and the in-place conflict guard.
-pub const project_files = [_][]const u8{
+const gas_files = [_][]const u8{
     "gero.toml",
     "src/main.gas",
     "tests/smoke.gas",
     "tests/smoke.expected",
     "README.md",
 };
+
+/// A Gero project has no `.expected` golden: `gero test` collects
+/// `@test` defs and judges them by their own assertions.
+const gr_files = [_][]const u8{
+    "gero.toml",
+    "src/main.gr",
+    "tests/smoke.gr",
+    "README.md",
+};
+
+/// The files the scaffolder writes for `lang` — single source of
+/// truth for the write loop and the in-place conflict guard.
+pub fn projectFiles(lang: Lang) []const []const u8 {
+    return switch (lang) {
+        .gas => &gas_files,
+        .gr => &gr_files,
+    };
+}
+
+/// Settle which language to scaffold: the flag when given, the
+/// wizard when there is a terminal to ask, and otherwise nothing —
+/// the caller exits 2.
+///
+/// A default would be the one answer nobody chose, and it would be
+/// wrong for half the users silently (§3.10).
+pub fn resolveLang(
+    io: std.Io,
+    opts: cli.Options,
+    stdout: *std.Io.Writer,
+    term: *term_mod.Term,
+    comptime cmd: []const u8,
+) !?Lang {
+    if (opts.lang) |l| {
+        return switch (l) {
+            .gas => .gas,
+            .gr => .gr,
+        };
+    }
+    if (wizard.interactive(io)) {
+        if (try wizard.askLang(io, stdout, term)) |l| return l;
+        try term.err(cmd ++ ": no language chosen", .{});
+        return null;
+    }
+    try term.err(
+        cmd ++ ": --lang=<gas|gr> is required when there is no terminal to ask — `gas` scaffolds the assembler, `gr` the language",
+        .{},
+    );
+    return null;
+}
 
 /// Lay down the templates under `target.project_root`. Both
 /// `gero new` and `gero init` route here after their per-mode
@@ -110,13 +188,26 @@ pub fn scaffold(
     try ensureSubdir(io, term, cwd, arena, target.project_root, "src");
     try ensureSubdir(io, term, cwd, arena, target.project_root, "tests");
 
-    const gero_toml_body = try renderTemplate(arena, gero_toml_tmpl, target.name);
-    const readme_body = try renderTemplate(arena, readme_md_tmpl, target.name);
+    const named = try renderTemplate(arena, gero_toml_tmpl, target.name);
+    const gero_toml_body = try std.mem.replaceOwned(u8, arena, named, "{entry}", target.lang.entry());
+    const readme_tmpl = switch (target.lang) {
+        .gas => readme_gas_tmpl,
+        .gr => readme_gr_tmpl,
+    };
+    const readme_body = try renderTemplate(arena, readme_tmpl, target.name);
 
     try writeProjectFile(io, term, cwd, arena, target.project_root, "gero.toml", gero_toml_body);
-    try writeProjectFile(io, term, cwd, arena, target.project_root, "src/main.gas", main_gas_body);
-    try writeProjectFile(io, term, cwd, arena, target.project_root, "tests/smoke.gas", smoke_gas_body);
-    try writeProjectFile(io, term, cwd, arena, target.project_root, "tests/smoke.expected", smoke_expected_body);
+    switch (target.lang) {
+        .gas => {
+            try writeProjectFile(io, term, cwd, arena, target.project_root, "src/main.gas", main_gas_body);
+            try writeProjectFile(io, term, cwd, arena, target.project_root, "tests/smoke.gas", smoke_gas_body);
+            try writeProjectFile(io, term, cwd, arena, target.project_root, "tests/smoke.expected", smoke_expected_body);
+        },
+        .gr => {
+            try writeProjectFile(io, term, cwd, arena, target.project_root, "src/main.gr", main_gr_body);
+            try writeProjectFile(io, term, cwd, arena, target.project_root, "tests/smoke.gr", smoke_gr_body);
+        },
+    }
     try writeProjectFile(io, term, cwd, arena, target.project_root, "README.md", readme_body);
 }
 
@@ -252,12 +343,16 @@ test "renderTemplate: gero.toml template renders into a parseable manifest" {
     try testing.expect(std.mem.indexOf(u8, out, "{name}") == null);
 }
 
-test "renderTemplate: README template references docs/tooling.md" {
-    const out = try renderTemplate(testing.allocator, readme_md_tmpl, "demo");
-    defer testing.allocator.free(out);
-    try testing.expect(std.mem.indexOf(u8, out, "# demo") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "docs/tooling.md") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "{name}") == null);
+test "renderTemplate: each README template references docs/tooling.md" {
+    for ([_][]const u8{ readme_gas_tmpl, readme_gr_tmpl }) |tmpl| {
+        const out = try renderTemplate(testing.allocator, tmpl, "demo");
+        defer testing.allocator.free(out);
+        try testing.expect(std.mem.indexOf(u8, out, "# demo") != null);
+        try testing.expect(std.mem.indexOf(u8, out, "docs/tooling.md") != null);
+        // Every placeholder is substituted, or the scaffold ships
+        // literal braces.
+        try testing.expect(std.mem.indexOf(u8, out, "{name}") == null);
+    }
 }
 
 test "embedded asm templates: smoke pair stays consistent" {
@@ -274,8 +369,62 @@ test "embedded asm templates: main.gas halts cleanly" {
 }
 
 test "project_files: covers every embedded template" {
-    // If you add a new template, also wire it into both project_files
-    // and scaffold() — this assertion catches the case where one
-    // gets updated but not the other.
-    try testing.expectEqual(@as(usize, 5), project_files.len);
+    // If you add a new template, also wire it into projectFiles() and
+    // scaffold() — this assertion catches the case where one gets
+    // updated but not the other.
+    try testing.expectEqual(@as(usize, 5), projectFiles(.gas).len);
+    try testing.expectEqual(@as(usize, 4), projectFiles(.gr).len);
+}
+
+test "Lang: `--lang` spellings map to a language, anything else does not" {
+    try testing.expectEqual(Lang.gas, Lang.parse("gas").?);
+    try testing.expectEqual(Lang.gr, Lang.parse("gr").?);
+    try testing.expect(Lang.parse("") == null);
+    try testing.expect(Lang.parse("gero") == null);
+    try testing.expect(Lang.parse("GAS") == null);
+}
+
+test "Lang: the entry path is the one `[build].entry` dispatches on" {
+    // `gero build` picks its front-end from this extension, so the
+    // scaffold's manifest and its source file have to agree.
+    try testing.expectEqualStrings("src/main.gas", Lang.gas.entry());
+    try testing.expectEqualStrings("src/main.gr", Lang.gr.entry());
+}
+
+test "projectFiles: each language lists exactly what it writes" {
+    for (projectFiles(.gas)) |f| {
+        try testing.expect(std.mem.indexOf(u8, f, ".gr") == null);
+    }
+    // A Gero project has no golden to diff against.
+    for (projectFiles(.gr)) |f| {
+        try testing.expect(!std.mem.eql(u8, f, "tests/smoke.expected"));
+        try testing.expect(std.mem.indexOf(u8, f, ".gas") == null);
+    }
+}
+
+test "projectFiles: both languages write the manifest and the README" {
+    for ([_]Lang{ .gas, .gr }) |lang| {
+        var saw_manifest = false;
+        var saw_readme = false;
+        for (projectFiles(lang)) |f| {
+            if (std.mem.eql(u8, f, "gero.toml")) saw_manifest = true;
+            if (std.mem.eql(u8, f, "README.md")) saw_readme = true;
+        }
+        try testing.expect(saw_manifest);
+        try testing.expect(saw_readme);
+    }
+}
+
+test "embedded Gero templates: the entry prints and the test asserts" {
+    try testing.expect(std.mem.indexOf(u8, main_gr_body, "def main()") != null);
+    try testing.expect(std.mem.indexOf(u8, main_gr_body, "print ") != null);
+    // `gero test` collects by the annotation, so a scaffold without
+    // one ships a tests/ directory that reports nothing.
+    try testing.expect(std.mem.indexOf(u8, smoke_gr_body, "@test") != null);
+    try testing.expect(std.mem.indexOf(u8, smoke_gr_body, "assert(") != null);
+}
+
+test "gero.toml template: the entry is a placeholder, not a fixed language" {
+    try testing.expect(std.mem.indexOf(u8, gero_toml_tmpl, "{entry}") != null);
+    try testing.expect(std.mem.indexOf(u8, gero_toml_tmpl, "src/main.gas") == null);
 }

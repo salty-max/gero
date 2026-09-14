@@ -32,13 +32,14 @@ the subcommands whose own `--help` lists it** — using one elsewhere is
 a usage error (exit 2), not a silently ignored argument:
 
 ```
-$ gero init --lang=gr
-error: --lang=gr is not a flag for `gero init` — run `gero init --help` for the ones it takes
+$ gero build --optimize=release
+error: --optimize=release is not a flag for `gero build` — run `gero build --help` for the ones it takes
 ```
 
-That matters because the alternative is worse than a typo. `--lang`
-is a reasonable guess for "scaffold a Gero project", and
-accepting it would scaffold an asm one and say nothing.
+That matters because the alternative is worse than a typo.
+`--optimize` is a reasonable guess for "build the release profile",
+which `[build].optimize` owns instead (§8) — accepting it would build
+the debug profile and say nothing.
 
 | Flag | Default | Accepted by | Effect |
 |------|---------|-------------|--------|
@@ -48,6 +49,7 @@ accepting it would scaffold an asm one and say nothing.
 | `--verbose` / `-v` | off | `asm`, `compile`, `run`, `test`, `check`, `build` | Extra info: timings, allocation counts, intermediate sizes. |
 | `--out=<path>` / `-o` | (per-cmd default) | `asm`, `compile` | Output path. |
 | `--optimize=<mode>` / `-O` | `debug` | `compile` | `debug` / `release` / `size`. Mirrors Zig modes. |
+| `--lang=<gas\|gr>` | (none) | `new`, `init`, `fmt` | Which language. Scaffolds it (`new` / `init`, §3.10); picks the front-end for `fmt --stdin` (§3.8). |
 
 Every other flag belongs to exactly one subcommand and is documented
 with it in §3.
@@ -500,17 +502,48 @@ is a no-op for `.gas` inputs.)
 
 ### 3.10 `gero new <name>` — scaffold a fresh project
 
-Lay out a minimal asm project in a new `./<name>/`
-sub-directory. Templates are embedded in the binary — no network
+Lay out a minimal project in a new `./<name>/` sub-directory, in
+either language. Templates are embedded in the binary — no network
 call, no external assets. For an in-place scaffold (cwd as the
 project root) see [§3.11 `gero init`](#311-gero-init--initialize-the-current-directory).
 
 ```bash
-gero new my-cart                  # → ./my-cart/ scaffold
-gero new my-cart --quiet          # skip the next-steps banner
+gero new my-cart --lang=gr        # → ./my-cart/ Gero scaffold
+gero new my-cart --lang=gas       # → ./my-cart/ asm scaffold
+gero new my-cart                  # asks, when run from a terminal
+gero new my-cart --lang=gr --quiet  # skip the next-steps banner
 ```
 
-**Scaffold:**
+**Choosing the language.** `--lang` settles it. Without the flag,
+an interactive run asks:
+
+```
+  Which language is this project written in?
+
+    1  gero-lang  (.gr) — the high-level language
+    2  asm        (.gas) — the assembler
+
+  >
+```
+
+With no terminal to ask — a pipe, a CI step, a script — the command
+exits 2 and names the flag instead of picking for you. Every project
+is one language or the other for its whole life, and a default would
+be the one answer nobody chose.
+
+**Scaffold (`--lang=gr`):**
+
+```
+my-cart/
+├── gero.toml              # name, version 0.1.0, vm target, entry src/main.gr
+├── src/
+│   └── main.gr            # hello-world entry
+├── tests/
+│   └── smoke.gr           # a `@test` def, collected by `gero test`
+└── README.md              # build / test / run pointers + tooling.md link
+```
+
+**Scaffold (`--lang=gas`):**
 
 ```
 my-cart/
@@ -522,6 +555,11 @@ my-cart/
 │   └── smoke.expected
 └── README.md              # build / test / run pointers + tooling.md link
 ```
+
+A Gero scaffold ships no `.expected`: `gero test` judges a `@test`
+def by its own assertions, where a `.gas` golden is diffed against
+captured stdout (§3.4). Both scaffolds pass `gero check`,
+`gero fmt --check` and `gero test` the moment they are written.
 
 **Behavior:**
 - The scaffold ships **no** `.github/workflows/`, **no**
@@ -535,7 +573,9 @@ my-cart/
 - Fails cleanly with exit 1 if `<name>` already exists.
 
 **Exit:** 0 on success; 1 on host IO / pre-existing dir;
-2 on usage / invalid name.
+2 on usage / invalid name / no language chosen. The language is
+settled before anything is created, so a refused run leaves no
+directory behind.
 
 ### 3.11 `gero init` — initialize the current directory
 
@@ -545,15 +585,21 @@ name. Cargo / poetry / yarn / zig convention — `new` for a fresh
 sub-directory, `init` for the current one.
 
 ```bash
-gero init                         # scaffold into ./, name = cwd basename
-gero init --quiet                 # skip the next-steps banner
+gero init --lang=gr               # scaffold Gero into ./
+gero init --lang=gas              # scaffold asm into ./
+gero init                         # asks, when run from a terminal
+gero init --lang=gr --quiet       # skip the next-steps banner
 ```
 
 **Behavior:**
-- Pre-flights every target path; refuses to overwrite if
-  `gero.toml`, `src/main.gas`, `tests/smoke.gas`,
-  `tests/smoke.expected`, or `README.md` already exist (exit 1
-  with the list).
+- Takes `--lang` and runs the same prompt as `gero new` (§3.10),
+  and refuses the same way when there is no terminal to ask.
+- Pre-flights every target path; refuses to overwrite if any file
+  the chosen language would write already exists (exit 1 with the
+  list). That set is `gero.toml`, `src/main.<ext>`,
+  `tests/smoke.<ext>`, `README.md`, plus `tests/smoke.expected`
+  for `--lang=gas`. The language is settled first, so `--lang=gr`
+  is not blocked by a stray `main.gas`.
 - Cwd basename must satisfy the same validation as `gero new`
   (1-64 chars, leading letter / `_`, body of letters / digits /
   `_` / `-`). Rename the directory or `cd` into a parent + run
@@ -562,7 +608,7 @@ gero init --quiet                 # skip the next-steps banner
   in-place intent.
 
 **Exit:** 0 on success; 1 on host IO / pre-existing files;
-2 on usage / invalid basename.
+2 on usage / invalid basename / no language chosen.
 
 ### 3.12 `gero build` — build project
 
@@ -789,7 +835,7 @@ authors = ["Jane Doe <jane@..>"]    # optional
 keywords = ["vm", "demo"]           # optional
 
 [build]
-entry = "src/main.gas"              # required
+entry = "src/main.gas"              # required — .gas or .gr
 out = "out/"                        # output directory; default "out/"
 optimize = "debug"                  # debug (default) | release | size
 name = "cart-cli"                   # optional, defaults to package.name
@@ -812,6 +858,11 @@ hex_case = "upper"
 `"vm"`; `[test].cycle_budget` → `1_000_000`. Every field outside
 those + `[package].name` / `[package].version` / `[build].entry`
 is optional.
+
+**Front-end**: `[build].entry`'s extension picks it — `.gas` runs
+the assembler, `.gr` the language pipeline. There is no separate
+language field: two places to say the same thing is two places to
+disagree.
 
 **Output path**: `<build.out>/<build.optimize>/<stem>.gx` —
 the per-profile subdir (Cargo's `target/{debug,release}/` pattern)

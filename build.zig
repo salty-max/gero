@@ -196,6 +196,16 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-new",
         .root_module = new_cli_mod,
     });
+    const wizard_cli_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/wizard.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wizard_cli_mod.addOptions("build_options", cli_options);
+    const wizard_cli_test = b.addTest(.{
+        .name = "test-cli-wizard",
+        .root_module = wizard_cli_mod,
+    });
     const init_cli_mod = b.createModule(.{
         .root_source_file = b.path("apps/gero-cli/init.zig"),
         .target = target,
@@ -435,6 +445,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(project_test).step);
     test_step.dependOn(&b.addRunArtifact(manifest_loader_test).step);
     test_step.dependOn(&b.addRunArtifact(new_cli_test).step);
+    test_step.dependOn(&b.addRunArtifact(wizard_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(init_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(build_cli_test).step);
     test_step.dependOn(&b.addRunArtifact(diagnostics_test).step);
