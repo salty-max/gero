@@ -24,6 +24,10 @@ pub const SymbolKind = enum {
     module_alias,
     /// `use sym from module` import — the imported symbol.
     imported,
+    /// A `struct` or `class` field, reached through its container
+    /// rather than found in a scope. Never registered as a name;
+    /// recorded only when a member access resolves to one.
+    field,
 };
 
 /// What the typechecker remembers about a name. The `ty` field is
