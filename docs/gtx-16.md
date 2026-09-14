@@ -10,7 +10,7 @@ and the built-in editor suite.
 > as the gtx-16 native runtime implementation forces decisions.
 > Numbers and IO addresses are starting points, not final.
 
-> **Sibling consumer:** [gero-lab](./gero-lab.md) is the other
+> **Sibling consumer:** [gero-lab](./wasm.md) is the other
 > application built on this VM — a toolchain cockpit rather than a
 > console. The two share the VM and nothing else: peripherals belong
 > here, source editing and debugging belong there.

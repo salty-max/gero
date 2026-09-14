@@ -188,7 +188,7 @@ A disassembly is static. Some questions are about what happens, not what is
 written: which branch actually runs, what a register holds at a particular
 moment, whether a loop terminates.
 
-For those, step the program. [`gero-lab.md`](../gero-lab.md) specifies a
+For those, step the program. [`wasm.md`](../wasm.md) specifies a
 browser playground with a source-level debugger built on the same debug
 section this chapter has been using — breakpoints, stepping, registers and
 memory as the program runs. The specification lives in this repository; the

@@ -7,7 +7,7 @@
 //! ordinary functions over it.
 //!
 //! The two memory regions have different lifetimes and that difference
-//! is the whole design; `docs/gero-lab.md` §2.1 explains why.
+//! is the whole design; `docs/wasm.md` §1 explains why.
 
 const std = @import("std");
 const abi = @import("abi.zig");

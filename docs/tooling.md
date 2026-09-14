@@ -305,8 +305,9 @@ parser.setLanguage(lang);
 
 Each release job smoke-tests the artifact — loads it and parses a
 trivial program — before attaching it, so a tag never ships a `.wasm`
-that cannot be loaded. gero-lab consumes these; see
-[`gero-lab.md`](gero-lab.md) §4.3.
+that cannot be loaded. gero-lab consumes these; how it does is its
+own business, described in
+[its specification](https://github.com/salty-max/gero-lab/blob/main/docs/gero-lab.md).
 
 ### 2.7 LSP
 

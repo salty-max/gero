@@ -543,7 +543,7 @@ pub fn build(b: *std.Build) void {
 
     // ----- wasm module -----------------------------------------------------
     //
-    // The boundary gero-lab is written against (docs/gero-lab.md §2).
+    // The boundary gero-lab is written against (docs/wasm.md §2).
     // `wasm32-freestanding` rather than wasi: the consumer wants a
     // narrow purpose-built surface, not a POSIX shim. Excluded from
     // build.zig.zon's `paths`, so it never reaches library consumers.

@@ -142,7 +142,7 @@ Run `gero <subcommand> --help` for per-command flags, or
   covering recursion, loops, payload-carrying enums, and `match`
 - [docs/lang.md](./docs/lang.md) — Gero spec (types,
   classes, pattern matching, annotations, the compilation model)
-- [docs/gero-lab.md](./docs/gero-lab.md) — browser playground spec —
+- [docs/wasm.md](./docs/wasm.md) — browser playground spec —
   the wasm engine boundary, worker protocol, and debugger cockpit
 
 ## Use as a library
@@ -198,7 +198,7 @@ tree-sitter grammar per language, plus the VS Code extension.
 The gtx-16 fantasy console is built in its own repo and consumes gero
 as a library; its contract lives in [`docs/gtx-16.md`](./docs/gtx-16.md).
 The `gero-lab` browser playground is specified in
-[`docs/gero-lab.md`](./docs/gero-lab.md) and belongs to this repo — it
+[`docs/wasm.md`](./docs/wasm.md) and belongs to this repo — it
 builds against the working tree so the playground can never lag the
 toolchain it demonstrates.
 

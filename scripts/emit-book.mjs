@@ -2,7 +2,7 @@
 //
 // The lab renders these chapters; it does not vendor them. A browser
 // cannot list `docs/book/` over HTTP, hence the manifest — the same
-// reason `samples.json` exists (docs/gero-lab.md §9, §10).
+// reason `samples.json` exists (docs/wasm.md §8, §10).
 //
 // Usage: node scripts/emit-book.mjs <out dir>
 

@@ -102,7 +102,7 @@ jobs:
       # `gero.wasm`, its sample manifest and the books ship as loose
       # release assets rather than inside a target tarball: a browser
       # host fetches them by URL and cannot unpack an archive
-      # (docs/gero-lab.md §10). The module pins its own optimize mode,
+      # (docs/wasm.md §9). The module pins its own optimize mode,
       # so there is no flag here.
       - name: Build the module, its sample manifest and the books
         run: zig build wasm

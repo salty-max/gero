@@ -1,7 +1,7 @@
 //! VM sessions behind the `gero_vm_*` exports.
 //!
 //! A host creates a session, loads a `.gx` into it, and drives it a
-//! slice of instructions at a time (`docs/gero-lab.md` §3.3). Several
+//! slice of instructions at a time (`docs/wasm.md` §4). Several
 //! sessions coexist, each with its own machine, memory, and output.
 //!
 //! Sessions outlive an operation, so they carry their own storage
