@@ -40,6 +40,10 @@ pub const Binding = struct {
     module: ?[]const u8 = null,
 };
 
+/// A type-checked program: the AST it was built from, the diagnostics
+/// the check produced, and what the checker learned along the way —
+/// expression types, binder types, and the declaration each reference
+/// resolves to.
 pub const CheckedProgram = struct {
     program: *const ast.Program,
     diagnostics: []Diagnostic,
