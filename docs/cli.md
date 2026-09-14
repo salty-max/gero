@@ -696,10 +696,14 @@ goes to stderr.
 
 Diagnostics (identical to what `gero check` reports) and
 formatting (identical to what `gero fmt` writes) are provided for
-both `.gas` and `.gr`. For `.gr` it also answers go-to-definition,
-hover, find-references, inlay hints, completion and quick-fix code
-actions, each from a table the type-checker built rather than from
-a second resolution of the same names.
+both `.gas` and `.gr`, as are go-to-definition, hover,
+find-references and completion. Each answers from a table the
+compiler built — the type-checker's bindings for `.gr`, the
+assembler's symbol table for `.gas` — rather than from a second
+resolution of the same names. Hovering a name in `.gas` reports the
+address it assembled to.
+
+Inlay hints and quick-fix code actions are `.gr` only.
 
 Buffers the editor holds unsaved are read from memory, and changing
 one re-checks every open document that imports it — so editing a

@@ -99,12 +99,12 @@ something it imported changes — the server keeps no text for it.
 | `textDocument/didClose` | Drops the buffer. Its diagnostics stand until the file is reopened. |
 | `textDocument/publishDiagnostics` | Notification, described below. |
 | `textDocument/formatting` | One `TextEdit` spanning the document. |
-| `textDocument/definition` | The declaration the name under the cursor binds to, or `null` (§6). |
-| `textDocument/hover` | The name, its type where known, and what kind of declaration it is (§6). |
-| `textDocument/references` | Every reference to the declaration under the cursor, in source order. `context.includeDeclaration` decides whether the declaration is among them. |
-| `textDocument/inlayHint` | The inferred type of each `let` the source left unannotated (§6). |
+| `textDocument/definition` | The declaration the name under the cursor binds to, or `null` (§6 for `.gr`, §7 for `.gas`). |
+| `textDocument/hover` | For `.gr`, the name, its type where known, and what kind of declaration it is (§6); for `.gas`, the address it assembled to (§7). |
+| `textDocument/references` | Every reference to the declaration under the cursor, in source order, across the files an `include` / `use` graph covers. `context.includeDeclaration` decides whether the declaration is among them. |
+| `textDocument/inlayHint` | The inferred type of each `let` the source left unannotated (§6). `.gr` only. |
 | `textDocument/completion` | After a `.`, the receiver's members; otherwise the names visible at the position, plus importable ones carrying the `use` they need (§6). No trigger characters — every completion here is an identifier. |
-| `textDocument/codeAction` | A `quickfix` per diagnostic under the selection the checker worked out a correction for, plus imports from the workspace index (§6). |
+| `textDocument/codeAction` | A `quickfix` per diagnostic under the selection the checker worked out a correction for, plus imports from the workspace index (§6). `.gr` only. |
 
 Any other request is answered `-32601` (method not found) rather than
 left hanging. Unknown *notifications* are dropped, since they carry no
@@ -211,7 +211,7 @@ protocol works: run `gero lsp`, send `initialize`, and open a file.
 
 ---
 
-## 6. Resolved names
+## 6. Resolved names in `.gr`
 
 Go-to-definition and hover are provided for `.gr`, and answer from the
 type-checker's own resolution rather than a second one.
@@ -336,27 +336,62 @@ likelier a typo than a reach for another file, and an import is the
 more disruptive correction; only the workspace can name several
 candidates, and it offers one action per file rather than guessing.
 
-### Not yet provided
+## 7. Resolved names in `.gas`
 
-Semantic tokens. It reads a table that now exists; it is unbuilt
-rather than blocked.
+Definition, hover, references and completion are provided for `.gas`
+too, from the assembler's own symbol table rather than a second
+resolution of the same names.
 
-`.gas` gets diagnostics and formatting, and none of this section's
-resolved-name features. The data is there and unused: the assembler
-records where each label and constant was declared
-(`asm.Symbol.decl_start`), and it computes its own near-spelling
-suggestions for an undefined symbol. The server has not been taught to
-read either.
+Asm has no scoping to get wrong. A global name means one thing across
+a program — labels are image-scoped ([`asm.md` §4](asm.md)) — and a
+local label means one thing within the global label above it. So a
+name plus its enclosing label is the whole story, and a reference is
+mangled to the same key its declaration was stored under: `.loop`
+written under `main` resolves to `main.loop`, exactly as codegen does
+it.
 
-Syntax highlighting is out of scope for a different reason: it needs
-no running server, and a grammar does it better. Both grammars exist —
+Hover is worth more here than in `.gr`. A name in asm *is* its value,
+so the resolved address is the thing a reader wants: `emit @ $0018`,
+`const PRINT = $0010`, `main.loop @ $0008`, with the bank when the
+symbol sits in one. That answer only exists after a successful
+assemble, so a file that does not assemble reports the kind it can see
+and nothing more.
+
+`asm.Symbol` already carries `decl_start`, the declaring name's
+offset, so declarations need nothing new. References are the half the
+assembler had no reason to keep — it resolves a name to a value
+without caring where it was written — and are collected from the parse
+tree when the server asks, which keeps the walk out of every
+`gero asm` run.
+
+Everything is positioned through the include graph's source map, so a
+definition in an `include`d file lands in that file, and references to
+a constant used on both sides of an `include` come back against the
+two URIs that wrote them.
+
+Code actions and inlay hints are not provided for `.gas`: the
+assembler emits no near-spelling suggestion the server can apply, and
+there is nothing an inlay hint would add to an instruction whose
+operands are all written out.
+
+### Not provided
+
+Colour is a grammar's job, not this server's. It needs no running
+server, and a grammar does it better. Both exist —
 [`tree-sitter-gero-asm`](https://github.com/salty-max/tree-sitter-gero-asm)
 for `.gas` and
 [`tree-sitter-gero-lang`](https://github.com/salty-max/tree-sitter-gero-lang)
 for `.gr` — consumed by the Neovim / Helix / Zed setups in
 [`tooling.md`](tooling.md).
 
-So a buffer in an LSP-aware editor gets colour from the grammar and
-diagnostics + formatting from this server, which is the division of
-labour semantic tokens would otherwise have to reproduce from the
-server side.
+That covers **semantic tokens** as well as plain syntax highlighting.
+The gap a grammar cannot close is telling a type from a value without
+resolving names, and Gero's casing convention
+([`lang.md` §2.3](lang.md)) answers that in the source itself. What
+semantic tokens would uniquely add beyond it — a parameter drawn
+differently from a local, a `const` from a `let` — is cosmetic, while
+the cost is a token stream for every document on every change, plus
+delta encoding to make that affordable. Not a trade worth making here.
+
+So a buffer in an LSP-aware editor takes colour from the grammar and
+everything that needs a resolver from this server.

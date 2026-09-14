@@ -12,6 +12,7 @@ const gero = @import("gero");
 const protocol = @import("lsp_protocol.zig");
 const analysis = @import("lsp_analysis.zig");
 const symbols = @import("lsp_symbols.zig");
+const asm_symbols = @import("lsp_asm.zig");
 const index_mod = @import("lsp_index.zig");
 const uri_mod = @import("lsp_uri.zig");
 
@@ -275,11 +276,11 @@ fn handleMessage(
     } else if (std.mem.eql(u8, req.method, "textDocument/formatting")) {
         try onFormatting(arena, server, stdout, req.body, req.id);
     } else if (std.mem.eql(u8, req.method, "textDocument/definition")) {
-        try onDefinition(arena, server, stdout, req.body, req.id);
+        try onDefinition(io, arena, server, stdout, req.body, req.id);
     } else if (std.mem.eql(u8, req.method, "textDocument/hover")) {
-        try onHover(arena, server, stdout, req.body, req.id);
+        try onHover(io, arena, server, stdout, req.body, req.id);
     } else if (std.mem.eql(u8, req.method, "textDocument/references")) {
-        try onReferences(arena, server, stdout, req.body, req.id);
+        try onReferences(io, arena, server, stdout, req.body, req.id);
     } else if (std.mem.eql(u8, req.method, "textDocument/inlayHint")) {
         try onInlayHint(arena, server, stdout, req.body, req.id);
     } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
@@ -480,13 +481,139 @@ fn resolveAt(
     return .{ .uri = uri, .src = text, .hit = hit };
 }
 
+/// Answer a completion request with the assembler's own symbols.
+fn writeAsmCompletions(
+    arena: std.mem.Allocator,
+    stdout: *std.Io.Writer,
+    id: ?std.json.Value,
+    items: []const asm_symbols.Completion,
+) !void {
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.beginObject();
+    try jw.objectField("jsonrpc");
+    try jw.write("2.0");
+    try writeId(&jw, id);
+    try jw.objectField("result");
+    try jw.beginObject();
+    try jw.objectField("isIncomplete");
+    try jw.write(false);
+    try jw.objectField("items");
+    try jw.beginArray();
+    for (items) |it| {
+        try jw.beginObject();
+        try jw.objectField("label");
+        try jw.write(it.name);
+        try jw.objectField("kind");
+        try jw.write(asm_symbols.completionKind(it.kind));
+        try jw.objectField("detail");
+        try jw.write(asm_symbols.kindText(it.kind));
+        try jw.endObject();
+    }
+    try jw.endArray();
+    try jw.endObject();
+    try jw.endObject();
+    try protocol.writeMessage(stdout, out.written());
+}
+
+/// A `.gas` document assembled, with the request's position resolved
+/// into the fused buffer those offsets belong to.
+const GasAt = struct {
+    program: analysis.GasProgram,
+    /// The document's own path, for placing results back into it.
+    path: ?[]const u8,
+    offset: u32,
+};
+
+/// Assemble the `.gas` document a request names and locate its
+/// position in the fused source. `null` when the document is not
+/// `.gas`, cannot be assembled, or names a position outside it.
+fn gasAt(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    server: *Server,
+    msg: std.json.ObjectMap,
+) !?GasAt {
+    const uri = docUri(msg) orelse return null;
+    const text = server.docs.get(uri) orelse return null;
+    if (analysis.langOf(uri) != .gas) return null;
+    const pos = requestPosition(msg) orelse return null;
+
+    var ov = try server.overlay(io, arena);
+    defer ov.deinit(arena);
+    const program = (try analysis.gasProgram(io, arena, uri, text, &ov)) orelse return null;
+    const path = try uri_mod.toPath(arena, uri);
+    const local = symbols.offsetOf(text, pos) orelse return null;
+    const fused = asm_symbols.fusedOffsetOf(program, path, local) orelse return null;
+    return .{ .program = program, .path = path, .offset = fused };
+}
+
+/// Answer a definition request with one fused span, placed in the
+/// file that wrote it.
+fn writeGasDefinition(
+    arena: std.mem.Allocator,
+    stdout: *std.Io.Writer,
+    id: ?std.json.Value,
+    fallback_uri: []const u8,
+    program: analysis.GasProgram,
+    span: gero.asm_.Span,
+) !void {
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.beginObject();
+    try jw.objectField("jsonrpc");
+    try jw.write("2.0");
+    try writeId(&jw, id);
+    try jw.objectField("result");
+    try jw.beginObject();
+    try writeGasLocation(&jw, arena, fallback_uri, program, span);
+    try jw.endObject();
+    try jw.endObject();
+    try protocol.writeMessage(stdout, out.written());
+}
+
+/// Write a fused span as an LSP `Location`, in whichever file wrote
+/// it — an included file, not necessarily the one being edited.
+fn writeGasLocation(
+    jw: *std.json.Stringify,
+    arena: std.mem.Allocator,
+    fallback_uri: []const u8,
+    program: analysis.GasProgram,
+    span: gero.asm_.Span,
+) !void {
+    const at = asm_symbols.place(program, span);
+    const uri = if (at.path) |p| try uri_mod.fromPath(arena, p) else fallback_uri;
+    const start = gero.diagnostics_json.lineColIn(at.text, at.start);
+    const end = gero.diagnostics_json.lineColIn(at.text, at.end);
+    try jw.objectField("uri");
+    try jw.write(uri);
+    try jw.objectField("range");
+    // safety: line/col of an offset in a source file, far under 4 GiB.
+    try writeRange(
+        jw,
+        @intCast(start.line - 1),
+        @intCast(start.col - 1),
+        @intCast(end.line - 1),
+        @intCast(end.col - 1),
+    );
+}
+
 fn onDefinition(
+    io: std.Io,
     arena: std.mem.Allocator,
     server: *Server,
     stdout: *std.Io.Writer,
     msg: std.json.ObjectMap,
     id: ?std.json.Value,
 ) !void {
+    if (try gasAt(io, arena, server, msg)) |g| {
+        const hit = (try asm_symbols.resolveAt(arena, g.program, g.offset)) orelse
+            return replyNull(arena, stdout, id);
+        const at = hit.symbol.decl_start orelse return replyNull(arena, stdout, id);
+        // safety: a declaration's name length, bounded by the source.
+        const len: u32 = @intCast(hit.key.len);
+        return writeGasDefinition(arena, stdout, id, docUri(msg).?, g.program, .{ .start = at, .end = at + len });
+    }
     const found = (try resolveAt(arena, server, msg)) orelse
         return replyNull(arena, stdout, id);
     const d = found.hit.binding.decl_span;
@@ -511,12 +638,21 @@ fn onDefinition(
 }
 
 fn onHover(
+    io: std.Io,
     arena: std.mem.Allocator,
     server: *Server,
     stdout: *std.Io.Writer,
     msg: std.json.ObjectMap,
     id: ?std.json.Value,
 ) !void {
+    if (try gasAt(io, arena, server, msg)) |g| {
+        const hit = (try asm_symbols.resolveAt(arena, g.program, g.offset)) orelse
+            return replyNull(arena, stdout, id);
+        const at = asm_symbols.place(g.program, hit.ref);
+        const s0 = symbols.positionOf(at.text, at.start);
+        const s1 = symbols.positionOf(at.text, at.end);
+        return writeHover(arena, stdout, id, try asm_symbols.hoverText(arena, hit.key, hit.symbol), s0, s1);
+    }
     const found = (try resolveAt(arena, server, msg)) orelse
         return replyNull(arena, stdout, id);
     const b = found.hit.binding;
@@ -540,7 +676,18 @@ fn onHover(
 
     const start = symbols.positionOf(found.src, found.hit.ref.start);
     const end = symbols.positionOf(found.src, found.hit.ref.end);
+    try writeHover(arena, stdout, id, text.items, start, end);
+}
 
+/// Answer a hover request with markdown covering `start`..`end`.
+fn writeHover(
+    arena: std.mem.Allocator,
+    stdout: *std.Io.Writer,
+    id: ?std.json.Value,
+    markdown: []const u8,
+    start: symbols.Position,
+    end: symbols.Position,
+) !void {
     var out = std.Io.Writer.Allocating.init(arena);
     var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
     try jw.beginObject();
@@ -554,7 +701,7 @@ fn onHover(
     try jw.objectField("kind");
     try jw.write("markdown");
     try jw.objectField("value");
-    try jw.write(text.items);
+    try jw.write(markdown);
     try jw.endObject();
     try jw.objectField("range");
     try writeRange(&jw, start.line, start.character, end.line, end.character);
@@ -564,6 +711,7 @@ fn onHover(
 }
 
 fn onReferences(
+    io: std.Io,
     arena: std.mem.Allocator,
     server: *Server,
     stdout: *std.Io.Writer,
@@ -573,7 +721,6 @@ fn onReferences(
     const uri = docUri(msg) orelse return replyNull(arena, stdout, id);
     const text = server.docs.get(uri) orelse return replyNull(arena, stdout, id);
     const lang = analysis.langOf(uri) orelse return replyNull(arena, stdout, id);
-    if (lang != .gr) return replyNull(arena, stdout, id);
     const pos = requestPosition(msg) orelse return replyNull(arena, stdout, id);
 
     // The client says whether the declaration itself belongs in the
@@ -584,6 +731,30 @@ fn onReferences(
             if (v == .bool) include_decl = v.bool;
         }
     }
+
+    if (lang == .gas) {
+        const g = (try gasAt(io, arena, server, msg)) orelse return replyNull(arena, stdout, id);
+        const spans = (try asm_symbols.referencesTo(arena, g.program, g.offset, include_decl)) orelse
+            return replyNull(arena, stdout, id);
+
+        var gout = std.Io.Writer.Allocating.init(arena);
+        var gjw: std.json.Stringify = .{ .writer = &gout.writer, .options = .{ .whitespace = .minified } };
+        try gjw.beginObject();
+        try gjw.objectField("jsonrpc");
+        try gjw.write("2.0");
+        try writeId(&gjw, id);
+        try gjw.objectField("result");
+        try gjw.beginArray();
+        for (spans) |sp| {
+            try gjw.beginObject();
+            try writeGasLocation(&gjw, arena, uri, g.program, sp);
+            try gjw.endObject();
+        }
+        try gjw.endArray();
+        try gjw.endObject();
+        return protocol.writeMessage(stdout, gout.written());
+    }
+    if (lang != .gr) return replyNull(arena, stdout, id);
 
     const spans = (try symbols.referencesTo(arena, text, pos, include_decl)) orelse
         return replyNull(arena, stdout, id);
@@ -669,6 +840,16 @@ fn onCompletion(
     const uri = docUri(msg) orelse return replyNull(arena, stdout, id);
     const text = server.docs.get(uri) orelse return replyNull(arena, stdout, id);
     const lang = analysis.langOf(uri) orelse return replyNull(arena, stdout, id);
+
+    // Asm completes the symbols the program defines. There is no
+    // scope to respect: a name means one thing across a program.
+    if (lang == .gas) {
+        var gov = try server.overlay(io, arena);
+        defer gov.deinit(arena);
+        const program = (try analysis.gasProgram(io, arena, uri, text, &gov)) orelse
+            return replyNull(arena, stdout, id);
+        return writeAsmCompletions(arena, stdout, id, try asm_symbols.completions(arena, program));
+    }
     if (lang != .gr) return replyNull(arena, stdout, id);
     const pos = requestPosition(msg) orelse return replyNull(arena, stdout, id);
 
@@ -1326,6 +1507,131 @@ fn openDoc(s: *Session, arena: std.mem.Allocator, text: []const u8) !void {
     try body.appendSlice(arena, out.written());
     try body.appendSlice(arena, "}}}");
     _ = try s.send(arena, body.items);
+}
+
+/// Open an `untitled:` `.gas` buffer — no file behind it, so fused
+/// offsets are the buffer's own and no include graph is resolved.
+fn openAsmDoc(s: *Session, arena: std.mem.Allocator, text: []const u8) !void {
+    var body: std.ArrayList(u8) = .empty;
+    try body.appendSlice(arena, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"untitled:a.gas\",\"languageId\":\"gero-asm\",\"version\":1,\"text\":");
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.write(text);
+    try body.appendSlice(arena, out.written());
+    try body.appendSlice(arena, "}}}");
+    _ = try s.send(arena, body.items);
+}
+
+const asm_src =
+    "const PRINT = $10\n" ++
+    "main:\n" ++
+    ".loop:\n" ++
+    "  djnz r1, .loop\n" ++
+    "  int PRINT\n" ++
+    "  call emit\n" ++
+    "  hlt\n" ++
+    "emit:\n" ++
+    "  ret\n";
+
+test "handleMessage: asm definition jumps to the label's declaration" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openAsmDoc(&s, arena, asm_src);
+    const before = s.written().len;
+    // The `emit` in `call emit` on line 5.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"untitled:a.gas\"},\"position\":{\"line\":5,\"character\":8}}}");
+    const reply = s.written()[before..];
+    // `emit:` declares on line 7.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"start\":{\"line\":7") != null);
+}
+
+test "handleMessage: asm definition resolves a local label under its parent" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openAsmDoc(&s, arena, asm_src);
+    const before = s.written().len;
+    // The `.loop` in `djnz r1, .loop` on line 3.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"untitled:a.gas\"},\"position\":{\"line\":3,\"character\":12}}}");
+    const reply = s.written()[before..];
+    // `.loop:` declares on line 2, not `main:` on line 1.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"start\":{\"line\":2") != null);
+}
+
+test "handleMessage: asm hover reports the address a name assembled to" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openAsmDoc(&s, arena, asm_src);
+    const before = s.written().len;
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"untitled:a.gas\"},\"position\":{\"line\":4,\"character\":7}}}");
+    const reply = s.written()[before..];
+    try testing.expect(std.mem.indexOf(u8, reply, "const PRINT = $0010") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "a constant") != null);
+}
+
+test "handleMessage: asm references cover the declaration and every use" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openAsmDoc(&s, arena, asm_src);
+    const before = s.written().len;
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"textDocument/references\",\"params\":{\"textDocument\":{\"uri\":\"untitled:a.gas\"},\"position\":{\"line\":4,\"character\":7},\"context\":{\"includeDeclaration\":true}}}");
+    const with_decl = s.written()[before..];
+    // The `const` on line 0 and the `int PRINT` on line 4.
+    try testing.expect(std.mem.indexOf(u8, with_decl, "\"start\":{\"line\":0") != null);
+    try testing.expect(std.mem.indexOf(u8, with_decl, "\"start\":{\"line\":4") != null);
+
+    const mark = s.written().len;
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"textDocument/references\",\"params\":{\"textDocument\":{\"uri\":\"untitled:a.gas\"},\"position\":{\"line\":4,\"character\":7},\"context\":{\"includeDeclaration\":false}}}");
+    const without = s.writtenSince(mark);
+    try testing.expect(std.mem.indexOf(u8, without, "\"start\":{\"line\":0") == null);
+    try testing.expect(std.mem.indexOf(u8, without, "\"start\":{\"line\":4") != null);
+}
+
+test "handleMessage: asm completion offers the program's symbols" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openAsmDoc(&s, arena, asm_src);
+    const before = s.written().len;
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":25,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"untitled:a.gas\"},\"position\":{\"line\":6,\"character\":2}}}");
+    const reply = s.written()[before..];
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"emit\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"PRINT\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"main.loop\"") != null);
+    // A symbol set is fixed; nothing typed next adds to it.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"isIncomplete\":false") != null);
+}
+
+test "handleMessage: an asm position on no name answers null" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openAsmDoc(&s, arena, asm_src);
+    const before = s.written().len;
+    // Column 2 of `  hlt` — a mnemonic, which names no symbol.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":26,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"untitled:a.gas\"},\"position\":{\"line\":6,\"character\":3}}}");
+    try testing.expect(std.mem.indexOf(u8, s.written()[before..], "\"id\":26,\"result\":null") != null);
 }
 
 test "handleMessage: inlay hints cover the inferred binder and not the stated one" {
