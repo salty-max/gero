@@ -1,6 +1,6 @@
 // Collect the example corpus into the wasm artifact's sample set.
 //
-// `docs/gero-lab.md` §9 draws the lab's samples from this repository's
+// `docs/wasm.md` §8 draws the lab's samples from this repository's
 // examples so they cannot drift from what CI proves works — and §10
 // puts the module's release in charge of carrying them, so the
 // application never keeps a copy of its own to fall out of date.

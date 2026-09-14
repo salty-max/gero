@@ -2,7 +2,7 @@
 //!
 //! Pure data: no state, no allocation, no I/O. A host decodes these
 //! and nothing else, so their shapes and numeric values are the
-//! contract — see `docs/gero-lab.md` §2.2 and `docs/versioning.md`
+//! contract — see `docs/wasm.md` §2 and `docs/versioning.md`
 //! before changing one.
 
 const std = @import("std");

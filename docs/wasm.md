@@ -1,66 +1,24 @@
-# gero-lab — Browser Playground Spec
+# gero.wasm — the module contract
 
-The web playground for the Gero toolchain: write `.gas` or `.gr` in
-the browser, assemble or compile it, and run it on the Gero VM with a
-full debugger cockpit — registers, memory, stack, disassembly,
-breakpoints, single-step.
+`zig build wasm` produces a WebAssembly module that carries the whole
+toolchain: assemble, compile, run, step, disassemble. This document is
+what a browser host may rely on — the exports, who owns which bytes,
+and what comes back.
 
-> **Layer separation:** gero-lab is a web application. It depends on
-> the `gero` library, compiled to WebAssembly, for every toolchain
-> operation — it reimplements nothing. This file lives in `gero/docs/`
-> because the engine boundary is a contract between the two, and gero
-> authors need it at hand when changing the public surface.
+It is a contract, not a design for any one application. A host that
+never opens [gero-lab](https://github.com/salty-max/gero-lab) can
+implement against this file alone, and gero-lab's own specification
+describes what *it* does with the module rather than restating any of
+it here. A rule written in two places is a rule that will eventually
+disagree with itself.
 
-gero-lab is a **toolchain cockpit**, not a game runtime. The
-peripherals — display, audio, input — belong to
-[gtx-16](./gtx-16.md), which is a separate consumer of the same VM.
-
----
-
-## 1. Layers
-
-Three layers, two boundaries. Each boundary is a contract that can be
-versioned and tested independently.
-
-```
-┌─────────────────────────────────────────────┐
-│  UI (main thread)                           │
-│  editor · panes · transport controls        │
-└───────────────┬─────────────────────────────┘
-                │  worker protocol (§3)
-┌───────────────┴─────────────────────────────┐
-│  Engine worker                              │
-│  session state · run loop · event batching  │
-└───────────────┬─────────────────────────────┘
-                │  wasm exports (§2)
-┌───────────────┴─────────────────────────────┐
-│  gero.wasm                                  │
-│  asm · lang · vm · disasm                   │
-└─────────────────────────────────────────────┘
-```
-
-The UI never touches the wasm module directly. The worker owns the VM
-instance and every allocation inside the module; the UI owns nothing
-but plain serializable messages. This keeps the run loop off the main
-thread, so a tight `while` loop in a user program cannot freeze the
-page.
-
-The lower boundary is also where the repositories divide: `gero.wasm`
-is built and gated in the gero repository, the two layers above it live
-with the application. §10 says why.
+The peripherals a game needs — display, audio, input — are not here.
+Those belong to [gtx-16](./gtx-16.md), a separate consumer of the same
+VM.
 
 ---
 
-## 2. The wasm surface
-
-`gero` builds to `wasm32-freestanding` with an explicit C-ABI export
-set. Freestanding rather than `wasm32-wasi`: the lab needs a narrow,
-purpose-built surface, not a POSIX shim. Print syscalls already route
-through `vm.host.out`, so the binding captures them into a ring buffer
-instead of needing stdout. The `wasm32-wasi` target stays as-is for
-CLI use.
-
-### 2.1 Memory ownership
+## 1. Memory ownership
 
 The module owns a bump arena reset per operation. Every export that
 returns variable-length data writes into a module-owned buffer and
@@ -120,7 +78,8 @@ Exhaustion is **reported, not trapped**: `gero_alloc` returns `0` and
 an export returns `out_of_memory`. A host raises its ceiling and
 retries rather than meeting an instance that has to be discarded.
 
-### 2.2 Exports
+
+## 2. Exports
 
 **Toolchain**
 
@@ -198,7 +157,8 @@ sessions are independent.
 `halted_on_fault`, `breakpoint` — plus the instruction count actually
 retired, which is under `n` when the run stopped early.
 
-### 2.3 Breakpoints
+
+## 3. Breakpoints
 
 Breakpoints use the ISA's `brk` opcode rather than a worker-side
 address set. Setting one patches the byte at the address and stores the
@@ -246,45 +206,8 @@ which is the intended path.
 
 ---
 
-## 3. Worker protocol
 
-A versioned message protocol over comlink. `PROTOCOL_VERSION` is a
-single integer; the UI refuses to connect to a worker whose version it
-doesn't recognize, which turns a stale service-worker cache into a
-clear error instead of silent misbehavior.
-
-### 3.1 Commands
-
-| Command | Payload |
-|---|---|
-| `init` | memory size, entry override |
-| `build` | source set + entry file + language |
-| `load` | `.gx` bytes (skips the toolchain — for a shared image) |
-| `reset` | — |
-| `run` | starting `ip` |
-| `pause` | — |
-| `step` | instruction count |
-| `breakpoints` | add / remove address lists |
-| `peek` | address, length, request id |
-| `poke` | address, bytes |
-| `setReg` | register, value |
-| `irq` | vector |
-
-### 3.2 Events
-
-| Event | Payload |
-|---|---|
-| `ready` | protocol version, gero version |
-| `built` | `.gx` size, entry, debug info (§6), diagnostics |
-| `paused` | reason (`breakpoint` / `manual` / `fault` / `halt`), `ip`, fault detail |
-| `snapshot` | register file |
-| `mem` | address, bytes, request id |
-| `output` | text drained from the print buffer |
-| `trace` | `ip`, before / after snapshots |
-| `irq` | phase (`enter` / `exit`), `ip` |
-| `bp` | added / removed / total |
-
-### 3.3 Run loop and back-pressure
+## 4. Run loop and back-pressure
 
 `run` executes in slices — a fixed instruction budget per turn — and
 yields between them so `pause` is honored promptly. Events coalesce
@@ -299,13 +222,14 @@ highest the loop runs uninterrupted until a breakpoint, fault, or
 
 ---
 
-## 4. Source languages
+
+## 5. Source languages
 
 Both `.gas` and `.gr` are first-class. Neither is a later addition:
 the language discriminant is present in every toolchain export, every
 `build` command, and the editor configuration.
 
-### 4.1 Per-language behavior
+### 5.1 Per-language behavior
 
 | | `.gas` | `.gr` |
 |---|---|---|
@@ -314,7 +238,8 @@ the language discriminant is present in every toolchain export, every
 | Multi-file | `include` (textual splice) | `use` (module import) |
 | Formatter | `gero_format(…, gas)` | `gero_format(…, gr)` |
 
-### 4.2 The virtual file set
+
+### 5.2 The virtual file set
 
 A session holds a named set of source buffers, not a single string.
 `include` and `use` resolve against that set, so a multi-file program
@@ -326,52 +251,8 @@ reachable ones.
 Resolution is closed: a path that escapes the set is a diagnostic, not
 a network fetch. The lab never loads code from a URL at build time.
 
-### 4.3 Highlighting
 
-The editor colours source with the **same tree-sitter grammars the
-native editors use**, loaded in the browser through
-[`web-tree-sitter`](https://github.com/tree-sitter/tree-sitter/tree/master/lib/binding_web):
-
-| Language | Grammar | Artifact |
-|---|---|---|
-| `.gas` | [`tree-sitter-gero-asm`](https://github.com/salty-max/tree-sitter-gero-asm) | `tree-sitter-gero_asm.wasm` |
-| `.gr` | [`tree-sitter-gero-lang`](https://github.com/salty-max/tree-sitter-gero-lang) | `tree-sitter-gero_lang.wasm` |
-
-Each grammar builds that artifact in CI on tag and attaches it to the
-release, so the lab fetches a versioned file rather than compiling a
-grammar it cannot compile:
-
-```
-https://github.com/salty-max/tree-sitter-<name>/releases/download/<tag>/tree-sitter-<name>.wasm
-```
-
-The `queries/highlights.scm` shipped alongside each grammar is the
-lab's theme mapping too. Editors and the lab therefore colour the same
-token the same way by construction, not by two teams agreeing.
-
-**Why not a CodeMirror or Monaco mode.** A hand-written mode is a
-second grammar, and it drifts — the failure §11 records for the VM,
-in a smaller place. The lab holds no token table for the same reason it
-holds no opcode table.
-
-**Why not semantic tokens.** They would come from the wasm module and
-so could not drift, but they need the symbol table `docs/lsp.md` §6
-gates hover and go-to-definition on. Highlighting does not need to wait
-for that, and a grammar answers it better regardless: it colours a
-buffer that does not compile, which is most buffers most of the time.
-
-**A language with no grammar renders as plain text.** That is the only
-fallback. It is not a licence to write a mode for the gap — the gap is
-closed by publishing a grammar, and both languages have one.
-
-**Build order.** The lab's highlighting depends on a tagged grammar
-release carrying its `.wasm`. Both do from `tree-sitter-gero-asm`
-v0.3.1 and `tree-sitter-gero-lang` v0.1.1 onward; earlier tags carry
-the grammar but no browser artifact.
-
----
-
-## 5. Diagnostics
+## 6. Diagnostics
 
 One contract across the CLI, the editor, and the lab. The wasm
 diagnostics array is the same shape `gero check --format=json` emits —
@@ -389,7 +270,8 @@ markers rather than the CLI's caret art.
 
 ---
 
-## 6. Debug information
+
+## 7. Debug information
 
 The cockpit maps machine state back to source. Two tables, both
 carried in the `.gx` debug section and returned by `built`:
@@ -410,32 +292,8 @@ degrade to address-level ones.
 
 ---
 
-## 7. Persistence
 
-Three kinds of state, three lifetimes:
-
-- **Source buffers** — the working set, saved to browser storage on
-  edit and restored on load. Losing a tab must not lose work.
-- **SRAM** — a program's `.sav` banks, exposed through
-  `gero_vm_sram`. Stored per program identity so a cart's saved game
-  survives a reload, matching what the CLI writes to a `.sav` file.
-- **Session state** — breakpoints, pane layout, speed, theme. Local
-  to the browser; never part of a shared link.
-
-## 8. Sharing
-
-A program shares as a URL carrying the compressed source set and entry
-point — not a `.gx`. Sharing source means the link stays readable, and
-the recipient assembles with their own toolchain version rather than
-running an opaque blob from a stranger.
-
-Links are self-contained: no server, no stored state, no account. A
-shared link that exceeds a practical URL length is refused with a
-message suggesting file download instead of silently truncating.
-
----
-
-## 9. Samples
+## 8. Samples
 
 The lab ships a sample set covering both languages, drawn from the
 repository's own example corpus so samples cannot drift from what CI
@@ -447,7 +305,8 @@ surprise — the sample set is gated the same way the example corpus is.
 
 ---
 
-## 10. Build and gating
+
+## 9. Build and gating
 
 The split follows the toolchain boundary, not the product boundary.
 
@@ -477,7 +336,8 @@ to rules written for a VM serves neither.
 - `build.zig.zon`'s `paths` allowlist excludes the wasm entry point, so
   nothing lab-shaped reaches consumers who fetch gero as a library.
 
-### Why the application may lag and the module may not
+
+### 9.1 Why the application may lag and the module may not
 
 A module that lags is a playground demonstrating semantics the VM no
 longer has — the `ret`-encoding drift of §11, shipped as a feature.
@@ -493,7 +353,8 @@ versioned: `PROTOCOL_VERSION` (§3) and the `Result` encoding (§2.2).
 An application built against an older module refuses to connect and
 says so. It does not quietly misbehave.
 
-### Samples across the boundary
+
+### 9.2 Samples across the boundary
 
 §9 draws the sample set from `examples/`, which lives here. The wasm
 module's release therefore carries the sample sources alongside it —
@@ -518,54 +379,3 @@ walkthroughs (`gero compile`, `brew install`) stay in the markdown
 until the chapters grow a lab-shaped telling.
 
 ---
-
-## 11. What gero-lab explicitly does NOT do
-
-These absences are deliberate.
-
-- **No peripherals.** No display, audio, or input. That is gtx-16's
-  layer; a lab that grew a framebuffer would become a second, worse
-  console.
-- **No server.** No accounts, no stored programs, no build queue.
-  Everything runs in the browser; sharing is a URL.
-- **No second implementation.** Every toolchain and VM operation goes
-  through the wasm module. The lab holds no opcode table, no
-  instruction semantics, no assembler. A prior TypeScript
-  implementation demonstrated the failure mode: it drifted to a
-  different `ret` encoding than the ISA and silently stopped being
-  able to run current programs.
-- **No editing of `.gx` bytes.** The lab is a source-level tool.
-  Memory poking during a session is a debugger affordance, not an
-  image editor.
-- **No network fetches at build time.** Imports resolve within the
-  session's file set.
-
----
-
-## 12. Why this shape
-
-**Why a worker rather than the main thread?** A user program is
-arbitrary code, including an infinite loop. On the main thread that
-hangs the page and loses the user's source. In a worker it is a
-`pause` away from recovery.
-
-**Why `brk` rather than an address set?** Address comparison costs
-something on every instruction, forever, to support a feature used
-rarely. Patching costs something once per breakpoint toggle. The ISA
-already defines the opcode and the VM already reports it.
-
-**Why compile in the browser rather than on a server?** The toolchain
-is a few hundred kilobytes of wasm and runs in milliseconds. A server
-would add latency, an availability dependency, and an attack surface,
-to do work the client can do locally.
-
-**Why share source rather than images?** A `.gx` is opaque and
-version-bound. Source is readable, diffable, and rebuilt by the
-recipient's toolchain — so a shared link keeps working across format
-changes that would invalidate a blob.
-
-**Why both languages from the start?** The lang compiler is the
-larger half of the project. A playground that demonstrates only the
-assembler would misrepresent what Gero is, and retrofitting a second
-language into a UI built around one is more work than accommodating
-both from the beginning.

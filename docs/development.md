@@ -167,7 +167,7 @@ wasm32-wasi. It needs `-fwasmtime` and `wasmtime` on PATH, so it is
 not part of the local `ci` aggregate — GitHub Actions installs the
 runtime and gates it there.
 
-`zig build wasm` builds `gero.wasm` (`docs/gero-lab.md` §2) and emits
+`zig build wasm` builds `gero.wasm` (`docs/wasm.md` §2) and emits
 the sample corpus and both books (`books.json`, packed from
 `docs/book/` and `docs/machine/`) alongside it. `zig build test-wasm-examples` runs
 every example through that module and diffs against the same

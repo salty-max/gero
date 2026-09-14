@@ -4,7 +4,7 @@
 //! Everything here is a function of the session's allocator and its
 //! file set — no filesystem, and no state of its own. A name the set
 //! does not hold is a diagnostic rather than a read, which is what
-//! `docs/gero-lab.md` §4.2 means by resolution being closed.
+//! `docs/wasm.md` §5.2 means by resolution being closed.
 
 const std = @import("std");
 const gero = @import("gero");

@@ -1,4 +1,4 @@
-//! The virtual file set (`docs/gero-lab.md` §4.2).
+//! The virtual file set (`docs/wasm.md` §5.2).
 //!
 //! A session holds a named set of source buffers rather than one
 //! string, and `include` / `use` resolve against that set — so a

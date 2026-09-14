@@ -5,7 +5,7 @@ bump: minor
 feat(wasm): a `wasm32-freestanding` module with a C-ABI boundary
 
 `zig build wasm` produces `gero.wasm` — the surface browser hosts call
-(`docs/gero-lab.md` §2). Freestanding rather than wasi: the consumer
+(`docs/wasm.md` §2). Freestanding rather than wasi: the consumer
 wants a narrow purpose-built surface, not a POSIX shim.
 
 This ships the two conventions every later export depends on. Memory

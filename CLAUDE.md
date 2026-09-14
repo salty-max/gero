@@ -10,7 +10,9 @@ The fantasy-console (gtx-16) and the gero-lab web application live
 elsewhere and consume gero as a library — out of scope for this repo.
 The wasm module they consume is not: it is a `zig build` target here,
 gated by a smoke test that runs the example corpus through it
-(`docs/gero-lab.md` §10).
+(`docs/wasm.md` §9). That file is the contract a browser host
+implements against; what the lab does with it is the lab's own
+specification.
 
 For source layout, full lint rule list, branch / commit /
 changeset conventions, release flow, and tech-stack reference,
@@ -40,7 +42,7 @@ guess from the codebase shape when the spec defines them.
 | [`tooling.md`](docs/tooling.md) | Project setup — installing the CLI, wiring editors, CI integration. |
 | [`asm-vs-lang.md`](docs/asm-vs-lang.md) | Which layer to write in — asm, Gero, or the bytecode both emit. Worked comparison with measured cycles. Positioning, not contract: it cites the specs rather than defining anything. |
 | [`asm-cookbook.md`](docs/asm-cookbook.md) | Working asm recipes — boot, IVT, banks, syscalls, etc. Reference for "how do I do X in asm?". |
-| [`gero-lab.md`](docs/gero-lab.md) | Browser playground spec — the wasm export surface (§2) is a `zig build` target here; the application (§3 onward) is out-of-repo. §10 draws the line. |
+| [`wasm.md`](docs/wasm.md) | The `gero.wasm` module contract — exports, memory ownership, the run loop, the virtual file set, samples, and the build. What a browser host may rely on. The lab's own repository describes what it does with the module; nothing is stated in both. |
 | [`gtx-16.md`](docs/gtx-16.md) | Fantasy-console spec — consumes Gero as its CPU/VM. Out-of-repo, but the contract lives here. |
 
 These specs follow the "complete designs, no deferral" rule:
@@ -380,7 +382,7 @@ zig build verify  # pre-push (~3s) — quick + lint + asm example
                   # REQUIRED green before pushing.
 
 zig build wasm    # the gero.wasm module for browser hosts
-                  # (docs/gero-lab.md §2). Part of `ci`.
+                  # (docs/wasm.md §2). Part of `ci`.
 
 zig build docs    # the public API reference, from the /// comments,
                   # into zig-out/docs/api. Part of `ci`.
