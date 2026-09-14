@@ -512,7 +512,7 @@ test "appendAttributed: maps a diagnostic in an imported region to its file" {
     try std.testing.expectEqual(@as(u32, 4), out.items[1].diagnostics[0].span.end);
 }
 
-test "appendAttributed: a diagnostic keeps its help and suggestion" {
+test "appendAttributed: a diagnostic keeps its help and fix" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -530,7 +530,7 @@ test "appendAttributed: a diagnostic keeps its help and suggestion" {
         .message = "a",
         .span = .{ .start = 1, .end = 3 },
         .help = "did you mean `ROOT`?",
-        .suggestion = "ROOT",
+        .fix = .{ .rename = "ROOT" },
     });
 
     var out: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
@@ -538,7 +538,7 @@ test "appendAttributed: a diagnostic keeps its help and suggestion" {
 
     const d = out.items[0].diagnostics[0];
     try std.testing.expectEqualStrings("did you mean `ROOT`?", d.help.?);
-    try std.testing.expectEqualStrings("ROOT", d.suggestion.?);
+    try std.testing.expectEqualStrings("ROOT", d.fix.?.rename);
 }
 
 test "appendAttributed: a secondary span is remapped into its own file" {

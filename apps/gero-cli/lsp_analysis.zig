@@ -35,9 +35,10 @@ pub const Diagnostic = struct {
     severity: u8,
     code: []const u8,
     message: []const u8,
-    /// Name the checker suggests in place of `range`, when it has one.
-    /// Backs the quick-fix a `textDocument/codeAction` offers.
-    suggestion: ?[]const u8 = null,
+    /// What the checker decided would fix this, when it decided
+    /// anything. Backs the quick-fix a `textDocument/codeAction`
+    /// offers.
+    fix: ?gero.lang.Fix = null,
 };
 
 /// One analysis: what to publish, and which files it read to decide.
@@ -114,7 +115,7 @@ fn diagnoseGr(
             .severity = severityOf(d.severity),
             .code = try arena.dupe(u8, d.code),
             .message = try arena.dupe(u8, d.message),
-            .suggestion = if (d.suggestion) |g| try arena.dupe(u8, g) else null,
+            .fix = try dupeFix(arena, d.fix),
         });
     }
     return .{
@@ -174,7 +175,7 @@ const Unplaced = struct {
     severity: u8,
     code: []const u8,
     message: []const u8,
-    suggestion: ?[]const u8 = null,
+    fix: ?gero.lang.Fix = null,
 };
 
 /// What resolving a `.gas` document's include graph produced.
@@ -282,7 +283,7 @@ fn place(text: []const u8, start: u32, end: u32, d: Unplaced) Diagnostic {
         .severity = d.severity,
         .code = d.code,
         .message = d.message,
-        .suggestion = d.suggestion,
+        .fix = d.fix,
     };
 }
 
@@ -291,6 +292,20 @@ fn pathsOf(arena: std.mem.Allocator, files: anytype) std.mem.Allocator.Error![]c
     const out = try arena.alloc([]const u8, files.len);
     for (files, 0..) |f, i| out[i] = f.path;
     return out;
+}
+
+/// Copy a fix's borrowed strings into `arena`, which outlives the
+/// checked program they point into.
+fn dupeFix(arena: std.mem.Allocator, fix: ?gero.lang.Fix) std.mem.Allocator.Error!?gero.lang.Fix {
+    const f = fix orelse return null;
+    return switch (f) {
+        .rename => |name| .{ .rename = try arena.dupe(u8, name) },
+        .import => |imp| .{ .import = .{
+            .module = try arena.dupe(u8, imp.module),
+            .name = try arena.dupe(u8, imp.name),
+        } },
+        .remove_import => .remove_import,
+    };
 }
 
 fn severityOf(s: gero.lang.Severity) u8 {
@@ -313,7 +328,7 @@ fn langDiagnostics(
             .severity = severityOf(d.severity),
             .code = try arena.dupe(u8, d.code),
             .message = try arena.dupe(u8, d.message),
-            .suggestion = if (d.suggestion) |g| try arena.dupe(u8, g) else null,
+            .fix = try dupeFix(arena, d.fix),
         }));
     }
     return out.toOwnedSlice(arena);

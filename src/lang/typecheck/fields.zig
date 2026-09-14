@@ -225,7 +225,7 @@ pub fn emitUndefinedField(self: *Checker, type_name: []const u8, field_name: []c
         .message = msg,
         .span = span,
         .help = help,
-        .suggestion = candidate,
+        .fix = if (candidate) |c| diag_mod.Fix{ .rename = c } else null,
         .secondary = secondary,
     });
 }

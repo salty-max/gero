@@ -7,6 +7,7 @@ const types = @import("../types.zig");
 const diag_mod = @import("../diagnostic.zig");
 const typecheck = @import("../typecheck.zig");
 const suggestions = @import("suggestions.zig");
+const stdlib_exports = @import("stdlib_exports.zig");
 const relations = @import("relations.zig");
 const scope_mod = @import("../scope.zig");
 
@@ -29,15 +30,15 @@ pub fn emitSpan(
     });
 }
 
-/// `emitSpanHelp` that also records the name it suggests, so a tool
-/// can offer to apply it without reading the help prose.
-fn emitSpanHelpSuggesting(
+/// `emitSpanHelp` that also records the correction, so a tool can
+/// offer to apply it without reading the help prose.
+pub fn emitSpanHelpFixing(
     self: *Checker,
     code: []const u8,
     span: ast.Span,
     message: []const u8,
     help: []const u8,
-    suggestion: []const u8,
+    fix: diag_mod.Fix,
 ) WalkError!void {
     try self.diagnostics.append(self.diag_alloc, .{
         .severity = .fatal,
@@ -45,7 +46,7 @@ fn emitSpanHelpSuggesting(
         .message = message,
         .span = span,
         .help = help,
-        .suggestion = suggestion,
+        .fix = fix,
     });
 }
 
@@ -269,5 +270,31 @@ pub fn emitSpanWithSuggestion(
 ) WalkError!void {
     const name = candidate orelse return self.emitSpan(code, span, message);
     const help = try std.fmt.allocPrint(self.arena, "did you mean `{s}`?", .{name});
-    try emitSpanHelpSuggesting(self, code, span, message, help, name);
+    try emitSpanHelpFixing(self, code, span, message, help, .{ .rename = name });
+}
+
+/// Emit an undefined-name diagnostic, suggesting either a near
+/// spelling already in scope or the import that would bring the name
+/// in.
+///
+/// A spelling match wins. A name one edit from something local is far
+/// more likely a typo than a deliberate reach for the stdlib, and the
+/// import is the more disruptive correction of the two.
+pub fn emitUndefined(
+    self: *Checker,
+    code: []const u8,
+    span: ast.Span,
+    message: []const u8,
+    candidate: ?[]const u8,
+    name: []const u8,
+) WalkError!void {
+    if (candidate != null) return emitSpanWithSuggestion(self, code, span, message, candidate);
+    const imp = stdlib_exports.importFor(name) orelse
+        return self.emitSpan(code, span, message);
+    const help = try std.fmt.allocPrint(
+        self.arena,
+        "`{s}` is in the stdlib — add `use {s} from {s}`",
+        .{ imp.name, imp.name, imp.module },
+    );
+    try emitSpanHelpFixing(self, code, span, message, help, .{ .import = imp });
 }

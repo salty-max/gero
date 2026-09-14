@@ -8,9 +8,9 @@ When a name does not resolve, the type-checker already looks for the
 closest spelling in scope and writes `help: did you mean \`x\`?`. It
 threw `x` away afterwards, leaving a tool that wanted to apply the fix
 to parse the name back out of an English sentence. `Diagnostic` now
-carries it as `suggestion`, the bare name, so a `textDocument/
-codeAction` is a `TextEdit` replacing the diagnostic's own span with
-what the checker decided.
+carries it structured, as `Diagnostic.fix`, so a
+`textDocument/codeAction` is a `TextEdit` built from what the checker
+decided rather than from its prose.
 
 Nothing re-derives the correction, which means an action can never
 disagree with the diagnostic offering it, and a diagnostic the checker
