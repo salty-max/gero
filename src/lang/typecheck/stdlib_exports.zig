@@ -12,16 +12,32 @@ const stdlib = @import("stdlib.zig");
 const mem_builtin = @import("mem_builtin.zig");
 const str_builtin = @import("str_builtin.zig");
 
+/// Every stdlib module, in the order a name is searched.
+pub const module_names = stdlib.module_names ++ [_][]const u8{ "mem", "str" };
+
+/// Every name `module` provides, for completion after `module.`.
+/// Empty for a name that is not a stdlib module.
+pub fn memberNames(module: []const u8) []const []const u8 {
+    if (std.mem.eql(u8, module, "mem")) return &mem_builtin.member_names;
+    if (std.mem.eql(u8, module, "str")) return &str_builtin.module_functions;
+    return stdlib.memberNames(module);
+}
+
+/// `true` when `name` is a stdlib module a `use` can name.
+pub fn isModule(name: []const u8) bool {
+    return memberNames(name).len > 0;
+}
+
 /// The import that would bring `name` into scope, or `null` when no
 /// stdlib module exports it.
 ///
 /// No two modules export the same name, so the answer is unambiguous
 /// and a caller never has to choose.
 pub fn importFor(name: []const u8) ?diag_mod.Fix.Import {
-    for (stdlib.module_names) |module| {
-        if (stdlib.isMember(module, name)) return .{ .module = module, .name = name };
+    for (module_names) |module| {
+        for (memberNames(module)) |member| {
+            if (std.mem.eql(u8, member, name)) return .{ .module = module, .name = name };
+        }
     }
-    if (mem_builtin.lookupMemBuiltin(name) != null) return .{ .module = "mem", .name = name };
-    if (str_builtin.isModuleFunction(name)) return .{ .module = "str", .name = name };
     return null;
 }

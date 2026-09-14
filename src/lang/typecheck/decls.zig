@@ -5,6 +5,7 @@ const scope_mod = @import("../scope.zig");
 const typecheck = @import("../typecheck.zig");
 const type_resolve = @import("type_resolve.zig");
 const stdlib = @import("stdlib.zig");
+const stdlib_exports = @import("stdlib_exports.zig");
 
 const Checker = typecheck.Checker;
 const WalkError = error{OutOfMemory};
@@ -116,6 +117,20 @@ fn registerUseDecl(self: *Checker, d: ast.UseDecl) WalkError!void {
             .decl_span = d.module,
             .ty = null,
         });
+        // A stdlib module has signature tables rather than
+        // declarations, so nothing would otherwise be recorded for it
+        // and `math.` would complete to nothing. Owned by the bound
+        // name, which is the alias when there is one.
+        for (stdlib_exports.memberNames(self.lexeme(d.module))) |member| {
+            try self.members.append(self.arena, .{
+                .owner = name,
+                .name = member,
+                .kind = .function,
+                // Builtins have no declaring identifier; the `use` is
+                // the nearest thing to point at.
+                .decl_span = d.module,
+            });
+        }
     }
 }
 

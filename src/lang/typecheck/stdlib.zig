@@ -61,6 +61,27 @@ const test_sigs = [_]Sig{
 /// The modules this file owns, in the order a name is searched.
 pub const module_names = [_][]const u8{ "math", "bank", "test" };
 
+/// Every function `module` provides, for completion after `module.`.
+/// Empty for a name this file does not own.
+pub fn memberNames(module: []const u8) []const []const u8 {
+    if (std.mem.eql(u8, module, "math")) return &math_names;
+    if (std.mem.eql(u8, module, "bank")) return &bank_names;
+    if (std.mem.eql(u8, module, "test")) return &test_names;
+    return &.{};
+}
+
+/// The `name` of every entry in `sigs`, resolved at compile time so
+/// the list cannot drift from the signatures it describes.
+fn namesOf(comptime sigs: []const Sig) [sigs.len][]const u8 {
+    var out: [sigs.len][]const u8 = undefined;
+    for (sigs, 0..) |sig, i| out[i] = sig.name;
+    return out;
+}
+
+const math_names = namesOf(&math_sigs);
+const bank_names = namesOf(&bank_sigs);
+const test_names = namesOf(&test_sigs);
+
 /// `true` for the modules this file owns. `mem` is excluded — it keeps
 /// its own resolver.
 pub fn isModule(name: []const u8) bool {

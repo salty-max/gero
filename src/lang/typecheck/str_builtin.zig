@@ -39,11 +39,9 @@ pub fn checkMethod(self: *Checker, m: ast.MethodCallExpr) WalkError!?*const type
     return null;
 }
 
-/// `true` when `name` is a function of the `str` module — the forms
-/// reached as `str.name(…)` rather than as a method on a `str` value.
-pub fn isModuleFunction(name: []const u8) bool {
-    return std.mem.eql(u8, name, "format") or std.mem.eql(u8, name, "format_into");
-}
+/// The functions reached as `str.name(…)`, rather than as methods on
+/// a `str` value — `len` / `at` / `cmp` are the latter (§3.2.1).
+pub const module_functions = [_][]const u8{ "format", "format_into" };
 
 /// Type-check a `str` module call — `str.format(fmt, args...)` and
 /// `str.format_into(dst, fmt, args...)` (§3.2.2). The format string is a
