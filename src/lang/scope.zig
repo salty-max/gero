@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const ast = @import("ast.zig");
 const types = @import("types.zig");
 
@@ -55,11 +56,23 @@ pub const Scope = struct {
     parent: ?*Scope,
     allocator: std.mem.Allocator,
     entries: std.StringHashMapUnmanaged(SymbolInfo) = .{},
+    /// Source range this scope covers, when the construct opening it
+    /// knows one. `null` at module root, which covers the whole file,
+    /// and wherever a scope is opened for something with no body of
+    /// its own. Recorded so a consumer can ask which names are visible
+    /// at an offset — a scope is gone by the time anything asks, so
+    /// the range has to be written down while it exists.
+    span: ?ast.Span = null,
 
     /// Build a fresh scope. Pass `parent = null` for the module
     /// root; pass an existing scope to nest a child.
     pub fn init(allocator: std.mem.Allocator, parent: ?*Scope) Scope {
         return .{ .parent = parent, .allocator = allocator };
+    }
+
+    /// A child scope covering `span`.
+    pub fn initSpanned(allocator: std.mem.Allocator, parent: ?*Scope, span: ?ast.Span) Scope {
+        return .{ .parent = parent, .allocator = allocator, .span = span };
     }
 
     /// Release the scope's hash-map. Keys reference the source

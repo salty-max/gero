@@ -40,6 +40,25 @@ pub const Binding = struct {
     module: ?[]const u8 = null,
 };
 
+/// A name, and where it can be seen.
+///
+/// Completion asks a question the binding table cannot answer: not
+/// what an existing name means, but which names could be written here
+/// at all. That needs the scopes the checker opens and closes as it
+/// walks, which are gone by the time an editor asks — so each
+/// declaration is recorded with the range of the scope it was
+/// declared in.
+pub const VisibleName = struct {
+    name: []const u8,
+    kind: scope_mod.SymbolKind,
+    /// The declaring identifier, so a consumer can offer only names
+    /// declared before the cursor.
+    decl_span: ast.Span,
+    /// The range the name is visible in. `null` means module scope —
+    /// visible everywhere in the file.
+    scope_span: ?ast.Span,
+};
+
 /// A type-checked program: the AST it was built from, the diagnostics
 /// the check produced, and what the checker learned along the way —
 /// expression types, binder types, and the declaration each reference
@@ -70,6 +89,9 @@ pub const CheckedProgram = struct {
     /// program type-checks — an editor wants this most in a buffer
     /// that does not compile. Backed by `type_arena`.
     bindings: std.AutoHashMapUnmanaged(u32, Binding),
+    /// Every declaration, with the range it is visible in. Ordered as
+    /// the checker met them. Backed by `type_arena`.
+    visible: []const VisibleName,
     type_arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
 
@@ -235,6 +257,7 @@ pub fn typecheckGraph(
         .non_nil = .{},
         .binder_types = .{},
         .bindings = .{},
+        .visible = .empty,
         .enum_registry = .{},
         .struct_registry = .{},
         .class_registry = .{},
@@ -335,6 +358,7 @@ pub fn typecheckGraph(
         .variadics = c.variadic_info,
         .binder_types = c.binder_types,
         .bindings = c.bindings,
+        .visible = c.visible.items,
         .module_variadic_arities = c.module_variadic_arities,
         .type_arena = arena,
         .allocator = allocator,
@@ -499,6 +523,9 @@ pub const Checker = struct {
     binder_types: std.AutoHashMapUnmanaged(u32, *const types.Type),
     /// Resolved references — see `CheckedProgram.bindings`.
     bindings: std.AutoHashMapUnmanaged(u32, Binding),
+    /// Declarations and their visibility — see
+    /// `CheckedProgram.visible`.
+    visible: std.ArrayListUnmanaged(VisibleName),
     /// Enum-name → decl pointer (pass 1).
     enum_registry: std.StringHashMapUnmanaged(*const ast.EnumDecl),
     /// Struct-name → decl pointer.
@@ -828,9 +855,17 @@ pub const Checker = struct {
         }
     }
 
+    /// The range a body covers, for the scope opened around it. An
+    /// empty body has no range and declares nothing, so `null` costs
+    /// nothing.
+    fn spanOf(body: []const ast.Statement) ?ast.Span {
+        if (body.len == 0) return null;
+        return .{ .start = body[0].span().start, .end = body[body.len - 1].span().end };
+    }
+
     fn walkInScope(self: *Checker, body: []const ast.Statement) WalkError!void {
         const saved = self.current_scope;
-        var child: Scope = .init(self.arena, saved);
+        var child: Scope = .initSpanned(self.arena, saved, spanOf(body));
         self.current_scope = &child;
         defer self.current_scope = saved;
         try self.walkStatementSequence(body);

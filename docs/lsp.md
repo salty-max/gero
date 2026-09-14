@@ -92,7 +92,7 @@ something it imported changes — the server keeps no text for it.
 
 | Request | Behavior |
 |---------|----------|
-| `initialize` | Advertises `textDocumentSync: 1`, `documentFormattingProvider`, `definitionProvider`, `hoverProvider`, `referencesProvider` and `inlayHintProvider`. |
+| `initialize` | Advertises `textDocumentSync: 1`, `documentFormattingProvider`, `definitionProvider`, `hoverProvider`, `referencesProvider`, `inlayHintProvider` and `completionProvider`. |
 | `shutdown` | Answers `null`. |
 | `exit` | Leaves with `0` after a `shutdown`, `1` without one. |
 | `textDocument/didOpen` / `didChange` | Re-analyze, then publish. |
@@ -103,6 +103,7 @@ something it imported changes — the server keeps no text for it.
 | `textDocument/hover` | The name, its type where known, and what kind of declaration it is (§6). |
 | `textDocument/references` | Every reference to the declaration under the cursor, in source order. `context.includeDeclaration` decides whether the declaration is among them. |
 | `textDocument/inlayHint` | The inferred type of each `let` the source left unannotated (§6). |
+| `textDocument/completion` | Names visible at the position, sorted, with no trigger characters — every completion here is an identifier. |
 
 Any other request is answered `-32601` (method not found) rather than
 left hanging. Unknown *notifications* are dropped, since they carry no
@@ -234,11 +235,23 @@ of each named binding, keyed by its declaring identifier. Only a `let`
 the source left unannotated gets one: repeating a type the author
 wrote is noise, and the point is to show what was inferred.
 
+Completion asks something the binding table cannot answer. That table
+maps references that exist; completion is about names that do not yet.
+So the checker records `CheckedProgram.visible`: every declaration with
+the range of the scope it was declared in, because the scopes
+themselves are opened and closed during the walk and are gone before an
+editor asks.
+
+A name is offered when its scope covers the cursor and it was declared
+before the cursor — a `let` is not in scope on the line above itself. A
+module-level declaration has no scope range, is visible throughout the
+file, and is therefore offered above its own line, which is how `def`
+behaves.
+
 ### Not yet provided
 
-Completion, semantic tokens and code actions. Each reads the same
-tables and none needs anything further from the front ends; they are
-unbuilt rather than blocked.
+Semantic tokens and code actions. Both read tables that now exist;
+they are unbuilt rather than blocked.
 
 `.gas` is not wired for either feature yet. The assembler records
 where each label and constant was declared (`asm.Symbol.decl_start`),
