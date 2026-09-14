@@ -318,6 +318,14 @@ pub fn checkClassDecl(self: *Checker, d: ast.ClassDecl) WalkError!void {
     self.current_class_name = self.lexeme(d.name);
     defer self.current_class_name = saved_name;
 
+    if (d.extends) |ext| {
+        // `extends Base` names the parent — a reference to it.
+        const parent_name = self.resolveImportAlias(self.lexeme(ext));
+        if (self.current_scope.lookup(parent_name)) |info| {
+            try self.recordBinding(ext, parent_name, info);
+        }
+    }
+
     if (d.extends) |ext| if (self.class_registry.get(self.lexeme(ext))) |parent| {
         if (annotations.hasAnnotation(self, parent.annotations, "final")) {
             const msg = try std.fmt.allocPrint(

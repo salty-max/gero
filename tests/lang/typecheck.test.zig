@@ -3947,6 +3947,141 @@ test "typecheck: a parameter and a def resolve to their own kinds" {
     try std.testing.expectEqualStrings("twice", cb.name);
 }
 
+/// The declaration offset every binding in `src` points at for a
+/// reference spelled `needle`, so a test can count the references to
+/// one declaration the way find-references does.
+fn countReferencesTo(checked: *const gero.lang.CheckedProgram, decl_offset: u32) usize {
+    var n: usize = 0;
+    var it = checked.bindings.valueIterator();
+    while (it.next()) |b| {
+        if (b.decl_span.start == decl_offset) n += 1;
+    }
+    return n;
+}
+
+test "typecheck: a type name in an annotation records a reference" {
+    const src =
+        \\struct Vec2
+        \\  x: i16
+        \\end
+        \\def take(v: Vec2) -> Vec2
+        \\  return v
+        \\end
+        \\def main()
+        \\  let a: Vec2 = Vec2 { x: 1 }
+        \\  print a.x
+        \\end
+        \\
+    ;
+    var r = try check(src);
+    defer r.stream.deinit();
+    defer r.tree.deinit();
+    defer r.checked.deinit();
+
+    const decl: u32 = @intCast(std.mem.indexOf(u8, src, "struct Vec2").? + "struct ".len);
+    // Parameter type, return type, `let` annotation, struct literal.
+    try std.testing.expectEqual(@as(usize, 4), countReferencesTo(&r.checked, decl));
+
+    const ann = std.mem.indexOf(u8, src, "let a: Vec2").? + "let a: ".len;
+    const b = r.checked.bindings.get(@intCast(ann)) orelse return error.NoBinding;
+    try std.testing.expectEqualStrings("Vec2", b.name);
+    try std.testing.expectEqual(gero.lang.scope.SymbolKind.struct_, b.kind);
+    try std.testing.expectEqual(decl, b.decl_span.start);
+}
+
+test "typecheck: `extends` records a reference to the parent class" {
+    const src =
+        \\class Base
+        \\  let n: i16
+        \\end
+        \\class Kid extends Base end
+        \\def main()
+        \\  let k = Kid()
+        \\  print k.n
+        \\end
+        \\
+    ;
+    var r = try check(src);
+    defer r.stream.deinit();
+    defer r.tree.deinit();
+    defer r.checked.deinit();
+
+    const decl: u32 = @intCast(std.mem.indexOf(u8, src, "class Base").? + "class ".len);
+    try std.testing.expectEqual(@as(usize, 1), countReferencesTo(&r.checked, decl));
+
+    const ext = std.mem.indexOf(u8, src, "extends Base").? + "extends ".len;
+    const b = r.checked.bindings.get(@intCast(ext)) orelse return error.NoBinding;
+    try std.testing.expectEqual(gero.lang.scope.SymbolKind.class, b.kind);
+}
+
+test "typecheck: an enum name records a reference from every position it names" {
+    const src =
+        \\enum State
+        \\  case Idle
+        \\  case Busy
+        \\end
+        \\def main()
+        \\  let s: State = State.Idle
+        \\  match s
+        \\    case State.Idle => print 0
+        \\    case State.Busy => print 1
+        \\  end
+        \\end
+        \\
+    ;
+    var r = try check(src);
+    defer r.stream.deinit();
+    defer r.tree.deinit();
+    defer r.checked.deinit();
+
+    const decl: u32 = @intCast(std.mem.indexOf(u8, src, "enum State").? + "enum ".len);
+    // Annotation, the `State.Idle` expression, and both arm patterns.
+    try std.testing.expectEqual(@as(usize, 4), countReferencesTo(&r.checked, decl));
+
+    const qualified = std.mem.indexOf(u8, src, "= State.Idle").? + "= ".len;
+    const b = r.checked.bindings.get(@intCast(qualified)) orelse return error.NoBinding;
+    try std.testing.expectEqual(gero.lang.scope.SymbolKind.enum_, b.kind);
+}
+
+test "typecheck: a `@static` call records a reference to its class" {
+    const src =
+        \\class Spawner
+        \\  @static
+        \\  def make() -> i16
+        \\    return 1
+        \\  end
+        \\end
+        \\def main()
+        \\  print Spawner.make()
+        \\end
+        \\
+    ;
+    var r = try check(src);
+    defer r.stream.deinit();
+    defer r.tree.deinit();
+    defer r.checked.deinit();
+
+    const decl: u32 = @intCast(std.mem.indexOf(u8, src, "class Spawner").? + "class ".len);
+    try std.testing.expectEqual(@as(usize, 1), countReferencesTo(&r.checked, decl));
+}
+
+test "typecheck: an undefined type name records no binding" {
+    const src =
+        \\def main()
+        \\  let v: Nope = 0
+        \\  print 1
+        \\end
+        \\
+    ;
+    var r = try check(src);
+    defer r.stream.deinit();
+    defer r.tree.deinit();
+    defer r.checked.deinit();
+
+    const ann = std.mem.indexOf(u8, src, "let v: Nope").? + "let v: ".len;
+    try std.testing.expect(r.checked.bindings.get(@intCast(ann)) == null);
+}
+
 test "typecheck: bindings survive a program that does not compile" {
     // An editor wants hover most in a buffer with errors in it, so the
     // table is built whether or not the program checks.

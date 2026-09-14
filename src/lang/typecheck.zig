@@ -641,7 +641,7 @@ pub const Checker = struct {
     /// has: it knows where the caret is, not which AST node covers it.
     /// A name resolved through an import alias records the target's
     /// own name, since that is what the declaring file calls it.
-    fn recordBinding(self: *Checker, span: ast.Span, name: []const u8, info: scope_mod.SymbolInfo) WalkError!void {
+    pub fn recordBinding(self: *Checker, span: ast.Span, name: []const u8, info: scope_mod.SymbolInfo) WalkError!void {
         try self.bindings.put(self.arena, span.start, .{
             .kind = info.kind,
             .decl_span = info.decl_span,
@@ -660,6 +660,17 @@ pub const Checker = struct {
             .decl_span = decl,
             .name = try self.arena.dupe(u8, name),
         });
+    }
+
+    /// Record the reference a *type-name* receiver makes — `State` in
+    /// `State.Idle`, `Player` in `Player.spawn()`.
+    ///
+    /// These arms resolve the receiver against a registry and return
+    /// before it is ever inferred as an expression, so the binding the
+    /// value path would have recorded never happens.
+    fn recordTypeReceiver(self: *Checker, span: ast.Span, name: []const u8) WalkError!void {
+        const info = self.current_scope.lookup(name) orelse return;
+        try self.recordBinding(span, name, info);
     }
 
     /// The module a name was imported from, or `null` when it is
@@ -2024,6 +2035,15 @@ pub const Checker = struct {
     /// else the variant path's head. An unresolved enum / variant falls
     /// back to the untyped walk.
     fn registerVariantBindings(self: *Checker, vp: ast.VariantPattern, ty: ?*const types.Type) WalkError!void {
+        // `State` in `case State.Idle` names the enum. The path is one
+        // span, so the head's own span is carved out of its front.
+        const raw_head = match.splitPath(self.lexeme(vp.path)).head;
+        if (raw_head.len > 0) {
+            // @as: an identifier's length, bounded by the source file.
+            const head_span: ast.Span = .{ .start = vp.path.start, .end = vp.path.start + @as(u32, @intCast(raw_head.len)) };
+            try self.recordTypeReceiver(head_span, self.resolveImportAlias(raw_head));
+        }
+
         const ed: ?*const ast.EnumDecl = blk: {
             if (ty) |it| if (self.enumDeclForType(it.*)) |e| break :blk e;
             const head = self.resolveImportAlias(match.splitPath(self.lexeme(vp.path)).head);
@@ -2278,6 +2298,7 @@ pub const Checker = struct {
                     // method call at parse time — resolve it as a
                     // payload-variant constructor.
                     if (self.enum_registry.get(recv_name)) |ed| {
+                        try self.recordTypeReceiver(m.receiver.ident.span, recv_name);
                         return try fields.checkEnumVariantConstruct(self, m, ed, recv_name);
                     }
                     // `ClassName.method(args)` — a `@static` call (the
@@ -2289,7 +2310,10 @@ pub const Checker = struct {
                         // named like the alias *target* must not mask the
                         // class the alias points at.
                         const is_class_ref = if (self.current_scope.lookup(raw_recv)) |info| info.kind == .class else true;
-                        if (is_class_ref) return try fields.checkStaticMethodCall(self, m, cd, recv_name);
+                        if (is_class_ref) {
+                            try self.recordTypeReceiver(m.receiver.ident.span, recv_name);
+                            return try fields.checkStaticMethodCall(self, m, cd, recv_name);
+                        }
                     }
                 }
                 const recv_ty = try self.inferExpr(m.receiver, null);
@@ -2313,6 +2337,7 @@ pub const Checker = struct {
                 if (f.receiver.* == .ident) {
                     const recv_name = self.resolveValueAlias(self.lexeme(f.receiver.ident.span));
                     if (self.enum_registry.get(recv_name)) |ed| {
+                        try self.recordTypeReceiver(f.receiver.ident.span, recv_name);
                         return try fields.resolveEnumVariant(self, ed, recv_name, f);
                     }
                     if (std.mem.eql(u8, recv_name, "mem")) {

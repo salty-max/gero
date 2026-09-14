@@ -223,6 +223,14 @@ the checker already decided. Nothing re-derives bindings from the AST,
 which would be a second implementation agreeing with its author rather
 than with the compiler.
 
+A type name is a reference like any other. `Vec2` in an annotation, in
+a struct literal, after `extends`, as a parameter or return type, and
+the enum or class receiver in `State.Idle` / `Player.spawn()` or a
+`case State.Idle` arm all bind to the declaration. Several of those
+positions resolve the name against a registry and never infer the
+receiver as an expression, so each records the reference itself rather
+than inheriting it from the value path.
+
 A position on anything the checker did not bind — a keyword, a
 comment, a name that does not resolve — answers `null` rather than
 guessing.
