@@ -272,6 +272,10 @@ fn handleMessage(
         try onDefinition(arena, server, stdout, req.body, req.id);
     } else if (std.mem.eql(u8, req.method, "textDocument/hover")) {
         try onHover(arena, server, stdout, req.body, req.id);
+    } else if (std.mem.eql(u8, req.method, "textDocument/references")) {
+        try onReferences(arena, server, stdout, req.body, req.id);
+    } else if (std.mem.eql(u8, req.method, "textDocument/inlayHint")) {
+        try onInlayHint(arena, server, stdout, req.body, req.id);
     } else if (req.id != null) {
         // An unknown request still needs an answer or the client
         // blocks; an unknown notification carries no id and needs none.
@@ -304,6 +308,10 @@ fn replyInitialize(arena: std.mem.Allocator, stdout: *std.Io.Writer, id: ?std.js
     try jw.objectField("definitionProvider");
     try jw.write(true);
     try jw.objectField("hoverProvider");
+    try jw.write(true);
+    try jw.objectField("referencesProvider");
+    try jw.write(true);
+    try jw.objectField("inlayHintProvider");
     try jw.write(true);
     try jw.endObject();
     try jw.objectField("serverInfo");
@@ -496,6 +504,101 @@ fn onHover(
     try jw.objectField("range");
     try writeRange(&jw, start.line, start.character, end.line, end.character);
     try jw.endObject();
+    try jw.endObject();
+    try protocol.writeMessage(stdout, out.written());
+}
+
+fn onReferences(
+    arena: std.mem.Allocator,
+    server: *Server,
+    stdout: *std.Io.Writer,
+    msg: std.json.ObjectMap,
+    id: ?std.json.Value,
+) !void {
+    const uri = docUri(msg) orelse return replyNull(arena, stdout, id);
+    const text = server.docs.get(uri) orelse return replyNull(arena, stdout, id);
+    const lang = analysis.langOf(uri) orelse return replyNull(arena, stdout, id);
+    if (lang != .gr) return replyNull(arena, stdout, id);
+    const pos = requestPosition(msg) orelse return replyNull(arena, stdout, id);
+
+    // The client says whether the declaration itself belongs in the
+    // results; some editors list it, some only want the uses.
+    var include_decl = true;
+    if (objectAt(msg, &.{ "params", "context" })) |ctx| {
+        if (ctx.get("includeDeclaration")) |v| {
+            if (v == .bool) include_decl = v.bool;
+        }
+    }
+
+    const spans = (try symbols.referencesTo(arena, text, pos, include_decl)) orelse
+        return replyNull(arena, stdout, id);
+
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.beginObject();
+    try jw.objectField("jsonrpc");
+    try jw.write("2.0");
+    try writeId(&jw, id);
+    try jw.objectField("result");
+    try jw.beginArray();
+    for (spans) |sp| {
+        const a = symbols.positionOf(text, sp.start);
+        const b = symbols.positionOf(text, sp.end);
+        try jw.beginObject();
+        try jw.objectField("uri");
+        try jw.write(uri);
+        try jw.objectField("range");
+        try writeRange(&jw, a.line, a.character, b.line, b.character);
+        try jw.endObject();
+    }
+    try jw.endArray();
+    try jw.endObject();
+    try protocol.writeMessage(stdout, out.written());
+}
+
+fn onInlayHint(
+    arena: std.mem.Allocator,
+    server: *Server,
+    stdout: *std.Io.Writer,
+    msg: std.json.ObjectMap,
+    id: ?std.json.Value,
+) !void {
+    const uri = docUri(msg) orelse return replyNull(arena, stdout, id);
+    const text = server.docs.get(uri) orelse return replyNull(arena, stdout, id);
+    const lang = analysis.langOf(uri) orelse return replyNull(arena, stdout, id);
+    if (lang != .gr) return replyNull(arena, stdout, id);
+
+    const hints = try symbols.inlayHints(arena, text);
+
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.beginObject();
+    try jw.objectField("jsonrpc");
+    try jw.write("2.0");
+    try writeId(&jw, id);
+    try jw.objectField("result");
+    try jw.beginArray();
+    for (hints) |h| {
+        const at = symbols.positionOf(text, h.at);
+        try jw.beginObject();
+        try jw.objectField("position");
+        try jw.beginObject();
+        try jw.objectField("line");
+        try jw.write(at.line);
+        try jw.objectField("character");
+        try jw.write(at.character);
+        try jw.endObject();
+        try jw.objectField("label");
+        try jw.write(try std.fmt.allocPrint(arena, ": {s}", .{h.text}));
+        // Type hints, so an editor can style them apart from parameter
+        // names if it distinguishes the two.
+        try jw.objectField("kind");
+        try jw.write(@as(u8, 1));
+        try jw.objectField("paddingLeft");
+        try jw.write(false);
+        try jw.endObject();
+    }
+    try jw.endArray();
     try jw.endObject();
     try protocol.writeMessage(stdout, out.written());
 }
@@ -779,6 +882,8 @@ test "handleMessage: initialize advertises its capabilities" {
     try testing.expect(std.mem.indexOf(u8, out, "\"textDocumentSync\":1") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"definitionProvider\":true") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"hoverProvider\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"referencesProvider\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"inlayHintProvider\":true") != null);
     // The id is echoed, or the client cannot match the response.
     try testing.expect(std.mem.indexOf(u8, out, "\"id\":1") != null);
 }
@@ -852,6 +957,81 @@ test "handleMessage: a position on nothing answers null rather than guessing" {
     // Column 0 of `end` — a keyword, bound to nothing.
     _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file:///p.gr\"},\"position\":{\"line\":2,\"character\":0}}}");
     try testing.expect(std.mem.indexOf(u8, s.written(), "\"id\":4,\"result\":null") != null);
+}
+
+/// One annotated binder and one inferred, so a hint appearing for the
+/// wrong one is visible.
+const hint_src =
+    "def main()\n" ++
+    "  let inferred = 40 + 2\n" ++
+    "  let stated: i16 = 3\n" ++
+    "  print inferred\n" ++
+    "  print inferred\n" ++
+    "end\n";
+
+fn openDoc(s: *Session, arena: std.mem.Allocator, text: []const u8) !void {
+    var body: std.ArrayList(u8) = .empty;
+    try body.appendSlice(arena, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\",\"languageId\":\"gero\",\"version\":1,\"text\":");
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.write(text);
+    try body.appendSlice(arena, out.written());
+    try body.appendSlice(arena, "}}}");
+    _ = try s.send(arena, body.items);
+}
+
+test "handleMessage: inlay hints cover the inferred binder and not the stated one" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, hint_src);
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/inlayHint\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"range\":{}}}");
+    const out = s.written();
+
+    // `let inferred` ends at line 1, column 14.
+    try testing.expect(std.mem.indexOf(
+        u8,
+        out,
+        "\"position\":{\"line\":1,\"character\":14},\"label\":\": i16\"",
+    ) != null);
+    // Repeating a type the author wrote is noise, so line 2 gets none.
+    try testing.expect(std.mem.indexOf(u8, out, "\"line\":2,\"character\"") == null);
+}
+
+test "handleMessage: references find the declaration and every use" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, hint_src);
+    // The `inferred` in the first `print`, on line 3.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/references\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":3,\"character\":9},\"context\":{\"includeDeclaration\":true}}}");
+    const out = s.written();
+
+    // The binder on line 1 and both reads, in source order.
+    try testing.expect(std.mem.indexOf(u8, out, "\"line\":1,\"character\":6") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"line\":3,\"character\":8") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"line\":4,\"character\":8") != null);
+}
+
+test "handleMessage: references can leave the declaration out" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, hint_src);
+    const before = s.written().len;
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/references\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":3,\"character\":9},\"context\":{\"includeDeclaration\":false}}}");
+    const reply = s.written()[before..];
+    try testing.expect(std.mem.indexOf(u8, reply, "\"line\":3,\"character\":8") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"line\":1,\"character\":6") == null);
 }
 
 test "handleMessage: exit without shutdown is an error, with it is not" {

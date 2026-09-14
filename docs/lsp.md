@@ -92,7 +92,7 @@ something it imported changes — the server keeps no text for it.
 
 | Request | Behavior |
 |---------|----------|
-| `initialize` | Advertises `textDocumentSync: 1`, `documentFormattingProvider`, `definitionProvider` and `hoverProvider`. |
+| `initialize` | Advertises `textDocumentSync: 1`, `documentFormattingProvider`, `definitionProvider`, `hoverProvider`, `referencesProvider` and `inlayHintProvider`. |
 | `shutdown` | Answers `null`. |
 | `exit` | Leaves with `0` after a `shutdown`, `1` without one. |
 | `textDocument/didOpen` / `didChange` | Re-analyze, then publish. |
@@ -101,6 +101,8 @@ something it imported changes — the server keeps no text for it.
 | `textDocument/formatting` | One `TextEdit` spanning the document. |
 | `textDocument/definition` | The declaration the name under the cursor binds to, or `null` (§6). |
 | `textDocument/hover` | The name, its type where known, and what kind of declaration it is (§6). |
+| `textDocument/references` | Every reference to the declaration under the cursor, in source order. `context.includeDeclaration` decides whether the declaration is among them. |
+| `textDocument/inlayHint` | The inferred type of each `let` the source left unannotated (§6). |
 
 Any other request is answered `-32601` (method not found) rather than
 left hanging. Unknown *notifications* are dropped, since they carry no
@@ -221,11 +223,22 @@ guessing.
 The table is built even when a buffer does not compile, which is when
 an editor is asked most.
 
+Find-references is the same table read backwards: an entry names the
+declaration its reference binds to, so the references to a declaration
+are the entries pointing at it. Asking on a reference and asking on the
+declaration give the same set, because both resolve to the same
+declaration first.
+
+Inlay hints come from `binder_types` rather than `bindings` — the type
+of each named binding, keyed by its declaring identifier. Only a `let`
+the source left unannotated gets one: repeating a type the author
+wrote is noise, and the point is to show what was inferred.
+
 ### Not yet provided
 
-Completion, find-references, semantic tokens, inlay hints and code
-actions. Each reads the same table and none needs anything further
-from the front ends; they are unbuilt rather than blocked.
+Completion, semantic tokens and code actions. Each reads the same
+tables and none needs anything further from the front ends; they are
+unbuilt rather than blocked.
 
 `.gas` is not wired for either feature yet. The assembler records
 where each label and constant was declared (`asm.Symbol.decl_start`),
