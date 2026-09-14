@@ -83,6 +83,13 @@ Three consequences worth expecting as a client author:
   Without it the editor would keep showing diagnostics that no longer
   hold.
 
+That retraction is scoped to the analysis that made the claim. The
+server records what each document's own analysis published, and clears
+only within that record. Clearing across documents would mean opening
+any file wiped the diagnostics of every other — and an editor does not
+re-send `didOpen` for a tab it already holds, so they would stay gone
+until something forced a re-check.
+
 A document the editor has **closed** is no longer re-checked, even if
 something it imported changes — the server keeps no text for it.
 
