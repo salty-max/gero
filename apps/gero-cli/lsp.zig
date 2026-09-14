@@ -372,10 +372,15 @@ fn replyInitialize(arena: std.mem.Allocator, stdout: *std.Io.Writer, id: ?std.js
     try jw.write(true);
     try jw.objectField("inlayHintProvider");
     try jw.write(true);
-    // No `triggerCharacters`: every completion here is an identifier,
-    // so the client asks when the user is typing one.
     try jw.objectField("completionProvider");
     try jw.beginObject();
+    // A client asks on its own while the user types an identifier, but
+    // `.` is not one — without it named here, a member list after a
+    // receiver never opens unless the user asks for it by hand.
+    try jw.objectField("triggerCharacters");
+    try jw.beginArray();
+    try jw.write(".");
+    try jw.endArray();
     try jw.endObject();
     // Quick-fixes only — every action here rewrites one diagnostic's
     // span to the name the checker already suggested.
@@ -1804,6 +1809,20 @@ test "handleMessage: an already-imported name completes without a redundant impo
     try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"abs\"") != null);
     // In scope already, so no edit and no second entry for it.
     try testing.expect(std.mem.indexOf(u8, reply, "additionalTextEdits") == null);
+}
+
+test "initialize: `.` is advertised as a completion trigger" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
+    const out = s.written();
+    // A client asks on its own while an identifier is being typed, but
+    // never on `.` — a member list would only ever open by hand.
+    try testing.expect(std.mem.indexOf(u8, out, "\"triggerCharacters\":[\".\"]") != null);
 }
 
 test "handleMessage: a stdlib module completes its own functions after a dot" {

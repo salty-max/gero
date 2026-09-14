@@ -110,7 +110,7 @@ something it imported changes — the server keeps no text for it.
 | `textDocument/hover` | For `.gr`, the name, its type where known, and what kind of declaration it is (§6); for `.gas`, the address it assembled to (§7). |
 | `textDocument/references` | Every reference to the declaration under the cursor, in source order, across the files an `include` / `use` graph covers. `context.includeDeclaration` decides whether the declaration is among them. |
 | `textDocument/inlayHint` | The inferred type of each `let` the source left unannotated (§6). `.gr` only. |
-| `textDocument/completion` | After a `.`, the receiver's members; otherwise the names visible at the position, plus importable ones carrying the `use` they need (§6). No trigger characters — every completion here is an identifier. |
+| `textDocument/completion` | After a `.`, the receiver's members; otherwise the names visible at the position, plus importable ones carrying the `use` they need (§6). `.` is the one trigger character: a client asks on its own while an identifier is being typed, but never on a dot, so a member list would otherwise open only by hand. |
 | `textDocument/codeAction` | A `quickfix` per diagnostic under the selection the checker worked out a correction for, plus imports from the workspace index (§6). `.gr` only. |
 
 Any other request is answered `-32601` (method not found) rather than
