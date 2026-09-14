@@ -311,13 +311,16 @@ own business, described in
 
 ### 2.7 LSP
 
-`gero lsp` offers in-editor diagnostics (the same ones `gero
-check` reports) and format-on-save (the same output `gero fmt`
-writes) for both `.gas` and `.gr` files. One server serves both
-languages.
+`gero lsp` serves both languages from one process: diagnostics (the
+same ones `gero check` reports), format-on-save (the same output
+`gero fmt` writes), go-to-definition, hover, find-references and
+completion. `.gr` adds inlay hints and quick-fix code actions —
+including one that writes the `use` line for a name you have not
+imported, which completion will also offer to do as you accept it.
+Hovering a name in `.gas` reports the address it assembled to.
 
 Per-editor wiring — Neovim, VS Code, Helix — is in
-[`lsp.md` §5](lsp.md).
+[`lsp.md` §5](lsp.md); what each feature answers from is §6 and §7.
 
 ---
 

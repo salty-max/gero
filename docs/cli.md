@@ -694,6 +694,11 @@ Takes no positional arguments. Everything written to stdout is a
 protocol message, so anything the server needs to say about itself
 goes to stderr.
 
+`--stdio` is accepted and ignored. Stdio is the only transport the
+server speaks, but most clients pass the flag by convention — VS Code's
+`vscode-languageclient` appends it whenever a transport is named — and
+rejecting it would leave the server unable to start under them.
+
 Diagnostics (identical to what `gero check` reports) and
 formatting (identical to what `gero fmt` writes) are provided for
 both `.gas` and `.gr`, as are go-to-definition, hover,
