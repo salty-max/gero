@@ -167,7 +167,14 @@ The pool varies by emission site:
 - `E_TYPE_UNDEFINED_FIELD` — the resolved type's field list,
   walking the inheritance chain for class receivers.
 - `E_TYPE_UNDEFINED_METHOD` — the resolved class's method list,
-  walking the inheritance chain.
+  walking the inheritance chain, or the `mem` builtin names for a
+  call on the stdlib module.
+
+The candidate is kept on the diagnostic as `suggestion`, the bare
+name, in addition to the `help:` sentence naming it. A tool offering
+to apply the fix replaces the diagnostic's span with that string; it
+would otherwise have to parse the name back out of English prose.
+`gero lsp` does exactly that — see [`lsp.md`](lsp.md) §6.
 
 Single-candidate ranking — the first-iterated match at the
 minimum distance wins. Multi-candidate listing (top-3,

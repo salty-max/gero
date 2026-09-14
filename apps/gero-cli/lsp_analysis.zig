@@ -35,6 +35,9 @@ pub const Diagnostic = struct {
     severity: u8,
     code: []const u8,
     message: []const u8,
+    /// Name the checker suggests in place of `range`, when it has one.
+    /// Backs the quick-fix a `textDocument/codeAction` offers.
+    suggestion: ?[]const u8 = null,
 };
 
 /// One analysis: what to publish, and which files it read to decide.
@@ -111,6 +114,7 @@ fn diagnoseGr(
             .severity = severityOf(d.severity),
             .code = try arena.dupe(u8, d.code),
             .message = try arena.dupe(u8, d.message),
+            .suggestion = if (d.suggestion) |g| try arena.dupe(u8, g) else null,
         });
     }
     return .{
@@ -170,6 +174,7 @@ const Unplaced = struct {
     severity: u8,
     code: []const u8,
     message: []const u8,
+    suggestion: ?[]const u8 = null,
 };
 
 /// What resolving a `.gas` document's include graph produced.
@@ -277,6 +282,7 @@ fn place(text: []const u8, start: u32, end: u32, d: Unplaced) Diagnostic {
         .severity = d.severity,
         .code = d.code,
         .message = d.message,
+        .suggestion = d.suggestion,
     };
 }
 
@@ -307,6 +313,7 @@ fn langDiagnostics(
             .severity = severityOf(d.severity),
             .code = try arena.dupe(u8, d.code),
             .message = try arena.dupe(u8, d.message),
+            .suggestion = if (d.suggestion) |g| try arena.dupe(u8, g) else null,
         }));
     }
     return out.toOwnedSlice(arena);

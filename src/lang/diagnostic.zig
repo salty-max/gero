@@ -48,6 +48,14 @@ pub const Diagnostic = struct {
     /// Optional `help: ...` block printed after the caret snippet.
     /// The renderer wraps long lines at 78 cols.
     help: ?[]const u8 = null,
+    /// The name this diagnostic suggests in place of what `span`
+    /// covers, when it has one.
+    ///
+    /// The same name the `help` text names, kept as itself rather than
+    /// only as prose. A tool offering to apply the fix would otherwise
+    /// have to parse it back out of an English sentence, and the
+    /// checker already decided what it is.
+    suggestion: ?[]const u8 = null,
     /// Annotated context spans (e.g. annotation declarations,
     /// prior definitions). Empty for diagnostics that don't need
     /// secondary context. Per spec §4.x rendering rules:

@@ -29,6 +29,26 @@ pub fn emitSpan(
     });
 }
 
+/// `emitSpanHelp` that also records the name it suggests, so a tool
+/// can offer to apply it without reading the help prose.
+fn emitSpanHelpSuggesting(
+    self: *Checker,
+    code: []const u8,
+    span: ast.Span,
+    message: []const u8,
+    help: []const u8,
+    suggestion: []const u8,
+) WalkError!void {
+    try self.diagnostics.append(self.diag_alloc, .{
+        .severity = .fatal,
+        .code = code,
+        .message = message,
+        .span = span,
+        .help = help,
+        .suggestion = suggestion,
+    });
+}
+
 /// Like `emitSpan` plus a `help:` block.
 pub fn emitSpanHelp(
     self: *Checker,
@@ -249,5 +269,5 @@ pub fn emitSpanWithSuggestion(
 ) WalkError!void {
     const name = candidate orelse return self.emitSpan(code, span, message);
     const help = try std.fmt.allocPrint(self.arena, "did you mean `{s}`?", .{name});
-    try self.emitSpanHelp(code, span, message, help);
+    try emitSpanHelpSuggesting(self, code, span, message, help, name);
 }

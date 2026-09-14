@@ -92,7 +92,7 @@ something it imported changes — the server keeps no text for it.
 
 | Request | Behavior |
 |---------|----------|
-| `initialize` | Advertises `textDocumentSync: 1`, `documentFormattingProvider`, `definitionProvider`, `hoverProvider`, `referencesProvider`, `inlayHintProvider` and `completionProvider`. |
+| `initialize` | Advertises `textDocumentSync: 1`, `documentFormattingProvider`, `definitionProvider`, `hoverProvider`, `referencesProvider`, `inlayHintProvider`, `completionProvider` and `codeActionProvider` (kind `quickfix`). |
 | `shutdown` | Answers `null`. |
 | `exit` | Leaves with `0` after a `shutdown`, `1` without one. |
 | `textDocument/didOpen` / `didChange` | Re-analyze, then publish. |
@@ -104,6 +104,7 @@ something it imported changes — the server keeps no text for it.
 | `textDocument/references` | Every reference to the declaration under the cursor, in source order. `context.includeDeclaration` decides whether the declaration is among them. |
 | `textDocument/inlayHint` | The inferred type of each `let` the source left unannotated (§6). |
 | `textDocument/completion` | After a `.`, the receiver's members; otherwise the names visible at the position. Sorted, with no trigger characters — every completion here is an identifier. |
+| `textDocument/codeAction` | A `quickfix` per diagnostic under the selection that named a replacement (§6). |
 
 Any other request is answered `-32601` (method not found) rather than
 left hanging. Unknown *notifications* are dropped, since they carry no
@@ -120,6 +121,11 @@ Exactly what `gero check` reports for the same tree, mapped to LSP:
 | `code` | The `E_` registry code (see [`lang-diagnostics.md`](lang-diagnostics.md)); omitted where the emission site carries none |
 | `source` | Always `"gero"` |
 | `message` | The human-readable summary |
+
+A diagnostic that suggested a name also carries it as
+`Diagnostic.suggestion` — the name itself, beside the `help:` prose
+that spells it into a sentence. That is what a code action applies;
+see §6.
 
 Both front-ends run every phase before reporting: Gero parses,
 type-checks, and codegen-validates; asm parses **and** resolves
@@ -262,14 +268,32 @@ instant completion is asked for, so `p.` parses as a member access with
 an empty name — reported as the error it is, and still producing a tree
 that types the receiver.
 
+Code actions apply what the checker already decided. When a name does
+not resolve, the checker looks for the closest spelling in scope and
+writes `help: did you mean \`x\`?`; it now also keeps `x` as itself on
+the diagnostic, so a quick-fix is a `TextEdit` replacing the
+diagnostic's own span with that name. Nothing here re-derives the
+correction, which means an action can never disagree with the
+diagnostic offering it — and a diagnostic the checker had no candidate
+for offers no action rather than a guess.
+
+The document is re-analyzed for the request rather than served from
+what was last published. A client sends its own copy of the
+diagnostics in `context`, and those describe the buffer as it was when
+they were published; applying an edit computed against text the user
+has since changed would corrupt it.
+
 ### Not yet provided
 
-Semantic tokens and code actions. Both read tables that now exist;
-they are unbuilt rather than blocked.
+Semantic tokens. It reads a table that now exists; it is unbuilt
+rather than blocked.
 
-`.gas` is not wired for either feature yet. The assembler records
-where each label and constant was declared (`asm.Symbol.decl_start`),
-so the data is there and the server has not been taught to use it.
+`.gas` gets diagnostics and formatting, and none of this section's
+resolved-name features. The data is there and unused: the assembler
+records where each label and constant was declared
+(`asm.Symbol.decl_start`), and it computes its own near-spelling
+suggestions for an undefined symbol. The server has not been taught to
+read either.
 
 Syntax highlighting is out of scope for a different reason: it needs
 no running server, and a grammar does it better. Both grammars exist —
