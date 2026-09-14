@@ -283,7 +283,7 @@ fn handleMessage(
     } else if (std.mem.eql(u8, req.method, "textDocument/inlayHint")) {
         try onInlayHint(arena, server, stdout, req.body, req.id);
     } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
-        try onCompletion(arena, server, stdout, req.body, req.id);
+        try onCompletion(io, arena, server, stdout, req.body, req.id);
     } else if (std.mem.eql(u8, req.method, "textDocument/codeAction")) {
         try onCodeAction(io, arena, server, stdout, req.body, req.id);
     } else if (req.id != null) {
@@ -659,6 +659,7 @@ fn onInlayHint(
 }
 
 fn onCompletion(
+    io: std.Io,
     arena: std.mem.Allocator,
     server: *Server,
     stdout: *std.Io.Writer,
@@ -671,7 +672,12 @@ fn onCompletion(
     if (lang != .gr) return replyNull(arena, stdout, id);
     const pos = requestPosition(msg) orelse return replyNull(arena, stdout, id);
 
-    const items = try symbols.completionsAt(arena, text, pos);
+    var ov = try server.overlay(io, arena);
+    defer ov.deinit(arena);
+    try server.index.rebuild(io, &ov, try uri_mod.toPath(arena, uri));
+    const doc_path = try uri_mod.toPath(arena, uri);
+    const doc_dir = if (doc_path) |dp| std.fs.path.dirname(dp) else null;
+    const list = try symbols.completionsAt(arena, text, &server.index, doc_dir, pos);
 
     var out = std.Io.Writer.Allocating.init(arena);
     var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
@@ -680,21 +686,45 @@ fn onCompletion(
     try jw.write("2.0");
     try writeId(&jw, id);
     try jw.objectField("result");
-    // The complete set for this position, so the client filters as the
-    // user types rather than asking again on every keystroke.
     try jw.beginObject();
     try jw.objectField("isIncomplete");
-    try jw.write(false);
+    try jw.write(list.is_incomplete);
     try jw.objectField("items");
     try jw.beginArray();
-    for (items) |it| {
+    const at = symbols.useInsertLine(text);
+    for (list.items) |it| {
         try jw.beginObject();
         try jw.objectField("label");
         try jw.write(it.name);
         try jw.objectField("kind");
         try jw.write(symbols.completionKind(it.kind));
         try jw.objectField("detail");
-        try jw.write(kindText(it.kind));
+        if (it.import) |imp| {
+            try jw.write(try std.fmt.allocPrint(arena, "from {s}", .{imp.module}));
+        } else {
+            try jw.write(kindText(it.kind));
+        }
+        // A name already in scope sorts above one that has to be
+        // imported: the user reaching for a local should not have to
+        // scroll past the stdlib to find it.
+        try jw.objectField("sortText");
+        try jw.write(try std.fmt.allocPrint(arena, "{d}{s}", .{
+            @as(u8, if (it.import == null) 0 else 1),
+            it.name,
+        }));
+        if (it.import) |imp| {
+            // Applied when the item is accepted, alongside the word
+            // the client inserts itself.
+            try jw.objectField("additionalTextEdits");
+            try jw.beginArray();
+            try jw.beginObject();
+            try jw.objectField("range");
+            try writeRange(&jw, at, 0, at, 0);
+            try jw.objectField("newText");
+            try jw.write(try std.fmt.allocPrint(arena, "use {s} from {s}\n", .{ imp.name, imp.module }));
+            try jw.endObject();
+            try jw.endArray();
+        }
         try jw.endObject();
     }
     try jw.endArray();
@@ -1385,6 +1415,89 @@ test "handleMessage: completion offers what is in scope and nothing else" {
     // is the failure that makes completion untrustworthy.
     try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"scoped\"") == null);
     try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"n\"") == null);
+}
+
+/// A prefix matching a stdlib export nothing has imported.
+const autoimport_src =
+    "def main()\n" ++
+    "  let x: fixed = fixed_s\n" ++
+    "end\n";
+
+test "handleMessage: an unimported stdlib name completes with the `use` it needs" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, autoimport_src);
+    const before = s.written().len;
+    // Just past `fixed_s` on line 1.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":1,\"character\":24}}}");
+    const reply = s.written()[before..];
+
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"fixed_sin\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"detail\":\"from math\"") != null);
+    // Accepting it inserts the import alongside the word.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"newText\":\"use fixed_sin from math\\n\"") != null);
+    // An in-scope name sorts ahead of one that has to be imported.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"sortText\":\"0main\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"sortText\":\"1fixed_sin\"") != null);
+    // The set depends on the prefix, so the client must ask again.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"isIncomplete\":true") != null);
+}
+
+test "handleMessage: an already-imported name completes without a redundant import" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, "use abs from math\ndef main()\n  print ab\nend\n");
+    const before = s.written().len;
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":2,\"character\":10}}}");
+    const reply = s.written()[before..];
+
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"abs\"") != null);
+    // In scope already, so no edit and no second entry for it.
+    try testing.expect(std.mem.indexOf(u8, reply, "additionalTextEdits") == null);
+}
+
+test "handleMessage: a stdlib module completes its own functions after a dot" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, "use math\ndef main()\n  let x: fixed = math.\nend\n");
+    const before = s.written().len;
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":2,\"character\":22}}}");
+    const reply = s.written()[before..];
+
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"fixed_sin\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"sqrt_fixed\"") != null);
+    // A receiver's members are a fixed set — nothing typed next adds
+    // to it, and nothing outside the module belongs in the list.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"isIncomplete\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"main\"") == null);
+}
+
+test "handleMessage: an aliased module completes under its alias" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, "use mem as m\ndef main()\n  m.\nend\n");
+    const before = s.written().len;
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":2,\"character\":4}}}");
+    const reply = s.written()[before..];
+
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"poke\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"memcpy\"") != null);
 }
 
 test "handleMessage: completion does not offer a local above its declaration" {

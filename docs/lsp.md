@@ -103,7 +103,7 @@ something it imported changes — the server keeps no text for it.
 | `textDocument/hover` | The name, its type where known, and what kind of declaration it is (§6). |
 | `textDocument/references` | Every reference to the declaration under the cursor, in source order. `context.includeDeclaration` decides whether the declaration is among them. |
 | `textDocument/inlayHint` | The inferred type of each `let` the source left unannotated (§6). |
-| `textDocument/completion` | After a `.`, the receiver's members; otherwise the names visible at the position. Sorted, with no trigger characters — every completion here is an identifier. |
+| `textDocument/completion` | After a `.`, the receiver's members; otherwise the names visible at the position, plus importable ones carrying the `use` they need (§6). No trigger characters — every completion here is an identifier. |
 | `textDocument/codeAction` | A `quickfix` per diagnostic under the selection the checker worked out a correction for, plus imports from the workspace index (§6). |
 
 Any other request is answered `-32601` (method not found) rather than
@@ -268,7 +268,25 @@ than offering nothing — none of it could legally appear.
 `CheckedProgram.members` carries every container's fields, methods and
 variants, and the receiver's type selects the set. A container named
 directly (`Colour.`) offers its own members; a value (`p.`) offers its
-type's.
+type's. A stdlib module offers its functions: those have
+signature tables rather than declarations, so the names are recorded
+as members of whatever the `use` bound them to — under the alias when
+there is one, so `m.` after `use math as m` answers like `math.`.
+
+Completion also offers names a `use` *would* bring into scope, each
+carrying the import as an `additionalTextEdits` that lands when the
+item is accepted. Both sources feed it: the stdlib's export tables,
+and the workspace index below. A name already in scope wins — it is
+offered once, without an edit.
+
+These are gated on a prefix the user has typed. Every stdlib export
+and every name in the workspace would otherwise appear at an empty
+cursor and bury the handful genuinely in scope. `sortText` puts them
+after the in-scope names for the same reason. Because the set depends
+on the prefix, the reply is marked `isIncomplete`, so a client asks
+again rather than re-filtering a list that was computed for a longer
+one. A member list after a dot is complete: nothing typed next can add
+to it.
 
 The parser recovers from a trailing dot rather than stopping at it. An
 incomplete member access is exactly what a buffer contains at the
@@ -304,9 +322,14 @@ about, so there is no binding to have recorded. The server therefore
 keeps its own index: `initialize`'s `rootUri` names a directory, and a
 code-action request walks it for `.gr` files and reads what each
 exports — skipping `local` declarations, and the document being
-edited. It is rebuilt per request rather than watched, since an editor
-asks at human speed and a stale index offers an import that does not
-resolve.
+edited. It is refreshed per request rather than watched, so a
+name saved a moment ago in another editor is seen. Completion asks on
+every keystroke, so a file whose size and modification time are both
+unchanged is reused from the previous pass instead of being parsed
+again: the marginal cost of a request is a directory walk and a stat
+per file, measured at well under a millisecond across two hundred
+files. Buffers are re-parsed each pass — there are few of them, and
+their text carries no modification time to compare.
 
 A checker fix always wins. A name one edit from something local is
 likelier a typo than a reach for another file, and an import is the
