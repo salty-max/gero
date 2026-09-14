@@ -14,6 +14,7 @@ const std = @import("std");
 const gero = @import("gero");
 
 const analysis = @import("lsp_analysis.zig");
+const index_mod = @import("lsp_index.zig");
 
 /// A zero-based LSP position.
 pub const Position = struct {
@@ -424,13 +425,20 @@ pub fn codeActionsAt(
     arena: std.mem.Allocator,
     text: []const u8,
     diags: []const analysis.Diagnostic,
+    workspace: ?*const index_mod.Index,
+    /// Directory of the document being edited, which a workspace
+    /// import is spelled relative to.
+    doc_dir: ?[]const u8,
     start: Position,
     end: Position,
 ) std.mem.Allocator.Error![]const CodeAction {
     var out: std.ArrayList(CodeAction) = .empty;
     for (diags) |d| {
-        const fix = d.fix orelse continue;
         if (!overlaps(d, start, end)) continue;
+        const fix = d.fix orelse {
+            try appendWorkspaceImports(arena, text, d, workspace, doc_dir, &out);
+            continue;
+        };
         switch (fix) {
             .rename => |name| try out.append(arena, .{
                 .title = try std.fmt.allocPrint(arena, "Change to `{s}`", .{name}),
@@ -459,6 +467,139 @@ pub fn codeActionsAt(
                 .new_text = "",
             }),
         }
+    }
+    return out.toOwnedSlice(arena);
+}
+
+/// Offer an import per workspace file exporting the name an
+/// undefined-symbol diagnostic reports.
+///
+/// Only reached when the checker worked out no fix of its own, so a
+/// spelling match and a stdlib import both win over a project one —
+/// they are the likelier reading, and this is the only correction
+/// that can name several candidates.
+fn appendWorkspaceImports(
+    arena: std.mem.Allocator,
+    text: []const u8,
+    d: analysis.Diagnostic,
+    workspace: ?*const index_mod.Index,
+    doc_dir: ?[]const u8,
+    out: *std.ArrayList(CodeAction),
+) std.mem.Allocator.Error!void {
+    const ws = workspace orelse return;
+    if (!std.mem.eql(u8, d.code, "E_UNDEFINED_SYMBOL") and
+        !std.mem.eql(u8, d.code, "E_TYPE_UNDEFINED")) return;
+    const name = nameAt(text, d) orelse return;
+
+    var paths: std.ArrayList([]const u8) = .empty;
+    try ws.lookup(name, &paths, arena);
+    const at = useInsertLine(text);
+    for (paths.items) |path| {
+        const spec = try importSpec(arena, doc_dir, path);
+        const title = try std.fmt.allocPrint(arena, "Import `{s}` from {s}", .{ name, spec });
+        // One undefined name usually reports twice — the annotation
+        // and the literal — and offering the same insertion twice
+        // reads as two different fixes.
+        if (alreadyOffered(out.items, title)) continue;
+        try out.append(arena, .{
+            .title = title,
+            .diagnostic = d,
+            .start = .{ .line = at, .character = 0 },
+            .end = .{ .line = at, .character = 0 },
+            .new_text = try std.fmt.allocPrint(arena, "use {s} from {s}\n", .{ name, spec }),
+        });
+    }
+}
+
+fn alreadyOffered(actions: []const CodeAction, title: []const u8) bool {
+    for (actions) |a| if (std.mem.eql(u8, a.title, title)) return true;
+    return false;
+}
+
+/// The source text a diagnostic's range covers — for an undefined
+/// name, the name itself.
+///
+/// Read from the buffer rather than back out of the message: the span
+/// is what the checker pointed at, and a message is prose that may be
+/// reworded.
+fn nameAt(text: []const u8, d: analysis.Diagnostic) ?[]const u8 {
+    if (d.line != d.end_line) return null;
+    const line_start = offsetOfLine(text, d.line) orelse return null;
+    const start = line_start + d.character;
+    const end = line_start + d.end_character;
+    if (end <= start or end > text.len) return null;
+    return text[start..end];
+}
+
+/// Byte offset where zero-based `line` starts, or `null` past the end.
+fn offsetOfLine(text: []const u8, line: u32) ?u32 {
+    var at: u32 = 0;
+    var n: u32 = 0;
+    while (n < line) : (n += 1) {
+        const nl = std.mem.indexOfScalarPos(u8, text, at, '\n') orelse return null;
+        // @as: a source file's length, far under 4 GiB.
+        at = @as(u32, @intCast(nl)) + 1;
+    }
+    return at;
+}
+
+/// How a `use` in `from_dir` spells the module in `path`: a quoted
+/// relative path without the `.gr`, which is what module resolution
+/// expects.
+///
+/// Relative to the importing document rather than to the workspace
+/// root, because that is what a `use` resolves against — an export a
+/// directory away needs the `../` to reach it.
+fn importSpec(
+    arena: std.mem.Allocator,
+    from_dir: ?[]const u8,
+    path: []const u8,
+) std.mem.Allocator.Error![]const u8 {
+    const dir = from_dir orelse {
+        const base = std.fs.path.basename(path);
+        return std.fmt.allocPrint(arena, "\"./{s}\"", .{stemOf(base)});
+    };
+    const rel = try relativeTo(arena, dir, path);
+    // Resolution reads a leading `./` as "beside me"; a `../` prefix
+    // already says where to look.
+    if (std.mem.startsWith(u8, rel, "../")) {
+        return std.fmt.allocPrint(arena, "\"{s}\"", .{stemOf(rel)});
+    }
+    return std.fmt.allocPrint(arena, "\"./{s}\"", .{stemOf(rel)});
+}
+
+/// `path` without its `.gr` extension.
+fn stemOf(path: []const u8) []const u8 {
+    return if (std.mem.endsWith(u8, path, ".gr")) path[0 .. path.len - ".gr".len] else path;
+}
+
+/// `path` expressed from `from_dir`, with `/` separators — which is
+/// how a `use` spells one on every host.
+fn relativeTo(
+    arena: std.mem.Allocator,
+    from_dir: []const u8,
+    path: []const u8,
+) std.mem.Allocator.Error![]const u8 {
+    var from = std.mem.tokenizeAny(u8, from_dir, "/\\");
+    var to = std.mem.tokenizeAny(u8, path, "/\\");
+    var from_rest: ?[]const u8 = from.next();
+    var to_rest: ?[]const u8 = to.next();
+    // Drop the shared prefix; what remains on each side is the climb
+    // out and the descent in.
+    while (from_rest != null and to_rest != null and
+        std.mem.eql(u8, from_rest.?, to_rest.?))
+    {
+        from_rest = from.next();
+        to_rest = to.next();
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    while (from_rest != null) : (from_rest = from.next()) {
+        try out.appendSlice(arena, "../");
+    }
+    while (to_rest) |seg| : (to_rest = to.next()) {
+        try out.appendSlice(arena, seg);
+        if (to.peek() != null) try out.append(arena, '/');
     }
     return out.toOwnedSlice(arena);
 }
@@ -526,7 +667,7 @@ test "codeActionsAt: a diagnostic with a suggestion offers replacing its own ran
     const arena = arena_state.allocator();
 
     const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, .{ .rename = "helo" })};
-    const actions = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 17 }, .{ .line = 2, .character = 17 });
+    const actions = try codeActionsAt(arena, "", &diags, null, null, .{ .line = 2, .character = 17 }, .{ .line = 2, .character = 17 });
     try std.testing.expectEqual(@as(usize, 1), actions.len);
     try std.testing.expectEqualStrings("helo", actions[0].new_text);
     try std.testing.expectEqualStrings("Change to `helo`", actions[0].title);
@@ -539,7 +680,7 @@ test "codeActionsAt: a diagnostic the checker worked out no fix for offers nothi
     const arena = arena_state.allocator();
 
     const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, null)};
-    const actions = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 17 }, .{ .line = 2, .character = 17 });
+    const actions = try codeActionsAt(arena, "", &diags, null, null, .{ .line = 2, .character = 17 }, .{ .line = 2, .character = 17 });
     try std.testing.expectEqual(@as(usize, 0), actions.len);
 }
 
@@ -549,7 +690,7 @@ test "codeActionsAt: a diagnostic elsewhere in the file is not offered" {
     const arena = arena_state.allocator();
 
     const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, .{ .rename = "helo" })};
-    const actions = try codeActionsAt(arena, "", &diags, .{ .line = 5, .character = 0 }, .{ .line = 5, .character = 4 });
+    const actions = try codeActionsAt(arena, "", &diags, null, null, .{ .line = 5, .character = 0 }, .{ .line = 5, .character = 4 });
     try std.testing.expectEqual(@as(usize, 0), actions.len);
 }
 
@@ -559,11 +700,11 @@ test "codeActionsAt: a caret resting on either end of the span still matches" {
     const arena = arena_state.allocator();
 
     const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, .{ .rename = "helo" })};
-    const at_start = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 15 }, .{ .line = 2, .character = 15 });
+    const at_start = try codeActionsAt(arena, "", &diags, null, null, .{ .line = 2, .character = 15 }, .{ .line = 2, .character = 15 });
     try std.testing.expectEqual(@as(usize, 1), at_start.len);
-    const at_end = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 21 }, .{ .line = 2, .character = 21 });
+    const at_end = try codeActionsAt(arena, "", &diags, null, null, .{ .line = 2, .character = 21 }, .{ .line = 2, .character = 21 });
     try std.testing.expectEqual(@as(usize, 1), at_end.len);
-    const past_end = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 22 }, .{ .line = 2, .character = 22 });
+    const past_end = try codeActionsAt(arena, "", &diags, null, null, .{ .line = 2, .character = 22 }, .{ .line = 2, .character = 22 });
     try std.testing.expectEqual(@as(usize, 0), past_end.len);
 }
 
@@ -576,7 +717,7 @@ test "codeActionsAt: a selection spanning several typos offers a fix for each" {
         diagAt(2, 15, 21, .{ .rename = "helo" }),
         diagAt(3, 4, 8, .{ .rename = "total" }),
     };
-    const actions = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 0 }, .{ .line = 3, .character = 20 });
+    const actions = try codeActionsAt(arena, "", &diags, null, null, .{ .line = 2, .character = 0 }, .{ .line = 3, .character = 20 });
     try std.testing.expectEqual(@as(usize, 2), actions.len);
 }
 
@@ -592,7 +733,7 @@ test "codeActionsAt: an import fix inserts a `use` line rather than rewriting th
         \\
     ;
     const diags = [_]analysis.Diagnostic{diagAt(1, 8, 11, .{ .import = .{ .module = "math", .name = "abs" } })};
-    const actions = try codeActionsAt(arena, text, &diags, .{ .line = 1, .character = 9 }, .{ .line = 1, .character = 9 });
+    const actions = try codeActionsAt(arena, text, &diags, null, null, .{ .line = 1, .character = 9 }, .{ .line = 1, .character = 9 });
     try std.testing.expectEqual(@as(usize, 1), actions.len);
     try std.testing.expectEqualStrings("Import `abs` from math", actions[0].title);
     try std.testing.expectEqualStrings("use abs from math\n", actions[0].new_text);
@@ -619,7 +760,7 @@ test "codeActionsAt: an import lands below the `use` lines already there" {
         \\
     ;
     const diags = [_]analysis.Diagnostic{diagAt(6, 8, 11, .{ .import = .{ .module = "math", .name = "abs" } })};
-    const actions = try codeActionsAt(arena, text, &diags, .{ .line = 6, .character = 9 }, .{ .line = 6, .character = 9 });
+    const actions = try codeActionsAt(arena, text, &diags, null, null, .{ .line = 6, .character = 9 }, .{ .line = 6, .character = 9 });
     try std.testing.expectEqual(@as(usize, 1), actions.len);
     // Line 4 — after `use poke from mem`, not above the comment.
     try std.testing.expectEqual(@as(u32, 4), actions[0].start.line);
@@ -638,7 +779,7 @@ test "codeActionsAt: a removal deletes the whole line it sits on" {
         \\
     ;
     const diags = [_]analysis.Diagnostic{diagAt(0, 4, 7, .remove_import)};
-    const actions = try codeActionsAt(arena, text, &diags, .{ .line = 0, .character = 5 }, .{ .line = 0, .character = 5 });
+    const actions = try codeActionsAt(arena, text, &diags, null, null, .{ .line = 0, .character = 5 }, .{ .line = 0, .character = 5 });
     try std.testing.expectEqual(@as(usize, 1), actions.len);
     try std.testing.expectEqualStrings("Remove unused import", actions[0].title);
     try std.testing.expectEqualStrings("", actions[0].new_text);
@@ -655,4 +796,86 @@ test "useInsertLine: a file whose first line is code takes the import above it" 
 
 test "useInsertLine: `user` is not mistaken for a `use` directive" {
     try std.testing.expectEqual(@as(u32, 0), useInsertLine("user_thing()\n"));
+}
+
+test "codeActionsAt: a workspace import is offered only where the checker had no fix" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var idx: index_mod.Index = .{ .gpa = std.testing.allocator };
+    defer idx.deinit();
+    try idx.exports.append(std.testing.allocator, .{
+        .name = try std.testing.allocator.dupe(u8, "Vec2"),
+        .path = try std.testing.allocator.dupe(u8, "/ws/vec.gr"),
+    });
+
+    const text = "def main()\n  let v: Vec2 = 0\nend\n";
+    // No `fix`: the checker found neither a near spelling nor a stdlib
+    // export, which is when the workspace gets a say.
+    var d = diagAt(1, 9, 13, null);
+    d.code = "E_TYPE_UNDEFINED";
+    d.message = "undefined type `Vec2`";
+    const diags = [_]analysis.Diagnostic{d};
+
+    const actions = try codeActionsAt(arena, text, &diags, &idx, null, .{ .line = 1, .character = 10 }, .{ .line = 1, .character = 10 });
+    try std.testing.expectEqual(@as(usize, 1), actions.len);
+    try std.testing.expectEqualStrings("Import `Vec2` from \"./vec\"", actions[0].title);
+    try std.testing.expectEqualStrings("use Vec2 from \"./vec\"\n", actions[0].new_text);
+}
+
+test "codeActionsAt: a checker fix wins over a workspace name of the same spelling" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var idx: index_mod.Index = .{ .gpa = std.testing.allocator };
+    defer idx.deinit();
+    try idx.exports.append(std.testing.allocator, .{
+        .name = try std.testing.allocator.dupe(u8, "Vec2"),
+        .path = try std.testing.allocator.dupe(u8, "/ws/vec.gr"),
+    });
+
+    const text = "def main()\n  let v: Vec2 = 0\nend\n";
+    var d = diagAt(1, 9, 13, .{ .rename = "Vec3" });
+    d.code = "E_TYPE_UNDEFINED";
+    d.message = "undefined type `Vec2`";
+    const diags = [_]analysis.Diagnostic{d};
+
+    const actions = try codeActionsAt(arena, text, &diags, &idx, null, .{ .line = 1, .character = 10 }, .{ .line = 1, .character = 10 });
+    try std.testing.expectEqual(@as(usize, 1), actions.len);
+    try std.testing.expectEqualStrings("Change to `Vec3`", actions[0].title);
+}
+
+test "nameAt: the diagnostic's range names the undefined symbol" {
+    const text = "def main()\n  let v: Vec2 = 0\nend\n";
+    var d = diagAt(1, 9, 13, null);
+    try std.testing.expectEqualStrings("Vec2", nameAt(text, d).?);
+    // A range past the buffer names nothing rather than slicing out of
+    // bounds.
+    d = diagAt(9, 0, 4, null);
+    try std.testing.expect(nameAt(text, d) == null);
+}
+
+test "importSpec: a workspace path becomes the quoted module a `use` wants" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try std.testing.expectEqualStrings("\"./vec\"", try importSpec(arena, "/ws", "/ws/vec.gr"));
+    try std.testing.expectEqualStrings("\"./lib/vec\"", try importSpec(arena, "/ws", "/ws/lib/vec.gr"));
+    try std.testing.expectEqualStrings("\"../vec\"", try importSpec(arena, "/ws/src", "/ws/vec.gr"));
+    // No document directory: the basename is the best guess left.
+    try std.testing.expectEqualStrings("\"./vec\"", try importSpec(arena, null, "/ws/vec.gr"));
+}
+
+test "relativeTo: a path is expressed from the importing document" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    try std.testing.expectEqualStrings("vec.gr", try relativeTo(arena, "/ws", "/ws/vec.gr"));
+    try std.testing.expectEqualStrings("lib/vec.gr", try relativeTo(arena, "/ws", "/ws/lib/vec.gr"));
+    try std.testing.expectEqualStrings("../vec.gr", try relativeTo(arena, "/ws/src", "/ws/vec.gr"));
+    try std.testing.expectEqualStrings("../../vec.gr", try relativeTo(arena, "/ws/a/b", "/ws/vec.gr"));
+    try std.testing.expectEqualStrings("../lib/vec.gr", try relativeTo(arena, "/ws/src", "/ws/lib/vec.gr"));
 }

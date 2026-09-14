@@ -104,7 +104,7 @@ something it imported changes — the server keeps no text for it.
 | `textDocument/references` | Every reference to the declaration under the cursor, in source order. `context.includeDeclaration` decides whether the declaration is among them. |
 | `textDocument/inlayHint` | The inferred type of each `let` the source left unannotated (§6). |
 | `textDocument/completion` | After a `.`, the receiver's members; otherwise the names visible at the position. Sorted, with no trigger characters — every completion here is an identifier. |
-| `textDocument/codeAction` | A `quickfix` per diagnostic under the selection that named a replacement (§6). |
+| `textDocument/codeAction` | A `quickfix` per diagnostic under the selection the checker worked out a correction for, plus imports from the workspace index (§6). |
 
 Any other request is answered `-32601` (method not found) rather than
 left hanging. Unknown *notifications* are dropped, since they carry no
@@ -290,6 +290,28 @@ what was last published. A client sends its own copy of the
 diagnostics in `context`, and those describe the buffer as it was when
 they were published; applying an edit computed against text the user
 has since changed would corrupt it.
+
+Three fixes are offered. A near-spelling match replaces the span. An
+unresolved name the stdlib exports inserts the `use` that binds it —
+`abs` becomes `use abs from math` — placed below the `use` lines the
+file already opens with, or above its first line of code. And an
+unused import is removed, line and all.
+
+Imports from the workspace are the exception to answering from the
+checker, because the checker cannot answer. A name in a sibling file
+that nothing imports is not part of any program the checker was asked
+about, so there is no binding to have recorded. The server therefore
+keeps its own index: `initialize`'s `rootUri` names a directory, and a
+code-action request walks it for `.gr` files and reads what each
+exports — skipping `local` declarations, and the document being
+edited. It is rebuilt per request rather than watched, since an editor
+asks at human speed and a stale index offers an import that does not
+resolve.
+
+A checker fix always wins. A name one edit from something local is
+likelier a typo than a reach for another file, and an import is the
+more disruptive correction; only the workspace can name several
+candidates, and it offers one action per file rather than guessing.
 
 ### Not yet provided
 

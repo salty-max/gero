@@ -12,6 +12,7 @@ const gero = @import("gero");
 const protocol = @import("lsp_protocol.zig");
 const analysis = @import("lsp_analysis.zig");
 const symbols = @import("lsp_symbols.zig");
+const index_mod = @import("lsp_index.zig");
 const uri_mod = @import("lsp_uri.zig");
 
 /// A set of document URIs.
@@ -40,8 +41,12 @@ const Server = struct {
     /// that document's diagnostics, even though the editor only told
     /// us about the file being typed in.
     deps: std.StringHashMapUnmanaged([]const []const u8) = .{},
+    /// What the workspace's other files export, for the import a code
+    /// action offers. Empty until `initialize` names a root.
+    index: index_mod.Index,
 
     fn deinit(self: *Server) void {
+        self.index.deinit();
         var it = self.docs.iterator();
         while (it.next()) |e| {
             self.gpa.free(e.key_ptr.*);
@@ -188,7 +193,7 @@ pub fn execute(
         return 2;
     }
 
-    var server: Server = .{ .gpa = gpa };
+    var server: Server = .{ .gpa = gpa, .index = .{ .gpa = gpa } };
     defer server.deinit();
 
     var read_buf: [64 * 1024]u8 = undefined;
@@ -253,6 +258,7 @@ fn handleMessage(
     const req = decode(parsed.value) orelse return null;
 
     if (std.mem.eql(u8, req.method, "initialize")) {
+        try noteRoot(arena, server, req.body);
         try replyInitialize(arena, stdout, req.id);
     } else if (std.mem.eql(u8, req.method, "shutdown")) {
         server.shutdown_received = true;
@@ -289,6 +295,18 @@ fn handleMessage(
 }
 
 // ---------- request handlers ----------
+
+/// Remember the workspace root an `initialize` named, so a code
+/// action can offer an import from a file the document has not
+/// mentioned. A client that sends neither leaves the index empty and
+/// only stdlib imports are offered.
+fn noteRoot(arena: std.mem.Allocator, server: *Server, msg: std.json.ObjectMap) !void {
+    const params = objectAt(msg, &.{"params"}) orelse return;
+    if (stringAt(params, "rootUri")) |uri| {
+        if (try uri_mod.toPath(arena, uri)) |path| return server.index.setRoot(path);
+    }
+    if (stringAt(params, "rootPath")) |path| return server.index.setRoot(path);
+}
 
 fn replyInitialize(arena: std.mem.Allocator, stdout: *std.Io.Writer, id: ?std.json.Value) !void {
     var out = std.Io.Writer.Allocating.init(arena);
@@ -737,7 +755,10 @@ fn onCodeAction(
             break;
         }
     }
-    const actions = try symbols.codeActionsAt(arena, text, mine, range.start, range.end);
+    try server.index.rebuild(io, try uri_mod.toPath(arena, uri));
+    const doc_path = try uri_mod.toPath(arena, uri);
+    const doc_dir = if (doc_path) |dp| std.fs.path.dirname(dp) else null;
+    const actions = try symbols.codeActionsAt(arena, text, mine, &server.index, doc_dir, range.start, range.end);
 
     var out = std.Io.Writer.Allocating.init(arena);
     var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
@@ -1030,7 +1051,7 @@ const Session = struct {
     out: std.Io.Writer.Allocating,
 
     fn init(gpa: std.mem.Allocator) Session {
-        return .{ .server = .{ .gpa = gpa }, .out = std.Io.Writer.Allocating.init(gpa) };
+        return .{ .server = .{ .gpa = gpa, .index = .{ .gpa = gpa } }, .out = std.Io.Writer.Allocating.init(gpa) };
     }
 
     fn deinit(self: *Session) void {
@@ -1579,7 +1600,7 @@ test "handleMessage: didClose drops the buffer" {
 }
 
 test "Server: reopening a document replaces its text without leaking" {
-    var s = Server{ .gpa = testing.allocator };
+    var s = Server{ .gpa = testing.allocator, .index = .{ .gpa = testing.allocator } };
     defer s.deinit();
     try s.put("untitled:a.gr", "first");
     try s.put("untitled:a.gr", "second");
