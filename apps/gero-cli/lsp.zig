@@ -11,6 +11,7 @@ const term_mod = @import("term.zig");
 const gero = @import("gero");
 const protocol = @import("lsp_protocol.zig");
 const analysis = @import("lsp_analysis.zig");
+const symbols = @import("lsp_symbols.zig");
 const uri_mod = @import("lsp_uri.zig");
 
 /// A set of document URIs.
@@ -267,6 +268,10 @@ fn handleMessage(
         if (docUri(req.body)) |uri| server.drop(uri);
     } else if (std.mem.eql(u8, req.method, "textDocument/formatting")) {
         try onFormatting(arena, server, stdout, req.body, req.id);
+    } else if (std.mem.eql(u8, req.method, "textDocument/definition")) {
+        try onDefinition(arena, server, stdout, req.body, req.id);
+    } else if (std.mem.eql(u8, req.method, "textDocument/hover")) {
+        try onHover(arena, server, stdout, req.body, req.id);
     } else if (req.id != null) {
         // An unknown request still needs an answer or the client
         // blocks; an unknown notification carries no id and needs none.
@@ -293,6 +298,12 @@ fn replyInitialize(arena: std.mem.Allocator, stdout: *std.Io.Writer, id: ?std.js
     try jw.objectField("textDocumentSync");
     try jw.write(@as(u8, 1));
     try jw.objectField("documentFormattingProvider");
+    try jw.write(true);
+    // Both answer from the checker's own binding table rather than a
+    // second resolution of the same names (`docs/lsp.md` §6).
+    try jw.objectField("definitionProvider");
+    try jw.write(true);
+    try jw.objectField("hoverProvider");
     try jw.write(true);
     try jw.endObject();
     try jw.objectField("serverInfo");
@@ -375,6 +386,134 @@ fn onDidChange(
     const text = stringAt(last.object, "text") orelse return;
     try server.put(uri, text);
     try publishAffected(io, arena, server, stdout, uri, text);
+}
+
+/// The position in a `textDocument/*` request that carries one.
+fn requestPosition(msg: std.json.ObjectMap) ?symbols.Position {
+    const p = objectAt(msg, &.{ "params", "position" }) orelse return null;
+    const line = p.get("line") orelse return null;
+    const ch = p.get("character") orelse return null;
+    if (line != .integer or ch != .integer) return null;
+    // @as: an editor's line and column, bounded by the file.
+    return .{ .line = @intCast(line.integer), .character = @intCast(ch.integer) };
+}
+
+/// Resolve what the cursor is on, or `null` for anything that is not a
+/// name the checker bound — whitespace, a keyword, an unresolved
+/// identifier.
+fn resolveAt(
+    arena: std.mem.Allocator,
+    server: *Server,
+    msg: std.json.ObjectMap,
+) !?struct { uri: []const u8, src: []const u8, hit: symbols.Resolved } {
+    const uri = docUri(msg) orelse return null;
+    const text = server.docs.get(uri) orelse return null;
+    const lang = analysis.langOf(uri) orelse return null;
+    // `.gas` resolves through the assembler's symbol table, which is a
+    // different shape; only `.gr` is wired here.
+    if (lang != .gr) return null;
+    const pos = requestPosition(msg) orelse return null;
+    const hit = (try symbols.resolveGr(arena, text, pos)) orelse return null;
+    return .{ .uri = uri, .src = text, .hit = hit };
+}
+
+fn onDefinition(
+    arena: std.mem.Allocator,
+    server: *Server,
+    stdout: *std.Io.Writer,
+    msg: std.json.ObjectMap,
+    id: ?std.json.Value,
+) !void {
+    const found = (try resolveAt(arena, server, msg)) orelse
+        return replyNull(arena, stdout, id);
+    const d = found.hit.binding.decl_span;
+    const start = symbols.positionOf(found.src, d.start);
+    const end = symbols.positionOf(found.src, d.end);
+
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.beginObject();
+    try jw.objectField("jsonrpc");
+    try jw.write("2.0");
+    try writeId(&jw, id);
+    try jw.objectField("result");
+    try jw.beginObject();
+    try jw.objectField("uri");
+    try jw.write(found.uri);
+    try jw.objectField("range");
+    try writeRange(&jw, start.line, start.character, end.line, end.character);
+    try jw.endObject();
+    try jw.endObject();
+    try protocol.writeMessage(stdout, out.written());
+}
+
+fn onHover(
+    arena: std.mem.Allocator,
+    server: *Server,
+    stdout: *std.Io.Writer,
+    msg: std.json.ObjectMap,
+    id: ?std.json.Value,
+) !void {
+    const found = (try resolveAt(arena, server, msg)) orelse
+        return replyNull(arena, stdout, id);
+    const b = found.hit.binding;
+
+    // `name: type` where a type is known, and the kind underneath, so
+    // hovering says both what this is and what it is called elsewhere.
+    var text: std.ArrayList(u8) = .empty;
+    try text.appendSlice(arena, "```gero\n");
+    try text.appendSlice(arena, b.name);
+    if (found.hit.type_text) |t| {
+        try text.appendSlice(arena, ": ");
+        try text.appendSlice(arena, t);
+    }
+    try text.appendSlice(arena, "\n```\n\n");
+    try text.appendSlice(arena, kindText(b.kind));
+    if (b.module) |m| {
+        try text.appendSlice(arena, ", imported from `");
+        try text.appendSlice(arena, m);
+        try text.appendSlice(arena, "`");
+    }
+
+    const start = symbols.positionOf(found.src, found.hit.ref.start);
+    const end = symbols.positionOf(found.src, found.hit.ref.end);
+
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.beginObject();
+    try jw.objectField("jsonrpc");
+    try jw.write("2.0");
+    try writeId(&jw, id);
+    try jw.objectField("result");
+    try jw.beginObject();
+    try jw.objectField("contents");
+    try jw.beginObject();
+    try jw.objectField("kind");
+    try jw.write("markdown");
+    try jw.objectField("value");
+    try jw.write(text.items);
+    try jw.endObject();
+    try jw.objectField("range");
+    try writeRange(&jw, start.line, start.character, end.line, end.character);
+    try jw.endObject();
+    try jw.endObject();
+    try protocol.writeMessage(stdout, out.written());
+}
+
+/// How a kind reads in a hover card.
+fn kindText(k: gero.lang.scope.SymbolKind) []const u8 {
+    return switch (k) {
+        .let_binding => "a `let` binding",
+        .const_binding => "a `const` binding",
+        .param => "a parameter",
+        .function => "a function",
+        .class => "a class",
+        .struct_ => "a struct",
+        .enum_ => "an enum",
+        .module_alias => "a module alias",
+        .imported => "an imported name",
+        .field => "a field",
+    };
 }
 
 fn onFormatting(
@@ -628,7 +767,7 @@ const Session = struct {
     }
 };
 
-test "handleMessage: initialize advertises the two capabilities" {
+test "handleMessage: initialize advertises its capabilities" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     var s = Session.init(testing.allocator);
@@ -638,8 +777,81 @@ test "handleMessage: initialize advertises the two capabilities" {
     const out = s.written();
     try testing.expect(std.mem.indexOf(u8, out, "\"documentFormattingProvider\":true") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"textDocumentSync\":1") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"definitionProvider\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"hoverProvider\":true") != null);
     // The id is echoed, or the client cannot match the response.
     try testing.expect(std.mem.indexOf(u8, out, "\"id\":1") != null);
+}
+
+/// A buffer the position tests share: `twice` declared on line 0 and
+/// called on line 4, `total` bound on line 4 and read on line 5.
+const position_src =
+    "def twice(n: i16) -> i16\n" ++
+    "  return n + n\n" ++
+    "end\n" ++
+    "def main()\n" ++
+    "  let total: i16 = twice(21)\n" ++
+    "  print total\n" ++
+    "end\n";
+
+fn openPositionDoc(s: *Session, arena: std.mem.Allocator) !void {
+    var body: std.ArrayList(u8) = .empty;
+    try body.appendSlice(arena, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///p.gr\",\"languageId\":\"gero\",\"version\":1,\"text\":");
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.write(position_src);
+    try body.appendSlice(arena, out.written());
+    try body.appendSlice(arena, "}}}");
+    _ = try s.send(arena, body.items);
+}
+
+test "handleMessage: definition jumps to the declaration, not the reference" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openPositionDoc(&s, arena);
+    // The `twice` inside `twice(21)` on line 4.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file:///p.gr\"},\"position\":{\"line\":4,\"character\":19}}}");
+    // `def twice` is line 0 and the name starts at column 4. Asserted
+    // as one fragment so a coincidental line 0 in a diagnostic cannot
+    // pass the test.
+    try testing.expect(std.mem.indexOf(
+        u8,
+        s.written(),
+        "\"range\":{\"start\":{\"line\":0,\"character\":4}",
+    ) != null);
+}
+
+test "handleMessage: hover names the binding and its type" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openPositionDoc(&s, arena);
+    // The `total` in `print total` on line 5.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"file:///p.gr\"},\"position\":{\"line\":5,\"character\":9}}}");
+    const out = s.written();
+    try testing.expect(std.mem.indexOf(u8, out, "\"kind\":\"markdown\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "total: i16") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "a `let` binding") != null);
+}
+
+test "handleMessage: a position on nothing answers null rather than guessing" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openPositionDoc(&s, arena);
+    // Column 0 of `end` — a keyword, bound to nothing.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"file:///p.gr\"},\"position\":{\"line\":2,\"character\":0}}}");
+    try testing.expect(std.mem.indexOf(u8, s.written(), "\"id\":4,\"result\":null") != null);
 }
 
 test "handleMessage: exit without shutdown is an error, with it is not" {
@@ -664,8 +876,10 @@ test "handleMessage: an unknown request is answered, an unknown notification is 
     var s = Session.init(testing.allocator);
     defer s.deinit();
 
-    // A request left unanswered blocks the client forever.
-    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/hover\"}");
+    // A request left unanswered blocks the client forever. The method
+    // has to be one the server really does not implement — this test
+    // used `textDocument/hover` until the server grew it.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/rename\"}");
     try testing.expect(std.mem.indexOf(u8, s.written(), "-32601") != null);
 
     const after_request = s.written().len;

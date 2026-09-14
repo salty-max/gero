@@ -92,13 +92,15 @@ something it imported changes — the server keeps no text for it.
 
 | Request | Behavior |
 |---------|----------|
-| `initialize` | Advertises `textDocumentSync: 1` and `documentFormattingProvider: true`. |
+| `initialize` | Advertises `textDocumentSync: 1`, `documentFormattingProvider`, `definitionProvider` and `hoverProvider`. |
 | `shutdown` | Answers `null`. |
 | `exit` | Leaves with `0` after a `shutdown`, `1` without one. |
 | `textDocument/didOpen` / `didChange` | Re-analyze, then publish. |
 | `textDocument/didClose` | Drops the buffer. Its diagnostics stand until the file is reopened. |
 | `textDocument/publishDiagnostics` | Notification, described below. |
 | `textDocument/formatting` | One `TextEdit` spanning the document. |
+| `textDocument/definition` | The declaration the name under the cursor binds to, or `null` (§6). |
+| `textDocument/hover` | The name, its type where known, and what kind of declaration it is (§6). |
 
 Any other request is answered `-32601` (method not found) rather than
 left hanging. Unknown *notifications* are dropped, since they carry no
@@ -200,18 +202,34 @@ protocol works: run `gero lsp`, send `initialize`, and open a file.
 
 ---
 
-## 6. Out of scope
+## 6. Resolved names
 
-Hover, completion, go-to-definition, find-references, semantic tokens,
-and code actions are **not** provided.
+Go-to-definition and hover are provided for `.gr`, and answer from the
+type-checker's own resolution rather than a second one.
 
-Each of them needs the front-ends to expose a resolved symbol table —
-which name at which offset binds to which declaration. The
-type-checker builds that internally and discards it; the diagnostic
-path never needs it. Exposing it is a front-end change, not a server
-one, and it is the work that gates all six features at once. Until
-that lands, the server would have to re-derive bindings from the AST
-in a second, independently-wrong implementation.
+`CheckedProgram.bindings` maps a reference's offset to the declaration
+it binds to — kind, span, name, and the module for an imported one.
+The server looks up the identifier under the cursor and reports what
+the checker already decided. Nothing re-derives bindings from the AST,
+which would be a second implementation agreeing with its author rather
+than with the compiler.
+
+A position on anything the checker did not bind — a keyword, a
+comment, a name that does not resolve — answers `null` rather than
+guessing.
+
+The table is built even when a buffer does not compile, which is when
+an editor is asked most.
+
+### Not yet provided
+
+Completion, find-references, semantic tokens, inlay hints and code
+actions. Each reads the same table and none needs anything further
+from the front ends; they are unbuilt rather than blocked.
+
+`.gas` is not wired for either feature yet. The assembler records
+where each label and constant was declared (`asm.Symbol.decl_start`),
+so the data is there and the server has not been taught to use it.
 
 Syntax highlighting is out of scope for a different reason: it needs
 no running server, and a grammar does it better. Both grammars exist —
