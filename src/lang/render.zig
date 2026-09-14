@@ -117,7 +117,7 @@ fn writeDiagnosticFull(
     });
     try writeExcerpt(writer, source, d.span, lc, d.secondary, style);
     try writeCrossLineSecondaries(writer, path, source, d.span, d.secondary, style);
-    if (d.help) |h| try writeHelp(writer, h, style);
+    if (d.help) |h| try writeHelp(writer, "", h, style);
     try writer.writeByte('\n');
 }
 
@@ -139,7 +139,7 @@ fn writeDiagnosticBody(
     });
     try writeExcerpt(writer, source, d.span, lc, d.secondary, style);
     try writeCrossLineSecondaries(writer, path, source, d.span, d.secondary, style);
-    if (d.help) |h| try writeHelp(writer, h, style);
+    if (d.help) |h| try writeHelp(writer, "  ", h, style);
     try writer.writeByte('\n');
 }
 
@@ -389,8 +389,8 @@ fn lineOf(source: []const u8, byte: u32) usize {
     return lineColAt(source, byte).line;
 }
 
-fn writeHelp(writer: *std.Io.Writer, help_msg: []const u8, style: Style) !void {
-    try writer.print("{s}help:{s} {s}\n", .{ style.help, style.reset, help_msg });
+fn writeHelp(writer: *std.Io.Writer, indent: []const u8, help_msg: []const u8, style: Style) !void {
+    try writer.print("{s}{s}help:{s} {s}\n", .{ indent, style.help, style.reset, help_msg });
 }
 
 fn writePadGutter(writer: *std.Io.Writer, gutter_w: usize, style: Style) !void {

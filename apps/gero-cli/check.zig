@@ -311,6 +311,35 @@ test "isFailure: only notes → not a failure (notes are informational)" {
     try std.testing.expect(!isFailure(&diags, true));
 }
 
+/// Remap `secondary` spans into `fpath`'s offsets, dropping any that
+/// resolve to a different file — the renderer draws secondaries against
+/// the primary's source, so one from elsewhere underlines the wrong bytes.
+fn remapSecondaries(
+    arena: std.mem.Allocator,
+    gf: GrFile,
+    fpath: []const u8,
+    secondary: []const gero.lang.SpanLabel,
+) std.mem.Allocator.Error![]const gero.lang.SpanLabel {
+    if (secondary.len == 0) return &.{};
+    var out: std.ArrayList(gero.lang.SpanLabel) = .empty;
+    for (secondary) |s| {
+        const loc = gf.source_map.lookup(s.span.start) orelse {
+            // No mapping means an identity (single-file) check, where
+            // the fused offsets already are the root file's.
+            if (std.mem.eql(u8, fpath, gf.path)) try out.append(arena, s);
+            continue;
+        };
+        if (!std.mem.eql(u8, loc.file.path, fpath)) continue;
+        var moved = s;
+        moved.span = .{
+            .start = loc.file_offset,
+            .end = loc.file_offset + (s.span.end - s.span.start),
+        };
+        try out.append(arena, moved);
+    }
+    return out.toOwnedSlice(arena);
+}
+
 /// Split a checked `.gr` file's diagnostics by their originating source
 /// file (resolved through the fused source map) and append one
 /// `FileDiagnostics` per file, with each span remapped to that file's
@@ -329,12 +358,9 @@ fn appendAttributed(
         const fpath: []const u8 = if (loc) |l| l.file.path else gf.path;
         const fsrc: []const u8 = if (loc) |l| l.file.content else gf.source;
         const start: u32 = if (loc) |l| l.file_offset else d.span.start;
-        const remapped: gero.lang.Diagnostic = .{
-            .severity = d.severity,
-            .code = d.code,
-            .message = d.message,
-            .span = .{ .start = start, .end = start + (d.span.end - d.span.start) },
-        };
+        var remapped = d;
+        remapped.span = .{ .start = start, .end = start + (d.span.end - d.span.start) };
+        remapped.secondary = try remapSecondaries(arena, gf, fpath, d.secondary);
         const gop = try by_file.getOrPut(arena, fpath);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         try gop.value_ptr.append(arena, remapped);
@@ -484,4 +510,73 @@ test "appendAttributed: maps a diagnostic in an imported region to its file" {
     try std.testing.expectEqualStrings("import.gr", out.items[1].path);
     try std.testing.expectEqual(@as(u32, 2), out.items[1].diagnostics[0].span.start);
     try std.testing.expectEqual(@as(u32, 4), out.items[1].diagnostics[0].span.end);
+}
+
+test "appendAttributed: a diagnostic keeps its help and suggestion" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var files: std.ArrayList(gero.lang.FileInfo) = .empty;
+    try files.append(arena, .{ .path = "root.gr", .content = "ROOT--" });
+    var regions: std.ArrayList(gero.lang.Region) = .empty;
+    try regions.append(arena, .{ .fused_start = 0, .fused_end = 6, .file_id = 0, .file_offset = 0 });
+    const sm: gero.lang.SourceMap = .{ .files = files, .regions = regions, .allocator = arena };
+
+    var diags: std.ArrayList(gero.lang.Diagnostic) = .empty;
+    try diags.append(arena, .{
+        .severity = .fatal,
+        .code = "E_A",
+        .message = "a",
+        .span = .{ .start = 1, .end = 3 },
+        .help = "did you mean `ROOT`?",
+        .suggestion = "ROOT",
+    });
+
+    var out: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
+    try appendAttributed(arena, &out, .{ .path = "root.gr", .source = "ROOT--", .diagnostics = diags.items, .source_map = sm, .is_failure = true });
+
+    const d = out.items[0].diagnostics[0];
+    try std.testing.expectEqualStrings("did you mean `ROOT`?", d.help.?);
+    try std.testing.expectEqualStrings("ROOT", d.suggestion.?);
+}
+
+test "appendAttributed: a secondary span is remapped into its own file" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Fused = "ROOT--" (file 0) ++ "IMPORTED" (file 1, fused 6..14).
+    var files: std.ArrayList(gero.lang.FileInfo) = .empty;
+    try files.append(arena, .{ .path = "root.gr", .content = "ROOT--" });
+    try files.append(arena, .{ .path = "import.gr", .content = "IMPORTED" });
+    var regions: std.ArrayList(gero.lang.Region) = .empty;
+    try regions.append(arena, .{ .fused_start = 0, .fused_end = 6, .file_id = 0, .file_offset = 0 });
+    try regions.append(arena, .{ .fused_start = 6, .fused_end = 14, .file_id = 1, .file_offset = 0 });
+    const sm: gero.lang.SourceMap = .{ .files = files, .regions = regions, .allocator = arena };
+
+    // Primary and one secondary in the imported file, plus one secondary
+    // back in the root — the renderer draws against a single source, so
+    // only the same-file one can survive.
+    const secondary = [_]gero.lang.SpanLabel{
+        .{ .span = .{ .start = 10, .end = 12 }, .message = "here" },
+        .{ .span = .{ .start = 1, .end = 2 }, .message = "elsewhere" },
+    };
+    var diags: std.ArrayList(gero.lang.Diagnostic) = .empty;
+    try diags.append(arena, .{
+        .severity = .fatal,
+        .code = "E_B",
+        .message = "b",
+        .span = .{ .start = 8, .end = 10 },
+        .secondary = &secondary,
+    });
+
+    var out: std.ArrayList(gero.lang.render.FileDiagnostics) = .empty;
+    try appendAttributed(arena, &out, .{ .path = "root.gr", .source = "ROOT--IMPORTED", .diagnostics = diags.items, .source_map = sm, .is_failure = true });
+
+    const d = out.items[0].diagnostics[0];
+    try std.testing.expectEqualStrings("import.gr", out.items[0].path);
+    try std.testing.expectEqual(@as(usize, 1), d.secondary.len);
+    try std.testing.expectEqual(@as(u32, 4), d.secondary[0].span.start);
+    try std.testing.expectEqualStrings("here", d.secondary[0].message);
 }
