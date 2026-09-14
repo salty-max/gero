@@ -243,7 +243,7 @@ test "diagnostics: printJsonReport — read-error-only run" {
     try testing.expectEqualStrings(expected, out.written());
 }
 
-test "diagnostics: writeDiagnosticJson — code + note both serialized when present" {
+test "diagnostics: writeDiagnosticJson — code + help both serialized when present" {
     // Build a synthetic SourceMap covering one file so locationOf
     // resolves cleanly.
     var sm: gero.asm_.SourceMap = .{
@@ -284,7 +284,7 @@ test "diagnostics: writeDiagnosticJson — code + note both serialized when pres
 
     const expected =
         "[{\"file\":\"foo.gas\",\"line\":1,\"column\":5,\"severity\":\"error\"," ++
-        "\"code\":\"E005\",\"message\":\"undefined symbol\",\"note\":\"did you mean `bar`?\"}]";
+        "\"code\":\"E005\",\"message\":\"undefined symbol\",\"help\":\"did you mean `bar`?\"}]";
     try testing.expectEqualStrings(expected, out.written());
 }
 

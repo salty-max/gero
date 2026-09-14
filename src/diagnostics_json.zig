@@ -73,7 +73,7 @@ pub fn writeAsm(
     try jw.objectField("message");
     try jw.write(d.parse_error.message);
     if (d.note) |n| {
-        try jw.objectField("note");
+        try jw.objectField("help");
         try jw.write(n);
     }
     try jw.endObject();
@@ -108,9 +108,38 @@ pub fn writeLang(
     try jw.write(d.code);
     try jw.objectField("message");
     try jw.write(d.message);
+    try jw.objectField("span");
+    try jw.beginObject();
+    try jw.objectField("start");
+    try jw.write(d.span.start);
+    try jw.objectField("end");
+    try jw.write(d.span.end);
+    try jw.endObject();
     if (d.help) |h| {
-        try jw.objectField("note");
+        try jw.objectField("help");
         try jw.write(h);
+    }
+    if (d.suggestion) |g| {
+        try jw.objectField("suggestion");
+        try jw.write(g);
+    }
+    if (d.secondary.len > 0) {
+        try jw.objectField("notes");
+        try jw.beginArray();
+        for (d.secondary) |sec| {
+            const at = lang.render.lineColAt(file.source, sec.span.start);
+            try jw.beginObject();
+            try jw.objectField("file");
+            try jw.write(file.path);
+            try jw.objectField("line");
+            try jw.write(at.line);
+            try jw.objectField("column");
+            try jw.write(at.col);
+            try jw.objectField("message");
+            try jw.write(sec.message);
+            try jw.endObject();
+        }
+        try jw.endArray();
     }
     try jw.endObject();
 }
