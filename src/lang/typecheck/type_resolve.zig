@@ -18,7 +18,10 @@ pub fn resolveType(self: *Checker, t: *const ast.TypeAnn) WalkError!*const types
             if (types.primitiveFromName(name)) |p| {
                 return try self.primitive(p);
             }
-            if (self.current_scope.lookup(name)) |_| {
+            if (self.current_scope.lookup(name)) |info| {
+                // A type name is a reference like any other: an editor
+                // asking on `Vec2` in an annotation wants the struct.
+                try self.recordBinding(n.name, name, info);
                 return try types.mkNamed(self.arena, name, n.span);
             }
             const msg = try std.fmt.allocPrint(

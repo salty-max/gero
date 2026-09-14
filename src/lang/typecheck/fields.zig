@@ -410,6 +410,11 @@ pub fn checkStaticMethodCall(
 pub fn checkStructLit(self: *Checker, sl: ast.StructLit) WalkError!?*const types.Type {
     const type_name = self.resolveImportAlias(self.lexeme(sl.type_name));
     const named_ty = try types.mkNamed(self.arena, type_name, sl.type_name);
+    // The name in `Vec2 { … }` is a reference to the struct, the same
+    // as the one in an annotation.
+    if (self.current_scope.lookup(type_name)) |info| {
+        try self.recordBinding(sl.type_name, type_name, info);
+    }
 
     // Struct literals can be used to construct classes too
     // (`Player { name: "Cecil" }` shorthand) — try both
