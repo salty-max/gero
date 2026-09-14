@@ -2928,9 +2928,9 @@ fn expectNoSuggestion(source: []const u8, code: []const u8) !void {
     try std.testing.expect(saw_code);
 }
 
-/// Assert the named diagnostic carries `suggestion` as the bare name,
-/// not only inside the `help:` prose. A quick-fix replaces the span
-/// with exactly this string.
+/// Assert the named diagnostic carries a `rename` fix naming the
+/// candidate, not only the `help:` prose. A quick-fix replaces the
+/// span with exactly that string.
 fn expectSuggestionField(source: []const u8, code: []const u8, candidate: []const u8) !void {
     var stream = try gero.lang.tokenize(alloc, source);
     defer stream.deinit();
@@ -2941,8 +2941,9 @@ fn expectSuggestionField(source: []const u8, code: []const u8, candidate: []cons
 
     for (checked.diagnostics) |d| {
         if (!std.mem.eql(u8, d.code, code)) continue;
-        const got = d.suggestion orelse continue;
-        if (std.mem.eql(u8, got, candidate)) return;
+        const got = d.fix orelse continue;
+        if (got != .rename) continue;
+        if (std.mem.eql(u8, got.rename, candidate)) return;
     }
     return error.MissingSuggestion;
 }
@@ -2997,7 +2998,7 @@ test "typecheck/suggest: no candidate leaves the suggestion empty" {
     for (checked.diagnostics) |d| {
         if (!std.mem.eql(u8, d.code, "E_UNDEFINED_SYMBOL")) continue;
         saw = true;
-        try std.testing.expect(d.suggestion == null);
+        try std.testing.expect(d.fix == null);
     }
     try std.testing.expect(saw);
 }

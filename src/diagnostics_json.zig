@@ -119,9 +119,30 @@ pub fn writeLang(
         try jw.objectField("help");
         try jw.write(h);
     }
-    if (d.suggestion) |g| {
-        try jw.objectField("suggestion");
-        try jw.write(g);
+    if (d.fix) |f| {
+        try jw.objectField("fix");
+        try jw.beginObject();
+        switch (f) {
+            .rename => |name| {
+                try jw.objectField("kind");
+                try jw.write("rename");
+                try jw.objectField("name");
+                try jw.write(name);
+            },
+            .import => |imp| {
+                try jw.objectField("kind");
+                try jw.write("import");
+                try jw.objectField("module");
+                try jw.write(imp.module);
+                try jw.objectField("name");
+                try jw.write(imp.name);
+            },
+            .remove_import => {
+                try jw.objectField("kind");
+                try jw.write("remove_import");
+            },
+        }
+        try jw.endObject();
     }
     if (d.secondary.len > 0) {
         try jw.objectField("notes");

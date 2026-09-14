@@ -854,6 +854,18 @@ pub const Checker = struct {
     }
 
     /// Delegated to `typecheck/diagnostics.zig`.
+    pub fn emitUndefined(
+        self: *Checker,
+        code: []const u8,
+        span: ast.Span,
+        message: []const u8,
+        candidate: ?[]const u8,
+        name: []const u8,
+    ) WalkError!void {
+        return diag_check.emitUndefined(self, code, span, message, candidate, name);
+    }
+
+    /// Delegated to `typecheck/diagnostics.zig`.
     pub fn emitSpanWithSuggestion(
         self: *Checker,
         code: []const u8,
@@ -2286,7 +2298,7 @@ pub const Checker = struct {
                     "undefined symbol `{s}`",
                     .{name},
                 );
-                try self.emitSpanWithSuggestion("E_UNDEFINED_SYMBOL", i.span, msg, try self.suggestSymbol(name));
+                try self.emitUndefined("E_UNDEFINED_SYMBOL", i.span, msg, try self.suggestSymbol(name), name);
                 return null;
             },
             .self_expr => |se| {

@@ -37,6 +37,33 @@ pub const SpanLabel = struct {
     pub const Decoration = enum { underline, point };
 };
 
+/// A correction the checker worked out while reporting a diagnostic.
+///
+/// Each variant says what to change, not how to write it: the edit a
+/// tool builds from one is the tool's own business, because where an
+/// import belongs depends on the file's existing `use` lines.
+pub const Fix = union(enum) {
+    /// Replace what the diagnostic's `span` covers with this name —
+    /// the near-spelling match behind `did you mean …?`.
+    rename: []const u8,
+    /// Bind `name` by importing it, which puts the undefined name the
+    /// diagnostic reports into scope.
+    import: Import,
+    /// Remove the import the diagnostic's span sits on, line and all.
+    /// Carries nothing: the line to drop is the one reported.
+    remove_import,
+
+    /// The import a `Fix.import` asks for.
+    pub const Import = struct {
+        /// The module to take the name from, written as a `use`
+        /// spells it: a bare name for the stdlib, a quoted path for a
+        /// file.
+        module: []const u8,
+        /// The name to bind, as the target module declares it.
+        name: []const u8,
+    };
+};
+
 /// One diagnostic. The `span` covers the offending bytes in the
 /// source buffer; `code` is the stable `E_TYPE_MISMATCH`-style
 /// identifier from `docs/lang-diagnostics.md`.
@@ -48,14 +75,14 @@ pub const Diagnostic = struct {
     /// Optional `help: ...` block printed after the caret snippet.
     /// The renderer wraps long lines at 78 cols.
     help: ?[]const u8 = null,
-    /// The name this diagnostic suggests in place of what `span`
-    /// covers, when it has one.
+    /// What the checker decided would fix this diagnostic, when it
+    /// decided anything.
     ///
-    /// The same name the `help` text names, kept as itself rather than
-    /// only as prose. A tool offering to apply the fix would otherwise
-    /// have to parse it back out of an English sentence, and the
-    /// checker already decided what it is.
-    suggestion: ?[]const u8 = null,
+    /// The same correction the `help` text spells into a sentence,
+    /// kept structured rather than only as prose. A tool offering to
+    /// apply it would otherwise have to parse it back out of English,
+    /// and the checker already worked it out.
+    fix: ?Fix = null,
     /// Annotated context spans (e.g. annotation declarations,
     /// prior definitions). Empty for diagnostics that don't need
     /// secondary context. Per spec §4.x rendering rules:

@@ -397,40 +397,102 @@ fn namedOf(t: gero.lang.types.Type) ?[]const u8 {
 
 // ---------- code actions ----------
 
-/// One quick-fix the editor can offer: a title to show, and the range
-/// plus replacement text that applies it.
+/// One quick-fix the editor can offer: a title to show, and the edit
+/// that applies it.
 pub const CodeAction = struct {
     title: []const u8,
     /// The diagnostic this fixes, so the editor can pair them.
     diagnostic: analysis.Diagnostic,
-    /// Text that replaces `diagnostic`'s range.
+    /// Range the edit replaces. The diagnostic's own span for a
+    /// rename, a zero-width point for an inserted import, the whole
+    /// line for a removed one.
+    start: Position,
+    end: Position,
+    /// Text that replaces `start`..`end`. Empty for a removal.
     new_text: []const u8,
 };
 
-/// Quick-fixes for every diagnostic in `diags` that overlaps the
-/// requested range and names a replacement.
+/// Quick-fixes for every diagnostic overlapping the requested range
+/// that the checker worked out a correction for.
 ///
-/// The fix is the checker's own `suggestion` — the name it already
-/// decided on when it wrote `did you mean …?`. Nothing here guesses at
-/// a correction, so a code action can never disagree with the
-/// diagnostic that offered it.
+/// The correction is the checker's own `fix`. Nothing here decides
+/// *what* to change, so an action can never disagree with the
+/// diagnostic that offered it. What this does decide is where the
+/// text goes, which is a property of the buffer rather than of the
+/// program: an import belongs after the `use` lines already there.
 pub fn codeActionsAt(
     arena: std.mem.Allocator,
+    text: []const u8,
     diags: []const analysis.Diagnostic,
     start: Position,
     end: Position,
 ) std.mem.Allocator.Error![]const CodeAction {
     var out: std.ArrayList(CodeAction) = .empty;
     for (diags) |d| {
-        const name = d.suggestion orelse continue;
+        const fix = d.fix orelse continue;
         if (!overlaps(d, start, end)) continue;
-        try out.append(arena, .{
-            .title = try std.fmt.allocPrint(arena, "Change to `{s}`", .{name}),
-            .diagnostic = d,
-            .new_text = name,
-        });
+        switch (fix) {
+            .rename => |name| try out.append(arena, .{
+                .title = try std.fmt.allocPrint(arena, "Change to `{s}`", .{name}),
+                .diagnostic = d,
+                .start = .{ .line = d.line, .character = d.character },
+                .end = .{ .line = d.end_line, .character = d.end_character },
+                .new_text = name,
+            }),
+            .import => |imp| {
+                const at = useInsertLine(text);
+                try out.append(arena, .{
+                    .title = try std.fmt.allocPrint(arena, "Import `{s}` from {s}", .{ imp.name, imp.module }),
+                    .diagnostic = d,
+                    .start = .{ .line = at, .character = 0 },
+                    .end = .{ .line = at, .character = 0 },
+                    .new_text = try std.fmt.allocPrint(arena, "use {s} from {s}\n", .{ imp.name, imp.module }),
+                });
+            },
+            .remove_import => try out.append(arena, .{
+                .title = "Remove unused import",
+                .diagnostic = d,
+                // Through to the start of the next line, so the blank
+                // the line occupied goes with it.
+                .start = .{ .line = d.line, .character = 0 },
+                .end = .{ .line = d.line + 1, .character = 0 },
+                .new_text = "",
+            }),
+        }
     }
     return out.toOwnedSlice(arena);
+}
+
+/// The line a new `use` belongs on: after the last one already at the
+/// top of the file, else above the first line of actual code.
+///
+/// Only the run of `use` lines the file opens with counts. A `use`
+/// further down is unusual enough that following it would scatter the
+/// imports rather than group them.
+fn useInsertLine(text: []const u8) u32 {
+    var line: u32 = 0;
+    var after_last_use: u32 = 0;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| : (line += 1) {
+        const trimmed = std.mem.trim(u8, raw, " \t\r");
+        if (trimmed.len == 0) continue;
+        // A leading comment block belongs above the imports.
+        if (std.mem.startsWith(u8, trimmed, "--")) continue;
+        if (isUseLine(trimmed)) {
+            after_last_use = line + 1;
+            continue;
+        }
+        break;
+    }
+    return after_last_use;
+}
+
+/// `true` when `trimmed` opens with the `use` keyword rather than an
+/// identifier that merely starts with those letters (`user`).
+fn isUseLine(trimmed: []const u8) bool {
+    if (!std.mem.startsWith(u8, trimmed, "use")) return false;
+    if (trimmed.len == 3) return true;
+    return trimmed[3] == ' ' or trimmed[3] == '\t' or trimmed[3] == '"';
 }
 
 /// Whether a diagnostic's range intersects `start`..`end`. An editor
@@ -445,7 +507,7 @@ fn before(l0: u32, c0: u32, l1: u32, c1: u32) bool {
     return l0 < l1 or (l0 == l1 and c0 < c1);
 }
 
-fn diagAt(l0: u32, c0: u32, c1: u32, suggestion: ?[]const u8) analysis.Diagnostic {
+fn diagAt(l0: u32, c0: u32, c1: u32, fix: ?gero.lang.Fix) analysis.Diagnostic {
     return .{
         .line = l0,
         .character = c0,
@@ -454,7 +516,7 @@ fn diagAt(l0: u32, c0: u32, c1: u32, suggestion: ?[]const u8) analysis.Diagnosti
         .severity = 1,
         .code = "E_UNDEFINED_SYMBOL",
         .message = "undefined symbol",
-        .suggestion = suggestion,
+        .fix = fix,
     };
 }
 
@@ -463,21 +525,21 @@ test "codeActionsAt: a diagnostic with a suggestion offers replacing its own ran
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, "helo")};
-    const actions = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 17 }, .{ .line = 2, .character = 17 });
+    const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, .{ .rename = "helo" })};
+    const actions = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 17 }, .{ .line = 2, .character = 17 });
     try std.testing.expectEqual(@as(usize, 1), actions.len);
     try std.testing.expectEqualStrings("helo", actions[0].new_text);
     try std.testing.expectEqualStrings("Change to `helo`", actions[0].title);
     try std.testing.expectEqual(@as(u32, 15), actions[0].diagnostic.character);
 }
 
-test "codeActionsAt: a diagnostic the checker had no candidate for offers nothing" {
+test "codeActionsAt: a diagnostic the checker worked out no fix for offers nothing" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
     const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, null)};
-    const actions = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 17 }, .{ .line = 2, .character = 17 });
+    const actions = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 17 }, .{ .line = 2, .character = 17 });
     try std.testing.expectEqual(@as(usize, 0), actions.len);
 }
 
@@ -486,8 +548,8 @@ test "codeActionsAt: a diagnostic elsewhere in the file is not offered" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, "helo")};
-    const actions = try codeActionsAt(arena, &diags, .{ .line = 5, .character = 0 }, .{ .line = 5, .character = 4 });
+    const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, .{ .rename = "helo" })};
+    const actions = try codeActionsAt(arena, "", &diags, .{ .line = 5, .character = 0 }, .{ .line = 5, .character = 4 });
     try std.testing.expectEqual(@as(usize, 0), actions.len);
 }
 
@@ -496,12 +558,12 @@ test "codeActionsAt: a caret resting on either end of the span still matches" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, "helo")};
-    const at_start = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 15 }, .{ .line = 2, .character = 15 });
+    const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, .{ .rename = "helo" })};
+    const at_start = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 15 }, .{ .line = 2, .character = 15 });
     try std.testing.expectEqual(@as(usize, 1), at_start.len);
-    const at_end = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 21 }, .{ .line = 2, .character = 21 });
+    const at_end = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 21 }, .{ .line = 2, .character = 21 });
     try std.testing.expectEqual(@as(usize, 1), at_end.len);
-    const past_end = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 22 }, .{ .line = 2, .character = 22 });
+    const past_end = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 22 }, .{ .line = 2, .character = 22 });
     try std.testing.expectEqual(@as(usize, 0), past_end.len);
 }
 
@@ -511,9 +573,86 @@ test "codeActionsAt: a selection spanning several typos offers a fix for each" {
     const arena = arena_state.allocator();
 
     const diags = [_]analysis.Diagnostic{
-        diagAt(2, 15, 21, "helo"),
-        diagAt(3, 4, 8, "total"),
+        diagAt(2, 15, 21, .{ .rename = "helo" }),
+        diagAt(3, 4, 8, .{ .rename = "total" }),
     };
-    const actions = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 0 }, .{ .line = 3, .character = 20 });
+    const actions = try codeActionsAt(arena, "", &diags, .{ .line = 2, .character = 0 }, .{ .line = 3, .character = 20 });
     try std.testing.expectEqual(@as(usize, 2), actions.len);
+}
+
+test "codeActionsAt: an import fix inserts a `use` line rather than rewriting the name" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const text =
+        \\def main()
+        \\  print abs(0 - 1)
+        \\end
+        \\
+    ;
+    const diags = [_]analysis.Diagnostic{diagAt(1, 8, 11, .{ .import = .{ .module = "math", .name = "abs" } })};
+    const actions = try codeActionsAt(arena, text, &diags, .{ .line = 1, .character = 9 }, .{ .line = 1, .character = 9 });
+    try std.testing.expectEqual(@as(usize, 1), actions.len);
+    try std.testing.expectEqualStrings("Import `abs` from math", actions[0].title);
+    try std.testing.expectEqualStrings("use abs from math\n", actions[0].new_text);
+    // Inserted at the top, as a zero-width edit.
+    try std.testing.expectEqual(@as(u32, 0), actions[0].start.line);
+    try std.testing.expectEqual(actions[0].start.line, actions[0].end.line);
+    try std.testing.expectEqual(actions[0].start.character, actions[0].end.character);
+}
+
+test "codeActionsAt: an import lands below the `use` lines already there" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const text =
+        \\-- a leading comment
+        \\
+        \\use peek from mem
+        \\use poke from mem
+        \\
+        \\def main()
+        \\  print abs(0 - 1)
+        \\end
+        \\
+    ;
+    const diags = [_]analysis.Diagnostic{diagAt(6, 8, 11, .{ .import = .{ .module = "math", .name = "abs" } })};
+    const actions = try codeActionsAt(arena, text, &diags, .{ .line = 6, .character = 9 }, .{ .line = 6, .character = 9 });
+    try std.testing.expectEqual(@as(usize, 1), actions.len);
+    // Line 4 — after `use poke from mem`, not above the comment.
+    try std.testing.expectEqual(@as(u32, 4), actions[0].start.line);
+}
+
+test "codeActionsAt: a removal deletes the whole line it sits on" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const text =
+        \\use min from math
+        \\def main()
+        \\  print 1
+        \\end
+        \\
+    ;
+    const diags = [_]analysis.Diagnostic{diagAt(0, 4, 7, .remove_import)};
+    const actions = try codeActionsAt(arena, text, &diags, .{ .line = 0, .character = 5 }, .{ .line = 0, .character = 5 });
+    try std.testing.expectEqual(@as(usize, 1), actions.len);
+    try std.testing.expectEqualStrings("Remove unused import", actions[0].title);
+    try std.testing.expectEqualStrings("", actions[0].new_text);
+    // Column 0 through the start of the next line, so no blank is left.
+    try std.testing.expectEqual(@as(u32, 0), actions[0].start.line);
+    try std.testing.expectEqual(@as(u32, 0), actions[0].start.character);
+    try std.testing.expectEqual(@as(u32, 1), actions[0].end.line);
+    try std.testing.expectEqual(@as(u32, 0), actions[0].end.character);
+}
+
+test "useInsertLine: a file whose first line is code takes the import above it" {
+    try std.testing.expectEqual(@as(u32, 0), useInsertLine("def main()\n  print 1\nend\n"));
+}
+
+test "useInsertLine: `user` is not mistaken for a `use` directive" {
+    try std.testing.expectEqual(@as(u32, 0), useInsertLine("user_thing()\n"));
 }

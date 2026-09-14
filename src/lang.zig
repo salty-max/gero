@@ -23,6 +23,7 @@ const tc_annotations = @import("lang/typecheck/annotations.zig");
 const tc_relations = @import("lang/typecheck/relations.zig");
 const tc_flow = @import("lang/typecheck/flow.zig");
 const tc_suggestions = @import("lang/typecheck/suggestions.zig");
+const tc_stdlib_exports = @import("lang/typecheck/stdlib_exports.zig");
 const tc_type_resolve = @import("lang/typecheck/type_resolve.zig");
 const tc_fields = @import("lang/typecheck/fields.zig");
 const tc_operators = @import("lang/typecheck/operators.zig");
@@ -236,6 +237,9 @@ pub const MemBuiltinSig = tc_mem_builtin.MemBuiltinSig;
 pub const lookupMemBuiltin = tc_mem_builtin.lookupMemBuiltin;
 /// Diagnostic shape carried by `CheckedProgram`.
 pub const Diagnostic = diag_mod.Diagnostic;
+
+/// A correction the checker worked out while reporting a diagnostic.
+pub const Fix = diag_mod.Fix;
 /// Annotated context span on a `Diagnostic`.
 pub const SpanLabel = diag_mod.SpanLabel;
 /// Diagnostic severity.
@@ -366,6 +370,8 @@ pub const internal = struct {
         pub const stdlib = tc_stdlib;
         /// "Did you mean…?" Levenshtein-based name suggestions.
         pub const suggestions = tc_suggestions;
+        /// Which stdlib module exports a given name.
+        pub const stdlib_exports = tc_stdlib_exports;
         /// `ast.TypeAnn` → `types.Type` resolution.
         pub const type_resolve = tc_type_resolve;
         /// Field + method resolution for structs + classes.

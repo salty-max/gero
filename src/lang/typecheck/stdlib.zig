@@ -58,6 +58,9 @@ const test_sigs = [_]Sig{
     .{ .name = "assert_ne", .shape = .equatable_pair },
 };
 
+/// The modules this file owns, in the order a name is searched.
+pub const module_names = [_][]const u8{ "math", "bank", "test" };
+
 /// `true` for the modules this file owns. `mem` is excluded — it keeps
 /// its own resolver.
 pub fn isModule(name: []const u8) bool {

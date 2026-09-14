@@ -737,7 +737,7 @@ fn onCodeAction(
             break;
         }
     }
-    const actions = try symbols.codeActionsAt(arena, mine, range.start, range.end);
+    const actions = try symbols.codeActionsAt(arena, text, mine, range.start, range.end);
 
     var out = std.Io.Writer.Allocating.init(arena);
     var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
@@ -765,7 +765,6 @@ fn writeCodeAction(
     a: symbols.CodeAction,
     preferred: bool,
 ) !void {
-    const d = a.diagnostic;
     try jw.beginObject();
     try jw.objectField("title");
     try jw.write(a.title);
@@ -775,7 +774,7 @@ fn writeCodeAction(
     try jw.write(preferred);
     try jw.objectField("diagnostics");
     try jw.beginArray();
-    try writeDiagnostic(jw, d);
+    try writeDiagnostic(jw, a.diagnostic);
     try jw.endArray();
     try jw.objectField("edit");
     try jw.beginObject();
@@ -785,7 +784,7 @@ fn writeCodeAction(
     try jw.beginArray();
     try jw.beginObject();
     try jw.objectField("range");
-    try writeRange(jw, d.line, d.character, d.end_line, d.end_character);
+    try writeRange(jw, a.start.line, a.start.character, a.end.line, a.end.character);
     try jw.objectField("newText");
     try jw.write(a.new_text);
     try jw.endObject();

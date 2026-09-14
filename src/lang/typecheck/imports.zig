@@ -80,5 +80,6 @@ fn warn(self: *Checker, span: ast.Span, name: []const u8) WalkError!void {
         .message = msg,
         .span = span,
         .help = "remove it, or reference the name it brings into scope",
+        .fix = .remove_import,
     });
 }
