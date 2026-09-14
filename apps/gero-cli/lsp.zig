@@ -32,11 +32,17 @@ const Server = struct {
     docs: Documents = .{},
     /// Set by `shutdown`; `exit` then leaves with 0 rather than 1.
     shutdown_received: bool = false,
-    /// URIs currently carrying diagnostics. Checking one document can
-    /// report errors in the files it imports, and those have to be
-    /// cleared once fixed — an editor keeps showing a published list
-    /// until an empty one replaces it.
-    published: UriSet = .{},
+    /// URIs each document's analysis last published diagnostics for,
+    /// keyed by the document analyzed.
+    ///
+    /// Checking one document can report errors in the files it
+    /// imports, and those have to be cleared once fixed — an editor
+    /// keeps showing a published list until an empty one replaces it.
+    /// Scoped per analysis rather than globally, because analyzing one
+    /// document says nothing about what another's errors should be:
+    /// clearing across roots would wipe a file's diagnostics the
+    /// moment an unrelated one was opened.
+    published: std.StringHashMapUnmanaged(UriSet) = .{},
     /// Canonical paths each open document's last analysis read, keyed
     /// by document URI. A change to any of those paths invalidates
     /// that document's diagnostics, even though the editor only told
@@ -54,8 +60,11 @@ const Server = struct {
             self.gpa.free(e.value_ptr.*);
         }
         self.docs.deinit(self.gpa);
-        var pit = self.published.keyIterator();
-        while (pit.next()) |k| self.gpa.free(k.*);
+        var pit = self.published.iterator();
+        while (pit.next()) |e| {
+            self.gpa.free(e.key_ptr.*);
+            self.freeUriSet(e.value_ptr);
+        }
         self.published.deinit(self.gpa);
         var dit = self.deps.iterator();
         while (dit.next()) |e| {
@@ -136,17 +145,25 @@ const Server = struct {
     /// written this round gets an explicit empty list, since an editor
     /// keeps a published list until an empty one replaces it.
     /// `carrying` then becomes the new set to reconcile against.
+    /// Clear the diagnostics `root`'s previous analysis published and
+    /// this one did not, then record what this one is carrying.
+    ///
+    /// Only `root`'s own previous set is cleared. Another document's
+    /// diagnostics are that document's analysis to retract.
     fn reconcilePublished(
         self: *Server,
         arena: std.mem.Allocator,
         stdout: *std.Io.Writer,
+        root: []const u8,
         written: *const UriSet,
         carrying: *const UriSet,
     ) !void {
-        var it = self.published.keyIterator();
-        while (it.next()) |k| {
-            if (written.contains(k.*)) continue;
-            try writeDiagnostics(arena, stdout, k.*, &.{});
+        if (self.published.get(root)) |prev| {
+            var it = prev.keyIterator();
+            while (it.next()) |k| {
+                if (written.contains(k.*)) continue;
+                try writeDiagnostics(arena, stdout, k.*, &.{});
+            }
         }
         var next: UriSet = .{};
         errdefer {
@@ -162,11 +179,16 @@ const Server = struct {
             errdefer self.gpa.free(owned);
             try next.put(self.gpa, owned, {});
         }
-        var old = self.published;
-        var oit = old.keyIterator();
-        while (oit.next()) |k| self.gpa.free(k.*);
-        old.deinit(self.gpa);
-        self.published = next;
+        const gop = try self.published.getOrPut(self.gpa, root);
+        if (gop.found_existing) {
+            self.freeUriSet(gop.value_ptr);
+        } else {
+            gop.key_ptr.* = self.gpa.dupe(u8, root) catch |err| {
+                _ = self.published.remove(root);
+                return err;
+            };
+        }
+        gop.value_ptr.* = next;
     }
 
     fn drop(self: *Server, uri: []const u8) void {
@@ -178,6 +200,20 @@ const Server = struct {
             self.gpa.free(kv.key);
             self.freePaths(kv.value);
         }
+        // What this document's analysis published stands until the
+        // file is reopened (§3), so only the bookkeeping goes.
+        if (self.published.fetchRemove(uri)) |kv| {
+            self.gpa.free(kv.key);
+            var set = kv.value;
+            self.freeUriSet(&set);
+        }
+    }
+
+    /// Release a set's owned URI keys and its backing storage.
+    fn freeUriSet(self: *Server, set: *UriSet) void {
+        var it = set.keyIterator();
+        while (it.next()) |k| self.gpa.free(k.*);
+        set.deinit(self.gpa);
     }
 };
 
@@ -1136,7 +1172,7 @@ fn publish(
         try written.put(arena, f.uri, {});
         if (f.items.len > 0) try carrying.put(arena, f.uri, {});
     }
-    try server.reconcilePublished(arena, stdout, &written, &carrying);
+    try server.reconcilePublished(arena, stdout, uri, &written, &carrying);
 }
 
 fn writeDiagnostics(
@@ -2053,6 +2089,64 @@ test "publishAffected: editing a library re-publishes its importers" {
     const after = s.written()[before..];
     try testing.expect(std.mem.indexOf(u8, after, main_uri) != null);
     try testing.expect(std.mem.indexOf(u8, after, "undefined symbol `double`") != null);
+}
+
+test "publishAffected: opening one document does not clear another's diagnostics" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "broken.gr", .data = "def main()\n  print nope\nend\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "clean.gr", .data = "def ok() -> i16\n  return 1\nend\n" });
+    const broken_uri = try uriOf(arena, &tmp, "broken.gr");
+    const clean_uri = try uriOf(arena, &tmp, "clean.gr");
+
+    _ = try s.send(arena, try didOpen(arena, broken_uri, "def main()\n  print nope\nend\n"));
+    try testing.expect(std.mem.indexOf(u8, s.written(), "undefined symbol `nope`") != null);
+
+    // Opening an unrelated clean file says nothing about the broken
+    // one. Clearing across documents would wipe its squiggle, and an
+    // editor does not re-open a tab it already holds — so it would
+    // stay gone until the file was edited again.
+    const before = s.written().len;
+    _ = try s.send(arena, try didOpen(arena, clean_uri, "def ok() -> i16\n  return 1\nend\n"));
+    const after = s.written()[before..];
+
+    const cleared = try std.fmt.allocPrint(arena, "\"uri\":\"{s}\",\"diagnostics\":[]", .{broken_uri});
+    try testing.expect(std.mem.indexOf(u8, after, cleared) == null);
+}
+
+test "publishAffected: a fixed error in an imported file is cleared" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "lib.gr", .data = "def helper() -> i16\n  return nope\nend\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "app.gr", .data = "use helper from \"./lib\"\ndef main()\n  print helper()\nend\n" });
+    const lib_uri = try uriOf(arena, &tmp, "lib.gr");
+    const app_uri = try uriOf(arena, &tmp, "app.gr");
+
+    // The error is in the imported file, reported against that file.
+    _ = try s.send(arena, try didOpen(arena, app_uri, "use helper from \"./lib\"\ndef main()\n  print helper()\nend\n"));
+    try testing.expect(std.mem.indexOf(u8, s.written(), "undefined symbol `nope`") != null);
+
+    // Fixing it has to retract what the earlier analysis published,
+    // which is what scoping the record per document must not lose.
+    const before = s.written().len;
+    _ = try s.send(arena, try didChange(arena, app_uri, "use helper from \"./lib\"\ndef main()\n  print helper()\n  print 1\nend\n"));
+    _ = try s.send(arena, try didOpen(arena, lib_uri, "def helper() -> i16\n  return 0\nend\n"));
+    const after = s.written()[before..];
+
+    const cleared = try std.fmt.allocPrint(arena, "\"uri\":\"{s}\",\"diagnostics\":[]", .{lib_uri});
+    try testing.expect(std.mem.indexOf(u8, after, cleared) != null);
 }
 
 test "publishAffected: an unrelated document is not re-published" {
