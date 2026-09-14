@@ -40,6 +40,22 @@ pub const Binding = struct {
     module: ?[]const u8 = null,
 };
 
+/// One member of a container: a struct or class field, a method, or
+/// an enum variant.
+///
+/// Completion after a dot needs the members of the receiver's type,
+/// which the checker knows from its registries and used to keep to
+/// itself. Without them an editor either offers nothing or — worse —
+/// offers whatever happens to be in scope, which cannot follow a dot.
+pub const Member = struct {
+    /// The container's name, as `Named` types carry it.
+    owner: []const u8,
+    name: []const u8,
+    kind: scope_mod.SymbolKind,
+    /// The declaring identifier, for go-to-definition on a member.
+    decl_span: ast.Span,
+};
+
 /// A name, and where it can be seen.
 ///
 /// Completion asks a question the binding table cannot answer: not
@@ -92,6 +108,9 @@ pub const CheckedProgram = struct {
     /// Every declaration, with the range it is visible in. Ordered as
     /// the checker met them. Backed by `type_arena`.
     visible: []const VisibleName,
+    /// Every container's members, so a consumer can answer what may
+    /// follow a dot. Backed by `type_arena`.
+    members: []const Member,
     type_arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
 
@@ -258,6 +277,7 @@ pub fn typecheckGraph(
         .binder_types = .{},
         .bindings = .{},
         .visible = .empty,
+        .members = .empty,
         .enum_registry = .{},
         .struct_registry = .{},
         .class_registry = .{},
@@ -284,14 +304,38 @@ pub fn typecheckGraph(
         .enum_decl => |ed| {
             const name = source[ed.name.start..ed.name.end];
             try c.module_decls[c.moduleIndexOf(ed.name.start)].enums.put(a, name, &stmt.enum_decl);
+            for (ed.variants) |v| try c.members.append(a, .{
+                .owner = name,
+                .name = source[v.name.start..v.name.end],
+                .kind = .enum_,
+                .decl_span = v.name,
+            });
         },
         .struct_decl => |sd| {
             const name = source[sd.name.start..sd.name.end];
             try c.module_decls[c.moduleIndexOf(sd.name.start)].structs.put(a, name, &stmt.struct_decl);
+            for (sd.fields) |f| try c.members.append(a, .{
+                .owner = name,
+                .name = source[f.name.start..f.name.end],
+                .kind = .field,
+                .decl_span = f.name,
+            });
         },
         .class_decl => |cd| {
             const name = source[cd.name.start..cd.name.end];
             try c.module_decls[c.moduleIndexOf(cd.name.start)].classes.put(a, name, &stmt.class_decl);
+            for (cd.fields) |f| try c.members.append(a, .{
+                .owner = name,
+                .name = source[f.name.start..f.name.end],
+                .kind = .field,
+                .decl_span = f.name,
+            });
+            for (cd.methods) |m| try c.members.append(a, .{
+                .owner = name,
+                .name = source[m.name.start..m.name.end],
+                .kind = .function,
+                .decl_span = m.name,
+            });
         },
         .def_decl => |dd| {
             const name = source[dd.name.start..dd.name.end];
@@ -359,6 +403,7 @@ pub fn typecheckGraph(
         .binder_types = c.binder_types,
         .bindings = c.bindings,
         .visible = c.visible.items,
+        .members = c.members.items,
         .module_variadic_arities = c.module_variadic_arities,
         .type_arena = arena,
         .allocator = allocator,
@@ -526,6 +571,8 @@ pub const Checker = struct {
     /// Declarations and their visibility — see
     /// `CheckedProgram.visible`.
     visible: std.ArrayListUnmanaged(VisibleName),
+    /// Container members — see `CheckedProgram.members`.
+    members: std.ArrayListUnmanaged(Member),
     /// Enum-name → decl pointer (pass 1).
     enum_registry: std.StringHashMapUnmanaged(*const ast.EnumDecl),
     /// Struct-name → decl pointer.

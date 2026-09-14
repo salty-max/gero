@@ -1141,6 +1141,75 @@ test "handleMessage: completion does not offer a local above its declaration" {
     try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"main\"") != null);
 }
 
+/// One of each container, and a buffer that stops mid-member — which
+/// is what a file looks like when completion is asked for.
+const member_src =
+    "struct Point\n  x: i16,\n  y: i16\nend\n" ++
+    "enum Colour\n  case Red\n  case Blue\nend\n" ++
+    "class Fighter\n  let hp: i16\n  def hurt(self, n: i16)\n    self.hp = self.hp - n\n  end\nend\n" ++
+    "def main()\n  let p: Point = Point { x: 1, y: 2 }\n  print p.\nend\n";
+
+fn completeAt(s: *Session, arena: std.mem.Allocator, id: u8, line: u32, ch: u32) ![]const u8 {
+    const before = s.written().len;
+    const req = try std.fmt.allocPrint(
+        arena,
+        "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/completion\",\"params\":{{\"textDocument\":{{\"uri\":\"file:///h.gr\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}}}",
+        .{ id, line, ch },
+    );
+    _ = try s.send(arena, req);
+    return s.written()[before..];
+}
+
+test "handleMessage: completion after a dot offers members, not what is in scope" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, member_src);
+    // Just past `p.` on the last line of `main`'s body.
+    const reply = try completeAt(&s, arena, 20, 16, 10);
+
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"x\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"y\"") != null);
+    // Nothing in scope can follow a dot, so none of it is offered.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"main\"") == null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"Colour\"") == null);
+}
+
+test "handleMessage: a container named directly offers its own members" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    const src = member_src ++ "def other()\n  print Colour.\nend\n";
+    try openDoc(&s, arena, src);
+    // Past `Colour.` — the enum itself, not a value of it.
+    const reply = try completeAt(&s, arena, 21, 19, 15);
+
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"Red\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"Blue\"") != null);
+}
+
+test "handleMessage: a method is not offered as a free function" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, member_src);
+    // Inside `main`, at module nesting — `hurt` belongs to `Fighter`
+    // and cannot be called here.
+    const reply = try completeAt(&s, arena, 22, 15, 2);
+
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"Fighter\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"hurt\"") == null);
+}
+
 test "handleMessage: exit without shutdown is an error, with it is not" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();

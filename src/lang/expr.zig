@@ -411,7 +411,23 @@ fn parseFieldOrMethod(p: *Parser, receiver: *ast.Expr) ParserError!*ast.Expr {
     }
     // A name after `.` is unambiguously a member — accept the `from`
     // keyword (otherwise reserved for `use … from`) so `Vec.from(…)` parses.
-    const name_tok = if (p.accept(.kw_from)) |t| t else try p.expect(.ident, "field or method name");
+    //
+    // A dot with nothing after it is reported and then *recovered*:
+    // the member access is built with an empty name. `p.` is what a
+    // buffer looks like in the instant a member is being asked for, so
+    // a tree that stops there answers nothing about the receiver —
+    // while one that carries an empty member still types it.
+    const name_tok = if (p.accept(.kw_from)) |t|
+        t
+    else if (p.check(.ident))
+        try p.expect(.ident, "field or method name")
+    else blk: {
+        const msg = try std.fmt.allocPrint(p.allocator, "expected {s}", .{"field or method name"});
+        try p.allocated_messages.append(p.allocator, msg);
+        try p.recordError(msg, "E_SYNTAX_MISSING_TOKEN");
+        const at = p.peek().start;
+        break :blk lexer.Token{ .kind = .ident, .start = at, .end = at, .value = 0 };
+    };
     if (p.check(.lparen)) {
         p.pos += 1;
         p.skipNewlines();

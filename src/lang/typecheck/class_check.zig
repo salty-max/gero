@@ -245,7 +245,7 @@ fn walkMethodBody(
     defer self.current_class_extends = saved_extends;
 
     const saved_scope = self.current_scope;
-    var class_scope: Scope = .init(self.arena, saved_scope);
+    var class_scope: Scope = .initSpanned(self.arena, saved_scope, class.span);
     self.current_scope = &class_scope;
     defer self.current_scope = saved_scope;
 
@@ -303,7 +303,10 @@ fn variadicArgsTuple(self: *Checker, elem: *const types.Type, arity: u32) WalkEr
 pub fn checkClassDecl(self: *Checker, d: ast.ClassDecl) WalkError!void {
     try annotations.validateAnnotations(self, d.annotations, T.CLASS);
     const saved = self.current_scope;
-    var class_scope: Scope = .init(self.arena, saved);
+    // The class's own range. Without it the scope reads as module-wide
+    // and its methods are offered as though they were free functions,
+    // which is a suggestion that cannot be acted on.
+    var class_scope: Scope = .initSpanned(self.arena, saved, d.span);
     self.current_scope = &class_scope;
     defer self.current_scope = saved;
 

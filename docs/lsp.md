@@ -103,7 +103,7 @@ something it imported changes — the server keeps no text for it.
 | `textDocument/hover` | The name, its type where known, and what kind of declaration it is (§6). |
 | `textDocument/references` | Every reference to the declaration under the cursor, in source order. `context.includeDeclaration` decides whether the declaration is among them. |
 | `textDocument/inlayHint` | The inferred type of each `let` the source left unannotated (§6). |
-| `textDocument/completion` | Names visible at the position, sorted, with no trigger characters — every completion here is an identifier. |
+| `textDocument/completion` | After a `.`, the receiver's members; otherwise the names visible at the position. Sorted, with no trigger characters — every completion here is an identifier. |
 
 Any other request is answered `-32601` (method not found) rather than
 left hanging. Unknown *notifications* are dropped, since they carry no
@@ -247,6 +247,20 @@ before the cursor — a `let` is not in scope on the line above itself. A
 module-level declaration has no scope range, is visible throughout the
 file, and is therefore offered above its own line, which is how `def`
 behaves.
+
+After a dot the answer is different in kind: only the receiver's
+members can follow, so offering what happens to be in scope is worse
+than offering nothing — none of it could legally appear.
+`CheckedProgram.members` carries every container's fields, methods and
+variants, and the receiver's type selects the set. A container named
+directly (`Colour.`) offers its own members; a value (`p.`) offers its
+type's.
+
+The parser recovers from a trailing dot rather than stopping at it. An
+incomplete member access is exactly what a buffer contains at the
+instant completion is asked for, so `p.` parses as a member access with
+an empty name — reported as the error it is, and still producing a tree
+that types the receiver.
 
 ### Not yet provided
 
