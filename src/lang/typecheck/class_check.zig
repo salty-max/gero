@@ -83,6 +83,13 @@ pub fn isVariadicDef(d: ast.DefDecl) bool {
     return d.params.len > 0 and d.params[d.params.len - 1].variadic;
 }
 
+/// The range a body covers. Empty bodies declare nothing, so `null`
+/// loses no information.
+fn bodySpan(body: []const ast.Statement) ?ast.Span {
+    if (body.len == 0) return null;
+    return .{ .start = body[0].span().start, .end = body[body.len - 1].span().end };
+}
+
 /// Walk a `def` body in a fresh scope: bind params, set the bake /
 /// no-capture / return-type context, then check statements. For a
 /// variadic def, `variadic_args` carries the whole-program `(T, …, T)`
@@ -93,7 +100,9 @@ pub fn walkDefBody(
     variadic_args: ?*const types.Type,
 ) WalkError!void {
     const saved_scope = self.current_scope;
-    var fn_scope: Scope = .init(self.arena, saved_scope);
+    // The function's own range, so its parameters and locals are
+    // offered inside it and nowhere else.
+    var fn_scope: Scope = .initSpanned(self.arena, saved_scope, bodySpan(d.body));
     self.current_scope = &fn_scope;
     defer self.current_scope = saved_scope;
 

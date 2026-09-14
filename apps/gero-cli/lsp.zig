@@ -276,6 +276,8 @@ fn handleMessage(
         try onReferences(arena, server, stdout, req.body, req.id);
     } else if (std.mem.eql(u8, req.method, "textDocument/inlayHint")) {
         try onInlayHint(arena, server, stdout, req.body, req.id);
+    } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
+        try onCompletion(arena, server, stdout, req.body, req.id);
     } else if (req.id != null) {
         // An unknown request still needs an answer or the client
         // blocks; an unknown notification carries no id and needs none.
@@ -313,6 +315,11 @@ fn replyInitialize(arena: std.mem.Allocator, stdout: *std.Io.Writer, id: ?std.js
     try jw.write(true);
     try jw.objectField("inlayHintProvider");
     try jw.write(true);
+    // No `triggerCharacters`: every completion here is an identifier,
+    // so the client asks when the user is typing one.
+    try jw.objectField("completionProvider");
+    try jw.beginObject();
+    try jw.endObject();
     try jw.endObject();
     try jw.objectField("serverInfo");
     try jw.beginObject();
@@ -603,6 +610,51 @@ fn onInlayHint(
     try protocol.writeMessage(stdout, out.written());
 }
 
+fn onCompletion(
+    arena: std.mem.Allocator,
+    server: *Server,
+    stdout: *std.Io.Writer,
+    msg: std.json.ObjectMap,
+    id: ?std.json.Value,
+) !void {
+    const uri = docUri(msg) orelse return replyNull(arena, stdout, id);
+    const text = server.docs.get(uri) orelse return replyNull(arena, stdout, id);
+    const lang = analysis.langOf(uri) orelse return replyNull(arena, stdout, id);
+    if (lang != .gr) return replyNull(arena, stdout, id);
+    const pos = requestPosition(msg) orelse return replyNull(arena, stdout, id);
+
+    const items = try symbols.completionsAt(arena, text, pos);
+
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.beginObject();
+    try jw.objectField("jsonrpc");
+    try jw.write("2.0");
+    try writeId(&jw, id);
+    try jw.objectField("result");
+    // The complete set for this position, so the client filters as the
+    // user types rather than asking again on every keystroke.
+    try jw.beginObject();
+    try jw.objectField("isIncomplete");
+    try jw.write(false);
+    try jw.objectField("items");
+    try jw.beginArray();
+    for (items) |it| {
+        try jw.beginObject();
+        try jw.objectField("label");
+        try jw.write(it.name);
+        try jw.objectField("kind");
+        try jw.write(symbols.completionKind(it.kind));
+        try jw.objectField("detail");
+        try jw.write(kindText(it.kind));
+        try jw.endObject();
+    }
+    try jw.endArray();
+    try jw.endObject();
+    try jw.endObject();
+    try protocol.writeMessage(stdout, out.written());
+}
+
 /// How a kind reads in a hover card.
 fn kindText(k: gero.lang.scope.SymbolKind) []const u8 {
     return switch (k) {
@@ -884,6 +936,7 @@ test "handleMessage: initialize advertises its capabilities" {
     try testing.expect(std.mem.indexOf(u8, out, "\"hoverProvider\":true") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"referencesProvider\":true") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"inlayHintProvider\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"completionProvider\"") != null);
     // The id is echoed, or the client cannot match the response.
     try testing.expect(std.mem.indexOf(u8, out, "\"id\":1") != null);
 }
@@ -1032,6 +1085,60 @@ test "handleMessage: references can leave the declaration out" {
     const reply = s.written()[before..];
     try testing.expect(std.mem.indexOf(u8, reply, "\"line\":3,\"character\":8") != null);
     try testing.expect(std.mem.indexOf(u8, reply, "\"line\":1,\"character\":6") == null);
+}
+
+/// Two functions, so a local in one must not be offered in the other.
+const completion_src =
+    "def helper(n: i16) -> i16\n" ++
+    "  let scoped = n * 2\n" ++
+    "  return scoped\n" ++
+    "end\n" ++
+    "def main()\n" ++
+    "  let total = 1\n" ++
+    "  print total\n" ++
+    "end\n";
+
+test "handleMessage: completion offers what is in scope and nothing else" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, completion_src);
+    const before = s.written().len;
+    // Inside `main`, on the line after `let total`.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":6,\"character\":8}}}");
+    const reply = s.written()[before..];
+
+    // Module-level names are visible throughout the file.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"helper\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"main\"") != null);
+    // The local in this function is in scope.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"total\"") != null);
+    // The other function's local and parameter are not — offering them
+    // is the failure that makes completion untrustworthy.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"scoped\"") == null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"n\"") == null);
+}
+
+test "handleMessage: completion does not offer a local above its declaration" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openDoc(&s, arena, completion_src);
+    const before = s.written().len;
+    // Inside `helper`, on its first body line — `scoped` is declared
+    // on that line and is not usable before it.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":1,\"character\":2}}}");
+    const reply = s.written()[before..];
+
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"scoped\"") == null);
+    // A `def` is usable anywhere in the file, including above itself.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"main\"") != null);
 }
 
 test "handleMessage: exit without shutdown is an error, with it is not" {

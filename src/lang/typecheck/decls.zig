@@ -127,6 +127,15 @@ pub fn registerName(
     name: []const u8,
     info: scope_mod.SymbolInfo,
 ) WalkError!void {
+    // Recorded before the checks below, so a name that turns out to
+    // clash is still offered: an editor completing inside a buffer
+    // with an error in it should behave like one inside a clean buffer.
+    try self.visible.append(self.arena, .{
+        .name = name,
+        .kind = info.kind,
+        .decl_span = info.decl_span,
+        .scope_span = self.current_scope.span,
+    });
     if (isReservedBuiltinName(name)) {
         const msg = try std.fmt.allocPrint(
             self.arena,

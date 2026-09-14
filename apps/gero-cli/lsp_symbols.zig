@@ -265,3 +265,67 @@ pub fn referencesTo(
 fn spanLess(_: void, a: gero.lang.ast.Span, b: gero.lang.ast.Span) bool {
     return a.start < b.start;
 }
+
+/// A name an editor may offer at a position.
+pub const Completion = struct {
+    name: []const u8,
+    kind: gero.lang.scope.SymbolKind,
+};
+
+/// Names visible at `pos`.
+///
+/// A name is offered when the scope it was declared in covers the
+/// cursor, and when it was declared before the cursor — a `let` is not
+/// in scope on the line above itself. Module-level declarations carry
+/// no scope range and are visible throughout the file, including
+/// before the line that declares them, which is how `def` works.
+pub fn completionsAt(
+    arena: std.mem.Allocator,
+    src: []const u8,
+    pos: Position,
+) ![]Completion {
+    const offset = offsetOf(src, pos) orelse return &.{};
+
+    const stream = try gero.lang.tokenize(arena, src);
+    const tree = try gero.lang.parse(arena, src, stream);
+    var checked = try gero.lang.typecheck(arena, src, &tree.program);
+    defer checked.deinit();
+
+    var seen: std.StringHashMapUnmanaged(void) = .{};
+    var out: std.ArrayList(Completion) = .empty;
+    for (checked.visible) |v| {
+        if (v.scope_span) |sp| {
+            if (offset < sp.start or offset > sp.end) continue;
+            // A local is not in scope above its own declaration.
+            if (offset < v.decl_span.start) continue;
+        }
+        // The innermost declaration of a shadowed name is the one the
+        // checker met last, so a later entry replaces an earlier one.
+        const gop = try seen.getOrPut(arena, v.name);
+        if (gop.found_existing) continue;
+        try out.append(arena, .{
+            .name = try arena.dupe(u8, v.name),
+            .kind = v.kind,
+        });
+    }
+    std.mem.sort(Completion, out.items, {}, completionLess);
+    return out.toOwnedSlice(arena);
+}
+
+fn completionLess(_: void, a: Completion, b: Completion) bool {
+    return std.mem.lessThan(u8, a.name, b.name);
+}
+
+/// The LSP `CompletionItemKind` for a declaration.
+pub fn completionKind(k: gero.lang.scope.SymbolKind) u8 {
+    return switch (k) {
+        .let_binding, .const_binding => 6, // Variable
+        .param => 6,
+        .function => 3, // Function
+        .class => 7, // Class
+        .struct_ => 22, // Struct
+        .enum_ => 13, // Enum
+        .module_alias, .imported => 9, // Module
+        .field => 5, // Field
+    };
+}
