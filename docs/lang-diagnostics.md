@@ -170,11 +170,21 @@ The pool varies by emission site:
   walking the inheritance chain, or the `mem` builtin names for a
   call on the stdlib module.
 
-The candidate is kept on the diagnostic as `suggestion`, the bare
-name, in addition to the `help:` sentence naming it. A tool offering
-to apply the fix replaces the diagnostic's span with that string; it
-would otherwise have to parse the name back out of English prose.
-`gero lsp` does exactly that — see [`lsp.md`](lsp.md) §6.
+The candidate is kept on the diagnostic as `Diagnostic.fix`, beside
+the `help:` sentence naming it, so a tool can apply the correction
+without parsing it back out of English prose. `fix` is a union: a
+`rename` replaces what the diagnostic's span covers, an `import` names
+a module and a name to bind, and `remove_import` drops the reported
+line. Each says what to change rather than how to write it — where an
+import belongs depends on the file's existing `use` lines. `gero lsp`
+turns them into quick-fixes; see [`lsp.md`](lsp.md) §6.
+
+An unresolved name no candidate matches is checked against the stdlib
+before the diagnostic is final. `abs` with no `use` reports the
+undefined symbol and adds ``help: `abs` is in the stdlib — add `use
+abs from math` ``, carrying the import as its fix. A spelling match
+wins where there is one: a name one edit from something in scope is
+likelier a typo than a reach for the stdlib.
 
 Single-candidate ranking — the first-iterated match at the
 minimum distance wins. Multi-candidate listing (top-3,
@@ -1064,7 +1074,7 @@ Schema (mirrors `apps/gero-cli/diagnostics.zig::printJsonReport`):
       "end_col": 25,
       "span": { "start": 234, "end": 241 },
       "help": "convert with `... as i16` or use a literal",
-      "suggestion": "hp",
+      "fix": { "kind": "rename", "name": "hp" },
       "notes": [
         {
           "file": "src/foo.gr",
@@ -1089,8 +1099,10 @@ present. The rest appear when the diagnostic carries them:
   that indexes by offset rather than by line.
 - `help` — the `help:` line, when there is one. Both front-ends use
   this key.
-- `suggestion` — the name `help` names, kept as itself so a tool can
-  apply the fix without parsing English (§4.3).
+- `fix` — the correction `help` describes, structured so a tool can
+  apply it without parsing English (§4.3). `kind` is `rename`,
+  `import` or `remove_import`; `rename` carries `name`, `import`
+  carries `module` and `name`.
 - `notes` — one entry per secondary span, each located in its own
   file.
 
