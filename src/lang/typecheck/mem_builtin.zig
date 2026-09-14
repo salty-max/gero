@@ -35,6 +35,13 @@ const mem_builtins = [_]MemBuiltinSig{
     .{ .name = "addr_of", .params = &.{}, .ret = .u16, .is_addr_of = true },
 };
 
+/// Every function `mem` provides, for completion after `mem.`.
+pub const member_names: [mem_builtins.len][]const u8 = blk: {
+    var out: [mem_builtins.len][]const u8 = undefined;
+    for (mem_builtins, 0..) |b, i| out[i] = b.name;
+    break :blk out;
+};
+
 /// Look up a `mem.X` builtin by name. Returns `null` for unknown
 /// names so the typechecker can surface a clean diagnostic.
 pub fn lookupMemBuiltin(name: []const u8) ?MemBuiltinSig {
