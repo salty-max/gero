@@ -271,6 +271,24 @@ fn spanLess(_: void, a: gero.lang.ast.Span, b: gero.lang.ast.Span) bool {
 pub const Completion = struct {
     name: []const u8,
     kind: gero.lang.scope.SymbolKind,
+    /// The import accepting this item must add, for a name not yet in
+    /// scope. `null` for a name already visible, which needs no edit
+    /// beyond the word itself.
+    import: ?gero.lang.Fix.Import = null,
+};
+
+/// What a completion request answers with.
+pub const CompletionList = struct {
+    items: []const Completion,
+    /// `true` when the set depends on what the user has typed so far,
+    /// so the client must ask again rather than re-filtering this one.
+    ///
+    /// Importable names are gated on a prefix — offering every stdlib
+    /// export and every name in the workspace at an empty cursor would
+    /// bury the few that are actually in scope. A client that cached
+    /// the list and filtered it locally would then lose candidates as
+    /// the prefix shortened.
+    is_incomplete: bool,
 };
 
 /// Names visible at `pos`.
@@ -283,9 +301,13 @@ pub const Completion = struct {
 pub fn completionsAt(
     arena: std.mem.Allocator,
     src: []const u8,
+    workspace: ?*const index_mod.Index,
+    /// Directory of the document, which a workspace import is spelled
+    /// relative to.
+    doc_dir: ?[]const u8,
     pos: Position,
-) ![]Completion {
-    const offset = offsetOf(src, pos) orelse return &.{};
+) !CompletionList {
+    const offset = offsetOf(src, pos) orelse return .{ .items = &.{}, .is_incomplete = false };
 
     const stream = try gero.lang.tokenize(arena, src);
     const tree = try gero.lang.parse(arena, src, stream);
@@ -296,7 +318,9 @@ pub fn completionsAt(
     // what happens to be in scope there is worse than offering
     // nothing: none of it can legally appear.
     if (receiverBefore(src, offset)) |recv| {
-        return try membersOf(arena, &checked, src, recv);
+        // A receiver's members are a fixed set; nothing the user types
+        // next can add to it.
+        return .{ .items = try membersOf(arena, &checked, src, recv), .is_incomplete = false };
     }
 
     var seen: std.StringHashMapUnmanaged(void) = .{};
@@ -316,11 +340,66 @@ pub fn completionsAt(
             .kind = v.kind,
         });
     }
+    try appendImportable(arena, src, offset, workspace, doc_dir, &seen, &out);
     std.mem.sort(Completion, out.items, {}, completionLess);
-    return out.toOwnedSlice(arena);
+    return .{ .items = try out.toOwnedSlice(arena), .is_incomplete = true };
 }
 
+/// Names a `use` would bring into scope, offered alongside the ones
+/// already there so a reach for the stdlib does not have to start by
+/// writing the import.
+///
+/// Gated on a prefix the user has actually typed. Every stdlib export
+/// and every name in the workspace would otherwise appear the moment
+/// the cursor sits in an empty expression, which buries the handful
+/// of names that are genuinely in scope.
+fn appendImportable(
+    arena: std.mem.Allocator,
+    src: []const u8,
+    offset: u32,
+    workspace: ?*const index_mod.Index,
+    doc_dir: ?[]const u8,
+    seen: *std.StringHashMapUnmanaged(void),
+    out: *std.ArrayList(Completion),
+) !void {
+    const start = wordStart(src, offset) orelse return;
+    const prefix = src[start .. start + wordLen(src, start)];
+    if (prefix.len == 0) return;
+
+    for (gero.lang.internal.typechecker.stdlib_exports.module_names) |module| {
+        for (gero.lang.internal.typechecker.stdlib_exports.memberNames(module)) |name| {
+            if (!std.mem.startsWith(u8, name, prefix)) continue;
+            const gop = try seen.getOrPut(arena, name);
+            if (gop.found_existing) continue;
+            try out.append(arena, .{
+                .name = try arena.dupe(u8, name),
+                .kind = .function,
+                .import = .{ .module = module, .name = name },
+            });
+        }
+    }
+
+    const ws = workspace orelse return;
+    for (ws.exports.items) |e| {
+        if (!std.mem.startsWith(u8, e.name, prefix)) continue;
+        const gop = try seen.getOrPut(arena, e.name);
+        if (gop.found_existing) continue;
+        const spec = try importSpec(arena, doc_dir, e.path);
+        try out.append(arena, .{
+            .name = try arena.dupe(u8, e.name),
+            .kind = .imported,
+            .import = .{ .module = spec, .name = e.name },
+        });
+    }
+}
+
+/// In-scope names first, then the importable ones, each group by name.
+/// An editor sorts by `sortText`, but a client that takes the array as
+/// given should see the same order.
 fn completionLess(_: void, a: Completion, b: Completion) bool {
+    const a_import = a.import != null;
+    const b_import = b.import != null;
+    if (a_import != b_import) return b_import;
     return std.mem.lessThan(u8, a.name, b.name);
 }
 
@@ -610,7 +689,7 @@ fn relativeTo(
 /// Only the run of `use` lines the file opens with counts. A `use`
 /// further down is unusual enough that following it would scatter the
 /// imports rather than group them.
-fn useInsertLine(text: []const u8) u32 {
+pub fn useInsertLine(text: []const u8) u32 {
     var line: u32 = 0;
     var after_last_use: u32 = 0;
     var it = std.mem.splitScalar(u8, text, '\n');

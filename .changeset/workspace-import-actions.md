@@ -20,9 +20,11 @@ rather than a guess between them.
 
 Buffers the editor holds unsaved shadow the disk, so a name typed a
 minute ago in another tab is offered like any other — including from a
-file that has never been saved at all. The index is rebuilt per
-request rather than watched: an editor asks for code actions at human
-speed, and a stale index offers an import that does not resolve.
+file that has never been saved at all. The index is refreshed per
+request rather than watched, so a file saved elsewhere is seen; a file
+whose size and modification time are both unchanged is reused from the
+previous pass rather than parsed again, which keeps a per-keystroke
+completion request to a walk and a stat per file.
 
 A correction the checker worked out always wins. A name one edit from
 something local is likelier a typo than a reach for another file, and

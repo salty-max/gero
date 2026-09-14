@@ -21,15 +21,31 @@ pub const Export = struct {
     path: []const u8,
 };
 
+/// One file's parsed exports, kept so an unchanged file is not read
+/// and parsed again.
+const Cached = struct {
+    /// What the file looked like when it was parsed. A file whose
+    /// size and modification time both match is taken as unchanged.
+    size: u64,
+    mtime: i96,
+    names: []const []const u8,
+};
+
 /// Every exported top-level name in a workspace, with the file that
 /// declares it.
 ///
-/// Rebuilt from disk on demand rather than watched: an editor asks for
-/// code actions at human speed, and a stale index offers an import
-/// that does not resolve.
+/// Refreshed on demand rather than watched, so a name saved a moment
+/// ago in another editor is seen. Completion asks on every keystroke,
+/// so a file whose size and modification time are unchanged is reused
+/// from the last pass rather than parsed again — the per-keystroke
+/// cost is a directory walk and a stat per file.
 pub const Index = struct {
     gpa: std.mem.Allocator,
     exports: std.ArrayList(Export) = .empty,
+    /// Parsed exports by absolute path, for files read from disk.
+    /// Buffers are re-parsed each pass: there are few of them, and
+    /// their text carries no modification time to compare.
+    cache: std.StringHashMapUnmanaged(Cached) = .{},
     /// Workspace root, or `null` before `initialize` named one. An
     /// index without a root stays empty — there is nothing to walk.
     root: ?[]const u8 = null,
@@ -37,7 +53,18 @@ pub const Index = struct {
     pub fn deinit(self: *Index) void {
         self.clear();
         self.exports.deinit(self.gpa);
+        var it = self.cache.iterator();
+        while (it.next()) |e| {
+            self.gpa.free(e.key_ptr.*);
+            self.freeNames(e.value_ptr.names);
+        }
+        self.cache.deinit(self.gpa);
         if (self.root) |r| self.gpa.free(r);
+    }
+
+    fn freeNames(self: *Index, names: []const []const u8) void {
+        for (names) |n| self.gpa.free(n);
+        self.gpa.free(names);
     }
 
     fn clear(self: *Index) void {
@@ -111,7 +138,8 @@ pub const Index = struct {
     }
 
     /// Record `path`'s exported top-level names, preferring the
-    /// editor's copy of it over the one on disk.
+    /// editor's copy of it over the one on disk, and reusing the last
+    /// parse of a file that has not changed since.
     fn addFile(
         self: *Index,
         io: std.Io,
@@ -121,26 +149,71 @@ pub const Index = struct {
         if (overlay) |ov| {
             if (ov.get(path)) |buffered| return self.addSource(path, buffered);
         }
+        const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
+        if (self.cache.get(path)) |hit| {
+            if (hit.size == stat.size and hit.mtime == stat.mtime.nanoseconds) {
+                return self.emit(path, hit.names);
+            }
+        }
         const src = try std.Io.Dir.cwd().readFileAlloc(io, path, self.gpa, .limited(max_file_bytes));
         defer self.gpa.free(src);
-        return self.addSource(path, src);
+        const names = try self.namesIn(src);
+        errdefer self.freeNames(names);
+        try self.remember(path, stat.size, stat.mtime.nanoseconds, names);
+        return self.emit(path, names);
     }
 
-    /// Record what `src` — the contents of `path` — exports.
-    fn addSource(self: *Index, path: []const u8, src: []const u8) !void {
+    /// Replace `path`'s cache entry, releasing what it held.
+    fn remember(self: *Index, path: []const u8, size: u64, mtime: i96, names: []const []const u8) !void {
+        const gop = try self.cache.getOrPut(self.gpa, path);
+        if (gop.found_existing) {
+            self.freeNames(gop.value_ptr.names);
+        } else {
+            gop.key_ptr.* = self.gpa.dupe(u8, path) catch |err| {
+                _ = self.cache.remove(path);
+                return err;
+            };
+        }
+        gop.value_ptr.* = .{ .size = size, .mtime = mtime, .names = names };
+    }
+
+    /// Add one entry per name, all declared by `path`.
+    fn emit(self: *Index, path: []const u8, names: []const []const u8) !void {
+        for (names) |name| {
+            try self.exports.append(self.gpa, .{
+                .name = try self.gpa.dupe(u8, name),
+                .path = try self.gpa.dupe(u8, path),
+            });
+        }
+    }
+
+    /// The exported top-level names `src` declares. Caller owns the
+    /// slice and each name in it.
+    fn namesIn(self: *Index, src: []const u8) ![]const []const u8 {
         var stream = try gero.lang.tokenize(self.gpa, src);
         defer stream.deinit();
         var tree = try gero.lang.parse(self.gpa, src, stream);
         defer tree.deinit();
+
+        var out: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (out.items) |n| self.gpa.free(n);
+            out.deinit(self.gpa);
+        }
         // A file mid-edit parses to a tree with errors and a partial
         // statement list; its complete declarations still count.
         for (tree.program.statements) |stmt| {
             const decl = exportedName(src, stmt) orelse continue;
-            try self.exports.append(self.gpa, .{
-                .name = try self.gpa.dupe(u8, decl),
-                .path = try self.gpa.dupe(u8, path),
-            });
+            try out.append(self.gpa, try self.gpa.dupe(u8, decl));
         }
+        return out.toOwnedSlice(self.gpa);
+    }
+
+    /// Record what `src` — the contents of `path` — exports.
+    fn addSource(self: *Index, path: []const u8, src: []const u8) !void {
+        const names = try self.namesIn(src);
+        defer self.freeNames(names);
+        return self.emit(path, names);
     }
 
     /// Files this large are not hand-written Gero; skipping one costs
@@ -413,4 +486,57 @@ test "Index: a buffer for a file never written to disk still exports" {
     try testing.expectEqual(@as(usize, 2), names.items.len);
     try testing.expectEqualStrings("Brand", names.items[0]);
     try testing.expectEqualStrings("anchor", names.items[1]);
+}
+
+test "Index: a file edited between passes is re-read" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def first() -> i16\n  return 0\nend\n");
+
+    var idx: Index = .{ .gpa = testing.allocator };
+    defer idx.deinit();
+    const probe = "lib.gr";
+    const root = try fx.root(probe);
+    defer testing.allocator.free(root);
+    try idx.setRoot(root);
+
+    try idx.rebuild(std.testing.io, null, null);
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(testing.allocator);
+    try namesOf(&idx, &names);
+    try testing.expectEqualStrings("first", names.items[0]);
+
+    // A rewrite changes the size, which the cache compares alongside
+    // the modification time — a same-second edit is still seen.
+    try fx.write("lib.gr", "def second_name() -> i16\n  return 0\nend\n");
+    try idx.rebuild(std.testing.io, null, null);
+    names.clearRetainingCapacity();
+    try namesOf(&idx, &names);
+    try testing.expectEqual(@as(usize, 1), names.items.len);
+    try testing.expectEqualStrings("second_name", names.items[0]);
+}
+
+test "Index: an unchanged file yields the same names across passes" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def stable() -> i16\n  return 0\nend\nstruct Held\n  x: i16\nend\n");
+
+    var idx: Index = .{ .gpa = testing.allocator };
+    defer idx.deinit();
+    const probe = "lib.gr";
+    const root = try fx.root(probe);
+    defer testing.allocator.free(root);
+    try idx.setRoot(root);
+
+    try idx.rebuild(std.testing.io, null, null);
+    try idx.rebuild(std.testing.io, null, null);
+    try idx.rebuild(std.testing.io, null, null);
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(testing.allocator);
+    try namesOf(&idx, &names);
+    // Three passes, not three copies of each name.
+    try testing.expectEqual(@as(usize, 2), names.items.len);
+    try testing.expectEqualStrings("Held", names.items[0]);
+    try testing.expectEqualStrings("stable", names.items[1]);
 }
