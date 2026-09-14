@@ -15,6 +15,17 @@ fn renderPretty(file: FileDiagnostics) ![]u8 {
     return writer.toOwnedSlice();
 }
 
+/// `pretty`'s multi-file form, which indents each diagnostic under
+/// its file heading.
+fn renderPrettyAll(files: []const FileDiagnostics) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    try gero.lang.render.pretty(&writer.writer, files, gero.lang.render.Style.none);
+    return writer.toOwnedSlice();
+}
+
 test "render: lineColAt computes 1-based (line, col)" {
     const src = "abc\ndef\nghi";
     try std.testing.expectEqual(@as(usize, 1), gero.lang.render.lineColAt(src, 0).line);
@@ -72,6 +83,27 @@ test "render: pretty includes help block when provided" {
     const out = try renderPretty(file);
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "help: use `let x: u8 = 0` instead") != null);
+}
+
+test "render: pretty indents the help block with the diagnostic it belongs to" {
+    const source = "let x: i16 = 0";
+    const d = Diagnostic{
+        .severity = .fatal,
+        .code = "E_TYPE_MISMATCH",
+        .message = "type mismatch",
+        .span = .{ .start = 13, .end = 14 },
+        .help = "use `let x: u8 = 0` instead",
+    };
+    const file: FileDiagnostics = .{
+        .path = "foo.gr",
+        .source = source,
+        .diagnostics = &.{d},
+    };
+    const out = try renderPrettyAll(&.{file});
+    defer alloc.free(out);
+    // `pretty` indents each diagnostic under its file heading, and the
+    // help line sits with the `error:` it explains.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\n  help: use") != null);
 }
 
 test "render: severity warning emits `warning:` prefix" {
