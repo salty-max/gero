@@ -395,6 +395,10 @@ pub fn typecheckGraph(
     // `args: (T, …, T)` tuple their call sites pinned (§4.6.2).
     try class_check.resolveDeferredVariadics(&c);
 
+    // Pass 4: an import is only unused once every body that could have
+    // referenced it has been walked.
+    try imports.reportUnused(&c, program);
+
     return .{
         .program = program,
         .diagnostics = try diagnostics.toOwnedSlice(allocator),
@@ -413,6 +417,7 @@ pub fn typecheckGraph(
 const mem_builtin = @import("typecheck/mem_builtin.zig");
 const stdlib = @import("typecheck/stdlib.zig");
 const match = @import("typecheck/match.zig");
+const imports = @import("typecheck/imports.zig");
 const vec_builtin = @import("typecheck/vec_builtin.zig");
 const str_builtin = @import("typecheck/str_builtin.zig");
 const fmtspec = @import("fmtspec.zig");
@@ -662,15 +667,20 @@ pub const Checker = struct {
         });
     }
 
-    /// Record the reference a *type-name* receiver makes — `State` in
-    /// `State.Idle`, `Player` in `Player.spawn()`.
+    /// Record the reference a receiver dispatched *by name* makes —
+    /// `State` in `State.Idle`, `Player` in `Player.spawn()`, `mem` in
+    /// `mem.poke(…)`.
     ///
     /// These arms resolve the receiver against a registry and return
     /// before it is ever inferred as an expression, so the binding the
-    /// value path would have recorded never happens.
-    fn recordTypeReceiver(self: *Checker, span: ast.Span, name: []const u8) WalkError!void {
-        const info = self.current_scope.lookup(name) orelse return;
-        try self.recordBinding(span, name, info);
+    /// value path would have recorded never happens. `raw` is the name
+    /// as written and `resolved` the target an import alias points at;
+    /// the scope holds the former, and the binding records the latter,
+    /// which is what the declaring file calls it.
+    pub fn recordNamedReceiver(self: *Checker, span: ast.Span, raw: []const u8, resolved: []const u8) WalkError!void {
+        const info = self.current_scope.lookup(raw) orelse
+            self.current_scope.lookup(resolved) orelse return;
+        try self.recordBinding(span, resolved, info);
     }
 
     /// The module a name was imported from, or `null` when it is
@@ -1185,7 +1195,7 @@ pub const Checker = struct {
     }
 
     /// `true` when this run may leave `stmt`'s module's bodies unwalked.
-    fn skipsBodies(self: *const Checker, stmt: ast.Statement) bool {
+    pub fn skipsBodies(self: *const Checker, stmt: ast.Statement) bool {
         const g = self.graph orelse return false;
         const idx = self.moduleIndexOf(stmt.span().start);
         return idx < g.skip_bodies.len and g.skip_bodies[idx];
@@ -2041,7 +2051,7 @@ pub const Checker = struct {
         if (raw_head.len > 0) {
             // @as: an identifier's length, bounded by the source file.
             const head_span: ast.Span = .{ .start = vp.path.start, .end = vp.path.start + @as(u32, @intCast(raw_head.len)) };
-            try self.recordTypeReceiver(head_span, self.resolveImportAlias(raw_head));
+            try self.recordNamedReceiver(head_span, raw_head, self.resolveImportAlias(raw_head));
         }
 
         const ed: ?*const ast.EnumDecl = blk: {
@@ -2280,6 +2290,9 @@ pub const Checker = struct {
                 if (m.receiver.* == .ident) {
                     const raw_recv = self.lexeme(m.receiver.ident.span);
                     const recv_name = self.resolveValueAlias(raw_recv);
+                    // A module receiver is dispatched by name and never
+                    // inferred, so its reference is recorded up front.
+                    try self.recordNamedReceiver(m.receiver.ident.span, raw_recv, recv_name);
                     if (std.mem.eql(u8, recv_name, "mem")) {
                         return try fields.checkMemMethodCall(self, m);
                     }
@@ -2298,7 +2311,7 @@ pub const Checker = struct {
                     // method call at parse time — resolve it as a
                     // payload-variant constructor.
                     if (self.enum_registry.get(recv_name)) |ed| {
-                        try self.recordTypeReceiver(m.receiver.ident.span, recv_name);
+                        try self.recordNamedReceiver(m.receiver.ident.span, raw_recv, recv_name);
                         return try fields.checkEnumVariantConstruct(self, m, ed, recv_name);
                     }
                     // `ClassName.method(args)` — a `@static` call (the
@@ -2311,7 +2324,7 @@ pub const Checker = struct {
                         // class the alias points at.
                         const is_class_ref = if (self.current_scope.lookup(raw_recv)) |info| info.kind == .class else true;
                         if (is_class_ref) {
-                            try self.recordTypeReceiver(m.receiver.ident.span, recv_name);
+                            try self.recordNamedReceiver(m.receiver.ident.span, raw_recv, recv_name);
                             return try fields.checkStaticMethodCall(self, m, cd, recv_name);
                         }
                     }
@@ -2335,9 +2348,13 @@ pub const Checker = struct {
                 //   - `EnumName.Variant` — variant constructor.
                 //   - `mem.func`         — stdlib builtin.
                 if (f.receiver.* == .ident) {
-                    const recv_name = self.resolveValueAlias(self.lexeme(f.receiver.ident.span));
+                    const raw_recv = self.lexeme(f.receiver.ident.span);
+                    const recv_name = self.resolveValueAlias(raw_recv);
+                    // A module receiver is dispatched by name and never
+                    // inferred, so its reference is recorded up front.
+                    try self.recordNamedReceiver(f.receiver.ident.span, raw_recv, recv_name);
                     if (self.enum_registry.get(recv_name)) |ed| {
-                        try self.recordTypeReceiver(f.receiver.ident.span, recv_name);
+                        try self.recordNamedReceiver(f.receiver.ident.span, raw_recv, recv_name);
                         return try fields.resolveEnumVariant(self, ed, recv_name, f);
                     }
                     if (std.mem.eql(u8, recv_name, "mem")) {

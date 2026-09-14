@@ -1047,15 +1047,20 @@ test "codegen: a local named like an alias target doesn't capture the alias" {
 }
 
 test "codegen: a local closure shadows a selective stdlib import" {
-    // `math.max(2, 9)` is 9; the local closure `a + b` is 11 — the
-    // local must win.
+    // `math.max(2, 9)` is 9; the local closure `a + b` is 11. The local
+    // must win where it is in scope, and the import must still reach
+    // the stdlib from a function the local does not cover.
     try runAndExpect(
         \\use max from math
+        \\def widest() -> i16
+        \\  return max(2, 9)
+        \\end
         \\def main()
         \\  let max = |a: i16, b: i16| -> i16 a + b
         \\  print max(2, 9)
+        \\  print widest()
         \\end
-    , "11\n");
+    , "11\n9\n");
 }
 
 test "codegen: a local closure shadows a same-named class constructor" {

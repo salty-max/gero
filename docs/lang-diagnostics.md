@@ -201,6 +201,26 @@ has to change.
 | `E_USE_DEPTH` | The graph is deeper than 32 — a runaway import chain. |
 | `E_USE_DUPLICATE_ALIAS` | `use X as Y` and `use Z as Y` bind one alias to two targets. |
 | `E_USE_CASE_MISMATCH` | The target exists but is spelled differently on disk. |
+| `W_UNUSED_IMPORT` | The module never referenced the name a `use` brought into scope. Warning — the program still compiles. |
+
+An import is used when some reference binds to it. The type-checker
+already records that: `CheckedProgram.bindings` maps a reference's
+offset to the declaration it resolved to, so an import nothing points
+at is one nothing named. The check therefore runs after every body has
+been walked, and a module whose bodies came from cache is exempt —
+those references were never recorded.
+
+A selective import is judged per item, so `use abs, min from math`
+where only `abs` is called reports `min` alone. A whole-module import
+is judged as a whole: `use math` is used the moment anything says
+`math.`. An import a local shadows everywhere is unused, because the
+name it bound can no longer be reached.
+
+The warning covers imports the checker sees as declarations, which
+today means the stdlib. A `use` naming a quoted path is resolved as
+text by the fuse layer and never reaches the checker as a declaration,
+so nothing is there to judge.
+
 
 `E_USE_CASE_MISMATCH` is the portability one. macOS and Windows
 volumes usually ignore case, so `use "./Lib"` finds `lib.gr` there and
@@ -930,6 +950,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_USE_DEPTH` | Module resolution | v0.3 |
 | `E_USE_DUPLICATE_ALIAS` | Module resolution | v0.3 |
 | `E_USE_CASE_MISMATCH` | Module resolution | v0.3 |
+| `W_UNUSED_IMPORT` | Module resolution | v0.3 |
 | `E_TYPE_UNDEFINED_VARIANT` | Typechecker | v0.3 |
 | `E_BAKE_TYPE` | Bake | v0.3 |
 | `E_BAKE_UNSUPPORTED` | Bake | v0.3 |
