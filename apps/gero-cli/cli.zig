@@ -434,6 +434,7 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .out => .{ .sig = "--out=<path> / -o <path>", .desc = "Output destination." },
         .color => .{ .sig = "--color=<m> / -c <m>", .desc = "auto (default) / always / never." },
         .no_color => .{ .sig = "--no-color", .desc = "Shortcut for --color=never." },
+        .stdio => .{ .sig = "--stdio", .desc = "Accepted and ignored — stdio is the only transport." },
         .bank => .{ .sig = "--bank=<N>", .desc = "Pick a bank slot to disassemble (default: base image)." },
         .show_bytes => .{ .sig = "--show-bytes", .desc = "(default) Show the hex-bytes column." },
         .no_show_bytes => .{ .sig = "--no-show-bytes", .desc = "Strip the hex-bytes column for a cleaner view." },
@@ -465,7 +466,7 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .init => &.{ .help, .quiet, .color, .no_color },
         .build => &.{ .help, .target, .quiet, .verbose, .color, .no_color },
         .repl => &.{ .help, .color, .no_color },
-        .lsp => &.{ .help, .color, .no_color },
+        .lsp => &.{ .help, .stdio, .color, .no_color },
         .compile => &.{ .help, .out, .optimize, .quiet, .verbose, .color, .no_color },
         .bench => &.{ .help, .iter, .quiet, .color, .no_color },
     };
@@ -502,7 +503,7 @@ fn parseLang(s: []const u8) ParseError!Lang {
     return error.InvalidEnumValue;
 }
 
-const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, cycles, check, stdin, format, target, werror, lang, iter };
+const FlagKind = enum { help, version, quiet, verbose, optimize, out, color, no_color, bank, show_bytes, no_show_bytes, check_roundtrip, cycles, check, stdin, format, target, werror, lang, iter, stdio };
 
 /// Which flags a subcommand accepts.
 ///
@@ -535,6 +536,7 @@ fn accepts(cmd: Command, kind: FlagKind) bool {
         .target => cmd == .build,
         .bank, .show_bytes, .no_show_bytes, .check_roundtrip => cmd == .disasm,
         .cycles => cmd == .run,
+        .stdio => cmd == .lsp,
     };
 }
 
@@ -554,6 +556,7 @@ fn longFlag(s: []const u8) ?FlagKind {
     if (std.mem.eql(u8, s, "cycles")) return .cycles;
     if (std.mem.eql(u8, s, "check")) return .check;
     if (std.mem.eql(u8, s, "stdin")) return .stdin;
+    if (std.mem.eql(u8, s, "stdio")) return .stdio;
     if (std.mem.eql(u8, s, "format")) return .format;
     if (std.mem.eql(u8, s, "target")) return .target;
     if (std.mem.eql(u8, s, "werror")) return .werror;
@@ -583,6 +586,9 @@ fn applyFlag(opts: *Options, kind: FlagKind, value: ?[]const u8) ParseError!void
         .out => opts.out = value orelse return error.MissingFlagValue,
         .color => opts.color = try parseColor(value orelse return error.MissingFlagValue),
         .no_color => opts.color = .never,
+        // Accepted and ignored: stdio is the only transport the server
+        // speaks, and most clients pass the flag by convention.
+        .stdio => {},
         .bank => opts.bank = try parseBank(value orelse return error.MissingFlagValue),
         .show_bytes => opts.show_bytes = true,
         .no_show_bytes => opts.show_bytes = false,
@@ -1022,4 +1028,17 @@ test "run: subcommand stub exits 1" {
     const code = try run(.{ .command = .run, .options = .{} }, &out, &err);
     try testing.expectEqual(@as(u8, 1), code);
     try testing.expect(std.mem.indexOf(u8, err_buf[0..err.end], "not yet implemented") != null);
+}
+
+test "parse: `gero lsp --stdio` is accepted" {
+    // Most clients append `--stdio` when they name a transport, so
+    // rejecting it leaves the server unable to start under them.
+    const parsed = try parse(&.{ "lsp", "--stdio" });
+    try testing.expectEqual(Command.lsp, parsed.command);
+}
+
+test "parse: `--stdio` belongs to `lsp` alone" {
+    // It would mean nothing to the other commands, and silently
+    // accepting a flag that does nothing is worse than refusing it.
+    try testing.expectError(error.FlagNotForCommand, parse(&.{ "check", "--stdio", "a.gr" }));
 }

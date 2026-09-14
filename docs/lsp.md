@@ -172,12 +172,30 @@ vim.api.nvim_create_autocmd("BufWritePre", {
 })
 ```
 
+Inlay hints are off until asked for:
+
+```lua
+vim.api.nvim_create_autocmd("LspAttach", {
+  callback = function(args)
+    vim.lsp.inlay_hint.enable(true, { bufnr = args.buf })
+  end,
+})
+```
+
+`root_markers` is what makes imports from elsewhere in the project
+offerable: the root it picks becomes the `rootUri` the workspace index
+walks (§6). A client that sends none gets stdlib imports only.
+
 ### VS Code
 
-The extension in `editors/vscode-gero` wires this up. To point a
-generic client at the server yourself, spawn `gero lsp` with
-`TransportKind.stdio` and register the `gero` / `gero-asm` language
-ids.
+The extension in `editors/vscode-gero` spawns the server for you;
+install it from a `.vsix` per [`tooling.md` §2.1](tooling.md). Point
+`gero.path` at the binary when it is not on `PATH`, and set
+`gero.trace.server` to `verbose` to see the conversation.
+
+To wire a generic client yourself, spawn `gero lsp` over stdio and
+register the `gero-asm` / `gero-lang` language ids. A client that
+names a transport usually appends `--stdio`; the server accepts it.
 
 ### Helix
 
