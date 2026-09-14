@@ -165,3 +165,103 @@ fn typeTextAt(
     }
     return null;
 }
+
+/// An inferred type to show after a binder the source did not annotate.
+pub const Hint = struct {
+    /// Just past the binder's name, where `: T` would have been typed.
+    at: u32,
+    /// The rendered type, without the leading colon.
+    text: []const u8,
+};
+
+/// Inferred types for every `let` the source left unannotated.
+///
+/// Only unannotated binders get one: repeating a type the author
+/// already wrote is noise, and the point of a hint is to show what was
+/// inferred rather than what was stated. `binder_types` supplies the
+/// type, keyed by the declaring identifier's offset — which is also
+/// where the hint belongs.
+pub fn inlayHints(arena: std.mem.Allocator, src: []const u8) ![]Hint {
+    const stream = try gero.lang.tokenize(arena, src);
+    const tree = try gero.lang.parse(arena, src, stream);
+    var checked = try gero.lang.typecheck(arena, src, &tree.program);
+    defer checked.deinit();
+
+    var out: std.ArrayList(Hint) = .empty;
+    try collectHints(arena, &out, &checked, tree.program.statements);
+    return out.toOwnedSlice(arena);
+}
+
+fn collectHints(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(Hint),
+    checked: *const gero.lang.CheckedProgram,
+    statements: []const gero.lang.ast.Statement,
+) !void {
+    for (statements) |st| switch (st) {
+        .let_decl => |d| {
+            // An annotated binder already says what it is.
+            if (d.type_ann != null) continue;
+            if (d.pattern.* != .ident) continue;
+            const name = d.pattern.ident.name;
+            const ty = checked.binder_types.get(name.start) orelse continue;
+            try out.append(arena, .{
+                .at = name.end,
+                .text = try gero.lang.types.render(arena, ty.*),
+            });
+        },
+        .def_decl => |d| try collectHints(arena, out, checked, d.body),
+        .block => |b| try collectHints(arena, out, checked, b.body),
+        .while_stmt => |w| try collectHints(arena, out, checked, w.body),
+        .for_stmt => |f| try collectHints(arena, out, checked, f.body),
+        else => {},
+    };
+}
+
+/// Every reference to the declaration the name at `pos` binds to.
+///
+/// The binding table read backwards: each entry names the declaration
+/// its reference resolves to, so the references to one declaration are
+/// the entries pointing at it. Nothing is re-derived, so this cannot
+/// disagree with go-to-definition about what binds to what.
+pub fn referencesTo(
+    arena: std.mem.Allocator,
+    src: []const u8,
+    pos: Position,
+    include_declaration: bool,
+) !?[]gero.lang.ast.Span {
+    const offset = offsetOf(src, pos) orelse return null;
+
+    const stream = try gero.lang.tokenize(arena, src);
+    const tree = try gero.lang.parse(arena, src, stream);
+    var checked = try gero.lang.typecheck(arena, src, &tree.program);
+    defer checked.deinit();
+
+    // The cursor may be on a reference or on the declaration itself.
+    // Both have to reach the same declaration or the two cases would
+    // return different sets for the same name.
+    const target: gero.lang.ast.Span = if (bindingAt(&checked, src, offset)) |hit|
+        hit.binding.decl_span
+    else blk: {
+        const start = wordStart(src, offset) orelse return null;
+        break :blk .{ .start = start, .end = start + wordLen(src, start) };
+    };
+
+    var out: std.ArrayList(gero.lang.ast.Span) = .empty;
+    var it = checked.bindings.iterator();
+    while (it.next()) |e| {
+        if (e.value_ptr.decl_span.start != target.start) continue;
+        const start = e.key_ptr.*;
+        try out.append(arena, .{ .start = start, .end = start + wordLen(src, start) });
+    }
+    if (include_declaration) try out.append(arena, target);
+
+    // Ascending, so the results list reads in source order rather than
+    // in whatever order the map happened to store them.
+    std.mem.sort(gero.lang.ast.Span, out.items, {}, spanLess);
+    return try out.toOwnedSlice(arena);
+}
+
+fn spanLess(_: void, a: gero.lang.ast.Span, b: gero.lang.ast.Span) bool {
+    return a.start < b.start;
+}
