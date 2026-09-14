@@ -291,6 +291,13 @@ pub fn completionsAt(
     var checked = try gero.lang.typecheck(arena, src, &tree.program);
     defer checked.deinit();
 
+    // After a dot, only the receiver's members can follow. Offering
+    // what happens to be in scope there is worse than offering
+    // nothing: none of it can legally appear.
+    if (receiverBefore(src, offset)) |recv| {
+        return try membersOf(arena, &checked, src, recv);
+    }
+
     var seen: std.StringHashMapUnmanaged(void) = .{};
     var out: std.ArrayList(Completion) = .empty;
     for (checked.visible) |v| {
@@ -327,5 +334,63 @@ pub fn completionKind(k: gero.lang.scope.SymbolKind) u8 {
         .enum_ => 13, // Enum
         .module_alias, .imported => 9, // Module
         .field => 5, // Field
+    };
+}
+
+/// The identifier immediately before a `.` the cursor sits after, or
+/// null when the cursor does not follow one.
+///
+/// Read from the text rather than the tree: the tree at this instant
+/// describes `p.` with an empty member, and what is wanted is the
+/// receiver beside the dot, which the characters give directly.
+fn receiverBefore(src: []const u8, offset: u32) ?gero.lang.ast.Span {
+    var i: usize = @min(@as(usize, offset), src.len);
+    // Step back over a partly-typed member name.
+    while (i > 0 and isWordByte(src[i - 1])) i -= 1;
+    if (i == 0 or src[i - 1] != '.') return null;
+    const dot = i - 1;
+    var j = dot;
+    while (j > 0 and isWordByte(src[j - 1])) j -= 1;
+    if (j == dot) return null;
+    // @as: offsets into a source buffer.
+    return .{ .start = @intCast(j), .end = @intCast(dot) };
+}
+
+/// Members of whatever `recv` names — a value's type, or a container
+/// named directly, as in `Colour.Red`.
+fn membersOf(
+    arena: std.mem.Allocator,
+    checked: *const gero.lang.CheckedProgram,
+    src: []const u8,
+    recv: gero.lang.ast.Span,
+) ![]Completion {
+    const text = src[recv.start..recv.end];
+
+    // `Point.` — the receiver is the container itself.
+    var owner: []const u8 = text;
+    // `p.` — the receiver is a value, so its type names the container.
+    if (checked.bindings.get(recv.start)) |b| {
+        if (checked.binder_types.get(b.decl_span.start)) |ty| {
+            if (namedOf(ty.*)) |n| owner = n;
+        }
+    }
+
+    var out: std.ArrayList(Completion) = .empty;
+    for (checked.members) |m| {
+        if (!std.mem.eql(u8, m.owner, owner)) continue;
+        try out.append(arena, .{ .name = try arena.dupe(u8, m.name), .kind = m.kind });
+    }
+    std.mem.sort(Completion, out.items, {}, completionLess);
+    return out.toOwnedSlice(arena);
+}
+
+/// The container name a type refers to, looking through a reference or
+/// an optional so `p` and `p?` offer the same members.
+fn namedOf(t: gero.lang.types.Type) ?[]const u8 {
+    return switch (t) {
+        .named => |n| n.name,
+        .reference => |r| namedOf(r.*),
+        .optional => |o| namedOf(o.*),
+        else => null,
     };
 }
