@@ -199,6 +199,11 @@ pub const types = types_mod;
 pub const scope = scope_mod;
 /// Typechecker output: program + diagnostics.
 pub const CheckedProgram = typecheck_mod.CheckedProgram;
+/// Where a name in the source resolves to — see
+/// `CheckedProgram.bindings`. What an editor needs for
+/// go-to-definition, hover and find-references, taken from the
+/// checker's own resolution rather than derived a second time.
+pub const Binding = typecheck_mod.Binding;
 /// Type-check an `ast.Program`. Caller owns the result.
 ///
 /// Type errors are collected into `checked.diagnostics` rather than

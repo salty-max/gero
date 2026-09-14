@@ -11,6 +11,35 @@ const Severity = diag_mod.Severity;
 
 /// Typechecker output. Owns the diagnostics slice and the arena
 /// holding every `*Type` plus the scope tree.
+/// Which declaration a name in the source resolves to.
+///
+/// The checker resolves every reference against its scope and used to
+/// keep only the resulting type. An editor wants the resolution
+/// itself: go-to-definition is `decl_span`, hover is `kind` plus the
+/// type already in `expr_types`, and find-references is this map read
+/// backwards. Re-deriving it from the AST would be a second,
+/// independently wrong implementation of what the checker already
+/// computed.
+pub const Binding = struct {
+    /// What the name names — a binding, a parameter, a `def`, a class.
+    kind: scope_mod.SymbolKind,
+    /// The declaring identifier's span, in the declaring file.
+    decl_span: ast.Span,
+    /// The declaration's own name. For a reference through an import
+    /// alias this is the target, which is what the declaring file
+    /// calls it.
+    name: []const u8,
+    /// The module the declaration lives in, as written in the `use`
+    /// that brought it into scope. `null` when it is declared in the
+    /// same file as the reference.
+    ///
+    /// For an imported name `decl_span` is the `use` that imported it,
+    /// not the declaration in the other file — the checker runs per
+    /// module and does not hold the other one's table. A consumer
+    /// follows `module` to reach it.
+    module: ?[]const u8 = null,
+};
+
 pub const CheckedProgram = struct {
     program: *const ast.Program,
     diagnostics: []Diagnostic,
@@ -32,6 +61,11 @@ pub const CheckedProgram = struct {
     /// its own — this is where its type comes from. Backed by
     /// `type_arena`.
     binder_types: std.AutoHashMapUnmanaged(u32, *const types.Type),
+    /// Which declaration each referencing name resolves to, keyed by
+    /// the start offset of the reference. Populated whether or not the
+    /// program type-checks — an editor wants this most in a buffer
+    /// that does not compile. Backed by `type_arena`.
+    bindings: std.AutoHashMapUnmanaged(u32, Binding),
     type_arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
 
@@ -196,6 +230,7 @@ pub fn typecheckGraph(
         .current_class_name = null,
         .non_nil = .{},
         .binder_types = .{},
+        .bindings = .{},
         .enum_registry = .{},
         .struct_registry = .{},
         .class_registry = .{},
@@ -213,6 +248,7 @@ pub fn typecheckGraph(
         .expr_types = &expr_types,
         .import_aliases = import_aliases,
         .selective_stdlib = .{},
+        .import_modules = .{},
     };
 
     // Pre-pass: index enum / struct / class / def decls and the
@@ -294,6 +330,7 @@ pub fn typecheckGraph(
         .expr_types = expr_types,
         .variadics = c.variadic_info,
         .binder_types = c.binder_types,
+        .bindings = c.bindings,
         .module_variadic_arities = c.module_variadic_arities,
         .type_arena = arena,
         .allocator = allocator,
@@ -456,6 +493,8 @@ pub const Checker = struct {
     /// Binder-name type map built during registration — see
     /// `CheckedProgram.binder_types`.
     binder_types: std.AutoHashMapUnmanaged(u32, *const types.Type),
+    /// Resolved references — see `CheckedProgram.bindings`.
+    bindings: std.AutoHashMapUnmanaged(u32, Binding),
     /// Enum-name → decl pointer (pass 1).
     enum_registry: std.StringHashMapUnmanaged(*const ast.EnumDecl),
     /// Struct-name → decl pointer.
@@ -509,9 +548,50 @@ pub const Checker = struct {
     /// the local name (alias or original) → its `(module, real_name)`.
     /// Lets a bare call lower to the stdlib signature.
     selective_stdlib: std.StringHashMapUnmanaged(StdlibImport),
+    /// Module each selectively-imported name came from, for every
+    /// `use x from m` rather than only the stdlib ones. Read by
+    /// `recordBinding` so a cross-file reference says where the name
+    /// came from even while `decl_span` still points at the `use`.
+    import_modules: std.StringHashMapUnmanaged([]const u8),
 
     /// A stdlib function pulled into scope by a selective `use`.
     pub const StdlibImport = struct { module: []const u8, name: []const u8 };
+
+    /// Remember that the reference at `span` resolved to `info`.
+    ///
+    /// Keyed by the reference's start offset, which is what an editor
+    /// has: it knows where the caret is, not which AST node covers it.
+    /// A name resolved through an import alias records the target's
+    /// own name, since that is what the declaring file calls it.
+    fn recordBinding(self: *Checker, span: ast.Span, name: []const u8, info: scope_mod.SymbolInfo) WalkError!void {
+        try self.bindings.put(self.arena, span.start, .{
+            .kind = info.kind,
+            .decl_span = info.decl_span,
+            .name = try self.arena.dupe(u8, name),
+            .module = self.moduleDeclaring(name),
+        });
+    }
+
+    /// Remember that the member access at `span` resolved to the
+    /// field declared at `decl`. Separate from `recordBinding` because
+    /// a field is reached through its container rather than found in
+    /// a scope, so there is no `SymbolInfo` to copy.
+    pub fn recordFieldBinding(self: *Checker, span: ast.Span, name: []const u8, decl: ast.Span) WalkError!void {
+        try self.bindings.put(self.arena, span.start, .{
+            .kind = .field,
+            .decl_span = decl,
+            .name = try self.arena.dupe(u8, name),
+        });
+    }
+
+    /// The module a name was imported from, or `null` when it is
+    /// declared in this file. Read from the import table the checker
+    /// already built, so a cross-file reference names the file that
+    /// declares it rather than the one that mentions it.
+    fn moduleDeclaring(self: *const Checker, name: []const u8) ?[]const u8 {
+        if (self.selective_stdlib.get(name)) |si| return si.module;
+        return self.import_modules.get(name);
+    }
 
     /// Resolve a quoted-path import alias to the real exported name;
     /// identity when `name` isn't an alias.
@@ -2015,6 +2095,7 @@ pub const Checker = struct {
                     }
                 }
                 if (info_opt) |info| {
+                    try self.recordBinding(i.span, name, info);
                     // Bake context cannot touch MMIO-bound globals.
                     if (self.in_bake and self.mmio_names.contains(name)) {
                         const msg = try std.fmt.allocPrint(

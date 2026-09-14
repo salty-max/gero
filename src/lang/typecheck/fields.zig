@@ -137,6 +137,7 @@ pub fn resolveFieldAccess(
     if (self.struct_registry.get(named_name)) |sd| {
         for (sd.fields) |fld| {
             if (std.mem.eql(u8, self.lexeme(fld.name), field_name)) {
+                try self.recordFieldBinding(f.field, field_name, fld.name);
                 return try type_resolve.resolveType(self, fld.type_ann);
             }
         }

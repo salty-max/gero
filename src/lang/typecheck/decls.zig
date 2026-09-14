@@ -93,6 +93,7 @@ fn registerUseDecl(self: *Checker, d: ast.UseDecl) WalkError!void {
                 .decl_span = it.name,
                 .ty = null,
             });
+            try self.import_modules.put(self.arena, name, module);
             // A stdlib selective import records its origin so a bare
             // call (`rng()` after `use rng from math`) lowers like the
             // qualified `math.rng()` form — and the member must exist,
