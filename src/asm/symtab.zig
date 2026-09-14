@@ -28,6 +28,12 @@ pub const Symbol = struct {
     /// and `.struct_field` are compile-time constants with no
     /// bank-positioned address, so they leave this `null`.
     bank: ?u8 = null,
+    /// Byte offset of the declaring name in the fused source, so a
+    /// consumer can jump to where a label or constant was defined
+    /// rather than only to what it evaluates to. `null` for a
+    /// synthetic entry the assembler invents, such as a struct
+    /// field's offset, which no line declares.
+    decl_start: ?u32 = null,
 };
 
 /// Name → Symbol lookup. Built incrementally by the codegen
