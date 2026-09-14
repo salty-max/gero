@@ -58,10 +58,17 @@ pub const Index = struct {
     /// skipping `exclude` — the document being edited, whose own
     /// declarations are already in scope.
     ///
-    /// A file that fails to read or parse contributes nothing: a
-    /// half-parsed neighbour is not worth an import that may not
-    /// compile.
-    pub fn rebuild(self: *Index, io: std.Io, exclude: ?[]const u8) !void {
+    /// `overlay` shadows the disk for buffers the editor holds
+    /// unsaved, so a name typed a minute ago in another tab is
+    /// offered like any other. A file that fails to read or parse
+    /// contributes nothing: a half-parsed neighbour is not worth an
+    /// import that may not compile.
+    pub fn rebuild(
+        self: *Index,
+        io: std.Io,
+        overlay: ?*const gero.lang.Overlay,
+        exclude: ?[]const u8,
+    ) !void {
         self.clear();
         const root = self.root orelse return;
 
@@ -76,15 +83,51 @@ pub const Index = struct {
             const full = try std.fs.path.join(self.gpa, &.{ root, entry.path });
             defer self.gpa.free(full);
             if (exclude) |x| if (std.mem.eql(u8, x, full)) continue;
-            self.addFile(io, full) catch continue;
+            self.addFile(io, overlay, full) catch continue;
+        }
+
+        // A buffer for a file the walk could not reach — one the editor
+        // opened from outside the root, or created and not yet saved —
+        // still exports names worth offering.
+        const ov = overlay orelse return;
+        var it = ov.iterator();
+        while (it.next()) |e| {
+            const path = e.key_ptr.*;
+            if (!std.mem.endsWith(u8, path, ".gr")) continue;
+            if (exclude) |x| if (std.mem.eql(u8, x, path)) continue;
+            if (self.hasFile(path)) continue;
+            if (!std.mem.startsWith(u8, path, root)) continue;
+            self.addSource(path, e.value_ptr.*) catch continue;
         }
     }
 
-    /// Record `path`'s exported top-level names.
-    fn addFile(self: *Index, io: std.Io, path: []const u8) !void {
+    /// `true` when some export already names `path` — the walk reached
+    /// it, so its buffer was read there.
+    fn hasFile(self: *const Index, path: []const u8) bool {
+        for (self.exports.items) |e| {
+            if (std.mem.eql(u8, e.path, path)) return true;
+        }
+        return false;
+    }
+
+    /// Record `path`'s exported top-level names, preferring the
+    /// editor's copy of it over the one on disk.
+    fn addFile(
+        self: *Index,
+        io: std.Io,
+        overlay: ?*const gero.lang.Overlay,
+        path: []const u8,
+    ) !void {
+        if (overlay) |ov| {
+            if (ov.get(path)) |buffered| return self.addSource(path, buffered);
+        }
         const src = try std.Io.Dir.cwd().readFileAlloc(io, path, self.gpa, .limited(max_file_bytes));
         defer self.gpa.free(src);
+        return self.addSource(path, src);
+    }
 
+    /// Record what `src` — the contents of `path` — exports.
+    fn addSource(self: *Index, path: []const u8, src: []const u8) !void {
         var stream = try gero.lang.tokenize(self.gpa, src);
         defer stream.deinit();
         var tree = try gero.lang.parse(self.gpa, src, stream);
@@ -188,7 +231,7 @@ test "Index: every exported declaration kind is recorded" {
     const root = try fx.root(probe);
     defer testing.allocator.free(root);
     try idx.setRoot(root);
-    try idx.rebuild(std.testing.io, null);
+    try idx.rebuild(std.testing.io, null, null);
 
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(testing.allocator);
@@ -219,7 +262,7 @@ test "Index: a `local` declaration is not exported" {
     const root = try fx.root(probe);
     defer testing.allocator.free(root);
     try idx.setRoot(root);
-    try idx.rebuild(std.testing.io, null);
+    try idx.rebuild(std.testing.io, null, null);
 
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(testing.allocator);
@@ -253,7 +296,7 @@ test "Index: the excluded document does not offer its own names" {
 
     const mine = try std.fs.path.join(testing.allocator, &.{ root, "here.gr" });
     defer testing.allocator.free(mine);
-    try idx.rebuild(std.testing.io, mine);
+    try idx.rebuild(std.testing.io, null, mine);
 
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(testing.allocator);
@@ -274,7 +317,7 @@ test "Index: two files exporting one name both answer a lookup" {
     const root = try fx.root(probe);
     defer testing.allocator.free(root);
     try idx.setRoot(root);
-    try idx.rebuild(std.testing.io, null);
+    try idx.rebuild(std.testing.io, null, null);
 
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -286,7 +329,7 @@ test "Index: two files exporting one name both answer a lookup" {
 test "Index: without a root there is nothing to offer" {
     var idx: Index = .{ .gpa = testing.allocator };
     defer idx.deinit();
-    try idx.rebuild(std.testing.io, null);
+    try idx.rebuild(std.testing.io, null, null);
     try testing.expectEqual(@as(usize, 0), idx.exports.items.len);
 }
 
@@ -302,7 +345,7 @@ test "Index: a file that does not parse contributes nothing" {
     const root = try fx.root(probe);
     defer testing.allocator.free(root);
     try idx.setRoot(root);
-    try idx.rebuild(std.testing.io, null);
+    try idx.rebuild(std.testing.io, null, null);
 
     // The broken file may yield nothing or a partial list; what must
     // hold is that it does not stop the walk reaching `fine.gr`.
@@ -314,4 +357,60 @@ test "Index: a file that does not parse contributes nothing" {
         if (std.mem.eql(u8, n, "ok")) saw_ok = true;
     }
     try testing.expect(saw_ok);
+}
+
+test "Index: an unsaved buffer shadows the file on disk" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def saved() -> i16\n  return 0\nend\n");
+
+    var idx: Index = .{ .gpa = testing.allocator };
+    defer idx.deinit();
+    const probe = "lib.gr";
+    const root = try fx.root(probe);
+    defer testing.allocator.free(root);
+    try idx.setRoot(root);
+
+    const lib = try std.fs.path.join(testing.allocator, &.{ root, "lib.gr" });
+    defer testing.allocator.free(lib);
+    var ov: gero.lang.Overlay = .{};
+    defer ov.deinit(testing.allocator);
+    try ov.put(testing.allocator, lib, "def unsaved() -> i16\n  return 0\nend\n");
+
+    try idx.rebuild(std.testing.io, &ov, null);
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(testing.allocator);
+    try namesOf(&idx, &names);
+    try testing.expectEqual(@as(usize, 1), names.items.len);
+    // The editor's copy, not the one on disk.
+    try testing.expectEqualStrings("unsaved", names.items[0]);
+}
+
+test "Index: a buffer for a file never written to disk still exports" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("anchor.gr", "def anchor() -> i16\n  return 0\nend\n");
+
+    var idx: Index = .{ .gpa = testing.allocator };
+    defer idx.deinit();
+    const probe = "anchor.gr";
+    const root = try fx.root(probe);
+    defer testing.allocator.free(root);
+    try idx.setRoot(root);
+
+    const fresh = try std.fs.path.join(testing.allocator, &.{ root, "fresh.gr" });
+    defer testing.allocator.free(fresh);
+    var ov: gero.lang.Overlay = .{};
+    defer ov.deinit(testing.allocator);
+    try ov.put(testing.allocator, fresh, "struct Brand\n  x: i16\nend\n");
+
+    try idx.rebuild(std.testing.io, &ov, null);
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(testing.allocator);
+    try namesOf(&idx, &names);
+    try testing.expectEqual(@as(usize, 2), names.items.len);
+    try testing.expectEqualStrings("Brand", names.items[0]);
+    try testing.expectEqualStrings("anchor", names.items[1]);
 }

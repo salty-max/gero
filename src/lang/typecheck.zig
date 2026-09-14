@@ -1360,7 +1360,16 @@ pub const Checker = struct {
                     "module does not export `{s}`",
                     .{item.name},
                 );
-                try self.emitSpan("E_USE_UNDEFINED_MEMBER", .{ .start = edge.site, .end = edge.site }, msg);
+                // The `use` line is elided from the fused buffer, so
+                // the span is the directive's sentinel and the caret
+                // cannot reach the name. The help line carries it.
+                const span: ast.Span = .{ .start = edge.site, .end = edge.site };
+                if (try self.suggestExport(edge.to, item.name)) |near| {
+                    const help = try std.fmt.allocPrint(self.arena, "did you mean `{s}`?", .{near});
+                    try self.emitSpanHelp("E_USE_UNDEFINED_MEMBER", span, msg, help);
+                } else {
+                    try self.emitSpan("E_USE_UNDEFINED_MEMBER", span, msg);
+                }
                 continue;
             }
             const bound = item.alias orelse item.name;
@@ -1371,6 +1380,20 @@ pub const Checker = struct {
                 error.OutOfMemory => return error.OutOfMemory,
             };
         }
+    }
+
+    /// Closest near-spelling among the names module `id` exports.
+    /// `local` declarations are excluded — suggesting one would name a
+    /// second error rather than fix the first.
+    fn suggestExport(self: *Checker, id: u16, name: []const u8) WalkError!?[]const u8 {
+        var pool: std.ArrayList([]const u8) = .empty;
+        defer pool.deinit(self.arena);
+        var it = self.module_scopes[id].entries.keyIterator();
+        while (it.next()) |k| {
+            if (self.local_names[id].contains(k.*)) continue;
+            try pool.append(self.arena, k.*);
+        }
+        return suggestions.bestMatch(name, pool.items);
     }
 
     /// Two imported modules provide the same name, so an unqualified
