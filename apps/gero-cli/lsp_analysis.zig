@@ -179,6 +179,50 @@ const Unplaced = struct {
 };
 
 /// What resolving a `.gas` document's include graph produced.
+/// A `.gas` document assembled far enough to answer questions about
+/// its names: the fused text the offsets belong to, the map back to
+/// the files it came from, and the symbol table with the parse tree
+/// the references were written in.
+pub const GasProgram = struct {
+    source: []const u8,
+    /// Absent for a document with no file behind it, where fused
+    /// offsets are already the buffer's own.
+    source_map: ?gero.asm_.SourceMap,
+    tree: gero.asm_.ParseTree,
+    symbols: gero.asm_.SymbolTable,
+};
+
+/// Assemble `uri`'s document so a resolver can ask what its names
+/// mean. `null` when the document names a file that cannot be read,
+/// or when its includes do not resolve — there is no program to
+/// answer about.
+///
+/// Both passes run: an address is only known after codegen, and a
+/// symbol table is what every `.gas` query reads.
+pub fn gasProgram(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    uri: []const u8,
+    src: []const u8,
+    overlay: ?*const gero.lang.Overlay,
+) !?GasProgram {
+    const path = try uri_mod.toPath(arena, uri);
+    const resolved = try resolveGas(io, arena, uri, path, src, overlay);
+    switch (resolved) {
+        .unresolvable, .include_errors => return null,
+        .ok => {},
+    }
+    const fused = resolved.ok.source;
+    const tree = try gero.asm_.parse(arena, fused);
+    const cg = try gero.asm_.assemble(arena, fused, tree, .{});
+    return .{
+        .source = fused,
+        .source_map = resolved.ok.source_map,
+        .tree = tree,
+        .symbols = cg.symbols,
+    };
+}
+
 const ResolvedGas = union(enum) {
     /// The document names a file that cannot be read.
     unresolvable,

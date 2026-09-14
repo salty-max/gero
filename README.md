@@ -115,7 +115,7 @@ see [`docs/asm-vs-lang.md`](./docs/asm-vs-lang.md).
 | `gero disasm <file.gx>` | `.gx` → asm (round-trip-safe; CI-gated) |
 | `gero info <file.gx>` | Pretty-print a `.gx` header |
 | `gero repl` | Interactive Gero prompt — declarations persist across inputs |
-| `gero lsp` | Language server for `.gas` + `.gr` — diagnostics, formatting, and for `.gr` definition / hover / references / inlay hints / completion / quick fixes |
+| `gero lsp` | Language server for `.gas` + `.gr` — diagnostics, formatting, definition / hover / references / completion, plus inlay hints and quick fixes for `.gr` |
 
 Run `gero <subcommand> --help` for per-command flags, or
 [`docs/cli.md`](./docs/cli.md) for the full reference.

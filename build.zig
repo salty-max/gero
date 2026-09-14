@@ -381,6 +381,16 @@ pub fn build(b: *std.Build) void {
         .name = "test-cli-lsp-index",
         .root_module = lsp_index_mod,
     });
+    const lsp_asm_mod = b.createModule(.{
+        .root_source_file = b.path("apps/gero-cli/lsp_asm.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lsp_asm_mod.addImport("gero", gero_mod);
+    const lsp_asm_test = b.addTest(.{
+        .name = "test-cli-lsp-asm",
+        .root_module = lsp_asm_mod,
+    });
 
     // ----- Format ----------------------------------------------------------
 
@@ -442,6 +452,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(lsp_analysis_test).step);
     test_step.dependOn(&b.addRunArtifact(lsp_symbols_test).step);
     test_step.dependOn(&b.addRunArtifact(lsp_index_test).step);
+    test_step.dependOn(&b.addRunArtifact(lsp_asm_test).step);
     test_step.dependOn(&b.addRunArtifact(lsp_server_test).step);
     for (test_files) |rel| {
         const t = makeTest(b, gero_mod, examples_opts, rel, target, optimize);
