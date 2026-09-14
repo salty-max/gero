@@ -2540,6 +2540,19 @@ Resolution:
   symlink whose real name differs.
 - No transitive re-exports — if you import a module, only its direct
   exports are visible
+- A selective `use` binds the names it lists and nothing else, whether
+  the target is the stdlib or another file. `use abs from math` leaves
+  `min` unbound; `use Vec2 from "./lib"` leaves the rest of `lib`
+  unbound. A rename binds the new name only — after
+  `use zero as nought from "./lib"`, `zero` does not resolve.
+- A name the target does not export — missing, renamed, or `local` —
+  is `E_USE_UNDEFINED_MEMBER`, reported at the `use` rather than at
+  whatever line happened to name it.
+
+A quoted-path import splices the target's text into one buffer, so a
+selective one restricts what is *bound* rather than what is compiled.
+Two files that each import a different half of a third still produce
+one copy of it.
 
 ### 5.3 Standard library
 

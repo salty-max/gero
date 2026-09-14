@@ -39,6 +39,22 @@ pub const Region = struct {
 pub const ImportEdge = struct {
     from: u16,
     to: u16,
+    /// The names a selective `use a, b from "./m"` listed. Empty for
+    /// the whole-module form, which brings every export into scope.
+    items: []const ImportItem = &.{},
+    /// Fused offset of the `use` directive's one-byte sentinel, so a
+    /// diagnostic about the import lands on the line that wrote it.
+    /// The directive itself is elided from the fused buffer.
+    site: u32 = 0,
+};
+
+/// One name in a selective import. Both slices borrow the interned
+/// source, which outlives the fuse.
+pub const ImportItem = struct {
+    /// The name as the target module declares it.
+    name: []const u8,
+    /// The name it is bound to in the importer, when `as` renamed it.
+    alias: ?[]const u8 = null,
 };
 
 /// Resolves a fused-source offset back to `(file, file_offset)`.
@@ -221,6 +237,7 @@ pub const FusedSource = struct {
         self.allocator.free(self.errors);
         // Keys/values borrow the source buffers — only free the table.
         self.import_aliases.deinit(self.allocator);
+        for (self.imports) |e| self.allocator.free(e.items);
         self.allocator.free(self.imports);
     }
 
@@ -634,7 +651,7 @@ fn processSource(
             // declaration for them. The fused length here equals the
             // sentinel offset appended below, so a duplicate-alias
             // diagnostic maps back to this `use` line.
-            try collectAliases(ctx, code, @intCast(ctx.fused.items.len));
+            const items = try collectItems(ctx, code, @intCast(ctx.fused.items.len));
             const seg_file_end: u32 = @intCast(line_start);
             if (seg_file_end > seg_file_start) {
                 try ctx.source_map.appendRegion(
@@ -657,7 +674,14 @@ fn processSource(
             );
             const this_dir = include_paths.dirname(pathKind(ctx), canonical) orelse ".";
             if (try resolveOne(ctx, target, this_dir, depth + 1, sentinel_start)) |target_id| {
-                try ctx.imports.append(ctx.allocator, .{ .from = file_id, .to = target_id });
+                try ctx.imports.append(ctx.allocator, .{
+                    .from = file_id,
+                    .to = target_id,
+                    .items = items,
+                    .site = sentinel_start,
+                });
+            } else {
+                ctx.allocator.free(items);
             }
             const after_newline = if (i < content.len) i + 1 else i;
             seg_file_start = @intCast(after_newline);
@@ -750,24 +774,31 @@ fn matchUseQuotedLine(line: []const u8) ?[]const u8 {
 /// no items, so nothing is recorded. Name/alias slices borrow `line`
 /// (interned source, stable for the fuse). A repeated alias key takes
 /// the last binding.
-fn collectAliases(ctx: *Context, line: []const u8, site_offset: u32) ResolveError!void {
+fn collectItems(ctx: *Context, line: []const u8, site_offset: u32) ResolveError![]const ImportItem {
     var i: usize = 0;
     while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
     const kw = "use";
-    if (i + kw.len > line.len or !std.mem.eql(u8, line[i .. i + kw.len], kw)) return;
+    if (i + kw.len > line.len or !std.mem.eql(u8, line[i .. i + kw.len], kw)) return &.{};
     i += kw.len;
     while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
-    // Aliases only appear in the selective form, ahead of `from`.
-    const from_off = findKeyword(line[i..], "from") orelse return;
-    const items = line[i .. i + from_off];
+    // A name list only appears in the selective form, ahead of `from`.
+    const from_off = findKeyword(line[i..], "from") orelse return &.{};
+    const listed = line[i .. i + from_off];
 
-    var it = std.mem.splitScalar(u8, items, ',');
+    var out: std.ArrayList(ImportItem) = .empty;
+    errdefer out.deinit(ctx.allocator);
+    var it = std.mem.splitScalar(u8, listed, ',');
     while (it.next()) |raw| {
         const item = std.mem.trim(u8, raw, " \t");
-        const as_off = findKeyword(item, "as") orelse continue;
+        if (item.len == 0) continue;
+        const as_off = findKeyword(item, "as") orelse {
+            try out.append(ctx.allocator, .{ .name = item });
+            continue;
+        };
         const name = std.mem.trim(u8, item[0..as_off], " \t");
         const alias = std.mem.trim(u8, item[as_off + "as".len ..], " \t");
         if (name.len == 0 or alias.len == 0) continue;
+        try out.append(ctx.allocator, .{ .name = name, .alias = alias });
         const gop = try ctx.import_aliases.getOrPut(ctx.allocator, alias);
         // Re-binding the same alias to the same target is a harmless
         // repeat; to a different one is an ambiguous import.
@@ -776,6 +807,7 @@ fn collectAliases(ctx: *Context, line: []const u8, site_offset: u32) ResolveErro
         }
         gop.value_ptr.* = name;
     }
+    return out.toOwnedSlice(ctx.allocator);
 }
 
 // ---------- tests ----------
