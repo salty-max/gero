@@ -1,0 +1,37 @@
+# {name}
+
+A gero project. The entry point is `src/main.gr` — a Gero source
+file, built to a `.gx` cartridge by `gero build`.
+
+## Build
+
+```bash
+gero build                    # → out/debug/{name}.gx
+gero build --release          # → out/release/{name}.gx
+gero run out/debug/{name}.gx
+```
+
+## Test
+
+Tests live under `tests/` as `@test` defs. `gero test` collects
+them, runs each on a fresh VM, and reports the ones whose `assert`
+does not hold.
+
+```bash
+gero test                     # every @test under tests/
+gero test double              # only tests whose name matches
+```
+
+## Check + format
+
+```bash
+gero check                    # type-check without building
+gero fmt                      # rewrite to canonical form
+gero fmt --check              # fail if anything would change (CI)
+```
+
+## Editor setup
+
+Syntax highlighting, diagnostics and navigation are covered in the
+upstream tooling guide:
+<https://github.com/salty-max/gero/blob/main/docs/tooling.md>

@@ -1,0 +1,13 @@
+-- smoke.gr — a starting test.
+--
+-- `gero test` collects every `@test` def under tests/, runs each on
+-- a fresh VM, and fails the ones whose `assert` does not hold.
+-- Treat this as a template — add real tests as your project grows.
+def double(n: i16) -> i16
+  return n * 2
+end
+
+@test
+def double_scales_its_input()
+  assert(double(21) == 42, "double(21) should be 42")
+end

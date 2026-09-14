@@ -89,10 +89,10 @@ pub const Options = struct {
     /// integrations can surface warnings without blocking the
     /// build; CI gates set this for zero-warning policies.
     werror: bool = false,
-    /// `--lang=<gas|gr>` for `gero fmt --stdin` — selects the
+    /// `--lang=<gas|gr>`. `gero fmt --stdin` selects the
     /// front-end for piped source. Ignored outside stdin mode, where
     /// the file extension decides. Defaults to `gas`.
-    lang: Lang = .gas,
+    lang: ?Lang = null,
     /// `--iter=N` — iterations per benchmark. `null` uses the
     /// command's default.
     iter: ?u32 = null,
@@ -213,14 +213,15 @@ fn commandIsImplemented(cmd: Command) bool {
 
 /// ANSI helpers used only inside the help text. Kept inline so
 /// `cli.zig` doesn't have to pull in the asm-side `Style` struct.
-const HelpAnsi = struct {
+/// The palette help text and the scaffold wizard share.
+pub const HelpAnsi = struct {
     bold: []const u8,
     dim: []const u8,
     cyan: []const u8,
     yellow: []const u8,
     reset: []const u8,
 
-    fn pick(color: bool) HelpAnsi {
+    pub fn pick(color: bool) HelpAnsi {
         return if (color) .{
             .bold = "\x1b[1m",
             .dim = "\x1b[2m",
@@ -445,7 +446,7 @@ fn flagHelpLine(kind: FlagKind) FlagHelpLine {
         .format => .{ .sig = "--format=<m>", .desc = "human (default) / json. JSON output suppresses human messages." },
         .target => .{ .sig = "--target=<m>", .desc = "vm (default) / gtx-16. Overrides manifest's [package].target." },
         .werror => .{ .sig = "--werror", .desc = "Treat warnings as errors (escalates exit code to 4)." },
-        .lang => .{ .sig = "--lang=<l>", .desc = "gas (default) / gr. Picks the front-end for --stdin (paths use the extension)." },
+        .lang => .{ .sig = "--lang=<l>", .desc = "gas / gr. Scaffolds that language (new/init), or picks the front-end for --stdin." },
         .iter => .{ .sig = "--iter=<N>", .desc = "Iterations per benchmark (default 1000)." },
     };
 }
@@ -462,8 +463,8 @@ fn flagsForCommand(cmd: Command) []const FlagKind {
         .test_ => &.{ .help, .verbose, .color, .no_color },
         .check => &.{ .help, .format, .werror, .quiet, .verbose, .color, .no_color },
         .fmt => &.{ .help, .check, .stdin, .lang, .quiet, .color, .no_color },
-        .new => &.{ .help, .quiet, .color, .no_color },
-        .init => &.{ .help, .quiet, .color, .no_color },
+        .new => &.{ .help, .lang, .quiet, .color, .no_color },
+        .init => &.{ .help, .lang, .quiet, .color, .no_color },
         .build => &.{ .help, .target, .quiet, .verbose, .color, .no_color },
         .repl => &.{ .help, .color, .no_color },
         .lsp => &.{ .help, .stdio, .color, .no_color },
@@ -531,7 +532,8 @@ fn accepts(cmd: Command, kind: FlagKind) bool {
         .out => cmd == .asm_ or cmd == .compile,
         .optimize => cmd == .compile,
         .iter => cmd == .bench,
-        .check, .stdin, .lang => cmd == .fmt,
+        .check, .stdin => cmd == .fmt,
+        .lang => cmd == .fmt or cmd == .new or cmd == .init,
         .format, .werror => cmd == .check,
         .target => cmd == .build,
         .bank, .show_bytes, .no_show_bytes, .check_roundtrip => cmd == .disasm,
@@ -852,10 +854,10 @@ test "parse: -- terminator captures trailing positionals" {
 test "parse: a flag belonging to another subcommand is refused" {
     // The parser resolves names against one table for the whole CLI,
     // so every one of these parses. Accepting them means the flag is
-    // silently dropped — `gero init --lang=gr` scaffolding an asm
-    // project is the case that made this visible.
+    // silently dropped: `gero build --optimize=release` reads like it
+    // would pick the profile, which `[build].optimize` owns instead.
     const cases = [_]struct { cmd: []const u8, flag: []const u8 }{
-        .{ .cmd = "init", .flag = "--lang=gr" },
+        .{ .cmd = "build", .flag = "--optimize=release" },
         .{ .cmd = "new", .flag = "--check" },
         .{ .cmd = "check", .flag = "--stdin" },
         .{ .cmd = "disasm", .flag = "--lang=gr" },
@@ -872,10 +874,10 @@ test "parse: the refusal names the flag and the subcommand" {
     // A reader has to know both to act: the flag is not a typo, it
     // belongs somewhere else.
     var diag: Diagnostic = .{};
-    const args = [_][]const u8{ "init", "--lang=gr" };
+    const args = [_][]const u8{ "build", "--optimize=release" };
     try testing.expectError(error.FlagNotForCommand, parseWithDiagnostic(&args, &diag));
-    try testing.expectEqualStrings("--lang=gr", diag.bad_token.?);
-    try testing.expectEqual(Command.init, diag.bad_command.?);
+    try testing.expectEqualStrings("--optimize=release", diag.bad_token.?);
+    try testing.expectEqual(Command.build, diag.bad_command.?);
 }
 
 test "parse: a flag every subcommand takes is accepted under any of them" {
@@ -928,12 +930,22 @@ test "parse: --optimize=release accepted" {
     try testing.expectEqual(Optimize.release, p.options.optimize);
 }
 
-test "parse: --lang defaults to gas, --lang=gr selects the lang front-end" {
+test "parse: --lang is absent until given, and carries its value" {
+    // Absent has to be distinguishable from `gas`: `fmt --stdin`
+    // treats the absence as `gas`, while `new` / `init` ask rather
+    // than assume.
     const default_p = try parse(&[_][]const u8{ "fmt", "--stdin" });
-    try testing.expectEqual(Lang.gas, default_p.options.lang);
+    try testing.expect(default_p.options.lang == null);
 
     const gr_p = try parse(&[_][]const u8{ "fmt", "--stdin", "--lang=gr" });
-    try testing.expectEqual(Lang.gr, gr_p.options.lang);
+    try testing.expectEqual(Lang.gr, gr_p.options.lang.?);
+}
+
+test "parse: `new` and `init` take --lang" {
+    const n = try parse(&[_][]const u8{ "new", "my-cart", "--lang=gr" });
+    try testing.expectEqual(Lang.gr, n.options.lang.?);
+    const i = try parse(&[_][]const u8{ "init", "--lang=gas" });
+    try testing.expectEqual(Lang.gas, i.options.lang.?);
 }
 
 test "parse: --lang with an unknown value errors" {
