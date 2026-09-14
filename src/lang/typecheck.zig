@@ -1299,6 +1299,13 @@ pub const Checker = struct {
         var origin: std.AutoHashMapUnmanaged(u32, u16) = .{};
         for (g.imports) |edge| {
             if (edge.from >= self.module_scopes.len or edge.to >= self.module_scopes.len) continue;
+            // `use a, b from "./m"` binds `a` and `b` and nothing else
+            // (§5.2). The whole-module form lists nothing and takes
+            // every export.
+            if (edge.items.len > 0) {
+                try self.linkSelective(edge);
+                continue;
+            }
             var it = self.module_scopes[edge.to].entries.iterator();
             while (it.next()) |e| {
                 const name = e.key_ptr.*;
@@ -1321,6 +1328,36 @@ pub const Checker = struct {
                 };
                 try origin.put(self.arena, key, edge.to);
             }
+        }
+    }
+
+    /// Bind only the names a selective `use` listed, under their alias
+    /// where one was given.
+    ///
+    /// A name the target does not export is `E_USE_UNDEFINED_MEMBER`:
+    /// the import says what it expects to find, so a target that
+    /// renamed or removed the name is caught at the `use` rather than
+    /// at whatever line happened to call it.
+    fn linkSelective(self: *Checker, edge: include_mod.ImportEdge) WalkError!void {
+        for (edge.items) |item| {
+            const exported = !self.local_names[edge.to].contains(item.name);
+            const info = if (exported) self.module_scopes[edge.to].entries.get(item.name) else null;
+            if (info == null) {
+                const msg = try std.fmt.allocPrint(
+                    self.arena,
+                    "module does not export `{s}`",
+                    .{item.name},
+                );
+                try self.emitSpan("E_USE_UNDEFINED_MEMBER", .{ .start = edge.site, .end = edge.site }, msg);
+                continue;
+            }
+            const bound = item.alias orelse item.name;
+            // A local declaration of the same name wins (§5.1), which
+            // `define` reports as a clash; there is nothing to say.
+            self.module_scopes[edge.from].define(bound, info.?) catch |err| switch (err) {
+                error.AlreadyDefined => {},
+                error.OutOfMemory => return error.OutOfMemory,
+            };
         }
     }
 

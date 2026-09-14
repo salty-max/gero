@@ -63,6 +63,36 @@ pub const ModuleFixture = struct {
         return tmpPath(self.alloc, &self.tmp, name);
     }
 
+    /// Check `entry` with its `use` graph and append every diagnostic
+    /// code it produced to `out`. For tests about what the import
+    /// graph accepts, where the program need not run.
+    ///
+    /// Caller frees each appended code.
+    pub fn collectCodes(
+        self: *ModuleFixture,
+        entry: []const u8,
+        out: *std.ArrayList([]const u8),
+    ) !void {
+        const path = try self.pathOf(entry);
+        defer self.alloc.free(path);
+
+        var fused = try gero.lang.resolveUseImports(std.testing.io, self.alloc, path);
+        defer fused.deinit();
+        for (fused.errors) |e| try out.append(self.alloc, try self.alloc.dupe(u8, gero.lang.includeErrorCode(e.kind)));
+
+        var stream = try gero.lang.tokenize(self.alloc, fused.source);
+        defer stream.deinit();
+        var tree = try gero.lang.parse(self.alloc, fused.source, stream);
+        defer tree.deinit();
+
+        var checked = try gero.lang.typecheckGraph(self.alloc, fused.source, &tree.program, &fused.import_aliases, .{
+            .source_map = &fused.source_map,
+            .imports = fused.imports,
+        });
+        defer checked.deinit();
+        for (checked.diagnostics) |d| try out.append(self.alloc, try self.alloc.dupe(u8, d.code));
+    }
+
     /// Compile `entry` with its `use` graph and run it, asserting on
     /// what the program printed.
     pub fn expectRuns(self: *ModuleFixture, entry: []const u8, expected: []const u8) !void {

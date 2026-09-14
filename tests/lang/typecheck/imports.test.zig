@@ -128,3 +128,186 @@ test "imports: an import a local shadows everywhere is reported" {
     try std.testing.expectEqual(@as(usize, 1), got.items.len);
     try std.testing.expectEqualStrings("unused import `max`", got.items[0]);
 }
+
+// ---------- selective imports from a project file (§5.2) ----------
+
+const util = @import("util");
+
+/// `true` when `codes` holds `want`.
+fn has(codes: []const []const u8, want: []const u8) bool {
+    for (codes) |c| if (std.mem.eql(u8, c, want)) return true;
+    return false;
+}
+
+fn freeCodes(out: *std.ArrayList([]const u8)) void {
+    for (out.items) |c| alloc.free(c);
+    out.deinit(alloc);
+}
+
+test "imports: a selective import binds only the names it lists" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\struct Vec2
+        \\  x: i16
+        \\end
+        \\def zero() -> i16
+        \\  return 0
+        \\end
+        \\
+    );
+    // `zero` is never imported, so naming it must not resolve.
+    try fx.write("main.gr",
+        \\use Vec2 from "./lib"
+        \\def main()
+        \\  let v: Vec2 = Vec2 { x: 1 }
+        \\  print v.x + zero()
+        \\end
+        \\
+    );
+
+    var codes: std.ArrayList([]const u8) = .empty;
+    defer freeCodes(&codes);
+    try fx.collectCodes("main.gr", &codes);
+    try std.testing.expect(has(codes.items, "E_UNDEFINED_SYMBOL"));
+}
+
+test "imports: a whole-module import brings every export into scope" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\def zero() -> i16
+        \\  return 0
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use "./lib"
+        \\def main()
+        \\  print zero()
+        \\end
+        \\
+    );
+
+    var codes: std.ArrayList([]const u8) = .empty;
+    defer freeCodes(&codes);
+    try fx.collectCodes("main.gr", &codes);
+    try std.testing.expectEqual(@as(usize, 0), codes.items.len);
+}
+
+test "imports: importing a name the target does not export is rejected" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\def zero() -> i16
+        \\  return 0
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use nope from "./lib"
+        \\def main()
+        \\  print 1
+        \\end
+        \\
+    );
+
+    var codes: std.ArrayList([]const u8) = .empty;
+    defer freeCodes(&codes);
+    try fx.collectCodes("main.gr", &codes);
+    try std.testing.expect(has(codes.items, "E_USE_UNDEFINED_MEMBER"));
+}
+
+test "imports: importing a `local` declaration is rejected" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\local def hidden() -> i16
+        \\  return 0
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use hidden from "./lib"
+        \\def main()
+        \\  print 1
+        \\end
+        \\
+    );
+
+    var codes: std.ArrayList([]const u8) = .empty;
+    defer freeCodes(&codes);
+    try fx.collectCodes("main.gr", &codes);
+    try std.testing.expect(has(codes.items, "E_USE_UNDEFINED_MEMBER"));
+}
+
+test "imports: a rename binds the alias and not the original name" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\def zero() -> i16
+        \\  return 0
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use zero as nought from "./lib"
+        \\def main()
+        \\  print nought()
+        \\  print zero()
+        \\end
+        \\
+    );
+
+    var codes: std.ArrayList([]const u8) = .empty;
+    defer freeCodes(&codes);
+    try fx.collectCodes("main.gr", &codes);
+    // `nought` resolves; the original `zero` no longer does.
+    try std.testing.expect(has(codes.items, "E_UNDEFINED_SYMBOL"));
+}
+
+test "imports: a selective project import nothing references is reported" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\def zero() -> i16
+        \\  return 0
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use zero from "./lib"
+        \\def main()
+        \\  print 1
+        \\end
+        \\
+    );
+
+    var codes: std.ArrayList([]const u8) = .empty;
+    defer freeCodes(&codes);
+    try fx.collectCodes("main.gr", &codes);
+    try std.testing.expect(has(codes.items, "W_UNUSED_IMPORT"));
+}
+
+test "imports: a selective project import that is used is not reported" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\def zero() -> i16
+        \\  return 0
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use zero from "./lib"
+        \\def main()
+        \\  print zero()
+        \\end
+        \\
+    );
+
+    var codes: std.ArrayList([]const u8) = .empty;
+    defer freeCodes(&codes);
+    try fx.collectCodes("main.gr", &codes);
+    try std.testing.expectEqual(@as(usize, 0), codes.items.len);
+}
