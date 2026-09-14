@@ -360,16 +360,18 @@ pub fn commandHelp(out: *std.Io.Writer, cmd: Command, color: bool) std.Io.Writer
             try out.print("  {s}gero lsp{s}                        {s}# what an editor's LSP client runs{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
         },
         .new => {
-            try out.print("  {s}gero new{s} <name> [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("  {s}gero new{s} <name> [--lang=<gas|gr>] [--quiet]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
-            try out.print("  {s}gero new my-cart{s}                {s}# scaffold ./my-cart with src/, tests/, gero.toml{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
-            try out.print("  {s}gero new my-cart --quiet{s}        {s}# suppress the next-steps banner{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero new my-cart --lang=gr{s}      {s}# scaffold ./my-cart as a Gero project{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero new my-cart --lang=gas{s}     {s}# scaffold ./my-cart as an asm project{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero new my-cart{s}                {s}# ask which, when run from a terminal{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("\nFor an in-place scaffold (cwd as the project root), see {s}gero init{s}.\n", .{ a.cyan, a.reset });
         },
         .init => {
-            try out.print("  {s}gero init{s} [--quiet]\n\n", .{ a.cyan, a.reset });
+            try out.print("  {s}gero init{s} [--lang=<gas|gr>] [--quiet]\n\n", .{ a.cyan, a.reset });
             try out.print("{s}EXAMPLES{s}\n", .{ a.yellow, a.reset });
-            try out.print("  {s}gero init{s}                       {s}# scaffold into the current directory (name = its basename){s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero init --lang=gr{s}             {s}# scaffold Gero into the current directory{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
+            try out.print("  {s}gero init{s}                       {s}# ask which, when run from a terminal{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("  {s}gero init --quiet{s}               {s}# suppress the next-steps banner{s}\n", .{ a.cyan, a.reset, a.dim, a.reset });
             try out.print("\nRefuses to overwrite any pre-existing gero.toml / src/ / tests/ files.\n", .{});
         },
