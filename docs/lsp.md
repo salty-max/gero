@@ -160,15 +160,22 @@ in canonical form likewise produces no edits.
 `gero` is not in `lspconfig`'s registry, so define the server:
 
 ```lua
-vim.filetype.add({ extension = { gr = "gero", gas = "geroasm" } })
+vim.filetype.add({ extension = { gr = "gero_lang", gas = "gero_asm" } })
 
 vim.lsp.config["gero"] = {
   cmd = { "gero", "lsp" },
-  filetypes = { "gero", "geroasm" },
-  root_markers = { "gero.toml", ".git" },
+  filetypes = { "gero_lang", "gero_asm" },
+  root_markers = { "gero.toml", "build.zig", ".git" },
 }
 vim.lsp.enable("gero")
 ```
+
+The filetype names match the tree-sitter parser names on purpose —
+`vim.treesitter.start()` looks a parser up by filetype, so `gero_lang`
+the filetype and `gero_lang.so` the parser have to agree. Registering
+them under different names in [`tooling.md` §2.2](tooling.md) and here
+would leave whichever call ran second in charge, and the other feature
+silently off.
 
 Format on save:
 

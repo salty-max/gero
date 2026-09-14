@@ -160,10 +160,27 @@ return {
     end,
     init = function()
       vim.filetype.add({ extension = { gas = "gero_asm" } })
+      -- nvim-treesitter's `main` branch does not start
+      -- highlighting for you, and a parser outside its
+      -- registry would not be started in any case.
+      vim.api.nvim_create_autocmd("FileType", {
+        pattern = "gero_asm",
+        callback = function(args)
+          pcall(vim.treesitter.start, args.buf)
+          vim.bo[args.buf].commentstring = "; %s"
+        end,
+      })
     end,
   },
 }
 ```
+
+The filetype name and the parser name have to match:
+`vim.treesitter.start()` looks a parser up by the buffer's filetype, so
+`gero_asm` the filetype finds `gero_asm.so` the parser. The `gero lsp`
+setup in [`lsp.md` §5](lsp.md) registers the same names for the same
+reason — two different spellings would leave whichever ran second in
+charge and the other feature silently off.
 
 Then in any `.gas` buffer:
 
@@ -227,6 +244,16 @@ return {
     end,
     init = function()
       vim.filetype.add({ extension = { gr = "gero_lang" } })
+      -- nvim-treesitter's `main` branch does not start
+      -- highlighting for you, and a parser outside its
+      -- registry would not be started in any case.
+      vim.api.nvim_create_autocmd("FileType", {
+        pattern = "gero_lang",
+        callback = function(args)
+          pcall(vim.treesitter.start, args.buf)
+          vim.bo[args.buf].commentstring = "-- %s"
+        end,
+      })
     end,
   },
 }
