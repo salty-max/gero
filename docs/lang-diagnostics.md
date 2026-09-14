@@ -1060,8 +1060,11 @@ Schema (mirrors `apps/gero-cli/diagnostics.zig::printJsonReport`):
       "severity": "error",
       "code": "E_TYPE_MISMATCH",
       "message": "type mismatch",
+      "end_line": 12,
+      "end_col": 25,
       "span": { "start": 234, "end": 241 },
       "help": "convert with `... as i16` or use a literal",
+      "suggestion": "hp",
       "notes": [
         {
           "file": "src/foo.gr",
@@ -1076,6 +1079,20 @@ Schema (mirrors `apps/gero-cli/diagnostics.zig::printJsonReport`):
   "files_failed": 1
 }
 ```
+
+`file`, `line`, `column`, `severity`, `code` and `message` are always
+present. The rest appear when the diagnostic carries them:
+
+- `end_line` / `end_col` — the span's far end in line/column terms,
+  for an editor underlining a range.
+- `span` — the same range as byte offsets into the file, for a tool
+  that indexes by offset rather than by line.
+- `help` — the `help:` line, when there is one. Both front-ends use
+  this key.
+- `suggestion` — the name `help` names, kept as itself so a tool can
+  apply the fix without parsing English (§4.3).
+- `notes` — one entry per secondary span, each located in its own
+  file.
 
 Rules:
 
