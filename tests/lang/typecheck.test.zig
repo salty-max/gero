@@ -2928,6 +2928,80 @@ fn expectNoSuggestion(source: []const u8, code: []const u8) !void {
     try std.testing.expect(saw_code);
 }
 
+/// Assert the named diagnostic carries `suggestion` as the bare name,
+/// not only inside the `help:` prose. A quick-fix replaces the span
+/// with exactly this string.
+fn expectSuggestionField(source: []const u8, code: []const u8, candidate: []const u8) !void {
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    for (checked.diagnostics) |d| {
+        if (!std.mem.eql(u8, d.code, code)) continue;
+        const got = d.suggestion orelse continue;
+        if (std.mem.eql(u8, got, candidate)) return;
+    }
+    return error.MissingSuggestion;
+}
+
+test "typecheck/suggest: an undefined symbol names its candidate as itself" {
+    try expectSuggestionField(
+        \\def main()
+        \\  let helo: i16 = 0
+        \\  let x: i16 = helllo
+        \\end
+    , "E_UNDEFINED_SYMBOL", "helo");
+}
+
+test "typecheck/suggest: an undefined field names its candidate as itself" {
+    try expectSuggestionField(
+        \\struct Stats
+        \\  hp: i16
+        \\end
+        \\
+        \\def main()
+        \\  let s: Stats = Stats { hp: 10 }
+        \\  let n: i16 = s.hpp
+        \\end
+    , "E_TYPE_UNDEFINED_FIELD", "hp");
+}
+
+test "typecheck/suggest: an undefined type names its candidate as itself" {
+    try expectSuggestionField(
+        \\class Player end
+        \\
+        \\def main()
+        \\  let p: Playr = Player()
+        \\end
+    , "E_TYPE_UNDEFINED", "Player");
+}
+
+test "typecheck/suggest: no candidate leaves the suggestion empty" {
+    const source =
+        \\def main()
+        \\  let aaaa: i16 = 0
+        \\  let x: i16 = zzzzzz
+        \\end
+    ;
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+
+    var saw = false;
+    for (checked.diagnostics) |d| {
+        if (!std.mem.eql(u8, d.code, "E_UNDEFINED_SYMBOL")) continue;
+        saw = true;
+        try std.testing.expect(d.suggestion == null);
+    }
+    try std.testing.expect(saw);
+}
+
 test "typecheck/suggest: undefined ident with a close-spelling local" {
     try expectSuggestion(
         \\def main()

@@ -394,3 +394,126 @@ fn namedOf(t: gero.lang.types.Type) ?[]const u8 {
         else => null,
     };
 }
+
+// ---------- code actions ----------
+
+/// One quick-fix the editor can offer: a title to show, and the range
+/// plus replacement text that applies it.
+pub const CodeAction = struct {
+    title: []const u8,
+    /// The diagnostic this fixes, so the editor can pair them.
+    diagnostic: analysis.Diagnostic,
+    /// Text that replaces `diagnostic`'s range.
+    new_text: []const u8,
+};
+
+/// Quick-fixes for every diagnostic in `diags` that overlaps the
+/// requested range and names a replacement.
+///
+/// The fix is the checker's own `suggestion` — the name it already
+/// decided on when it wrote `did you mean …?`. Nothing here guesses at
+/// a correction, so a code action can never disagree with the
+/// diagnostic that offered it.
+pub fn codeActionsAt(
+    arena: std.mem.Allocator,
+    diags: []const analysis.Diagnostic,
+    start: Position,
+    end: Position,
+) std.mem.Allocator.Error![]const CodeAction {
+    var out: std.ArrayList(CodeAction) = .empty;
+    for (diags) |d| {
+        const name = d.suggestion orelse continue;
+        if (!overlaps(d, start, end)) continue;
+        try out.append(arena, .{
+            .title = try std.fmt.allocPrint(arena, "Change to `{s}`", .{name}),
+            .diagnostic = d,
+            .new_text = name,
+        });
+    }
+    return out.toOwnedSlice(arena);
+}
+
+/// Whether a diagnostic's range intersects `start`..`end`. An editor
+/// asks with the selection, which is usually an empty range at the
+/// cursor, so touching at an endpoint counts.
+fn overlaps(d: analysis.Diagnostic, start: Position, end: Position) bool {
+    return !before(d.end_line, d.end_character, start.line, start.character) and
+        !before(end.line, end.character, d.line, d.character);
+}
+
+fn before(l0: u32, c0: u32, l1: u32, c1: u32) bool {
+    return l0 < l1 or (l0 == l1 and c0 < c1);
+}
+
+fn diagAt(l0: u32, c0: u32, c1: u32, suggestion: ?[]const u8) analysis.Diagnostic {
+    return .{
+        .line = l0,
+        .character = c0,
+        .end_line = l0,
+        .end_character = c1,
+        .severity = 1,
+        .code = "E_UNDEFINED_SYMBOL",
+        .message = "undefined symbol",
+        .suggestion = suggestion,
+    };
+}
+
+test "codeActionsAt: a diagnostic with a suggestion offers replacing its own range" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, "helo")};
+    const actions = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 17 }, .{ .line = 2, .character = 17 });
+    try std.testing.expectEqual(@as(usize, 1), actions.len);
+    try std.testing.expectEqualStrings("helo", actions[0].new_text);
+    try std.testing.expectEqualStrings("Change to `helo`", actions[0].title);
+    try std.testing.expectEqual(@as(u32, 15), actions[0].diagnostic.character);
+}
+
+test "codeActionsAt: a diagnostic the checker had no candidate for offers nothing" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, null)};
+    const actions = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 17 }, .{ .line = 2, .character = 17 });
+    try std.testing.expectEqual(@as(usize, 0), actions.len);
+}
+
+test "codeActionsAt: a diagnostic elsewhere in the file is not offered" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, "helo")};
+    const actions = try codeActionsAt(arena, &diags, .{ .line = 5, .character = 0 }, .{ .line = 5, .character = 4 });
+    try std.testing.expectEqual(@as(usize, 0), actions.len);
+}
+
+test "codeActionsAt: a caret resting on either end of the span still matches" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const diags = [_]analysis.Diagnostic{diagAt(2, 15, 21, "helo")};
+    const at_start = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 15 }, .{ .line = 2, .character = 15 });
+    try std.testing.expectEqual(@as(usize, 1), at_start.len);
+    const at_end = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 21 }, .{ .line = 2, .character = 21 });
+    try std.testing.expectEqual(@as(usize, 1), at_end.len);
+    const past_end = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 22 }, .{ .line = 2, .character = 22 });
+    try std.testing.expectEqual(@as(usize, 0), past_end.len);
+}
+
+test "codeActionsAt: a selection spanning several typos offers a fix for each" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const diags = [_]analysis.Diagnostic{
+        diagAt(2, 15, 21, "helo"),
+        diagAt(3, 4, 8, "total"),
+    };
+    const actions = try codeActionsAt(arena, &diags, .{ .line = 2, .character = 0 }, .{ .line = 3, .character = 20 });
+    try std.testing.expectEqual(@as(usize, 2), actions.len);
+}

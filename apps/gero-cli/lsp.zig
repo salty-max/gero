@@ -278,6 +278,8 @@ fn handleMessage(
         try onInlayHint(arena, server, stdout, req.body, req.id);
     } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
         try onCompletion(arena, server, stdout, req.body, req.id);
+    } else if (std.mem.eql(u8, req.method, "textDocument/codeAction")) {
+        try onCodeAction(io, arena, server, stdout, req.body, req.id);
     } else if (req.id != null) {
         // An unknown request still needs an answer or the client
         // blocks; an unknown notification carries no id and needs none.
@@ -319,6 +321,15 @@ fn replyInitialize(arena: std.mem.Allocator, stdout: *std.Io.Writer, id: ?std.js
     // so the client asks when the user is typing one.
     try jw.objectField("completionProvider");
     try jw.beginObject();
+    try jw.endObject();
+    // Quick-fixes only — every action here rewrites one diagnostic's
+    // span to the name the checker already suggested.
+    try jw.objectField("codeActionProvider");
+    try jw.beginObject();
+    try jw.objectField("codeActionKinds");
+    try jw.beginArray();
+    try jw.write("quickfix");
+    try jw.endArray();
     try jw.endObject();
     try jw.endObject();
     try jw.objectField("serverInfo");
@@ -408,6 +419,25 @@ fn requestPosition(msg: std.json.ObjectMap) ?symbols.Position {
     const p = objectAt(msg, &.{ "params", "position" }) orelse return null;
     const line = p.get("line") orelse return null;
     const ch = p.get("character") orelse return null;
+    if (line != .integer or ch != .integer) return null;
+    // @as: an editor's line and column, bounded by the file.
+    return .{ .line = @intCast(line.integer), .character = @intCast(ch.integer) };
+}
+
+/// The `params.range` an editor sends with a request scoped to a
+/// selection rather than to a caret.
+fn requestRange(msg: std.json.ObjectMap) ?struct { start: symbols.Position, end: symbols.Position } {
+    const r = objectAt(msg, &.{ "params", "range" }) orelse return null;
+    const a = positionIn(r, "start") orelse return null;
+    const b = positionIn(r, "end") orelse return null;
+    return .{ .start = a, .end = b };
+}
+
+fn positionIn(obj: std.json.ObjectMap, key: []const u8) ?symbols.Position {
+    const v = obj.get(key) orelse return null;
+    if (v != .object) return null;
+    const line = v.object.get("line") orelse return null;
+    const ch = v.object.get("character") orelse return null;
     if (line != .integer or ch != .integer) return null;
     // @as: an editor's line and column, bounded by the file.
     return .{ .line = @intCast(line.integer), .character = @intCast(ch.integer) };
@@ -671,6 +701,100 @@ fn kindText(k: gero.lang.scope.SymbolKind) []const u8 {
     };
 }
 
+/// Answer `textDocument/codeAction` with the quick-fixes for the
+/// diagnostics under the editor's selection.
+///
+/// The document is re-analyzed rather than served from what was last
+/// published: the client sends its own copy of the diagnostics in
+/// `context`, and trusting those would mean applying a fix computed
+/// against text the user has since edited.
+fn onCodeAction(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    server: *Server,
+    stdout: *std.Io.Writer,
+    msg: std.json.ObjectMap,
+    id: ?std.json.Value,
+) !void {
+    const uri = docUri(msg) orelse return replyNull(arena, stdout, id);
+    const text = server.docs.get(uri) orelse return replyNull(arena, stdout, id);
+    const lang = analysis.langOf(uri) orelse return replyNull(arena, stdout, id);
+    if (lang != .gr) return replyNull(arena, stdout, id);
+    const range = requestRange(msg) orelse return replyNull(arena, stdout, id);
+
+    var ov = try server.overlay(io, arena);
+    defer ov.deinit(arena);
+    const result = analysis.diagnose(io, arena, lang, uri, text, &ov) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        // The document names a file that cannot be read — nothing to fix.
+        else => return replyNull(arena, stdout, id),
+    };
+
+    var mine: []const analysis.Diagnostic = &.{};
+    for (result.files) |f| {
+        if (std.mem.eql(u8, f.uri, uri)) {
+            mine = f.items;
+            break;
+        }
+    }
+    const actions = try symbols.codeActionsAt(arena, mine, range.start, range.end);
+
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.beginObject();
+    try jw.objectField("jsonrpc");
+    try jw.write("2.0");
+    try writeId(&jw, id);
+    try jw.objectField("result");
+    try jw.beginArray();
+    for (actions) |a| try writeCodeAction(&jw, uri, a, actions.len == 1);
+    try jw.endArray();
+    try jw.endObject();
+    try protocol.writeMessage(stdout, out.written());
+}
+
+/// One `CodeAction` as the protocol's object, carrying the edit that
+/// applies it.
+///
+/// `preferred` marks the action an editor may apply without showing a
+/// menu. Only a lone fix earns that: with several on offer the user
+/// has a choice to make, and the protocol allows one preferred action.
+fn writeCodeAction(
+    jw: *std.json.Stringify,
+    uri: []const u8,
+    a: symbols.CodeAction,
+    preferred: bool,
+) !void {
+    const d = a.diagnostic;
+    try jw.beginObject();
+    try jw.objectField("title");
+    try jw.write(a.title);
+    try jw.objectField("kind");
+    try jw.write("quickfix");
+    try jw.objectField("isPreferred");
+    try jw.write(preferred);
+    try jw.objectField("diagnostics");
+    try jw.beginArray();
+    try writeDiagnostic(jw, d);
+    try jw.endArray();
+    try jw.objectField("edit");
+    try jw.beginObject();
+    try jw.objectField("changes");
+    try jw.beginObject();
+    try jw.objectField(uri);
+    try jw.beginArray();
+    try jw.beginObject();
+    try jw.objectField("range");
+    try writeRange(jw, d.line, d.character, d.end_line, d.end_character);
+    try jw.objectField("newText");
+    try jw.write(a.new_text);
+    try jw.endObject();
+    try jw.endArray();
+    try jw.endObject();
+    try jw.endObject();
+    try jw.endObject();
+}
+
 fn onFormatting(
     arena: std.mem.Allocator,
     server: *Server,
@@ -803,26 +927,30 @@ fn writeDiagnostics(
     try jw.write(uri);
     try jw.objectField("diagnostics");
     try jw.beginArray();
-    for (diags) |d| {
-        try jw.beginObject();
-        try jw.objectField("range");
-        try writeRange(&jw, d.line, d.character, d.end_line, d.end_character);
-        try jw.objectField("severity");
-        try jw.write(d.severity);
-        if (d.code.len > 0) {
-            try jw.objectField("code");
-            try jw.write(d.code);
-        }
-        try jw.objectField("source");
-        try jw.write("gero");
-        try jw.objectField("message");
-        try jw.write(d.message);
-        try jw.endObject();
-    }
+    for (diags) |d| try writeDiagnostic(&jw, d);
     try jw.endArray();
     try jw.endObject();
     try jw.endObject();
     try protocol.writeMessage(stdout, out.written());
+}
+
+/// One diagnostic as the protocol's object. A code action attaches the
+/// same shape, so an editor can match the fix to what it is showing.
+fn writeDiagnostic(jw: *std.json.Stringify, d: analysis.Diagnostic) !void {
+    try jw.beginObject();
+    try jw.objectField("range");
+    try writeRange(jw, d.line, d.character, d.end_line, d.end_character);
+    try jw.objectField("severity");
+    try jw.write(d.severity);
+    if (d.code.len > 0) {
+        try jw.objectField("code");
+        try jw.write(d.code);
+    }
+    try jw.objectField("source");
+    try jw.write("gero");
+    try jw.objectField("message");
+    try jw.write(d.message);
+    try jw.endObject();
 }
 
 // ---------- JSON helpers ----------
@@ -920,6 +1048,12 @@ const Session = struct {
     fn written(self: *Session) []const u8 {
         return self.out.written();
     }
+
+    /// Only what was written after `mark` — for a test that sends two
+    /// requests and has to tell their replies apart.
+    fn writtenSince(self: *Session, mark: usize) []const u8 {
+        return self.out.written()[mark..];
+    }
 };
 
 test "handleMessage: initialize advertises its capabilities" {
@@ -961,6 +1095,117 @@ fn openPositionDoc(s: *Session, arena: std.mem.Allocator) !void {
     try body.appendSlice(arena, out.written());
     try body.appendSlice(arena, "}}}");
     _ = try s.send(arena, body.items);
+}
+
+/// A misspelled reference with its intended name in scope, so the
+/// checker has a candidate to suggest. Opened as an `untitled:`
+/// buffer — the text is the whole program, with no import graph to
+/// resolve from disk.
+const typo_src =
+    \\def main()
+    \\  let helo: i16 = 0
+    \\  let x: i16 = helllo
+    \\  print x
+    \\end
+    \\
+;
+
+fn openTypoDoc(s: *Session, arena: std.mem.Allocator) !void {
+    var body: std.ArrayList(u8) = .empty;
+    try body.appendSlice(arena, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"untitled:t.gr\",\"languageId\":\"gero\",\"version\":1,\"text\":");
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.write(typo_src);
+    try body.appendSlice(arena, out.written());
+    try body.appendSlice(arena, "}}}");
+    _ = try s.send(arena, body.items);
+}
+
+test "handleMessage: a code action rewrites the typo to the suggested name" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openTypoDoc(&s, arena);
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/codeAction\",\"params\":{\"textDocument\":{\"uri\":\"untitled:t.gr\"},\"range\":{\"start\":{\"line\":2,\"character\":16},\"end\":{\"line\":2,\"character\":16}},\"context\":{\"diagnostics\":[]}}}");
+    const out = s.written();
+    try testing.expect(std.mem.indexOf(u8, out, "\"kind\":\"quickfix\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"title\":\"Change to `helo`\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"newText\":\"helo\"") != null);
+    // The edit must cover `helllo` alone — columns 15..21 of line 2.
+    try testing.expect(std.mem.indexOf(
+        u8,
+        out,
+        "\"range\":{\"start\":{\"line\":2,\"character\":15},\"end\":{\"line\":2,\"character\":21}},\"newText\":\"helo\"",
+    ) != null);
+}
+
+test "handleMessage: a range with no diagnostic in it yields no actions" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    try openTypoDoc(&s, arena);
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"textDocument/codeAction\",\"params\":{\"textDocument\":{\"uri\":\"untitled:t.gr\"},\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":3}},\"context\":{\"diagnostics\":[]}}}");
+    try testing.expect(std.mem.indexOf(u8, s.written(), "\"id\":6,\"result\":[]") != null);
+}
+
+/// Two misspellings on one line, so a selection covering both gets two
+/// actions and neither can be the one an editor applies unprompted.
+const two_typos_src =
+    \\def main()
+    \\  let helo: i16 = 0
+    \\  let total: i16 = 0
+    \\  let x: i16 = helllo + totl
+    \\  print x
+    \\end
+    \\
+;
+
+test "handleMessage: one fix on offer is preferred, several are not" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    var body: std.ArrayList(u8) = .empty;
+    try body.appendSlice(arena, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"untitled:two.gr\",\"languageId\":\"gero\",\"version\":1,\"text\":");
+    var out = std.Io.Writer.Allocating.init(arena);
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .minified } };
+    try jw.write(two_typos_src);
+    try body.appendSlice(arena, out.written());
+    try body.appendSlice(arena, "}}}");
+    _ = try s.send(arena, body.items);
+
+    // The whole of line 3, covering both typos.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/codeAction\",\"params\":{\"textDocument\":{\"uri\":\"untitled:two.gr\"},\"range\":{\"start\":{\"line\":3,\"character\":0},\"end\":{\"line\":3,\"character\":28}},\"context\":{\"diagnostics\":[]}}}");
+    const both = s.written();
+    try testing.expect(std.mem.indexOf(u8, both, "\"newText\":\"helo\"") != null);
+    try testing.expect(std.mem.indexOf(u8, both, "\"newText\":\"total\"") != null);
+    try testing.expect(std.mem.indexOf(u8, both, "\"isPreferred\":true") == null);
+
+    // A caret on one of them alone offers a single, preferred fix.
+    const mark = s.written().len;
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/codeAction\",\"params\":{\"textDocument\":{\"uri\":\"untitled:two.gr\"},\"range\":{\"start\":{\"line\":3,\"character\":17},\"end\":{\"line\":3,\"character\":17}},\"context\":{\"diagnostics\":[]}}}");
+    const one = s.writtenSince(mark);
+    try testing.expect(std.mem.indexOf(u8, one, "\"isPreferred\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, one, "\"newText\":\"totl\"") == null);
+}
+
+test "replyInitialize: the server advertises quickfix code actions" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var s = Session.init(testing.allocator);
+    defer s.deinit();
+
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
+    try testing.expect(std.mem.indexOf(u8, s.written(), "\"codeActionProvider\":{\"codeActionKinds\":[\"quickfix\"]}") != null);
 }
 
 test "handleMessage: definition jumps to the declaration, not the reference" {

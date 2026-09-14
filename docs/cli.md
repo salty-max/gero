@@ -694,12 +694,16 @@ Takes no positional arguments. Everything written to stdout is a
 protocol message, so anything the server needs to say about itself
 goes to stderr.
 
-Two capabilities: diagnostics (identical to what `gero check`
-reports) and formatting (identical to what `gero fmt` writes),
-for both `.gas` and `.gr`. Buffers the editor holds unsaved are
-read from memory, and changing one re-checks every open document
-that imports it — so editing a library reddens its importers
-without a save.
+Diagnostics (identical to what `gero check` reports) and
+formatting (identical to what `gero fmt` writes) are provided for
+both `.gas` and `.gr`. For `.gr` it also answers go-to-definition,
+hover, find-references, inlay hints, completion and quick-fix code
+actions, each from a table the type-checker built rather than from
+a second resolution of the same names.
+
+Buffers the editor holds unsaved are read from memory, and changing
+one re-checks every open document that imports it — so editing a
+library reddens its importers without a save.
 
 **Exit**: `0` on `shutdown` + `exit`, or when the client closes
 stdin. `1` on `exit` without `shutdown`, or a malformed header.
