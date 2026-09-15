@@ -5,6 +5,69 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.4.0 - 2026-09-15
+
+The release where the editor knows what your code means.
+
+v0.3.0 shipped a language server that reported diagnostics and
+formatted a buffer. This makes it answer questions: go-to-definition,
+hover, find-references and completion, for **both** languages — `.gr`
+from the type-checker's own binding table, `.gas` from the
+assembler's symbol table. Neither re-resolves a name the compiler
+already resolved, so an editor and a build cannot disagree about what
+a name means. Hovering a label in assembly tells you the address it
+assembled to.
+
+On top of that sits import tooling. An unresolved name says which
+module has it, completion offers names you have not imported yet and
+writes the `use` line when you accept one, an import nothing uses is
+reported, and the quick-fixes to add or remove one are a keystroke
+away. `gero new` and `gero init` finally ask which language you are
+writing rather than assuming assembly.
+
+The formatter grew up too. The Gero printer took no options at all
+and flattened every call and struct literal onto one line however
+long it ran; it now wraps what does not fit, and `gero.toml`
+configures both printers — indent, width, tabs, trailing commas,
+bracket spacing, `use` ordering and line endings.
+
+**Three breaks, each small and each deliberate.** A selective `use`
+now binds only the names it lists, where it used to leak the whole
+module — programs that reached a name they never imported stop
+compiling, and none in the example corpus did. `gero new` / `gero
+init` without `--lang` exit 2 when there is no terminal to ask,
+rather than silently scaffolding assembly. And `--format=json` emits
+the schema its own spec documents, which moves the help text from
+`note` to `help`.
+
+### Breaking
+
+- `gero check --format=json` emits its documented schema.
+- `gero new` and `gero init` scaffold either language.
+- A selective `use` from a project file binds only the names it lists.
+
+### Added
+
+- Completion offers names you have not imported, and imports them when you accept one.
+- The Gero printer takes formatting options, and `gero.toml` configures both languages.
+- An unresolved stdlib name suggests the import that would bind it, and `gero lsp` offers it as a quick-fix.
+- `gero lsp` offers quick-fix code actions for `.gr`.
+- `gero lsp` answers completion for `.gr`.
+- `gero lsp` answers go-to-definition and hover for `.gr`.
+- `gero lsp` answers go-to-definition, hover, find-references and completion for `.gas`.
+- `gero lsp` answers find-references and inlay hints for `.gr`.
+- Completion after a `.` offers the receiver's members.
+- `gero lsp` offers imports from files the document has not mentioned.
+
+### Fixed
+
+- `gero check` prints the `help:` line again.
+- A member list opens when you type the dot.
+- Opening one document no longer clears another's diagnostics.
+- `gero lsp` accepts `--stdio`.
+- `math.` completes to the functions of `math`.
+- Go-to-definition, hover and find-references work on type names.
+
 ## v0.3.0 - 2026-09-14
 
 The first release with the whole toolchain in it.
