@@ -10206,3 +10206,65 @@ test "codegen: interned print strings are data symbols, not decoded as code" {
     try std.testing.expect(std.mem.indexOf(u8, out, "data8 str_0") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "; \"Hello, gero!\"") != null);
 }
+
+test "globals: a module-level struct literal initializes its fields" {
+    // The scalar path stores through the accumulator, which holds one
+    // value; an aggregate needs its whole width moved.
+    try runAndExpect(
+        \\struct Ball
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\let ball: Ball = Ball { x: 160, y: 120 }
+        \\def main()
+        \\  print ball.x
+        \\  print ball.y
+        \\end
+        \\
+    , "160\n120\n");
+}
+
+test "globals: a module-level array initializes its elements" {
+    try runAndExpect(
+        \\let arr: [i16; 3] = [7; 3]
+        \\def main()
+        \\  print arr[0]
+        \\  print arr[2]
+        \\end
+        \\
+    , "7\n7\n");
+}
+
+test "globals: a nested aggregate lands on the right bytes" {
+    try runAndExpect(
+        \\struct V
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\struct Box
+        \\  tl: V
+        \\  size: i16
+        \\end
+        \\let b: Box = Box { tl: V { x: 3, y: 4 }, size: 9 }
+        \\def main()
+        \\  print b.tl.x
+        \\  print b.tl.y
+        \\  print b.size
+        \\end
+        \\
+    , "3\n4\n9\n");
+}
+
+test "globals: a module-level aggregate stays mutable" {
+    try runAndExpect(
+        \\struct V
+        \\  x: i16
+        \\end
+        \\let v: V = V { x: 1 }
+        \\def main()
+        \\  v.x = v.x + 100
+        \\  print v.x
+        \\end
+        \\
+    , "101\n");
+}

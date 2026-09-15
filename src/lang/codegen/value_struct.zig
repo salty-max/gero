@@ -1222,7 +1222,7 @@ fn class_storeAt(self: *Emitter, base: u8, offset: u16, width: u16, src: u8) !vo
 
 /// `reg = fp + ofs` — the address of a frame slot (`ofs` negative for
 /// locals, positive for params).
-fn frameAddrToReg(self: *Emitter, ofs: i16, reg: u8) !void {
+pub fn frameAddrToReg(self: *Emitter, ofs: i16, reg: u8) !void {
     try isa.movRegToReg(self, Reg.fp, reg);
     if (ofs < 0) {
         try isa.subImmFromReg(self, @intCast(-ofs), reg);
