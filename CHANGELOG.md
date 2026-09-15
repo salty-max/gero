@@ -5,6 +5,20 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.4.1 - 2026-09-15
+
+A submodule-pointer fix, so a clone does not depend on a dangling ref.
+
+v0.4.0 records the `editors/vscode-gero` pointer at a commit that a
+rebase-merge replaced and deleted. It still resolves — GitHub keeps
+such commits reachable through the pull-request ref for a while — so
+a v0.4.0 checkout initialises its submodules today and would stop
+once that commit is collected. Nothing else changed.
+
+### Fixed
+
+- The `editors/vscode-gero` submodule points at a commit on that repo's `main`.
+
 ## v0.4.0 - 2026-09-15
 
 The release where the editor knows what your code means.
