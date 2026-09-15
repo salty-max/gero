@@ -73,14 +73,31 @@ pub const Manifest = struct {
         cycle_budget: usize,
     };
 
-    /// `[fmt]` overrides for the canonical printer. Shape mirrors
-    /// `gero.asm_.PrintOptions`; the CLI converts between the two
-    /// at fmt-time so this module stays library-dep-free.
+    /// `[fmt]` resolved per printer. `[fmt]` sets a key for every
+    /// printer that has it; `[fmt.gas]` / `[fmt.gr]` override their
+    /// own. Shapes mirror the two `PrintOptions` structs; the CLI
+    /// converts at fmt-time so this module stays library-dep-free.
     pub const Fmt = struct {
-        indent: usize,
-        comment_column: usize,
-        align_kv: bool,
-        hex_case: HexCase,
+        gas: Gas,
+        gr: Gr,
+
+        /// Knobs the assembler's printer has.
+        pub const Gas = struct {
+            indent: usize,
+            comment_column: usize,
+            align_kv: bool,
+            hex_case: HexCase,
+        };
+
+        /// Knobs the Gero printer has. `comment_column` and `align_kv`
+        /// have no counterpart: Gero does not align trailing comments
+        /// or `const` blocks, the way rustfmt and prettier do not.
+        pub const Gr = struct {
+            indent: usize,
+            use_tabs: bool,
+            max_width: usize,
+            hex_case: HexCase,
+        };
     };
 
     /// Case policy for hex literals — mirrors `printer.HexCase`.
@@ -108,6 +125,11 @@ pub const defaults = struct {
     pub const fmt_comment_column: usize = 30;
     pub const fmt_align_kv: bool = true;
     pub const fmt_hex_case: Manifest.HexCase = .upper;
+    pub const fmt_use_tabs: bool = false;
+    pub const fmt_max_width: usize = 100;
+    /// Gero re-emits a literal's own spelling unless told otherwise —
+    /// the case often carries meaning the printer cannot see.
+    pub const fmt_gr_hex_case: Manifest.HexCase = .preserve;
     pub const test_cycle_budget: usize = 1_000_000;
 };
 
@@ -247,7 +269,32 @@ fn isIdentCont(c: u8) bool {
 
 /// Which `[section]` the parser is currently inside, so the key-
 /// value handler can route into the right pending bucket.
-const Section = enum { none, package, build, test_, fmt, unknown };
+const Section = enum { none, package, build, test_, fmt, fmt_gas, fmt_gr, unknown };
+
+/// Parse a `hex_case` value, or `null` when the section did not set
+/// one. `section` names the table in the diagnostic so a reader knows
+/// which of the three to fix.
+fn parseHexCase(parser: *Parser, raw: ?[]const u8, comptime section: []const u8) ParseError!?Manifest.HexCase {
+    const str = raw orelse return null;
+    if (std.mem.eql(u8, str, "upper")) return .upper;
+    if (std.mem.eql(u8, str, "lower")) return .lower;
+    if (std.mem.eql(u8, str, "preserve")) return .preserve;
+    parser.reportf("invalid '" ++ section ++ ".hex_case' value '{s}' (expected 'upper', 'lower', or 'preserve')", .{str});
+    return error.ParseFailed;
+}
+
+/// The section's name as a manifest spells it, for diagnostics.
+fn sectionLabel(s: Section) []const u8 {
+    return switch (s) {
+        .fmt => "[fmt]",
+        .fmt_gas => "[fmt.gas]",
+        .fmt_gr => "[fmt.gr]",
+        .package => "[package]",
+        .build => "[build]",
+        .test_ => "[test]",
+        .none, .unknown => "(none)",
+    };
+}
 
 const Parser = struct {
     source: []const u8,
@@ -316,7 +363,11 @@ const Parser = struct {
             self.reportf("expected section name after '['", .{});
             return error.ParseFailed;
         }
-        while (self.index < self.source.len and isIdentCont(self.source[self.index])) {
+        // `.` is part of the name: a sub-table like `[fmt.gr]` is one
+        // section here, not a path the parser walks.
+        while (self.index < self.source.len and
+            (isIdentCont(self.source[self.index]) or self.source[self.index] == '.'))
+        {
             self.advance(1);
         }
         const name = self.source[name_start..self.index];
@@ -338,6 +389,8 @@ const Parser = struct {
         if (std.mem.eql(u8, name, "build")) return .build;
         if (std.mem.eql(u8, name, "test")) return .test_;
         if (std.mem.eql(u8, name, "fmt")) return .fmt;
+        if (std.mem.eql(u8, name, "fmt.gas")) return .fmt_gas;
+        if (std.mem.eql(u8, name, "fmt.gr")) return .fmt_gr;
         // Forward-compat: skip unknown sections instead of failing.
         return .unknown;
     }
@@ -540,10 +593,23 @@ const Pending = struct {
     test_include: ?[]const []const u8 = null,
     test_exclude: ?[]const []const u8 = null,
     test_cycle_budget: ?usize = null,
+    // `[fmt]` — applies to every printer that has the key.
     fmt_indent: ?usize = null,
+    fmt_hex_case: ?[]const u8 = null,
     fmt_comment_column: ?usize = null,
     fmt_align_kv: ?bool = null,
-    fmt_hex_case: ?[]const u8 = null,
+    fmt_use_tabs: ?bool = null,
+    fmt_max_width: ?usize = null,
+    // `[fmt.gas]` — overrides the above for the assembler.
+    gas_indent: ?usize = null,
+    gas_comment_column: ?usize = null,
+    gas_align_kv: ?bool = null,
+    gas_hex_case: ?[]const u8 = null,
+    // `[fmt.gr]` — overrides the above for Gero.
+    gr_indent: ?usize = null,
+    gr_use_tabs: ?bool = null,
+    gr_max_width: ?usize = null,
+    gr_hex_case: ?[]const u8 = null,
 
     fn recordString(self: *Pending, parser: *Parser, key: []const u8, value: []const u8) ParseError!void {
         switch (parser.current_section) {
@@ -583,10 +649,15 @@ const Pending = struct {
                 parser.reportf("unknown string key '[test].{s}' (only 'include' / 'exclude' arrays + 'cycle_budget' are accepted)", .{key});
                 return error.ParseFailed;
             },
-            .fmt => {
-                if (std.mem.eql(u8, key, "hex_case")) self.fmt_hex_case = value else {
-                    parser.reportf("unknown string key '[fmt].{s}' (only 'hex_case' is a string)", .{key});
+            .fmt, .fmt_gas, .fmt_gr => {
+                if (!std.mem.eql(u8, key, "hex_case")) {
+                    parser.reportf("unknown string key '{s}.{s}' (only 'hex_case' is a string)", .{ sectionLabel(parser.current_section), key });
                     return error.ParseFailed;
+                }
+                switch (parser.current_section) {
+                    .fmt => self.fmt_hex_case = value,
+                    .fmt_gas => self.gas_hex_case = value,
+                    else => self.gr_hex_case = value,
                 }
             },
             .unknown, .none => {
@@ -599,8 +670,20 @@ const Pending = struct {
     fn recordInteger(self: *Pending, parser: *Parser, key: []const u8, value: usize) ParseError!void {
         switch (parser.current_section) {
             .fmt => {
-                if (std.mem.eql(u8, key, "indent")) self.fmt_indent = value else if (std.mem.eql(u8, key, "comment_column")) self.fmt_comment_column = value else {
+                if (std.mem.eql(u8, key, "indent")) self.fmt_indent = value else if (std.mem.eql(u8, key, "comment_column")) self.fmt_comment_column = value else if (std.mem.eql(u8, key, "max_width")) self.fmt_max_width = value else {
                     parser.reportf("unknown integer key '[fmt].{s}'", .{key});
+                    return error.ParseFailed;
+                }
+            },
+            .fmt_gas => {
+                if (std.mem.eql(u8, key, "indent")) self.gas_indent = value else if (std.mem.eql(u8, key, "comment_column")) self.gas_comment_column = value else {
+                    parser.reportf("unknown integer key '[fmt.gas].{s}'", .{key});
+                    return error.ParseFailed;
+                }
+            },
+            .fmt_gr => {
+                if (std.mem.eql(u8, key, "indent")) self.gr_indent = value else if (std.mem.eql(u8, key, "max_width")) self.gr_max_width = value else {
+                    parser.reportf("unknown integer key '[fmt.gr].{s}'", .{key});
                     return error.ParseFailed;
                 }
             },
@@ -620,8 +703,20 @@ const Pending = struct {
     fn recordBool(self: *Pending, parser: *Parser, key: []const u8, value: bool) ParseError!void {
         switch (parser.current_section) {
             .fmt => {
-                if (std.mem.eql(u8, key, "align_kv")) self.fmt_align_kv = value else {
+                if (std.mem.eql(u8, key, "align_kv")) self.fmt_align_kv = value else if (std.mem.eql(u8, key, "use_tabs")) self.fmt_use_tabs = value else {
                     parser.reportf("unknown boolean key '[fmt].{s}'", .{key});
+                    return error.ParseFailed;
+                }
+            },
+            .fmt_gas => {
+                if (std.mem.eql(u8, key, "align_kv")) self.gas_align_kv = value else {
+                    parser.reportf("unknown boolean key '[fmt.gas].{s}'", .{key});
+                    return error.ParseFailed;
+                }
+            },
+            .fmt_gr => {
+                if (std.mem.eql(u8, key, "use_tabs")) self.gr_use_tabs = value else {
+                    parser.reportf("unknown boolean key '[fmt.gr].{s}'", .{key});
                     return error.ParseFailed;
                 }
             },
@@ -682,13 +777,13 @@ const Pending = struct {
         // other string is a hard parse error with a clear
         // diagnostic — the printer's three-way enum has no escape
         // hatch.
-        const hex_case: Manifest.HexCase = if (self.fmt_hex_case) |s| blk: {
-            if (std.mem.eql(u8, s, "upper")) break :blk .upper;
-            if (std.mem.eql(u8, s, "lower")) break :blk .lower;
-            if (std.mem.eql(u8, s, "preserve")) break :blk .preserve;
-            parser.reportf("invalid '[fmt].hex_case' value '{s}' (expected 'upper', 'lower', or 'preserve')", .{s});
-            return error.ParseFailed;
-        } else defaults.fmt_hex_case;
+        // A shared `[fmt].hex_case` sets both printers; a
+        // `[fmt.<lang>].hex_case` overrides its own.
+        const shared_hex = try parseHexCase(parser, self.fmt_hex_case, "[fmt]");
+        const hex_case = try parseHexCase(parser, self.gas_hex_case, "[fmt.gas]") orelse
+            shared_hex orelse defaults.fmt_hex_case;
+        const gr_hex = try parseHexCase(parser, self.gr_hex_case, "[fmt.gr]") orelse
+            shared_hex orelse defaults.fmt_gr_hex_case;
 
         // Validate optimize too — it gates the per-profile output
         // subdirectory (`out/<optimize>/...`), so a typo would
@@ -728,10 +823,18 @@ const Pending = struct {
                 .cycle_budget = self.test_cycle_budget orelse defaults.test_cycle_budget,
             },
             .fmt = .{
-                .indent = self.fmt_indent orelse defaults.fmt_indent,
-                .comment_column = self.fmt_comment_column orelse defaults.fmt_comment_column,
-                .align_kv = self.fmt_align_kv orelse defaults.fmt_align_kv,
-                .hex_case = hex_case,
+                .gas = .{
+                    .indent = self.gas_indent orelse self.fmt_indent orelse defaults.fmt_indent,
+                    .comment_column = self.gas_comment_column orelse self.fmt_comment_column orelse defaults.fmt_comment_column,
+                    .align_kv = self.gas_align_kv orelse self.fmt_align_kv orelse defaults.fmt_align_kv,
+                    .hex_case = hex_case,
+                },
+                .gr = .{
+                    .indent = self.gr_indent orelse self.fmt_indent orelse defaults.fmt_indent,
+                    .use_tabs = self.gr_use_tabs orelse self.fmt_use_tabs orelse defaults.fmt_use_tabs,
+                    .max_width = self.gr_max_width orelse self.fmt_max_width orelse defaults.fmt_max_width,
+                    .hex_case = gr_hex,
+                },
             },
         };
     }
@@ -927,10 +1030,10 @@ test "project: [fmt] section parses int / bool / string keys" {
     var m = try parse(testing.allocator, src);
     defer m.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 4), m.fmt.indent);
-    try testing.expectEqual(@as(usize, 40), m.fmt.comment_column);
-    try testing.expectEqual(false, m.fmt.align_kv);
-    try testing.expectEqual(Manifest.HexCase.lower, m.fmt.hex_case);
+    try testing.expectEqual(@as(usize, 4), m.fmt.gas.indent);
+    try testing.expectEqual(@as(usize, 40), m.fmt.gas.comment_column);
+    try testing.expectEqual(false, m.fmt.gas.align_kv);
+    try testing.expectEqual(Manifest.HexCase.lower, m.fmt.gas.hex_case);
 }
 
 test "project: [fmt] section defaults when absent" {
@@ -946,10 +1049,10 @@ test "project: [fmt] section defaults when absent" {
     var m = try parse(testing.allocator, src);
     defer m.deinit(testing.allocator);
 
-    try testing.expectEqual(defaults.fmt_indent, m.fmt.indent);
-    try testing.expectEqual(defaults.fmt_comment_column, m.fmt.comment_column);
-    try testing.expectEqual(defaults.fmt_align_kv, m.fmt.align_kv);
-    try testing.expectEqual(defaults.fmt_hex_case, m.fmt.hex_case);
+    try testing.expectEqual(defaults.fmt_indent, m.fmt.gas.indent);
+    try testing.expectEqual(defaults.fmt_comment_column, m.fmt.gas.comment_column);
+    try testing.expectEqual(defaults.fmt_align_kv, m.fmt.gas.align_kv);
+    try testing.expectEqual(defaults.fmt_hex_case, m.fmt.gas.hex_case);
 }
 
 test "project: [fmt] hex_case validates against the three allowed values" {
@@ -987,10 +1090,10 @@ test "project: [fmt] partial overrides keep defaults for absent keys" {
     var m = try parse(testing.allocator, src);
     defer m.deinit(testing.allocator);
 
-    try testing.expectEqual(defaults.fmt_indent, m.fmt.indent);
-    try testing.expectEqual(@as(usize, 32), m.fmt.comment_column);
-    try testing.expectEqual(defaults.fmt_align_kv, m.fmt.align_kv);
-    try testing.expectEqual(defaults.fmt_hex_case, m.fmt.hex_case);
+    try testing.expectEqual(defaults.fmt_indent, m.fmt.gas.indent);
+    try testing.expectEqual(@as(usize, 32), m.fmt.gas.comment_column);
+    try testing.expectEqual(defaults.fmt_align_kv, m.fmt.gas.align_kv);
+    try testing.expectEqual(defaults.fmt_hex_case, m.fmt.gas.hex_case);
 }
 
 test "project: [fmt] rejects invalid boolean value" {

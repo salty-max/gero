@@ -128,6 +128,8 @@ pub const assembleInstruction = codegen_mod.assembleInstruction;
 pub const InlineAsm = codegen_mod.InlineAsm;
 /// Canonical-printer options (indent, etc.).
 pub const PrintOptions = printer_mod.PrintOptions;
+/// Case policy for `$XX` / `&XXXX` literals.
+pub const HexCase = printer_mod.HexCase;
 /// Default canonical-printer options.
 pub const default_print_options = printer_mod.default_options;
 /// Emit an `ast.Program` as canonical `.gas` source.

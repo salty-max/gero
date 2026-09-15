@@ -50,6 +50,7 @@ pub fn execute(
     // use case); `failed` means a read/parse error was already
     // printed.
     var print_options: gero.asm_.PrintOptions = gero.asm_.default_print_options;
+    var gr_options: gero.lang.PrintOptions = gero.lang.default_print_options;
     var manifest_files: ?[]const []const u8 = null;
     {
         const outcome = try manifest_loader.load(io, arena, term, "gero fmt");
@@ -60,6 +61,7 @@ pub fn execute(
                 var loaded_mut = loaded;
                 defer loaded_mut.deinit(arena);
                 print_options = printOptionsFromManifest(loaded.manifest.fmt);
+                gr_options = grOptionsFromManifest(loaded.manifest.fmt);
                 if (positionals.len == 0) {
                     var files_buf: std.ArrayList([]const u8) = .empty;
                     const entry_path = try manifest_loader.joinUnderRoot(arena, loaded.project_root, loaded.manifest.build.entry);
@@ -100,7 +102,7 @@ pub fn execute(
     for (files.items) |path| {
         const outcome = blk: {
             if (std.mem.endsWith(u8, path, ".gr")) {
-                break :blk formatOneGr(io, arena, stdout, term, style, path, opts.check, single, opts.quiet) catch |err| {
+                break :blk formatOneGr(io, arena, stdout, term, style, path, opts.check, single, opts.quiet, gr_options) catch |err| {
                     try term.err("gero fmt: cannot read/write {s} ({s})", .{ path, @errorName(err) });
                     return 1;
                 };
@@ -130,19 +132,36 @@ pub fn execute(
     return 0;
 }
 
-/// Translate the manifest's `[fmt]` shape into the printer's
-/// `PrintOptions`. Same fields one-to-one; `HexCase` is a
+/// Translate the manifest's `[fmt.gas]` shape into the assembler
+/// printer's `PrintOptions`. Same fields one-to-one; `HexCase` is a
 /// disjoint enum so we map per-variant.
 pub fn printOptionsFromManifest(fmt: project.Manifest.Fmt) gero.asm_.PrintOptions {
     return .{
-        .indent = fmt.indent,
-        .comment_column = fmt.comment_column,
-        .align_kv = fmt.align_kv,
-        .hex_case = switch (fmt.hex_case) {
-            .upper => .upper,
-            .lower => .lower,
-            .preserve => .preserve,
-        },
+        .indent = fmt.gas.indent,
+        .comment_column = fmt.gas.comment_column,
+        .align_kv = fmt.gas.align_kv,
+        .hex_case = hexCase(gero.asm_.HexCase, fmt.gas.hex_case),
+    };
+}
+
+/// The `[fmt.gr]` half, for the Gero printer.
+pub fn grOptionsFromManifest(fmt: project.Manifest.Fmt) gero.lang.PrintOptions {
+    return .{
+        .indent = fmt.gr.indent,
+        .use_tabs = fmt.gr.use_tabs,
+        .max_width = fmt.gr.max_width,
+        .hex_case = hexCase(gero.lang.HexCase, fmt.gr.hex_case),
+    };
+}
+
+/// Map the manifest's `HexCase` onto a printer's own. The two
+/// printers declare their own enum, so the variants are carried
+/// across by name rather than shared.
+fn hexCase(comptime T: type, v: project.Manifest.HexCase) T {
+    return switch (v) {
+        .upper => .upper,
+        .lower => .lower,
+        .preserve => .preserve,
     };
 }
 
@@ -235,7 +254,7 @@ fn formatStdinGr(
     }
 
     var allocating = std.Io.Writer.Allocating.init(arena);
-    try gero.lang.print(&allocating.writer, &tree.program, src, tree.comments);
+    try gero.lang.print(arena, &allocating.writer, &tree.program, src, tree.comments, gero.lang.default_print_options);
     return emitStdin(stdout, src, allocating.written(), check_mode);
 }
 
@@ -325,6 +344,7 @@ fn formatOneGr(
     check_mode: bool,
     single: bool,
     quiet: bool,
+    opts: gero.lang.PrintOptions,
 ) !Outcome {
     const src = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited);
 
@@ -350,7 +370,7 @@ fn formatOneGr(
     }
 
     var allocating = std.Io.Writer.Allocating.init(arena);
-    try gero.lang.print(&allocating.writer, &tree.program, src, tree.comments);
+    try gero.lang.print(arena, &allocating.writer, &tree.program, src, tree.comments, opts);
     const formatted = allocating.written();
 
     if (std.mem.eql(u8, src, formatted)) {

@@ -24,6 +24,11 @@ fn parseSource(source: []const u8) !gero.lang.ParseTree {
 
 /// Parse + print into a freshly allocated buffer.
 fn renderSource(source: []const u8) ![]u8 {
+    return renderWith(source, gero.lang.default_print_options);
+}
+
+/// Render under a specific option set, for the tests that pin one.
+fn renderWith(source: []const u8, opts: gero.lang.PrintOptions) ![]u8 {
     var tree = try parseSource(source);
     defer tree.deinit();
     if (tree.errors.len != 0) {
@@ -38,7 +43,7 @@ fn renderSource(source: []const u8) ![]u8 {
     var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
     defer writer.deinit();
 
-    try gero.lang.print(&writer.writer, &tree.program, source, tree.comments);
+    try gero.lang.print(alloc, &writer.writer, &tree.program, source, tree.comments, opts);
     return writer.toOwnedSlice();
 }
 
