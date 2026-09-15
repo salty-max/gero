@@ -102,18 +102,19 @@ the host's `MemoryMapper` (§3.5) can remap any region to a device.
 | `0x0100..0x0FFF` | 3.75 KB | **Low RAM** — always flat, never banked and never a host register. Where a runtime keeps structures that must survive a bank switch; Gero puts its cross-bank save-stack here. |
 | `0x1000..0x11FF` | 512 B | **Interrupt vector table** — 256 entries × 2 bytes each, one per vector. Vector `N` lives at `0x1000 + 2*N`. |
 | `0x1200..0x7FFF` | 27.5 KB | **User RAM** — code, data, heap, and the stack. The image is loaded from `0x0000`, so this is where a program's code actually begins to sit; `.gr` puts code at `0x1200` and data at `0x2000`. `sp` boots at `0x7FFE` and grows **down** toward the heap growing **up**. |
-| `0x8000..0xBDFF` | 15.5 KB | **Mapped region A** — host-defined. Plain RAM by default. gtx-16 leaves this region as plain RAM and recommends carts use it for sprite-sheet storage + other large assets (the cart sets `SPRITESHEET_BASE` here). |
+| `0x8000..0xBDFF` | 15.5 KB | **Mapped region A** — host-defined. Plain RAM by default. gtx-16 flat-maps its framebuffer here (`0x8000..0xB83F`), which is what makes the screen an address a cart can poke; the remainder stays plain RAM. |
 | `0xBE00..0xFDFF` | 16 KB | **Bank window** — mirrors bank `mb` if the program is banked, otherwise plain RAM. Exactly one bank wide, so every byte of a bank is addressable. |
 | `0xFE00..0xFFFF` | 512 B | **Mapped region B / IO page** — host-defined peripheral registers. gtx-16 maps display registers, drawing command surface, audio channels, input, RNG, timer, and KV store here. Plain RAM if no host device claims it. |
 
 The two **Mapped region** ranges (`0x8000..0xBDFF` and
 `0xFE00..0xFFFF`) are the convention for embedding hosts. A pure
 "compute" program (one that never expects graphics) sees plain RAM
-there and can use it freely. A gtx-16-targeted program issues
-drawing commands via the IO page (`0xFE50..0xFE61` for the
-command surface) and stores sprite data wherever it wants in
-cart memory — typically in mapped region A — see gtx-16 §2 for
-the full mapping.
+there and can use it freely. A gtx-16-targeted program draws either by
+writing pixels into the framebuffer mapped at region A or by issuing
+commands via the IO page (`0xFE50..0xFE61`), and keeps sprite data in
+the bank window so `mb` selects which sheet is live — see
+[gtx-16](https://github.com/salty-max/gtx-16/blob/main/docs/spec.md)
+§1.1 for the full mapping.
 
 ### 3.2 Banks
 

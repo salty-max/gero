@@ -2991,7 +2991,7 @@ $8000..$BDFF  Mapped region A (plain RAM; on gtx-16, carts
 $BE00..$FDFF  bank window (compiler emits per-bank if program
                               uses banked modules)
 $FE40..$FEFF  gtx-16 IO surface (display, drawing, audio,
-                                    input — see gtx-16 §14)
+                                    input — gtx-16 §14)
 $FF00..$FFFF  IO page tail (RNG, timing, KV store, mouse)
 ```
 
