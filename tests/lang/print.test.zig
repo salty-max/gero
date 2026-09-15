@@ -692,3 +692,28 @@ test "print: a comment after the last statement is not dropped" {
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "-- trailing file comment") != null);
 }
+
+test "print: a method call wraps the same way a plain call does" {
+    // Both are argument lists; wrapping one and flattening the other
+    // would make the rule depend on the callee's shape.
+    const src = "class C\n  def m(self, a: i16, b: i16) -> i16\n    return a\n  end\nend\ndef main()\n  let c: C = C()\n  print c.m(1111, 2222)\nend\n";
+    const out = try renderWith(src, .{ .max_width = 18 });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "c.m(\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "2222,\n") != null);
+}
+
+test "print: a tuple literal wraps too" {
+    const src = "def main()\n  let t: (i16, i16) = (1111, 2222)\n  print t.0\nend\n";
+    const out = try renderWith(src, .{ .max_width = 20 });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "= (\n") != null);
+}
+
+test "print: an empty argument list never breaks" {
+    // There is nothing to put on its own line.
+    const src = "def f() -> i16\n  return 1\nend\ndef main()\n  print f()\nend\n";
+    const out = try renderWith(src, .{ .max_width = 4 });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "f()") != null);
+}
