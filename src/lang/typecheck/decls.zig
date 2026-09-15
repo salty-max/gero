@@ -4,6 +4,8 @@ const types = @import("../types.zig");
 const scope_mod = @import("../scope.zig");
 const typecheck = @import("../typecheck.zig");
 const type_resolve = @import("type_resolve.zig");
+const diagnostic = @import("../diagnostic.zig");
+const predicates = @import("predicates.zig");
 const stdlib = @import("stdlib.zig");
 const stdlib_exports = @import("stdlib_exports.zig");
 
@@ -198,6 +200,29 @@ pub fn registerName(
 
 /// Build the function-pointer type for a `def`. Unannotated
 /// params produce a `nil` placeholder slot (treated as "skip
+/// Rewrite `undefined symbol` inside a parameter default when the name
+/// is a sibling parameter of `d`.
+///
+/// A default is emitted at the call site, where the callee's parameters
+/// do not exist yet — so it may read a const or a global but never a
+/// sibling. The generic message is misleading when the name it cannot
+/// find is declared two tokens to the left, so say the actual rule.
+fn explainParamReads(self: *Checker, d: ast.DefDecl, fresh: []diagnostic.Diagnostic) WalkError!void {
+    for (fresh) |*diag| {
+        if (!std.mem.eql(u8, diag.code, "E_UNDEFINED_SYMBOL")) continue;
+        const name = self.source[diag.span.start..diag.span.end];
+        for (d.params) |other| {
+            if (!std.mem.eql(u8, self.lexeme(other.name), name)) continue;
+            diag.message = try std.fmt.allocPrint(
+                self.arena,
+                "a default cannot read parameter `{s}` — it is evaluated at the call site, before any parameter exists",
+                .{name},
+            );
+            break;
+        }
+    }
+}
+
 /// arg-type check" by `checkCall`).
 pub fn signatureFromDef(self: *Checker, d: ast.DefDecl) WalkError!*const types.Type {
     var param_types: std.ArrayList(*const types.Type) = .empty;
@@ -226,6 +251,16 @@ pub fn signatureFromDef(self: *Checker, d: ast.DefDecl) WalkError!*const types.T
         else
             try self.primitive(.nil_);
         try param_types.append(self.arena, pt);
+
+        if (p.default) |dv| {
+            // The default stands in for an argument, so it answers to
+            // the parameter's type exactly as a written one would.
+            const first = self.diagnostics.items.len;
+            if (try self.inferExpr(dv, pt)) |dv_ty| {
+                if (!predicates.isNilType(pt.*)) try self.checkStoreCompat(dv.span(), pt, dv_ty);
+            }
+            try explainParamReads(self, d, self.diagnostics.items[first..]);
+        }
     }
     const ret_ty: *const types.Type = if (d.ret_type) |r|
         try type_resolve.resolveType(self, r)

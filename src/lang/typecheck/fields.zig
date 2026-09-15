@@ -315,17 +315,14 @@ pub fn checkMethodCall(
     if (method.params.len > 0 and std.mem.eql(u8, self.lexeme(method.params[0].name), "self")) has_self = true;
     const skip_count: usize = if (has_self) 1 else 0;
     const sig_params = method.params[skip_count..];
-    if (m.args.len != sig_params.len) {
-        const suffix: []const u8 = if (sig_params.len == 1) "" else "s";
-        const msg = try std.fmt.allocPrint(
-            self.arena,
-            "method `{s}.{s}` takes {d} argument{s}, called with {d}",
-            .{ named_name, method_name, sig_params.len, suffix, m.args.len },
-        );
+    const required = calls.requiredCount(sig_params);
+    if (m.args.len < required or m.args.len > sig_params.len) {
+        const subject = try std.fmt.allocPrint(self.arena, "method `{s}.{s}`", .{ named_name, method_name });
+        const msg = try calls.arityMessage(self.arena, subject, required, sig_params.len, m.args.len);
         try self.emitSpan("E_TYPE_ARG_COUNT", m.span, msg);
         for (m.args) |a| _ = try self.inferExpr(a, null);
     } else {
-        for (m.args, sig_params) |arg, p| {
+        for (m.args, sig_params[0..m.args.len]) |arg, p| {
             const param_ty: ?*const types.Type = if (p.type_ann) |t|
                 try type_resolve.resolveType(self, t)
             else
@@ -381,17 +378,14 @@ pub fn checkStaticMethodCall(
     const has_self = method.params.len > 0 and std.mem.eql(u8, self.lexeme(method.params[0].name), "self");
     const skip_count: usize = if (has_self) 1 else 0;
     const sig_params = method.params[skip_count..];
-    if (m.args.len != sig_params.len) {
-        const suffix: []const u8 = if (sig_params.len == 1) "" else "s";
-        const msg = try std.fmt.allocPrint(
-            self.arena,
-            "`{s}.{s}` takes {d} argument{s}, called with {d}",
-            .{ class_name, method_name, sig_params.len, suffix, m.args.len },
-        );
+    const required = calls.requiredCount(sig_params);
+    if (m.args.len < required or m.args.len > sig_params.len) {
+        const subject = try std.fmt.allocPrint(self.arena, "`{s}.{s}`", .{ class_name, method_name });
+        const msg = try calls.arityMessage(self.arena, subject, required, sig_params.len, m.args.len);
         try self.emitSpan("E_TYPE_ARG_COUNT", m.span, msg);
         for (m.args) |a| _ = try self.inferExpr(a, null);
     } else {
-        for (m.args, sig_params) |arg, p| {
+        for (m.args, sig_params[0..m.args.len]) |arg, p| {
             const param_ty: ?*const types.Type = if (p.type_ann) |t| try type_resolve.resolveType(self, t) else null;
             const skip = if (param_ty) |pt| predicates.isNilType(pt.*) else true;
             const arg_ty = try self.inferExpr(arg, if (skip) null else param_ty);

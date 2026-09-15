@@ -972,11 +972,13 @@ pub fn emitShortCircuitBool(self: *Emitter, b: ast.BinaryExpr) !void {
     }
 }
 
-/// Lower a `receiver.method(args)` expression. The stdlib
-/// `mem.X(...)` shape dispatches through the builtin lookup;
-/// other receivers (class instance method calls) are not yet
-/// supported.
-pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr) !void {
+/// Lower a `receiver.method(args)` expression — `super.`, a class
+/// instance, a `Vec` / `str` builtin, or a `Class.method` static. The
+/// stdlib `mem.X(...)` shape dispatches through the builtin lookup.
+pub fn emitMethodCall(self: *Emitter, call: ast.MethodCallExpr, e: *const ast.Expr) !void {
+    // Each class-method path below fills in the arguments the call left
+    // out, so the emitters downstream see one per parameter (§4.6.3).
+    var m = call;
     // `super.method(args)` — direct call to parent's method,
     // bypassing the vtable.
     if (m.receiver.* == .super_expr) {
@@ -992,6 +994,12 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
                     try class.emitSuperVariadicMethodCall(self, res.owner, mname, arity, m.args, m.span);
                     return;
                 }
+            }
+            // `super.m()` runs the ancestor's body, so it takes the
+            // ancestor's defaults — resolution starts above `cname`
+            // even when this class overrides `m`.
+            if (class.resolveSuperMethod(self, cname, mname)) |method| {
+                m.args = try methodArgsWithDefaults(self, method, m.args);
             }
             try class.emitSuperMethodCall(self, cname, mname, m.args, m.span);
             return;
@@ -1010,6 +1018,7 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
                 try class.emitVariadicMethodCall(self, m.receiver, res.owner, mname, arity, m.args, m.span);
                 return;
             }
+            m.args = try methodArgsWithDefaults(self, res.method, m.args);
         }
         try class.emitMethodDispatch(self, m.receiver, cname, mname, m.args, m.span);
         return;
@@ -1043,6 +1052,7 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
             if (class.resolveMethodOwner(self, resolved, mname)) |res| {
                 const is_var = variadic.isVariadicDef(res.method.*);
                 const arity = if (is_var) class.variadicMethodArity(self, res.method, m.args.len) else 0;
+                if (!is_var) m.args = try methodArgsWithDefaults(self, res.method, m.args);
                 try class.emitStaticMethodCall(self, res.owner, mname, m.args, m.span, is_var, arity);
                 return;
             }
@@ -1119,7 +1129,13 @@ pub fn emitMethodCall(self: *Emitter, m: ast.MethodCallExpr, e: *const ast.Expr)
 /// Compiler-known stdlib builtins (`mem.X`) intercept on the
 /// way in. Closure invocations and fn-pointer calls are not
 /// yet supported.
-pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
+pub fn emitCall(self: *Emitter, call: ast.CallExpr) !void {
+    // Fill in any trailing argument the call left out, so every path
+    // below — pushing, cleanup, arity — sees one argument per
+    // parameter and none of them has to know defaults exist (§4.6.3).
+    var c = call;
+    c.args = try argsWithDefaults(self, call);
+
     // Class constructor call — `ClassName(args)` allocates an
     // instance, writes the vtable pointer, and runs `init` if
     // declared. The instance address lands in `acu`.
@@ -1337,4 +1353,41 @@ pub fn emitCall(self: *Emitter, c: ast.CallExpr) !void {
         }
         if (drop_bytes > 0) try isa.addImmToReg(self, drop_bytes, Reg.sp);
     }
+}
+
+/// A call's arguments with each omitted trailing default appended.
+///
+/// Returns the original slice untouched when nothing is missing,
+/// which is every call to a def that declares no default.
+fn argsWithDefaults(self: *Emitter, c: ast.CallExpr) ![]*ast.Expr {
+    if (c.callee.* != .ident) return c.args;
+    const name = self.source[c.callee.ident.span.start..c.callee.ident.span.end];
+    const decl = self.default_decls.get(self.resolveImportAlias(name)) orelse return c.args;
+    return padWithDefaults(self, c.args, decl.params);
+}
+
+/// A method call's arguments padded against `method`'s parameters,
+/// skipping the leading `self` those carry and the args do not.
+///
+/// Resolution is static — an override's own defaults never apply to a
+/// call written against the parent's type (§4.6.3).
+fn methodArgsWithDefaults(self: *Emitter, method: *const ast.DefDecl, args: []*ast.Expr) ![]*ast.Expr {
+    const has_self = method.params.len > 0 and
+        std.mem.eql(u8, self.source[method.params[0].name.start..method.params[0].name.end], "self");
+    return padWithDefaults(self, args, method.params[if (has_self) 1 else 0..]);
+}
+
+/// `args` extended to one expression per parameter, each missing one
+/// taking its declared default.
+fn padWithDefaults(self: *Emitter, args: []*ast.Expr, params: []const ast.Param) ![]*ast.Expr {
+    if (args.len >= params.len) return args;
+
+    const out = try self.arena.alloc(*ast.Expr, params.len);
+    for (args, 0..) |a, i| out[i] = a;
+    for (params[args.len..], args.len..) |param, i| {
+        // The typechecker rejected a call short of the required
+        // arity, so every remaining parameter carries a default.
+        out[i] = param.default orelse return args;
+    }
+    return out;
 }

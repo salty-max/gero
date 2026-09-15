@@ -170,7 +170,10 @@ pub fn parseParamList(p: *Parser) ParserError![]ast.Param {
         // Free nested type-anns then let the ArrayList free its own
         // backing buffer. (Don't call `freeParams` here — that takes
         // an owned slice and would double-free the ArrayList buffer.)
-        for (params.items) |item| if (item.type_ann) |t| ast.freeTypeAnn(p.allocator, t);
+        for (params.items) |item| {
+            if (item.type_ann) |t| ast.freeTypeAnn(p.allocator, t);
+            if (item.default) |dv| ast.freeExpr(p.allocator, dv);
+        }
         params.deinit(p.allocator);
     }
 
@@ -208,13 +211,38 @@ pub fn parseParamList(p: *Parser) ParserError![]ast.Param {
             }
         }
 
-        const param_end: u32 = if (variadic) variadic_end else if (type_ann) |t| t.span().end else name_span.end;
+        // `name: T = expr` — the value a call may leave out.
+        var default: ?*ast.Expr = null;
+        if (p.accept(.equals)) |_| {
+            if (variadic) {
+                try p.recordError("a variadic parameter cannot have a default — it already accepts no arguments", "E_SYNTAX_PARAM_DEFAULT");
+                return error.ParseFailed;
+            }
+            default = try expr_mod.parseExpression(p, 0);
+        }
+
+        const param_end: u32 = if (default) |d| d.span().end else if (variadic) variadic_end else if (type_ann) |t| t.span().end else name_span.end;
         try params.append(p.allocator, .{
             .name = name_span,
             .type_ann = type_ann,
             .variadic = variadic,
+            .default = default,
             .span = .{ .start = name_span.start, .end = param_end },
         });
+
+        // Once a parameter carries a default, every parameter after it
+        // must too: otherwise a call supplying fewer arguments than
+        // there are parameters could not say which one it left out.
+        if (default == null and params.items.len > 1) {
+            const prev = params.items[params.items.len - 2];
+            if (prev.default != null) {
+                try p.recordError(
+                    "a parameter with a default cannot be followed by one without — give this parameter a default, or move it before the defaulted ones",
+                    "E_SYNTAX_PARAM_DEFAULT",
+                );
+                return error.ParseFailed;
+            }
+        }
 
         // A variadic parameter must be the last one. We break here
         // so any trailing `, more_param` would surface as

@@ -4203,3 +4203,78 @@ test "typecheck: a cross-module reference names the declaration, not the import"
     const decl_at = std.mem.indexOf(u8, fused.source, "def shout").? + "def ".len;
     try std.testing.expectEqual(@as(u32, @intCast(decl_at)), b.decl_span.start);
 }
+
+// ---------- default parameters (§4.6.3) ----------
+
+test "defaults: a default cannot read a sibling parameter" {
+    try expectCode(
+        \\def f(a: i16, b: i16 = a) -> i16
+        \\  return a + b
+        \\end
+        \\def main()
+        \\  print f(1)
+        \\end
+    , "E_UNDEFINED_SYMBOL");
+}
+
+test "defaults: a parameter read anywhere in a default is rejected" {
+    try expectCode(
+        \\def f(a: i16, b: i16 = a * 2 + 1) -> i16
+        \\  return a + b
+        \\end
+        \\def main()
+        \\  print f(1)
+        \\end
+    , "E_UNDEFINED_SYMBOL");
+}
+
+test "defaults: a call below the required arity is still an error" {
+    try expectCode(
+        \\def f(a: i16, b: i16, c: i16 = 3) -> i16
+        \\  return a + b + c
+        \\end
+        \\def main()
+        \\  print f(1)
+        \\end
+    , "E_TYPE_ARG_COUNT");
+}
+
+test "defaults: a call past the parameter list is still an error" {
+    try expectCode(
+        \\def f(a: i16, b: i16 = 2) -> i16
+        \\  return a + b
+        \\end
+        \\def main()
+        \\  print f(1, 2, 3)
+        \\end
+    , "E_TYPE_ARG_COUNT");
+}
+
+test "defaults: an omitted argument type-checks against its parameter" {
+    try expectCode(
+        \\def f(a: i16, b: str = 1) -> i16
+        \\  return a
+        \\end
+        \\def main()
+        \\  print f(1)
+        \\end
+    , "E_TYPE_MISMATCH");
+}
+
+test "defaults: a short call to a defaulted method is accepted" {
+    try expectClean(
+        \\class P
+        \\  let x: i16
+        \\  def init(self, x: i16)
+        \\    self.x = x
+        \\  end
+        \\  def bump(self, by: i16 = 5) -> i16
+        \\    return self.x + by
+        \\  end
+        \\end
+        \\def main()
+        \\  let p = P(1)
+        \\  print p.bump()
+        \\end
+    );
+}

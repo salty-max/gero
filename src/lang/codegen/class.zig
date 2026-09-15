@@ -702,6 +702,16 @@ pub fn resolveMethodOwner(self: *Emitter, class_name: []const u8, method_name: [
     }
 }
 
+/// The `method_name` a `super.` call inside `class_name` reaches: the
+/// nearest declaration at or above the parent, skipping this class's
+/// own override. `null` when no ancestor declares it.
+pub fn resolveSuperMethod(self: *Emitter, class_name: []const u8, method_name: []const u8) ?*const ast.DefDecl {
+    const cd = self.class_decls.get(class_name) orelse return null;
+    const parent = cd.extends orelse return null;
+    const res = resolveMethodOwner(self, self.source[parent.start..parent.end], method_name) orelse return null;
+    return res.method;
+}
+
 /// Vararg count at a variadic method call site: `n_args` minus the
 /// fixed params (excluding `self` when present + the variadic slot).
 /// Underflow-safe — a `self`-less method (`has_self == false`) would
