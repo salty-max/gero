@@ -214,11 +214,22 @@ has to change.
 | `E_USE_UNDEFINED_MEMBER` | `use X from "./m"` where `m` does not export `X` — it is missing, renamed, or `local`. |
 
 `E_USE_UNDEFINED_MEMBER` carries a near-spelling `help:` line when one
-of the module's exports is within distance 2, because its caret cannot
-point at the name. A quoted-path `use` is elided from the fused buffer
-and replaced by a one-byte sentinel, so the only span a diagnostic
-about one can hold is the start of the directive — the same limit
-`E_USE_DUPLICATE_ALIAS` reports under.
+of the module's exports is within distance 2.
+
+Both diagnostics point at the token that is wrong — the listed name,
+or the alias — rather than at the start of the directive:
+
+```
+use Vec2, Missing, Other from "./vec"
+          ^^^^^^^
+```
+
+A quoted-path `use` never reaches the parser: the fuse layer resolves
+it and blanks the line. It is blanked to its **own width** rather than
+collapsed, so every column keeps a fused offset that maps back through
+the source map. The parser sees whitespace either way, and a
+diagnostic keeps the span it needs.
+
 | `W_UNUSED_IMPORT` | The module never referenced the name a `use` brought into scope. Warning — the program still compiles. |
 
 An import is used when some reference binds to it. The type-checker

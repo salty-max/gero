@@ -1360,10 +1360,10 @@ pub const Checker = struct {
                     "module does not export `{s}`",
                     .{item.name},
                 );
-                // The `use` line is elided from the fused buffer, so
-                // the span is the directive's sentinel and the caret
-                // cannot reach the name. The help line carries it.
-                const span: ast.Span = .{ .start = edge.site, .end = edge.site };
+                // The name as the `use` line wrote it, so the caret
+                // sits under the word that is wrong rather than at the
+                // start of the directive.
+                const span: ast.Span = .{ .start = item.start, .end = item.end };
                 if (try self.suggestExport(edge.to, item.name)) |near| {
                     const help = try std.fmt.allocPrint(self.arena, "did you mean `{s}`?", .{near});
                     try self.emitSpanHelp("E_USE_UNDEFINED_MEMBER", span, msg, help);
