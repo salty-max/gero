@@ -778,6 +778,11 @@ pub const Param = struct {
     /// Only the last param of a list may be variadic; the parser
     /// enforces that.
     variadic: bool = false,
+    /// The value a call may leave out (`color: u8 = 0`). Present only
+    /// on trailing parameters: once one carries a default, every
+    /// parameter after it must too, or a call could not tell which
+    /// argument it had supplied.
+    default: ?*Expr = null,
     span: Span,
 };
 
@@ -1332,7 +1337,10 @@ pub fn freeStatement(allocator: std.mem.Allocator, s: *Statement) void {
 
 fn freeDefDecl(allocator: std.mem.Allocator, d: DefDecl) void {
     freeAnnotations(allocator, d.annotations);
-    for (d.params) |p| if (p.type_ann) |t| freeTypeAnn(allocator, t);
+    for (d.params) |p| {
+        if (p.type_ann) |t| freeTypeAnn(allocator, t);
+        if (p.default) |dv| freeExpr(allocator, dv);
+    }
     allocator.free(d.params);
     if (d.ret_type) |r| freeTypeAnn(allocator, r);
     freeStatementList(allocator, d.body);
@@ -1420,7 +1428,10 @@ pub fn freeExpr(allocator: std.mem.Allocator, e: *Expr) void {
         .if_expr => |ie| freeIfArmsAndElse(allocator, ie.arms, ie.else_body),
         .match_expr => |me| freeMatchArms(allocator, me.scrutinee, me.arms),
         .lambda => |l| {
-            for (l.params) |p| if (p.type_ann) |t| freeTypeAnn(allocator, t);
+            for (l.params) |p| {
+                if (p.type_ann) |t| freeTypeAnn(allocator, t);
+                if (p.default) |dv| freeExpr(allocator, dv);
+            }
             allocator.free(l.params);
             if (l.ret_type) |r| freeTypeAnn(allocator, r);
             freeStatementList(allocator, l.body);

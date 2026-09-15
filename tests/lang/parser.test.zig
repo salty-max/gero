@@ -1758,3 +1758,42 @@ test "parseExpression: a newline outside any group still ends the statement" {
     defer tree.deinit();
     try std.testing.expect(tree.errors.len > 0);
 }
+
+test "params: a defaulted parameter cannot be followed by a required one" {
+    // A call supplying fewer arguments than parameters could not say
+    // which one it left out.
+    var tree = try parseSource(
+        \\def bad(a: i16 = 1, b: i16) -> i16
+        \\  return a + b
+        \\end
+        \\
+    );
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, tree.errors[0].message, "cannot be followed by one without") != null);
+}
+
+test "params: a variadic parameter cannot carry a default" {
+    var tree = try parseSource(
+        \\def bad(xs: ... = 1) -> i16
+        \\  return 1
+        \\end
+        \\
+    );
+    defer tree.deinit();
+    try std.testing.expect(tree.errors.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, tree.errors[0].message, "already accepts no arguments") != null);
+}
+
+test "params: a default is parsed and kept on the parameter" {
+    var tree = try parseClean(
+        \\def f(a: i16, b: i16 = 5) -> i16
+        \\  return a + b
+        \\end
+        \\
+    );
+    defer tree.deinit();
+    const d = tree.program.statements[0].def_decl;
+    try std.testing.expect(d.params[0].default == null);
+    try std.testing.expect(d.params[1].default != null);
+}

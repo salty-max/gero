@@ -319,6 +319,7 @@ pub fn compile(
         .global_sret_scratch = 0,
         .inline_defs = .{},
         .variadic_decls = .{},
+        .default_decls = .{},
         .interrupt_defs = .empty,
         .inline_returns = null,
         .inline_depth = 0,
@@ -784,6 +785,9 @@ pub const Emitter = struct {
     /// param count to route each call to the matching `name$N`
     /// specialization (§4.6.2); emission walks the decls directly.
     variadic_decls: std.StringHashMapUnmanaged(*const ast.DefDecl),
+    /// Defs with at least one defaulted parameter, so a call that
+    /// leaves one out can emit the declared expression in its place.
+    default_decls: std.StringHashMapUnmanaged(*const ast.DefDecl),
     /// `@interrupt N` defs — vector index → def. Drives IVT-init
     /// emission before `main`.
     interrupt_defs: std.ArrayList(InterruptHandler),
@@ -2028,6 +2032,11 @@ pub const Emitter = struct {
                 if (noreturn_marked) try self.noreturn_defs.put(self.arena, dup, {});
                 if (inline_marked) try self.inline_defs.put(self.arena, dup, dd);
                 if (variadic.isVariadicDef(dd.*)) try self.variadic_decls.put(self.arena, dup, dd);
+                for (dd.params) |param| {
+                    if (param.default == null) continue;
+                    try self.default_decls.put(self.arena, dup, dd);
+                    break;
+                }
                 if (interrupt_vec) |vec| {
                     try self.interrupt_defs.append(self.allocator, .{
                         .vector = vec,

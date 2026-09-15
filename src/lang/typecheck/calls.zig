@@ -108,13 +108,11 @@ pub fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) Walk
         return try checkVariadicCall(self, c, decl, f);
     }
 
-    if (c.args.len != f.params.len) {
-        const suffix: []const u8 = if (f.params.len == 1) "" else "s";
-        const msg = try std.fmt.allocPrint(
-            self.arena,
-            "function takes {d} argument{s}, called with {d}",
-            .{ f.params.len, suffix, c.args.len },
-        );
+    // A trailing parameter with a default may be left out (§4.6.3),
+    // so the floor is the count that has none.
+    const required = requiredArity(self, c.callee) orelse f.params.len;
+    if (c.args.len < required or c.args.len > f.params.len) {
+        const msg = try arityMessage(self.arena, "function", required, f.params.len, c.args.len);
         try self.emitSpan("E_TYPE_ARG_COUNT", c.span, msg);
         for (c.args) |a| _ = try self.inferExpr(a, null);
         return f.ret;
@@ -510,6 +508,51 @@ pub fn checkBakeAnnotationConflicts(self: *Checker, anns: []const ast.Annotation
 fn directCalleeName(c: *const Checker, callee: *const ast.Expr) ?[]const u8 {
     const raw = flow.identName(c, callee) orelse return null;
     return c.resolveValueAlias(raw);
+}
+
+/// How many of `params` a call must supply: the count before the
+/// first one carrying a default (§4.6.3). Equal to `params.len` when
+/// none does.
+pub fn requiredCount(params: []const ast.Param) usize {
+    var n: usize = 0;
+    for (params) |param| {
+        if (param.default != null) break;
+        n += 1;
+    }
+    return n;
+}
+
+/// `<subject> takes N arguments, called with M` — or the `N to M`
+/// form when trailing parameters carry defaults.
+pub fn arityMessage(
+    arena: std.mem.Allocator,
+    subject: []const u8,
+    required: usize,
+    max: usize,
+    got: usize,
+) ![]const u8 {
+    if (required != max) return std.fmt.allocPrint(
+        arena,
+        "{s} takes {d} to {d} arguments, called with {d}",
+        .{ subject, required, max, got },
+    );
+    const suffix: []const u8 = if (max == 1) "" else "s";
+    return std.fmt.allocPrint(
+        arena,
+        "{s} takes {d} argument{s}, called with {d}",
+        .{ subject, max, suffix, got },
+    );
+}
+
+/// How many arguments a call to `callee` must supply.
+///
+/// `null` when the callee is not a `def` this module declared — an
+/// indirect call through a function value has no declaration to read
+/// defaults from, so every parameter is required.
+fn requiredArity(c: *const Checker, callee: *const ast.Expr) ?usize {
+    const raw = flow.identName(c, callee) orelse return null;
+    const decl = c.def_registry.get(c.resolveValueAlias(raw)) orelse return null;
+    return requiredCount(decl.params);
 }
 
 /// When `callee` resolves to a `def` decl whose last param is

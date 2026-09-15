@@ -273,6 +273,7 @@ Errors raised during tokenization or recursive-descent parsing.
 | `E_SYNTAX_MALFORMED_LITERAL` | Bad escape, bad hex digit, bad fixed-point form. |
 | `E_SYNTAX_HEX_PREFIX` | `0x...` rejected — use `$...`. |
 | `E_SYNTAX_ANNOTATION_PLACEMENT` | Annotation doesn't attach to a following decl. |
+| `E_SYNTAX_PARAM_DEFAULT` | A parameter default sits where it cannot hold — on a variadic parameter, or ahead of a parameter that has none (§4.6.3). |
 
 **Mockup — missing closing keyword:**
 
@@ -872,6 +873,7 @@ Codes are stable. New ones append; old ones never change meaning.
 | `E_SYNTAX_MALFORMED_LITERAL` | Parser | v0.3 |
 | `E_SYNTAX_HEX_PREFIX` | Parser | v0.3 |
 | `E_SYNTAX_ANNOTATION_PLACEMENT` | Parser | v0.3 |
+| `E_SYNTAX_PARAM_DEFAULT` | Parser | v0.4 |
 | `E_TYPE_MISMATCH` | Typechecker | v0.3 |
 | `E_TYPE_ASSIGN_CONST` | Typechecker | v0.4 |
 | `E_TYPE_TOP_LEVEL_STATEMENT` | Typechecker | v0.3 |

@@ -10268,3 +10268,105 @@ test "globals: a module-level aggregate stays mutable" {
         \\
     , "101\n");
 }
+
+test "defaults: an omitted trailing argument takes its declared value" {
+    try runAndExpect(
+        \\def f(a: i16, b: i16 = 5) -> i16
+        \\  return a + b
+        \\end
+        \\def main()
+        \\  print f(1)
+        \\  print f(1, 2)
+        \\end
+        \\
+    , "6\n3\n");
+}
+
+test "defaults: several trailing parameters fill right to left" {
+    try runAndExpect(
+        \\def add3(a: i16, b: i16 = 10, c: i16 = 100) -> i16
+        \\  return a + b + c
+        \\end
+        \\def main()
+        \\  print add3(1)
+        \\  print add3(1, 2)
+        \\  print add3(1, 2, 3)
+        \\end
+        \\
+    , "111\n103\n6\n");
+}
+
+test "defaults: a module-level aggregate can be the declared value" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\  y: i16
+        \\end
+        \\let origin: P = P { x: 3, y: 4 }
+        \\def dist(p: P = origin) -> i16
+        \\  return p.x + p.y
+        \\end
+        \\def main()
+        \\  print dist()
+        \\  print dist(P { x: 10, y: 20 })
+        \\end
+        \\
+    , "7\n30\n");
+}
+
+test "defaults: a method and a @static method both take theirs" {
+    try runAndExpect(
+        \\class P
+        \\  let x: i16
+        \\  def init(self, x: i16) self.x = x end
+        \\  def bump(self, by: i16 = 5) -> i16 return self.x + by end
+        \\  @static
+        \\  def make(v: i16 = 7) -> i16 return v * 2 end
+        \\end
+        \\def main()
+        \\  let p = P(1)
+        \\  print p.bump()
+        \\  print p.bump(2)
+        \\  print P.make()
+        \\end
+        \\
+    , "6\n3\n14\n");
+}
+
+test "defaults: the receiver's static type picks the default, the vtable picks the body" {
+    try runAndExpect(
+        \\class P
+        \\  let x: i16
+        \\  def init(self, x: i16) self.x = x end
+        \\  def bump(self, by: i16 = 5) -> i16 return self.x + by end
+        \\end
+        \\class Q extends P
+        \\  def bump(self, by: i16 = 100) -> i16 return self.x - by end
+        \\  def viasuper(self) -> i16 return super.bump() end
+        \\end
+        \\def main()
+        \\  let q = Q(0)
+        \\  let r: P = q
+        \\  print q.bump()
+        \\  print r.bump()
+        \\  print q.viasuper()
+        \\end
+        \\
+    , "-100\n-5\n5\n");
+}
+
+test "defaults: an aggregate default is built at the call site" {
+    try runAndExpect(
+        \\struct P
+        \\  x: i16
+        \\end
+        \\def f(n: i16, p: P = P { x: 7 }) -> i16
+        \\  return n + p.x
+        \\end
+        \\def main()
+        \\  print f(1)
+        \\  print f(1, P { x: 20 })
+        \\end
+        \\
+    , "8\n21\n");
+}

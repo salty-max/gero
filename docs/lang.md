@@ -1983,14 +1983,84 @@ take a tuple or `Vec` parameter instead of varargs.
 Restrictions:
 
 - Only the **last** parameter may be variadic.
-- Parameters have no default values, variadic or otherwise — the
-  caller supplies every argument. A variadic slot may be empty
-  (zero args).
+- A variadic parameter has no default — it already accepts zero
+  arguments. A variadic slot may be empty.
 - All variadic args must be **the same statically-known type** (or
   satisfy a common annotation). Mixed-type varargs aren't supported;
   for heterogeneous data, pass a tuple or struct explicitly.
 - A variadic **method** is non-virtual: not `@override` / `@abstract`,
   and not overridable.
+
+#### 4.6.3 Default parameters
+
+A trailing parameter may declare the value a call can leave out:
+
+```gero
+def rect(x: i16, y: i16, w: i16 = 8, h: i16 = 8, color: u8 = 7)
+  -- ...
+end
+
+rect(10, 20)                -- w=8, h=8, color=7
+rect(10, 20, 32)            -- h=8, color=7
+rect(10, 20, 32, 16, 3)
+```
+
+Rules:
+
+- Once a parameter carries a default, **every parameter after it must
+  too**. Otherwise a call supplying fewer arguments than there are
+  parameters could not say which one it left out.
+- A default is any expression valid where the call is written — a
+  literal, a `const`, a struct literal. It is evaluated **at the call
+  site**, as if the argument had been typed there.
+- It therefore cannot read the function's own parameters: they do not
+  exist yet. `def f(a: i16, b: i16 = a)` is an error.
+- A variadic parameter takes no default (§4.6.2); it already accepts
+  zero arguments.
+
+Methods take defaults on the same terms, `@static` ones included.
+Because the default is written into the call site, it is chosen by the
+**static** type of the receiver, while the body is still chosen by the
+vtable (§6):
+
+```gero
+class Sprite
+  let id: i16
+
+  def init(self, id: i16)
+    self.id = id
+  end
+
+  def draw(self, layer: i16 = 0) -> i16
+    return layer
+  end
+end
+
+class Ghost extends Sprite
+  def draw(self, layer: i16 = 3) -> i16
+    return layer
+  end
+
+  def behind(self) -> i16
+    return super.draw()       -- layer = 0, Sprite's
+  end
+end
+
+def main()
+  let g = Ghost(1)
+  let s: Sprite = g
+  print g.draw()              -- Ghost.draw, layer = 3
+  print s.draw()              -- Ghost.draw, layer = 0
+end
+```
+
+An override that changes the default therefore changes it only for
+calls written against the subclass. Declaring the same default in both
+is the way to keep them in step.
+
+Defaults cost nothing at runtime. The compiler emits the declared
+expression at each call that omits it, so `rect(10, 20)` compiles to
+exactly what `rect(10, 20, 8, 8, 7)` compiles to.
 
 #### 4.6.3 Method calls and chaining
 
@@ -3089,8 +3159,7 @@ and the compiler simple; the absence isn't a missing feature.
   `Vec(u8).slice` is the borrowed-view form.
 - **Tail-call reuse.** Every call pushes a frame. Rewrite unbounded
   recursion as a loop.
-- **`let else`, default parameter values.** Failure is `if let` /
-  `match`; every argument is written at the call site.
+- **`let else`.** Failure is `if let` / `match`.
 - **Block comments.** `--` to EOL is the only comment syntax —
   matches the asm `;` family in spirit (no `--[[ ... ]]`).
 - **Decimal floats.** The VM is integer-only; `fixed` (Q16.16) covers
