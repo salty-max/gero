@@ -218,6 +218,49 @@ test "imports: importing a name the target does not export is rejected" {
     try std.testing.expect(has(codes.items, "E_USE_UNDEFINED_MEMBER"));
 }
 
+test "imports: the caret sits under the listed name, not the directive" {
+    var fx = try util.ModuleFixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr",
+        \\struct Vec2
+        \\  x: i16
+        \\end
+        \\
+    );
+    try fx.write("main.gr",
+        \\use Vec2, Missing from "./lib"
+        \\def main()
+        \\  print 1
+        \\end
+        \\
+    );
+
+    const path = try fx.pathOf("main.gr");
+    defer alloc.free(path);
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, path);
+    defer fused.deinit();
+    var stream = try gero.lang.tokenize(alloc, fused.source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, fused.source, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheckGraph(alloc, fused.source, &tree.program, &fused.import_aliases, .{
+        .source_map = &fused.source_map,
+        .imports = fused.imports,
+    });
+    defer checked.deinit();
+
+    for (checked.diagnostics) |d| {
+        if (!std.mem.eql(u8, d.code, "E_USE_UNDEFINED_MEMBER")) continue;
+        const loc = fused.source_map.lookup(d.span.start) orelse return error.NoLocation;
+        // `use Vec2, Missing from "./lib"` — `Missing` starts at
+        // column 11, and the span covers the whole word.
+        try std.testing.expectEqual(@as(usize, 10), loc.file_offset);
+        try std.testing.expectEqual(@as(u32, "Missing".len), d.span.end - d.span.start);
+        return;
+    }
+    return error.MissingDiagnostic;
+}
+
 test "imports: a misspelled import names the export it nearly matched" {
     var fx = try util.ModuleFixture.init();
     defer fx.deinit();

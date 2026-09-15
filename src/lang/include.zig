@@ -55,6 +55,11 @@ pub const ImportItem = struct {
     name: []const u8,
     /// The name it is bound to in the importer, when `as` renamed it.
     alias: ?[]const u8 = null,
+    /// Fused offsets of `name` as the `use` line wrote it, so a
+    /// diagnostic about it can point at the name rather than at the
+    /// start of the directive.
+    start: u32 = 0,
+    end: u32 = 0,
 };
 
 /// Resolves a fused-source offset back to `(file, file_offset)`.
@@ -661,14 +666,20 @@ fn processSource(
                     seg_file_start,
                 );
             }
-            // 1-byte sentinel for the directive position so any
-            // error attached to the `use` line has a mappable
-            // fused offset.
+            // The directive is replaced by its own width in spaces
+            // rather than collapsed, so every column of it keeps a
+            // fused offset that maps back. A diagnostic about one of
+            // the listed names can then point at the name, where a
+            // one-byte sentinel could only point at the line.
+            // The parser sees blanks either way.
             const sentinel_start: u32 = @intCast(ctx.fused.items.len);
+            const directive_len = line_end - line_start;
+            try ctx.fused.appendNTimes(ctx.allocator, ' ', directive_len);
             try ctx.fused.append(ctx.allocator, '\n');
             try ctx.source_map.appendRegion(
                 sentinel_start,
-                sentinel_start + 1,
+                // @as: a source line's length, bounded by max_file_size.
+                sentinel_start + @as(u32, @intCast(directive_len)) + 1,
                 file_id,
                 @intCast(line_start),
             );
@@ -774,6 +785,16 @@ fn matchUseQuotedLine(line: []const u8) ?[]const u8 {
 /// no items, so nothing is recorded. Name/alias slices borrow `line`
 /// (interned source, stable for the fuse). A repeated alias key takes
 /// the last binding.
+/// Byte offset of `part` within `whole`, which it is a slice of.
+///
+/// The fused buffer keeps the directive at its original width, so an
+/// offset within the line is also an offset within the fused text.
+fn offsetWithin(whole: []const u8, part: []const u8) u32 {
+    // safety: `part` is a sub-slice of `whole`, so the difference is
+    // non-negative and bounded by a source line's length.
+    return @intCast(@intFromPtr(part.ptr) - @intFromPtr(whole.ptr));
+}
+
 fn collectItems(ctx: *Context, line: []const u8, site_offset: u32) ResolveError![]const ImportItem {
     var i: usize = 0;
     while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
@@ -792,18 +813,33 @@ fn collectItems(ctx: *Context, line: []const u8, site_offset: u32) ResolveError!
         const item = std.mem.trim(u8, raw, " \t");
         if (item.len == 0) continue;
         const as_off = findKeyword(item, "as") orelse {
-            try out.append(ctx.allocator, .{ .name = item });
+            const at = offsetWithin(line, item) + site_offset;
+            try out.append(ctx.allocator, .{
+                .name = item,
+                .start = at,
+                // @as: one identifier's length.
+                .end = at + @as(u32, @intCast(item.len)),
+            });
             continue;
         };
         const name = std.mem.trim(u8, item[0..as_off], " \t");
         const alias = std.mem.trim(u8, item[as_off + "as".len ..], " \t");
         if (name.len == 0 or alias.len == 0) continue;
-        try out.append(ctx.allocator, .{ .name = name, .alias = alias });
+        const at = offsetWithin(line, name) + site_offset;
+        try out.append(ctx.allocator, .{
+            .name = name,
+            .alias = alias,
+            .start = at,
+            // @as: one identifier's length.
+            .end = at + @as(u32, @intCast(name.len)),
+        });
         const gop = try ctx.import_aliases.getOrPut(ctx.allocator, alias);
         // Re-binding the same alias to the same target is a harmless
         // repeat; to a different one is an ambiguous import.
         if (gop.found_existing and !std.mem.eql(u8, gop.value_ptr.*, name)) {
-            try recordError(ctx, .duplicate_alias, site_offset, alias);
+            // The alias as written, for the same reason the member
+            // error points at its name.
+            try recordError(ctx, .duplicate_alias, offsetWithin(line, alias) + site_offset, alias);
         }
         gop.value_ptr.* = name;
     }
