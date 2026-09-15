@@ -3,6 +3,7 @@
 -- `gero test` collects every `@test` def under tests/, runs each on
 -- a fresh VM, and fails the ones whose `assert` does not hold.
 -- Treat this as a template — add real tests as your project grows.
+
 def double(n: i16) -> i16
   return n * 2
 end

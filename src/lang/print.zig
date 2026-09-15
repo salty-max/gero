@@ -57,6 +57,7 @@ pub fn print(
     var buf: std.Io.Writer.Allocating = .init(allocator);
     defer buf.deinit();
     var p: Printer = .{
+        .buf = &buf,
         .writer = &buf.writer,
         .source = source,
         .indent = 0,
@@ -81,9 +82,9 @@ pub fn print(
         try p.flushTrailing(s.span().end);
     }
     if (program.statements.len > 0) try p.writer.writeByte('\n');
-    try writer.writeAll(buf.written());
     // File-trailing comments after the last statement.
     try p.flushLeading(@intCast(source.len));
+    try writer.writeAll(buf.written());
 }
 
 fn isMultiLineStatement(s: ast.Statement) bool {
@@ -103,11 +104,71 @@ fn isMultiLineStatement(s: ast.Statement) bool {
     };
 }
 
+/// Whether `source[from..to]` holds a blank line — two newlines with
+/// nothing but horizontal space between them.
+fn blankLineBetween(source: []const u8, from: u32, to: u32) bool {
+    if (to <= from or to > source.len) return false;
+    var seen: usize = 0;
+    for (source[from..to]) |c| {
+        switch (c) {
+            '\n' => {
+                seen += 1;
+                if (seen == 2) return true;
+            },
+            ' ', '\t', '\r' => {},
+            // Anything else means the gap holds content, not a break.
+            else => return false,
+        }
+    }
+    return false;
+}
+
+/// A construct's one-line form, rendered by the same code that
+/// measures it so the two can never disagree.
+fn Flat(comptime Inner: type) type {
+    return struct {
+        inner: Inner,
+        fn render(self: @This(), p: *Printer) PrintError!void {
+            return self.inner.renderFlat(p);
+        }
+    };
+}
+
+const ArgList = struct {
+    args: []const *ast.Expr,
+    fn renderFlat(self: ArgList, p: *Printer) PrintError!void {
+        try p.writer.writeByte('(');
+        for (self.args, 0..) |a, i| {
+            if (i > 0) try p.writer.writeAll(", ");
+            try p.writeExpr(a, .lowest);
+        }
+        try p.writer.writeByte(')');
+    }
+};
+
+const FieldList = struct {
+    fields: []const ast.StructLitField,
+    fn renderFlat(self: FieldList, p: *Printer) PrintError!void {
+        try p.writer.writeAll(" { ");
+        for (self.fields, 0..) |f, i| {
+            if (i > 0) try p.writer.writeAll(", ");
+            try p.writer.writeAll(p.lexeme(f.name));
+            try p.writer.writeAll(": ");
+            try p.writeExpr(f.value, .lowest);
+        }
+        try p.writer.writeAll(" }");
+    }
+};
+
 /// What printing can fail with: the writer's own errors, plus the
 /// allocation a wrapping measurement needs.
 pub const PrintError = std.Io.Writer.Error || std.mem.Allocator.Error;
 
 const Printer = struct {
+    /// The same buffer `writer` appends to. Read back to find the
+    /// column a construct starts at, which is what decides whether it
+    /// fits on the line.
+    buf: *std.Io.Writer.Allocating,
     writer: *std.Io.Writer,
     source: []const u8,
     indent: usize,
@@ -125,13 +186,21 @@ const Printer = struct {
     /// its own line at the current indent. Drives leading + standalone
     /// comments; call it just before printing a spanned item (or the
     /// closing `end`) so the comment lands above it.
-    fn flushLeading(self: *Printer, offset: u32) std.Io.Writer.Error!void {
+    fn flushLeading(self: *Printer, offset: u32) PrintError!void {
         while (self.comment_idx < self.comments.len and self.comments[self.comment_idx].start < offset) {
             const c = self.comments[self.comment_idx];
             try self.writeIndent();
             try self.writer.writeAll(std.mem.trimEnd(u8, self.source[c.start..c.end], " \t"));
             try self.writer.writeByte('\n');
             self.comment_idx += 1;
+            // A blank line the author left after a comment separates a
+            // file or section header from what follows it. Collapsing
+            // it would glue every header onto the first declaration.
+            const next = if (self.comment_idx < self.comments.len)
+                @min(self.comments[self.comment_idx].start, offset)
+            else
+                offset;
+            if (blankLineBetween(self.source, c.end, next)) try self.writer.writeByte('\n');
         }
     }
 
@@ -139,7 +208,7 @@ const Printer = struct {
     /// item that just ended at byte `after`, emit it inline as a
     /// trailing ` -- …`. No-op otherwise (it'll flush as a leading
     /// comment before the next item).
-    fn flushTrailing(self: *Printer, after: u32) std.Io.Writer.Error!void {
+    fn flushTrailing(self: *Printer, after: u32) PrintError!void {
         if (self.comment_idx >= self.comments.len) return;
         const c = self.comments[self.comment_idx];
         if (c.start < after) return;
@@ -155,7 +224,82 @@ const Printer = struct {
         return self.source[span.start..span.end];
     }
 
-    fn writeIndent(self: *Printer) std.Io.Writer.Error!void {
+    /// Emit an integer literal, applying `hex_case` to a `$`-prefixed
+    /// one and leaving every other form byte-identical.
+    ///
+    /// Decimal and `0b` binary have no case to choose, and re-emitting
+    /// the span keeps them exactly as written.
+    fn writeIntLit(self: *Printer, span: ast.Span) PrintError!void {
+        const text = self.lexeme(span);
+        if (self.opts.hex_case == .preserve or text.len < 2 or text[0] != '$') {
+            return self.writer.writeAll(text);
+        }
+        try self.writer.writeByte('$');
+        for (text[1..]) |c| {
+            try self.writer.writeByte(switch (self.opts.hex_case) {
+                .upper => std.ascii.toUpper(c),
+                .lower => std.ascii.toLower(c),
+                .preserve => c,
+            });
+        }
+    }
+
+    /// Columns emitted on the current line so far.
+    ///
+    /// A tab counts as `indent` columns: its rendered width is the
+    /// reader's setting, and guessing low would wrap lines that fit.
+    fn column(self: *const Printer) usize {
+        const w = self.buf.written();
+        const line_start = if (std.mem.lastIndexOfScalar(u8, w, '\n')) |i| i + 1 else 0;
+        var n: usize = 0;
+        for (w[line_start..]) |c| n += if (c == '\t') self.opts.indent else 1;
+        return n;
+    }
+
+    /// Render `body` into a throwaway buffer at the current indent and
+    /// return its width, or `null` when it spans lines and so can
+    /// never be the flat form.
+    ///
+    /// Measuring by rendering keeps one definition of what a construct
+    /// looks like: a width computed separately would drift from the
+    /// emitter it is predicting.
+    fn flatWidth(self: *Printer, body: anytype) PrintError!?usize {
+        var probe: std.Io.Writer.Allocating = .init(self.allocator);
+        defer probe.deinit();
+        var sub: Printer = .{
+            .buf = &probe,
+            .writer = &probe.writer,
+            .source = self.source,
+            .indent = self.indent,
+            // A probe must not consume comments: the real emission
+            // replays the same span and needs them still pending.
+            .comments = &.{},
+            .comment_idx = 0,
+            .opts = self.opts,
+            .allocator = self.allocator,
+        };
+        try body.render(&sub);
+        const out = probe.written();
+        if (std.mem.indexOfScalar(u8, out, '\n') != null) return null;
+        return out.len;
+    }
+
+    /// Whether a construct of `width` columns still fits from here.
+    fn fits(self: *const Printer, width: usize) bool {
+        return self.column() + width <= self.opts.max_width;
+    }
+
+    /// Emit a newline and the indent one level deeper, for the broken
+    /// form of a wrapped construct.
+    fn breakLine(self: *Printer, depth: usize) PrintError!void {
+        try self.writer.writeByte('\n');
+        const saved = self.indent;
+        self.indent = depth;
+        try self.writeIndent();
+        self.indent = saved;
+    }
+
+    fn writeIndent(self: *Printer) PrintError!void {
         var i: usize = 0;
         while (i < self.indent) : (i += 1) {
             if (self.opts.use_tabs) {
@@ -178,7 +322,7 @@ const Printer = struct {
         self: *Printer,
         body: []const ast.Statement,
         end_off: ?u32,
-    ) std.Io.Writer.Error!void {
+    ) PrintError!void {
         self.indent += 1;
         for (body) |s| {
             try self.flushLeading(s.span().start);
@@ -200,7 +344,7 @@ const Printer = struct {
     fn writeAnnotations(
         self: *Printer,
         anns: []const ast.Annotation,
-    ) std.Io.Writer.Error!void {
+    ) PrintError!void {
         for (anns) |a| {
             try self.writer.writeByte('@');
             try self.writer.writeAll(self.lexeme(a.name));
@@ -222,7 +366,7 @@ const Printer = struct {
     /// Emit a full statement line: indent prefix + statement content.
     /// Use this from contexts where the writer is at the start of a
     /// fresh line and a new statement needs its own indent.
-    fn writeStatement(self: *Printer, s: ast.Statement) std.Io.Writer.Error!void {
+    fn writeStatement(self: *Printer, s: ast.Statement) PrintError!void {
         try self.writeIndent();
         try self.writeStatementInline(s);
     }
@@ -230,7 +374,7 @@ const Printer = struct {
     /// Emit only the statement content, no indent prefix. Use this
     /// when the writer is already positioned mid-line — match-arm
     /// single-line bodies (after `=>`), `defer <stmt>`, etc.
-    fn writeStatementInline(self: *Printer, s: ast.Statement) std.Io.Writer.Error!void {
+    fn writeStatementInline(self: *Printer, s: ast.Statement) PrintError!void {
         switch (s) {
             .let_decl => |d| try self.writeLetDecl(d),
             .const_decl => |d| try self.writeConstDecl(d),
@@ -277,7 +421,7 @@ const Printer = struct {
         }
     }
 
-    fn writeLetDecl(self: *Printer, d: ast.LetDecl) std.Io.Writer.Error!void {
+    fn writeLetDecl(self: *Printer, d: ast.LetDecl) PrintError!void {
         try self.writeAnnotations(d.annotations);
         if (d.is_local) try self.writer.writeAll("local ");
         try self.writer.writeAll("let ");
@@ -292,7 +436,7 @@ const Printer = struct {
         }
     }
 
-    fn writeConstDecl(self: *Printer, d: ast.ConstDecl) std.Io.Writer.Error!void {
+    fn writeConstDecl(self: *Printer, d: ast.ConstDecl) PrintError!void {
         try self.writeAnnotations(d.annotations);
         if (d.is_local) try self.writer.writeAll("local ");
         try self.writer.writeAll("const ");
@@ -305,7 +449,7 @@ const Printer = struct {
         try self.writeExpr(d.init, .lowest);
     }
 
-    fn writeAssign(self: *Printer, a: ast.AssignStmt) std.Io.Writer.Error!void {
+    fn writeAssign(self: *Printer, a: ast.AssignStmt) PrintError!void {
         try self.writeExpr(a.target, .lowest);
         try self.writer.writeByte(' ');
         try self.writer.writeAll(switch (a.op) {
@@ -329,14 +473,14 @@ const Printer = struct {
         self: *Printer,
         body: []const ast.Statement,
         end_off: u32,
-    ) std.Io.Writer.Error!void {
+    ) PrintError!void {
         try self.writer.writeAll("do\n");
         try self.writeBodyBlock(body, end_off);
         try self.writeIndent();
         try self.writer.writeAll("end");
     }
 
-    fn writeIfStmt(self: *Printer, s: ast.IfStmt) std.Io.Writer.Error!void {
+    fn writeIfStmt(self: *Printer, s: ast.IfStmt) PrintError!void {
         try self.writeIfChain(s.arms, s.else_body, s.span.end);
     }
 
@@ -345,7 +489,7 @@ const Printer = struct {
         arms: []const ast.IfArm,
         else_body: ?[]const ast.Statement,
         end_off: u32,
-    ) std.Io.Writer.Error!void {
+    ) PrintError!void {
         for (arms, 0..) |arm, i| {
             // The caller indents the first arm's `if`; later `elif`
             // arms begin their own line and indent themselves.
@@ -368,7 +512,7 @@ const Printer = struct {
         try self.writer.writeAll("end");
     }
 
-    fn writeIfArmHead(self: *Printer, arm: ast.IfArm) std.Io.Writer.Error!void {
+    fn writeIfArmHead(self: *Printer, arm: ast.IfArm) PrintError!void {
         if (arm.let_pattern) |pat| {
             try self.writer.writeAll("let ");
             try self.writePattern(pat);
@@ -383,7 +527,7 @@ const Printer = struct {
         }
     }
 
-    fn writeWhileStmt(self: *Printer, s: ast.WhileStmt) std.Io.Writer.Error!void {
+    fn writeWhileStmt(self: *Printer, s: ast.WhileStmt) PrintError!void {
         try self.writer.writeAll("while ");
         if (s.let_pattern) |pat| {
             try self.writer.writeAll("let ");
@@ -407,7 +551,7 @@ const Printer = struct {
         try self.writer.writeAll("end");
     }
 
-    fn writeForStmt(self: *Printer, s: ast.ForStmt) std.Io.Writer.Error!void {
+    fn writeForStmt(self: *Printer, s: ast.ForStmt) PrintError!void {
         try self.writer.writeAll("for ");
         try self.writer.writeAll(self.lexeme(s.binding));
         try self.writer.writeAll(" in ");
@@ -426,7 +570,7 @@ const Printer = struct {
         try self.writer.writeAll("end");
     }
 
-    fn writeRepeatStmt(self: *Printer, s: ast.RepeatStmt) std.Io.Writer.Error!void {
+    fn writeRepeatStmt(self: *Printer, s: ast.RepeatStmt) PrintError!void {
         try self.writer.writeAll("repeat");
         if (s.label) |lbl| {
             try self.writer.writeAll(" :");
@@ -441,7 +585,7 @@ const Printer = struct {
         try self.writeExpr(s.cond, .lowest);
     }
 
-    fn writeMatchStmt(self: *Printer, s: ast.MatchStmt) std.Io.Writer.Error!void {
+    fn writeMatchStmt(self: *Printer, s: ast.MatchStmt) PrintError!void {
         try self.writer.writeAll("match ");
         try self.writeExpr(s.scrutinee, .lowest);
         try self.writer.writeByte('\n');
@@ -473,7 +617,7 @@ const Printer = struct {
         try self.writer.writeAll("end");
     }
 
-    fn writeReturnStmt(self: *Printer, s: ast.ReturnStmt) std.Io.Writer.Error!void {
+    fn writeReturnStmt(self: *Printer, s: ast.ReturnStmt) PrintError!void {
         try self.writer.writeAll("return");
         if (s.value) |v| {
             try self.writer.writeByte(' ');
@@ -485,7 +629,7 @@ const Printer = struct {
         self: *Printer,
         kw: []const u8,
         label: ?ast.Span,
-    ) std.Io.Writer.Error!void {
+    ) PrintError!void {
         try self.writer.writeAll(kw);
         if (label) |l| {
             try self.writer.writeAll(" :");
@@ -493,7 +637,7 @@ const Printer = struct {
         }
     }
 
-    fn writePrintStmt(self: *Printer, s: ast.PrintStmt) std.Io.Writer.Error!void {
+    fn writePrintStmt(self: *Printer, s: ast.PrintStmt) PrintError!void {
         try self.writer.writeAll("print");
         for (s.args, 0..) |a, i| {
             try self.writer.writeAll(if (i == 0) " " else ", ");
@@ -501,7 +645,7 @@ const Printer = struct {
         }
     }
 
-    fn writeDefDecl(self: *Printer, d: ast.DefDecl) std.Io.Writer.Error!void {
+    fn writeDefDecl(self: *Printer, d: ast.DefDecl) PrintError!void {
         try self.writeAnnotations(d.annotations);
         if (d.is_local) try self.writer.writeAll("local ");
         if (d.is_bake) try self.writer.writeAll("bake ");
@@ -524,7 +668,7 @@ const Printer = struct {
     fn writeParamList(
         self: *Printer,
         params: []const ast.Param,
-    ) std.Io.Writer.Error!void {
+    ) PrintError!void {
         try self.writer.writeByte('(');
         for (params, 0..) |param, i| {
             if (i > 0) try self.writer.writeAll(", ");
@@ -539,7 +683,7 @@ const Printer = struct {
         try self.writer.writeByte(')');
     }
 
-    fn writeClassDecl(self: *Printer, d: ast.ClassDecl) std.Io.Writer.Error!void {
+    fn writeClassDecl(self: *Printer, d: ast.ClassDecl) PrintError!void {
         try self.writeAnnotations(d.annotations);
         if (d.is_local) try self.writer.writeAll("local ");
         try self.writer.writeAll("class ");
@@ -582,7 +726,7 @@ const Printer = struct {
         try self.writer.writeAll("end");
     }
 
-    fn writeStructDecl(self: *Printer, d: ast.StructDecl) std.Io.Writer.Error!void {
+    fn writeStructDecl(self: *Printer, d: ast.StructDecl) PrintError!void {
         try self.writeAnnotations(d.annotations);
         if (d.is_local) try self.writer.writeAll("local ");
         try self.writer.writeAll("struct ");
@@ -604,7 +748,7 @@ const Printer = struct {
         try self.writer.writeAll("end");
     }
 
-    fn writeEnumDecl(self: *Printer, d: ast.EnumDecl) std.Io.Writer.Error!void {
+    fn writeEnumDecl(self: *Printer, d: ast.EnumDecl) PrintError!void {
         try self.writeAnnotations(d.annotations);
         if (d.is_local) try self.writer.writeAll("local ");
         try self.writer.writeAll("enum ");
@@ -640,7 +784,7 @@ const Printer = struct {
         try self.writer.writeAll("end");
     }
 
-    fn writeUseDecl(self: *Printer, d: ast.UseDecl) std.Io.Writer.Error!void {
+    fn writeUseDecl(self: *Printer, d: ast.UseDecl) PrintError!void {
         if (d.is_local) try self.writer.writeAll("local ");
         try self.writer.writeAll("use ");
         if (d.items.len > 0) {
@@ -669,14 +813,14 @@ const Printer = struct {
 
     // ---------- patterns ----------
 
-    fn writePattern(self: *Printer, p: *const ast.Pattern) std.Io.Writer.Error!void {
+    fn writePattern(self: *Printer, p: *const ast.Pattern) PrintError!void {
         switch (p.*) {
             .wildcard => try self.writer.writeByte('_'),
             .ident => |x| try self.writer.writeAll(self.lexeme(x.name)),
             // Re-emit the source span so hex (`$FF`) / binary
             // (`0b…`) / decimal forms round-trip byte-identical
             // instead of normalizing to decimal.
-            .int_lit => |x| try self.writer.writeAll(self.lexeme(x.span)),
+            .int_lit => |x| try self.writeIntLit(x.span),
             .str_lit => |x| try self.writer.writeAll(self.lexeme(x.span)),
             .char_lit => |x| try self.writer.writeAll(self.lexeme(x.span)),
             .bool_lit => |x| try self.writer.writeAll(if (x.value) "true" else "false"),
@@ -732,7 +876,7 @@ const Printer = struct {
 
     // ---------- type annotations ----------
 
-    fn writeTypeAnn(self: *Printer, t: *const ast.TypeAnn) std.Io.Writer.Error!void {
+    fn writeTypeAnn(self: *Printer, t: *const ast.TypeAnn) PrintError!void {
         switch (t.*) {
             .named => |n| try self.writer.writeAll(self.lexeme(n.name)),
             .nullable => |n| {
@@ -814,16 +958,65 @@ const Printer = struct {
         };
     }
 
+    /// `(a, b, c)` on one line, or one argument per line when that
+    /// would overrun `max_width`.
+    ///
+    /// An empty list is always `()`: there is nothing to break.
+    fn writeArgList(self: *Printer, args: []const *ast.Expr) PrintError!void {
+        if (args.len == 0) {
+            try self.writer.writeAll("()");
+            return;
+        }
+        const flat = Flat(ArgList){ .inner = .{ .args = args } };
+        if (try self.flatWidth(flat)) |w| {
+            if (self.fits(w)) return flat.render(self);
+        }
+        const depth = self.indent + 1;
+        try self.writer.writeByte('(');
+        for (args) |a| {
+            try self.breakLine(depth);
+            try self.writeExpr(a, .lowest);
+            // A trailing comma on every element, so adding one later
+            // touches a single line.
+            try self.writer.writeByte(',');
+        }
+        try self.breakLine(self.indent);
+        try self.writer.writeByte(')');
+    }
+
+    /// `T { a: 1, b: 2 }` on one line, or one field per line.
+    fn writeFieldList(self: *Printer, fields: []const ast.StructLitField) PrintError!void {
+        if (fields.len == 0) {
+            try self.writer.writeAll(" {}");
+            return;
+        }
+        const flat = Flat(FieldList){ .inner = .{ .fields = fields } };
+        if (try self.flatWidth(flat)) |w| {
+            if (self.fits(w)) return flat.render(self);
+        }
+        const depth = self.indent + 1;
+        try self.writer.writeAll(" {");
+        for (fields) |f| {
+            try self.breakLine(depth);
+            try self.writer.writeAll(self.lexeme(f.name));
+            try self.writer.writeAll(": ");
+            try self.writeExpr(f.value, .lowest);
+            try self.writer.writeByte(',');
+        }
+        try self.breakLine(self.indent);
+        try self.writer.writeByte('}');
+    }
+
     fn writeExpr(
         self: *Printer,
         e: *const ast.Expr,
         outer: Prec,
-    ) std.Io.Writer.Error!void {
+    ) PrintError!void {
         switch (e.*) {
             // Re-emit the source span so hex (`$FF`) / binary
             // (`0b…`) / decimal forms round-trip byte-identical
             // instead of normalizing to decimal.
-            .int_lit => |x| try self.writer.writeAll(self.lexeme(x.span)),
+            .int_lit => |x| try self.writeIntLit(x.span),
             .fixed_lit => |x| try self.writer.writeAll(self.lexeme(x.span)),
             .bool_lit => |x| try self.writer.writeAll(if (x.value) "true" else "false"),
             .nil_lit => try self.writer.writeAll("nil"),
@@ -871,12 +1064,7 @@ const Printer = struct {
             },
             .call => |c| {
                 try self.writeExpr(c.callee, .call);
-                try self.writer.writeByte('(');
-                for (c.args, 0..) |a, i| {
-                    if (i > 0) try self.writer.writeAll(", ");
-                    try self.writeExpr(a, .lowest);
-                }
-                try self.writer.writeByte(')');
+                try self.writeArgList(c.args);
             },
             .method_call => |m| {
                 try self.writeExpr(m.receiver, .call);
@@ -931,14 +1119,7 @@ const Printer = struct {
             },
             .struct_lit => |sl| {
                 try self.writer.writeAll(self.lexeme(sl.type_name));
-                try self.writer.writeAll(" { ");
-                for (sl.fields, 0..) |f, i| {
-                    if (i > 0) try self.writer.writeAll(", ");
-                    try self.writer.writeAll(self.lexeme(f.name));
-                    try self.writer.writeAll(": ");
-                    try self.writeExpr(f.value, .lowest);
-                }
-                try self.writer.writeAll(" }");
+                try self.writeFieldList(sl.fields);
             },
             .tuple_lit => |tl| {
                 try self.writer.writeByte('(');
@@ -988,7 +1169,7 @@ const Printer = struct {
         }
     }
 
-    fn writeStrLit(self: *Printer, x: ast.StrLitExpr) std.Io.Writer.Error!void {
+    fn writeStrLit(self: *Printer, x: ast.StrLitExpr) PrintError!void {
         try self.writer.writeByte('"');
         for (x.parts) |part| switch (part) {
             .lit => |lp| try self.writer.writeAll(self.lexeme(lp.span)),
@@ -1005,7 +1186,7 @@ const Printer = struct {
         try self.writer.writeByte('"');
     }
 
-    fn writeLambda(self: *Printer, l: ast.LambdaExpr) std.Io.Writer.Error!void {
+    fn writeLambda(self: *Printer, l: ast.LambdaExpr) PrintError!void {
         // Short form when the body is exactly one `return <expr>` —
         // this is the canonical shape `parseShortLambda` produces.
         if (l.body.len == 1 and l.body[0] == .return_stmt and l.body[0].return_stmt.value != null) {

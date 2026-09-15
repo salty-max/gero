@@ -5,6 +5,7 @@
 --
 --   gero build
 --   gero run out/debug/<name>.gx
+
 def main()
   print "Hello, gero!"
 end

@@ -123,7 +123,7 @@ pub const ModuleParse = parser_mod.ModuleParse;
 /// ```
 /// var out: std.Io.Writer.Allocating = .init(allocator);
 /// defer out.deinit();
-/// try gero.lang.print(&out.writer, &tree.program, source, stream.comments);
+/// try gero.lang.print(alloc, &out.writer, &tree.program, source, stream.comments, .{});
 /// ```
 pub const print = print_mod.print;
 /// Knobs for the canonical `.gr` printer.
