@@ -28,6 +28,41 @@ pub const PrintOptions = struct {
     max_width: usize = 100,
     /// Case policy for `$FF` hex literals.
     hex_case: HexCase = .preserve,
+    /// Emit a comma after the last element of a construct broken
+    /// across lines, so adding one later touches a single line. Never
+    /// applies to the one-line form, where it would be noise.
+    trailing_comma: bool = true,
+    /// Pad the inside of a struct literal's braces — `P { x: 1 }`
+    /// against `P {x: 1}`.
+    bracket_spacing: bool = true,
+    /// What to do with a construct the author wrote across lines that
+    /// would fit on one.
+    wrap: Wrap = .collapse,
+    /// Line ending to emit.
+    newline: Newline = .lf,
+    /// Sort `use` declarations at the top of a file.
+    sort_use: bool = false,
+};
+
+/// What to do with a construct the author spread across lines that
+/// would fit on one.
+pub const Wrap = enum {
+    /// Put it back on one line — the printer's layout is the only
+    /// layout.
+    collapse,
+    /// Leave it broken. A multi-line literal is often a deliberate
+    /// grouping the width alone cannot see.
+    preserve,
+};
+
+/// Line ending policy.
+pub const Newline = enum {
+    /// `\n`.
+    lf,
+    /// `\r\n`.
+    crlf,
+    /// Whatever the host writes natively — `\r\n` on Windows.
+    native,
 };
 
 /// The defaults, for callers with no project config to apply.
@@ -66,14 +101,20 @@ pub fn print(
         .opts = opts,
         .allocator = allocator,
     };
-    for (program.statements, 0..) |s, i| {
+    const statements = if (opts.sort_use)
+        try sortedUseRun(allocator, program.statements, source)
+    else
+        program.statements;
+    defer if (opts.sort_use) allocator.free(statements);
+
+    for (statements, 0..) |s, i| {
         if (i > 0) {
             try p.writer.writeByte('\n');
             // Visual breathing room between multi-line decls — insert a
             // blank line when either neighbor is a multi-line construct
             // (def / class / struct / enum / if / while / for / repeat /
             // match / do block).
-            if (isMultiLineStatement(s) or isMultiLineStatement(program.statements[i - 1])) {
+            if (isMultiLineStatement(s) or isMultiLineStatement(statements[i - 1])) {
                 try p.writer.writeByte('\n');
             }
         }
@@ -81,10 +122,54 @@ pub fn print(
         try p.writeStatement(s);
         try p.flushTrailing(s.span().end);
     }
-    if (program.statements.len > 0) try p.writer.writeByte('\n');
+    if (statements.len > 0) try p.writer.writeByte('\n');
     // File-trailing comments after the last statement.
     try p.flushLeading(@intCast(source.len));
-    try writer.writeAll(buf.written());
+    try writeWithNewlines(writer, buf.written(), opts.newline);
+}
+
+/// Copy `text` to `writer`, translating its `\n` to the configured
+/// ending. The printer emits `\n` throughout and converts once here,
+/// so no emitter has to know the policy.
+fn writeWithNewlines(writer: *std.Io.Writer, text: []const u8, style: Newline) std.Io.Writer.Error!void {
+    const crlf = switch (style) {
+        .lf => false,
+        .crlf => true,
+        .native => @import("builtin").os.tag == .windows,
+    };
+    if (!crlf) return writer.writeAll(text);
+    var rest = text;
+    while (std.mem.indexOfScalar(u8, rest, '\n')) |i| {
+        try writer.writeAll(rest[0..i]);
+        try writer.writeAll("\r\n");
+        rest = rest[i + 1 ..];
+    }
+    try writer.writeAll(rest);
+}
+
+/// `statements` with the leading run of `use` declarations sorted by
+/// module spelling. Caller owns the returned slice.
+///
+/// Only the run a file opens with is touched: a `use` further down is
+/// unusual enough that moving it would reorder code around it.
+fn sortedUseRun(
+    allocator: std.mem.Allocator,
+    statements: []const ast.Statement,
+    source: []const u8,
+) std.mem.Allocator.Error![]ast.Statement {
+    const out = try allocator.dupe(ast.Statement, statements);
+    var run: usize = 0;
+    while (run < out.len and out[run] == .use_decl) run += 1;
+    const Ctx = struct {
+        src: []const u8,
+        fn lessThan(ctx: @This(), a: ast.Statement, b: ast.Statement) bool {
+            const am = a.use_decl.module;
+            const bm = b.use_decl.module;
+            return std.mem.order(u8, ctx.src[am.start..am.end], ctx.src[bm.start..bm.end]) == .lt;
+        }
+    };
+    std.mem.sort(ast.Statement, out[0..run], Ctx{ .src = source }, Ctx.lessThan);
+    return out;
 }
 
 fn isMultiLineStatement(s: ast.Statement) bool {
@@ -146,17 +231,29 @@ const ArgList = struct {
     }
 };
 
+const ParamList = struct {
+    params: []const ast.Param,
+    fn renderFlat(self: ParamList, p: *Printer) PrintError!void {
+        try p.writer.writeByte('(');
+        for (self.params, 0..) |param, i| {
+            if (i > 0) try p.writer.writeAll(", ");
+            try p.writeParam(param);
+        }
+        try p.writer.writeByte(')');
+    }
+};
+
 const FieldList = struct {
     fields: []const ast.StructLitField,
     fn renderFlat(self: FieldList, p: *Printer) PrintError!void {
-        try p.writer.writeAll(" { ");
+        try p.writer.writeAll(if (p.opts.bracket_spacing) " { " else " {");
         for (self.fields, 0..) |f, i| {
             if (i > 0) try p.writer.writeAll(", ");
             try p.writer.writeAll(p.lexeme(f.name));
             try p.writer.writeAll(": ");
             try p.writeExpr(f.value, .lowest);
         }
-        try p.writer.writeAll(" }");
+        try p.writer.writeAll(if (p.opts.bracket_spacing) " }" else "}");
     }
 };
 
@@ -665,22 +762,61 @@ const Printer = struct {
         try self.writer.writeAll("end");
     }
 
+    /// A signature's parameters, wrapping by the same rule as any
+    /// other comma list — a long signature is exactly where a reader
+    /// needs the break.
     fn writeParamList(
         self: *Printer,
         params: []const ast.Param,
     ) PrintError!void {
+        if (params.len == 0) {
+            try self.writer.writeAll("()");
+            return;
+        }
+        const flat = Flat(ParamList){ .inner = .{ .params = params } };
+        if (try self.flatWidth(flat)) |w| {
+            if (self.fits(w)) return flat.render(self);
+        }
+        const depth = self.indent + 1;
         try self.writer.writeByte('(');
         for (params, 0..) |param, i| {
-            if (i > 0) try self.writer.writeAll(", ");
-            try self.writer.writeAll(self.lexeme(param.name));
-            if (param.variadic) {
-                try self.writer.writeAll(": ...");
-            } else if (param.type_ann) |t| {
-                try self.writer.writeAll(": ");
-                try self.writeTypeAnn(t);
-            }
+            try self.breakLine(depth);
+            try self.writeParam(param);
+            try self.writeSeparator(i, params.len);
         }
+        try self.breakLine(self.indent);
         try self.writer.writeByte(')');
+    }
+
+    /// One parameter: its name, and the type or `...` that follows.
+    fn writeParam(self: *Printer, param: ast.Param) PrintError!void {
+        try self.writer.writeAll(self.lexeme(param.name));
+        if (param.variadic) {
+            try self.writer.writeAll(": ...");
+        } else if (param.type_ann) |t| {
+            try self.writer.writeAll(": ");
+            try self.writeTypeAnn(t);
+        }
+    }
+
+    /// Whether the author already spread this span across lines, and
+    /// `wrap` says to leave it that way.
+    ///
+    /// A multi-line literal is often a deliberate grouping — one field
+    /// per row, a matrix laid out square — that the width alone cannot
+    /// see.
+    fn authorBroke(self: *const Printer, span: ast.Span) bool {
+        if (self.opts.wrap != .preserve) return false;
+        if (span.end > self.source.len or span.start >= span.end) return false;
+        return std.mem.indexOfScalar(u8, self.source[span.start..span.end], '\n') != null;
+    }
+
+    /// The comma after element `i` of `count` in a broken construct.
+    ///
+    /// Every element but the last needs one to separate it — only the
+    /// last comma is the optional, stylistic one.
+    fn writeSeparator(self: *Printer, i: usize, count: usize) PrintError!void {
+        if (i + 1 < count or self.opts.trailing_comma) try self.writer.writeByte(',');
     }
 
     fn writeClassDecl(self: *Printer, d: ast.ClassDecl) PrintError!void {
@@ -973,35 +1109,35 @@ const Printer = struct {
         }
         const depth = self.indent + 1;
         try self.writer.writeByte('(');
-        for (args) |a| {
+        for (args, 0..) |a, i| {
             try self.breakLine(depth);
             try self.writeExpr(a, .lowest);
-            // A trailing comma on every element, so adding one later
-            // touches a single line.
-            try self.writer.writeByte(',');
+            try self.writeSeparator(i, args.len);
         }
         try self.breakLine(self.indent);
         try self.writer.writeByte(')');
     }
 
     /// `T { a: 1, b: 2 }` on one line, or one field per line.
-    fn writeFieldList(self: *Printer, fields: []const ast.StructLitField) PrintError!void {
+    fn writeFieldList(self: *Printer, fields: []const ast.StructLitField, span: ast.Span) PrintError!void {
         if (fields.len == 0) {
             try self.writer.writeAll(" {}");
             return;
         }
         const flat = Flat(FieldList){ .inner = .{ .fields = fields } };
-        if (try self.flatWidth(flat)) |w| {
-            if (self.fits(w)) return flat.render(self);
+        if (!self.authorBroke(span)) {
+            if (try self.flatWidth(flat)) |w| {
+                if (self.fits(w)) return flat.render(self);
+            }
         }
         const depth = self.indent + 1;
         try self.writer.writeAll(" {");
-        for (fields) |f| {
+        for (fields, 0..) |f, i| {
             try self.breakLine(depth);
             try self.writer.writeAll(self.lexeme(f.name));
             try self.writer.writeAll(": ");
             try self.writeExpr(f.value, .lowest);
-            try self.writer.writeByte(',');
+            try self.writeSeparator(i, fields.len);
         }
         try self.breakLine(self.indent);
         try self.writer.writeByte('}');
@@ -1114,7 +1250,7 @@ const Printer = struct {
             },
             .struct_lit => |sl| {
                 try self.writer.writeAll(self.lexeme(sl.type_name));
-                try self.writeFieldList(sl.fields);
+                try self.writeFieldList(sl.fields, sl.span);
             },
             .tuple_lit => |tl| try self.writeArgList(tl.elems),
             .is_test => |it| {

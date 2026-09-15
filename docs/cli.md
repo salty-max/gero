@@ -404,6 +404,11 @@ hex_case = "upper"           # default "upper" — upper | lower | preserve
 max_width = 100              # default 100 — column lines are kept within
 use_tabs = false             # default false — a tab per level instead of spaces
 hex_case = "preserve"        # default "preserve" — upper | lower | preserve
+trailing_comma = true        # default true — comma after a broken form's last element
+bracket_spacing = true       # default true — `P { x: 1 }` vs `P {x: 1}`
+wrap = "collapse"            # default "collapse" — collapse | preserve
+sort_use = false             # default false — order the opening `use` run
+newline = "lf"               # default "lf" — lf | crlf | native
 ```
 
 | Key | `.gas` | `.gr` | Default |
@@ -414,6 +419,11 @@ hex_case = "preserve"        # default "preserve" — upper | lower | preserve
 | `align_kv` | ● | — | `true` |
 | `max_width` | — | ● | `100` |
 | `use_tabs` | — | ● | `false` |
+| `trailing_comma` | — | ● | `true` |
+| `bracket_spacing` | — | ● | `true` |
+| `wrap` | — | ● | `"collapse"` |
+| `sort_use` | — | ● | `false` |
+| `newline` | — | ● | `"lf"` |
 
 `comment_column` and `align_kv` are assembler-only because Gero has
 no `const` block to align and does not column-align trailing
@@ -423,11 +433,21 @@ while Gero re-emits the spelling the author wrote, because a
 literal's case there often carries meaning the printer cannot see
 (`$FF` a mask, `$deadbeef` a sentinel).
 
+`trailing_comma` governs only the **last** element of a broken form —
+the commas separating the others are grammar, not style, and are
+always emitted. `bracket_spacing` is prettier's option of the same
+name. `wrap = "preserve"` keeps a construct the author spread across
+lines even when it would fit on one, the way prettier's `objectWrap`
+and Black's magic trailing comma do; `"collapse"` puts it back.
+`sort_use` orders the run of `use` declarations a file opens with, by
+module — a `use` further down is left alone, since moving it would
+reorder code around it. `newline` follows rustfmt's `newline_style`.
+
 **Line width** applies to `.gr` only, and only where the printer has
-a choice. A call's arguments or a struct literal's fields ride on one
-line when they fit within `max_width`, and break one element per line
-— each with a trailing comma, so adding one touches a single line —
-when they do not. A wide enough `max_width` collapses a broken
+a choice. A call's arguments, a `def`'s parameters, a struct
+literal's fields and a tuple's elements ride on one line when they
+fit within `max_width`, and break one element per line when they do
+not. A wide enough `max_width` collapses a broken
 construct back. The assembler is line-oriented (one instruction per
 line) and has nothing to wrap.
 
