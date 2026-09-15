@@ -1070,12 +1070,7 @@ const Printer = struct {
                 try self.writeExpr(m.receiver, .call);
                 try self.writer.writeByte('.');
                 try self.writer.writeAll(self.lexeme(m.method));
-                try self.writer.writeByte('(');
-                for (m.args, 0..) |a, i| {
-                    if (i > 0) try self.writer.writeAll(", ");
-                    try self.writeExpr(a, .lowest);
-                }
-                try self.writer.writeByte(')');
+                try self.writeArgList(m.args);
             },
             .field => |f| {
                 try self.writeExpr(f.receiver, .call);
@@ -1121,14 +1116,7 @@ const Printer = struct {
                 try self.writer.writeAll(self.lexeme(sl.type_name));
                 try self.writeFieldList(sl.fields);
             },
-            .tuple_lit => |tl| {
-                try self.writer.writeByte('(');
-                for (tl.elems, 0..) |x, i| {
-                    if (i > 0) try self.writer.writeAll(", ");
-                    try self.writeExpr(x, .lowest);
-                }
-                try self.writer.writeByte(')');
-            },
+            .tuple_lit => |tl| try self.writeArgList(tl.elems),
             .is_test => |it| {
                 const need_parens = @intFromEnum(outer) > @intFromEnum(Prec.is_test);
                 if (need_parens) try self.writer.writeByte('(');
