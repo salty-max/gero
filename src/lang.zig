@@ -126,6 +126,12 @@ pub const ModuleParse = parser_mod.ModuleParse;
 /// try gero.lang.print(&out.writer, &tree.program, source, stream.comments);
 /// ```
 pub const print = print_mod.print;
+/// Knobs for the canonical `.gr` printer.
+pub const PrintOptions = print_mod.PrintOptions;
+/// Case policy for `$FF` hex literals.
+pub const HexCase = print_mod.HexCase;
+/// The printer's defaults, for callers with no project config.
+pub const default_print_options = print_mod.default_print_options;
 
 // ---------- include resolver (multi-file `use "..."`) ----------
 

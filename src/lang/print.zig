@@ -2,6 +2,37 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const lexer = @import("lexer.zig");
 
+/// Case policy for `$FF` hex literals.
+pub const HexCase = enum {
+    /// Leave the spelling the author wrote — the default, because a
+    /// literal's case often carries meaning the printer cannot see
+    /// (`$FF` a mask, `$deadbeef` a sentinel).
+    preserve,
+    /// `$FF`.
+    upper,
+    /// `$ff`.
+    lower,
+};
+
+/// Knobs for the canonical printer.
+pub const PrintOptions = struct {
+    /// Columns per indent level.
+    indent: usize = 2,
+    /// Indent with a tab per level instead of `indent` spaces. The
+    /// width still drives wrapping decisions, since a tab's rendered
+    /// width is the reader's choice rather than ours.
+    use_tabs: bool = false,
+    /// Column a line is kept within where the printer has a choice.
+    /// A construct that fits stays on one line; one that does not is
+    /// broken across lines, one element each.
+    max_width: usize = 100,
+    /// Case policy for `$FF` hex literals.
+    hex_case: HexCase = .preserve,
+};
+
+/// The defaults, for callers with no project config to apply.
+pub const default_print_options: PrintOptions = .{};
+
 /// Emit canonical `.gr` text for `program` into `writer`. `source`
 /// is the original source buffer the AST was parsed from; the
 /// printer slices identifier names, char literals, format specs
@@ -9,13 +40,31 @@ const lexer = @import("lexer.zig");
 /// comments in source order — re-emitted as leading/trailing lines so
 /// formatting is lossless. Pass `&.{}` when comment fidelity isn't
 /// needed (e.g. AST round-trip tests).
+///
+/// `opts` drives the choices the printer has: indent width, tabs,
+/// the column it keeps lines within, and hex-literal case.
 pub fn print(
+    allocator: std.mem.Allocator,
     writer: *std.Io.Writer,
     program: *const ast.Program,
     source: []const u8,
     comments: []const lexer.Comment,
-) std.Io.Writer.Error!void {
-    var p: Printer = .{ .writer = writer, .source = source, .indent = 0, .comments = comments, .comment_idx = 0 };
+    opts: PrintOptions,
+) PrintError!void {
+    // Buffered rather than streamed: a wrapping decision needs the
+    // column the construct starts at, which is only knowable from the
+    // bytes already emitted.
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    var p: Printer = .{
+        .writer = &buf.writer,
+        .source = source,
+        .indent = 0,
+        .comments = comments,
+        .comment_idx = 0,
+        .opts = opts,
+        .allocator = allocator,
+    };
     for (program.statements, 0..) |s, i| {
         if (i > 0) {
             try p.writer.writeByte('\n');
@@ -32,6 +81,7 @@ pub fn print(
         try p.flushTrailing(s.span().end);
     }
     if (program.statements.len > 0) try p.writer.writeByte('\n');
+    try writer.writeAll(buf.written());
     // File-trailing comments after the last statement.
     try p.flushLeading(@intCast(source.len));
 }
@@ -53,10 +103,16 @@ fn isMultiLineStatement(s: ast.Statement) bool {
     };
 }
 
+/// What printing can fail with: the writer's own errors, plus the
+/// allocation a wrapping measurement needs.
+pub const PrintError = std.Io.Writer.Error || std.mem.Allocator.Error;
+
 const Printer = struct {
     writer: *std.Io.Writer,
     source: []const u8,
     indent: usize,
+    opts: PrintOptions,
+    allocator: std.mem.Allocator,
     /// Line comments in source order; `comment_idx` is the next one
     /// not yet emitted. The printer drains this as it walks spanned
     /// items so every comment lands exactly once.
@@ -101,7 +157,13 @@ const Printer = struct {
 
     fn writeIndent(self: *Printer) std.Io.Writer.Error!void {
         var i: usize = 0;
-        while (i < self.indent) : (i += 1) try self.writer.writeAll("  ");
+        while (i < self.indent) : (i += 1) {
+            if (self.opts.use_tabs) {
+                try self.writer.writeByte('\t');
+            } else {
+                try self.writer.splatByteAll(' ', self.opts.indent);
+            }
+        }
     }
 
     /// Bump indent by one and emit each body statement as its own

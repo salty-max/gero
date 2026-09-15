@@ -419,7 +419,7 @@ fn formatGr(arena: std.mem.Allocator, src: []const u8) std.mem.Allocator.Error!?
     if (stream.errors.len > 0 or tree.errors.len > 0) return null;
 
     var out = std.Io.Writer.Allocating.init(arena);
-    gero.lang.print(&out.writer, &tree.program, src, tree.comments) catch return null;
+    gero.lang.print(arena, &out.writer, &tree.program, src, tree.comments, gero.lang.default_print_options) catch return null;
     return out.written();
 }
 
