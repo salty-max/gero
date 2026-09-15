@@ -386,23 +386,61 @@ pattern as Rust's `rustfmt.toml` / Black's `pyproject.toml
 [tool.black]` — one canonical shape per project, no in-file
 overrides.
 
+The two languages have one printer each, and the printers do not
+have the same knobs. `[fmt]` sets a key for **every** printer that
+has it; `[fmt.gas]` and `[fmt.gr]` override their own. So a project
+states its shape once and refines only where the languages differ:
+
 ```toml
 [fmt]
-indent = 2                   # default 2 — spaces of label-body indent
+indent = 4                   # both printers
+
+[fmt.gas]
 comment_column = 30          # default 30 — 0 disables alignment
 align_kv = true              # default true — align `=` in const/data blocks
 hex_case = "upper"           # default "upper" — upper | lower | preserve
+
+[fmt.gr]
+max_width = 100              # default 100 — column lines are kept within
+use_tabs = false             # default false — a tab per level instead of spaces
+hex_case = "preserve"        # default "preserve" — upper | lower | preserve
 ```
 
-Inside a project, `gero fmt` (and `gero fmt --check`) reads the
-section and applies the overrides. Outside a project (or with no
-`[fmt]` section), compile-time defaults are used — preserves the
-single-file CLI behavior.
+| Key | `.gas` | `.gr` | Default |
+|-----|:--:|:--:|---------|
+| `indent` | ● | ● | `2` |
+| `hex_case` | ● | ● | `"upper"` / `"preserve"` |
+| `comment_column` | ● | — | `30` |
+| `align_kv` | ● | — | `true` |
+| `max_width` | — | ● | `100` |
+| `use_tabs` | — | ● | `false` |
 
-Invalid `hex_case` values produce a clean diagnostic with line/col;
-the parser rejects any other shape (integer keys for
-`indent` / `comment_column`, boolean for `align_kv`, string for
-`hex_case`).
+`comment_column` and `align_kv` are assembler-only because Gero has
+no `const` block to align and does not column-align trailing
+comments — rustfmt and prettier do not either. `hex_case` defaults
+differently per language: the assembler canonicalises to `upper`,
+while Gero re-emits the spelling the author wrote, because a
+literal's case there often carries meaning the printer cannot see
+(`$FF` a mask, `$deadbeef` a sentinel).
+
+**Line width** applies to `.gr` only, and only where the printer has
+a choice. A call's arguments or a struct literal's fields ride on one
+line when they fit within `max_width`, and break one element per line
+— each with a trailing comma, so adding one touches a single line —
+when they do not. A wide enough `max_width` collapses a broken
+construct back. The assembler is line-oriented (one instruction per
+line) and has nothing to wrap.
+
+Inside a project, `gero fmt` (and `gero fmt --check`) reads the
+sections and applies the overrides. Outside a project (or with no
+`[fmt]` section), compile-time defaults are used — preserves the
+single-file CLI behavior. `--stdin` always uses the defaults: it has
+no path, so it has no project.
+
+Invalid `hex_case` values produce a clean diagnostic naming the
+section they came from, with line/col; the parser rejects any other
+shape (integer keys for `indent` / `comment_column` / `max_width`,
+boolean for `align_kv` / `use_tabs`, string for `hex_case`).
 
 ### 3.9 `gero check <file>` — validate without producing output
 
@@ -847,10 +885,17 @@ exclude = ["tests/wip"]             # paths subtracted; default empty
 cycle_budget = 1_000_000            # per-test cycle cap; default 1M
 
 [fmt]                               # see §3.8 for full reference
-indent = 2
+indent = 2                          # every printer that has the key
+
+[fmt.gas]                           # assembler printer only
 comment_column = 30
 align_kv = true
 hex_case = "upper"
+
+[fmt.gr]                            # Gero printer only
+max_width = 100
+use_tabs = false
+hex_case = "preserve"
 ```
 
 **Defaults**: `[build].out` → `"out/"`; `[build].optimize` →

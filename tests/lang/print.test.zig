@@ -588,3 +588,107 @@ test "print: round-trip every fixture" {
         };
     }
 }
+
+test "print: indent width follows the option" {
+    const src = "def main()\n  print 1\nend\n";
+    const out = try renderWith(src, .{ .indent = 4 });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\n    print 1") != null);
+}
+
+test "print: use_tabs indents with tabs" {
+    const src = "def main()\n  print 1\nend\n";
+    const out = try renderWith(src, .{ .use_tabs = true });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\n\tprint 1") != null);
+}
+
+test "print: hex_case recases `$` literals and leaves other forms alone" {
+    const src = "def main()\n  let a: u16 = $beEF\n  let b: u16 = 0b1010\n  let c: u16 = 42\n  print a\nend\n";
+
+    const upper = try renderWith(src, .{ .hex_case = .upper });
+    defer std.testing.allocator.free(upper);
+    try std.testing.expect(std.mem.indexOf(u8, upper, "$BEEF") != null);
+    // Binary and decimal have no case to choose.
+    try std.testing.expect(std.mem.indexOf(u8, upper, "0b1010") != null);
+    try std.testing.expect(std.mem.indexOf(u8, upper, "42") != null);
+
+    const lower = try renderWith(src, .{ .hex_case = .lower });
+    defer std.testing.allocator.free(lower);
+    try std.testing.expect(std.mem.indexOf(u8, lower, "$beef") != null);
+}
+
+test "print: hex_case preserves the author's spelling by default" {
+    const src = "def main()\n  let a: u16 = $beEF\n  print a\nend\n";
+    const out = try renderSource(src);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "$beEF") != null);
+}
+
+test "print: a call that fits stays on one line" {
+    const src = "def f(a: i16, b: i16) -> i16\n  return a\nend\ndef main()\n  print f(1, 2)\nend\n";
+    const out = try renderSource(src);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "f(1, 2)") != null);
+}
+
+test "print: a call that overruns max_width breaks one argument per line" {
+    const src = "def f(a: i16, b: i16, c: i16) -> i16\n  return a\nend\ndef main()\n  print f(1111, 2222, 3333)\nend\n";
+    const out = try renderWith(src, .{ .max_width = 20 });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "f(\n") != null);
+    // A trailing comma on every element, so adding one touches a
+    // single line.
+    try std.testing.expect(std.mem.indexOf(u8, out, "3333,\n") != null);
+}
+
+test "print: a struct literal breaks one field per line when it overruns" {
+    const src = "struct P\n  x: i16\n  y: i16\nend\ndef main()\n  let p: P = P { x: 1111, y: 2222 }\n  print p.x\nend\n";
+    const out = try renderWith(src, .{ .max_width = 24 });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "P {\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "y: 2222,\n") != null);
+}
+
+test "print: wrapping is idempotent" {
+    // A formatter whose output is not a fixed point rewrites a file
+    // every time it runs.
+    const src = "struct P\n  x: i16\n  y: i16\nend\ndef main()\n  let p: P = P { x: 1111, y: 2222 }\n  print p.x\nend\n";
+    const once = try renderWith(src, .{ .max_width = 24 });
+    defer std.testing.allocator.free(once);
+    const twice = try renderWith(once, .{ .max_width = 24 });
+    defer std.testing.allocator.free(twice);
+    try std.testing.expectEqualStrings(once, twice);
+}
+
+test "print: a wide width collapses a broken construct back to one line" {
+    const src = "struct P\n  x: i16\n  y: i16\nend\ndef main()\n  let p: P = P {\n    x: 1,\n    y: 2,\n  }\n  print p.x\nend\n";
+    const out = try renderSource(src);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "P { x: 1, y: 2 }") != null);
+}
+
+test "print: a blank line after a header comment survives" {
+    // Without this the printer glues every file header onto the first
+    // declaration.
+    const src = "-- header\n-- more\n\ndef a() -> i16\n  return 1\nend\n";
+    const out = try renderSource(src);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "-- more\n\ndef a()") != null);
+}
+
+test "print: a comment with no blank after it stays attached" {
+    const src = "-- attached\ndef a() -> i16\n  return 1\nend\n";
+    const out = try renderSource(src);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "-- attached\ndef a()") != null);
+}
+
+test "print: a comment after the last statement is not dropped" {
+    // The printer buffers its output; a flush ordered after the copy
+    // would write the tail into a buffer nobody reads.
+    const src = "def a() -> i16\n  return 1\nend\n-- trailing file comment\n";
+    const out = try renderSource(src);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "-- trailing file comment") != null);
+}
