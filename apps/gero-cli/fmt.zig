@@ -151,6 +151,18 @@ pub fn grOptionsFromManifest(fmt: project.Manifest.Fmt) gero.lang.PrintOptions {
         .use_tabs = fmt.gr.use_tabs,
         .max_width = fmt.gr.max_width,
         .hex_case = hexCase(gero.lang.HexCase, fmt.gr.hex_case),
+        .trailing_comma = fmt.gr.trailing_comma,
+        .bracket_spacing = fmt.gr.bracket_spacing,
+        .wrap = switch (fmt.gr.wrap) {
+            .collapse => .collapse,
+            .preserve => .preserve,
+        },
+        .sort_use = fmt.gr.sort_use,
+        .newline = switch (fmt.gr.newline) {
+            .lf => .lf,
+            .crlf => .crlf,
+            .native => .native,
+        },
     };
 }
 

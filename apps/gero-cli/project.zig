@@ -97,11 +97,23 @@ pub const Manifest = struct {
             use_tabs: bool,
             max_width: usize,
             hex_case: HexCase,
+            trailing_comma: bool,
+            bracket_spacing: bool,
+            wrap: Wrap,
+            sort_use: bool,
+            newline: Newline,
         };
     };
 
     /// Case policy for hex literals — mirrors `printer.HexCase`.
     pub const HexCase = enum { upper, lower, preserve };
+
+    /// What to do with a construct the author broke across lines —
+    /// mirrors the Gero printer's `Wrap`.
+    pub const Wrap = enum { collapse, preserve };
+
+    /// Line-ending policy — mirrors the Gero printer's `Newline`.
+    pub const Newline = enum { lf, crlf, native };
 
     /// Free the heap-allocated string-array slices. String contents
     /// themselves borrow from the source buffer, so the caller
@@ -130,6 +142,11 @@ pub const defaults = struct {
     /// Gero re-emits a literal's own spelling unless told otherwise —
     /// the case often carries meaning the printer cannot see.
     pub const fmt_gr_hex_case: Manifest.HexCase = .preserve;
+    pub const fmt_trailing_comma: bool = true;
+    pub const fmt_bracket_spacing: bool = true;
+    pub const fmt_wrap: Manifest.Wrap = .collapse;
+    pub const fmt_sort_use: bool = false;
+    pub const fmt_newline: Manifest.Newline = .lf;
     pub const test_cycle_budget: usize = 1_000_000;
 };
 
@@ -610,6 +627,11 @@ const Pending = struct {
     gr_use_tabs: ?bool = null,
     gr_max_width: ?usize = null,
     gr_hex_case: ?[]const u8 = null,
+    gr_trailing_comma: ?bool = null,
+    gr_bracket_spacing: ?bool = null,
+    gr_sort_use: ?bool = null,
+    gr_wrap: ?[]const u8 = null,
+    gr_newline: ?[]const u8 = null,
 
     fn recordString(self: *Pending, parser: *Parser, key: []const u8, value: []const u8) ParseError!void {
         switch (parser.current_section) {
@@ -650,14 +672,19 @@ const Pending = struct {
                 return error.ParseFailed;
             },
             .fmt, .fmt_gas, .fmt_gr => {
-                if (!std.mem.eql(u8, key, "hex_case")) {
-                    parser.reportf("unknown string key '{s}.{s}' (only 'hex_case' is a string)", .{ sectionLabel(parser.current_section), key });
+                if (parser.current_section == .fmt_gr and std.mem.eql(u8, key, "wrap")) {
+                    self.gr_wrap = value;
+                } else if (parser.current_section == .fmt_gr and std.mem.eql(u8, key, "newline")) {
+                    self.gr_newline = value;
+                } else if (std.mem.eql(u8, key, "hex_case")) {
+                    switch (parser.current_section) {
+                        .fmt => self.fmt_hex_case = value,
+                        .fmt_gas => self.gas_hex_case = value,
+                        else => self.gr_hex_case = value,
+                    }
+                } else {
+                    parser.reportf("unknown string key '{s}.{s}'", .{ sectionLabel(parser.current_section), key });
                     return error.ParseFailed;
-                }
-                switch (parser.current_section) {
-                    .fmt => self.fmt_hex_case = value,
-                    .fmt_gas => self.gas_hex_case = value,
-                    else => self.gr_hex_case = value,
                 }
             },
             .unknown, .none => {
@@ -715,7 +742,7 @@ const Pending = struct {
                 }
             },
             .fmt_gr => {
-                if (std.mem.eql(u8, key, "use_tabs")) self.gr_use_tabs = value else {
+                if (std.mem.eql(u8, key, "use_tabs")) self.gr_use_tabs = value else if (std.mem.eql(u8, key, "trailing_comma")) self.gr_trailing_comma = value else if (std.mem.eql(u8, key, "bracket_spacing")) self.gr_bracket_spacing = value else if (std.mem.eql(u8, key, "sort_use")) self.gr_sort_use = value else {
                     parser.reportf("unknown boolean key '[fmt.gr].{s}'", .{key});
                     return error.ParseFailed;
                 }
@@ -784,6 +811,19 @@ const Pending = struct {
             shared_hex orelse defaults.fmt_hex_case;
         const gr_hex = try parseHexCase(parser, self.gr_hex_case, "[fmt.gr]") orelse
             shared_hex orelse defaults.fmt_gr_hex_case;
+        const gr_wrap: Manifest.Wrap = if (self.gr_wrap) |w| blk: {
+            if (std.mem.eql(u8, w, "collapse")) break :blk .collapse;
+            if (std.mem.eql(u8, w, "preserve")) break :blk .preserve;
+            parser.reportf("invalid '[fmt.gr].wrap' value '{s}' (expected 'collapse' or 'preserve')", .{w});
+            return error.ParseFailed;
+        } else defaults.fmt_wrap;
+        const gr_newline: Manifest.Newline = if (self.gr_newline) |n| blk: {
+            if (std.mem.eql(u8, n, "lf")) break :blk .lf;
+            if (std.mem.eql(u8, n, "crlf")) break :blk .crlf;
+            if (std.mem.eql(u8, n, "native")) break :blk .native;
+            parser.reportf("invalid '[fmt.gr].newline' value '{s}' (expected 'lf', 'crlf', or 'native')", .{n});
+            return error.ParseFailed;
+        } else defaults.fmt_newline;
 
         // Validate optimize too — it gates the per-profile output
         // subdirectory (`out/<optimize>/...`), so a typo would
@@ -834,6 +874,11 @@ const Pending = struct {
                     .use_tabs = self.gr_use_tabs orelse self.fmt_use_tabs orelse defaults.fmt_use_tabs,
                     .max_width = self.gr_max_width orelse self.fmt_max_width orelse defaults.fmt_max_width,
                     .hex_case = gr_hex,
+                    .trailing_comma = self.gr_trailing_comma orelse defaults.fmt_trailing_comma,
+                    .bracket_spacing = self.gr_bracket_spacing orelse defaults.fmt_bracket_spacing,
+                    .wrap = gr_wrap,
+                    .sort_use = self.gr_sort_use orelse defaults.fmt_sort_use,
+                    .newline = gr_newline,
                 },
             },
         };

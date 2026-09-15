@@ -717,3 +717,91 @@ test "print: an empty argument list never breaks" {
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "f()") != null);
 }
+
+test "print: a def's parameters wrap like any other comma list" {
+    // A long signature is exactly where a reader needs the break.
+    const src = "def wide(alpha: i16, beta: i16, gamma: i16) -> i16\n  return alpha\nend\n";
+    const out = try renderWith(src, .{ .max_width = 20 });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "wide(\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "gamma: i16,\n") != null);
+}
+
+test "print: trailing_comma off still separates the elements" {
+    // Only the last comma is stylistic; dropping the rest emits
+    // something the parser rejects.
+    const src = "struct P\n  x: i16\n  y: i16\nend\ndef main()\n  let p: P = P { x: 1111, y: 2222 }\n  print p.x\nend\n";
+    const out = try renderWith(src, .{ .max_width = 24, .trailing_comma = false });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "x: 1111,\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "y: 2222\n") != null);
+}
+
+test "print: trailing_comma on closes the last element too" {
+    const src = "struct P\n  x: i16\n  y: i16\nend\ndef main()\n  let p: P = P { x: 1111, y: 2222 }\n  print p.x\nend\n";
+    const out = try renderWith(src, .{ .max_width = 24, .trailing_comma = true });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "y: 2222,\n") != null);
+}
+
+test "print: bracket_spacing pads the inside of a struct literal" {
+    const src = "struct P\n  x: i16\nend\ndef main()\n  let p: P = P { x: 1 }\n  print p.x\nend\n";
+
+    const spaced = try renderSource(src);
+    defer std.testing.allocator.free(spaced);
+    try std.testing.expect(std.mem.indexOf(u8, spaced, "P { x: 1 }") != null);
+
+    const tight = try renderWith(src, .{ .bracket_spacing = false });
+    defer std.testing.allocator.free(tight);
+    try std.testing.expect(std.mem.indexOf(u8, tight, "P {x: 1}") != null);
+}
+
+test "print: wrap=preserve keeps a literal the author broke" {
+    const src = "struct P\n  x: i16\n  y: i16\nend\ndef main()\n  let p: P = P {\n    x: 1,\n    y: 2,\n  }\n  print p.x\nend\n";
+
+    const kept = try renderWith(src, .{ .wrap = .preserve });
+    defer std.testing.allocator.free(kept);
+    try std.testing.expect(std.mem.indexOf(u8, kept, "P {\n") != null);
+
+    // The default puts it back on one line.
+    const collapsed = try renderSource(src);
+    defer std.testing.allocator.free(collapsed);
+    try std.testing.expect(std.mem.indexOf(u8, collapsed, "P { x: 1, y: 2 }") != null);
+}
+
+test "print: wrap=preserve leaves a one-line literal alone" {
+    const src = "struct P\n  x: i16\nend\ndef main()\n  let p: P = P { x: 1 }\n  print p.x\nend\n";
+    const out = try renderWith(src, .{ .wrap = .preserve });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "P { x: 1 }") != null);
+}
+
+test "print: sort_use orders the opening run by module" {
+    const src = "use poke from mem\nuse abs from math\nuse format from str\ndef main()\n  print abs(0 - 1)\nend\n";
+    const out = try renderWith(src, .{ .sort_use = true });
+    defer std.testing.allocator.free(out);
+    const math = std.mem.indexOf(u8, out, "from math").?;
+    const mem_ = std.mem.indexOf(u8, out, "from mem").?;
+    const str = std.mem.indexOf(u8, out, "from str").?;
+    try std.testing.expect(math < mem_);
+    try std.testing.expect(mem_ < str);
+}
+
+test "print: sort_use is off by default" {
+    const src = "use poke from mem\nuse abs from math\ndef main()\n  print abs(0 - 1)\nend\n";
+    const out = try renderSource(src);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "from mem").? < std.mem.indexOf(u8, out, "from math").?);
+}
+
+test "print: newline=crlf ends every line with a carriage return" {
+    const src = "def main()\n  print 1\nend\n";
+    const out = try renderWith(src, .{ .newline = .crlf });
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "def main()\r\n") != null);
+    // No bare newline survives the translation.
+    var i: usize = 0;
+    while (i < out.len) : (i += 1) {
+        if (out[i] == '\n') try std.testing.expect(i > 0 and out[i - 1] == '\r');
+    }
+}
