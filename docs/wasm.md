@@ -13,7 +13,7 @@ it here. A rule written in two places is a rule that will eventually
 disagree with itself.
 
 The peripherals a game needs — display, audio, input — are not here.
-Those belong to [gtx-16](./gtx-16.md), a separate consumer of the same
+Those belong to [gtx-16](https://github.com/salty-max/gtx-16), a separate consumer of the same
 VM.
 
 ---

@@ -6,8 +6,9 @@ compiler, all pure Zig. Public barrel: `src/gero.zig`, imported as
 deps; built on [knit](https://github.com/salty-max/knit) for the
 parser-combinator layer (asm + lang).
 
-The fantasy-console (gtx-16) and the gero-lab web application live
-elsewhere and consume gero as a library — out of scope for this repo.
+The fantasy-console ([gtx-16](https://github.com/salty-max/gtx-16))
+and the gero-lab web application live elsewhere and consume gero as a
+library — out of scope for this repo, specs included.
 The wasm module they consume is not: it is a `zig build` target here,
 gated by a smoke test that runs the example corpus through it
 (`docs/wasm.md` §9). That file is the contract a browser host
@@ -43,7 +44,6 @@ guess from the codebase shape when the spec defines them.
 | [`asm-vs-lang.md`](docs/asm-vs-lang.md) | Which layer to write in — asm, Gero, or the bytecode both emit. Worked comparison with measured cycles. Positioning, not contract: it cites the specs rather than defining anything. |
 | [`asm-cookbook.md`](docs/asm-cookbook.md) | Working asm recipes — boot, IVT, banks, syscalls, etc. Reference for "how do I do X in asm?". |
 | [`wasm.md`](docs/wasm.md) | The `gero.wasm` module contract — exports, memory ownership, the run loop, the virtual file set, samples, and the build. What a browser host may rely on. The lab's own repository describes what it does with the module; nothing is stated in both. |
-| [`gtx-16.md`](docs/gtx-16.md) | Fantasy-console spec — consumes Gero as its CPU/VM. Out-of-repo, but the contract lives here. |
 
 These specs follow the "complete designs, no deferral" rule:
 they describe the **final shape** of the language / ISA / tooling

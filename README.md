@@ -196,7 +196,7 @@ Editor tooling lives in [`editors/`](./editors/) as submodules: a
 tree-sitter grammar per language, plus the VS Code extension.
 
 The gtx-16 fantasy console is built in its own repo and consumes gero
-as a library; its contract lives in [`docs/gtx-16.md`](./docs/gtx-16.md).
+as a library; its contract lives in [its own repo](https://github.com/salty-max/gtx-16).
 The `gero-lab` browser playground is specified in
 [`docs/wasm.md`](./docs/wasm.md) and belongs to this repo — it
 builds against the working tree so the playground can never lag the

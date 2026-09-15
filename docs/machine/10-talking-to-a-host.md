@@ -152,7 +152,7 @@ that switching banks can never swap a device register out from under a
 program. If the window reached the top, a write to `mb` could disconnect the
 display.
 
-The gtx-16 specification is [`gtx-16.md`](../gtx-16.md), and it is a different
+The gtx-16 specification lives in [its own repo](https://github.com/salty-max/gtx-16/blob/main/docs/spec.md), and it is a different
 kind of document from the ones this book has leaned on: not the machine, but
 one particular arrangement of hardware built on top of it.
 
