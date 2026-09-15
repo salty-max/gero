@@ -14,6 +14,7 @@ const strings = @import("strings.zig");
 const bake_mod = @import("../bake.zig");
 const destructure = @import("destructure.zig");
 const class = @import("class.zig");
+const value_struct = @import("value_struct.zig");
 const types = @import("../types.zig");
 const diag_mod = @import("../diagnostic.zig");
 
@@ -114,6 +115,27 @@ fn registerGlobalConst(self: *Emitter, d: *const ast.ConstDecl) !void {
     try self.global_inits.append(self.allocator, .{ .name = name, .init = d.init });
 }
 
+/// Seed a module-scope `let` / `const` whose initializer is a struct,
+/// tuple or array: build it in a frame slot, then copy its bytes into
+/// the global.
+///
+/// The scalar path stores through the accumulator, which holds one
+/// value; an aggregate needs its whole width moved.
+fn emitAggregateGlobal(
+    self: *Emitter,
+    init: *const ast.Expr,
+    ty: *const types.Type,
+    g: codegen.Global,
+) !void {
+    const width = self.widthOfType(ty);
+    const slot = try destructure.materializeScrutinee(self, init, ty);
+    const src = Reg.r1;
+    const dest = Reg.r2;
+    try value_struct.frameAddrToReg(self, slot, src);
+    try isa.movImmToReg(self, g.address, dest);
+    try value_struct.copyBytes(self, src, dest, width);
+}
+
 /// Seed a module-scope destructuring `let`: materialize the
 /// initializer into a frame slot, then copy each bound name out of it
 /// into that name's global.
@@ -211,6 +233,16 @@ pub fn emitGlobalInits(self: *Emitter) !void {
     for (self.global_inits.items) |gi| {
         const g = self.globals.get(gi.name) orelse continue;
         if (g.placement == .addr) continue;
+        // An aggregate does not fit the accumulator: materialize it
+        // into a frame slot the way a destructuring `let` does, then
+        // copy the bytes out to the global's own storage.
+        const ty = self.typeOf(gi.init);
+        if (ty) |t| {
+            if (self.isInlineAggregateType(t)) {
+                try emitAggregateGlobal(self, gi.init, t, g);
+                continue;
+            }
+        }
         try self.emitExpr(gi.init);
         try emitGlobalStore(self, Reg.acu, g);
         try fixed.storeHighToAddr(self, gi.init, g.address);
