@@ -5,6 +5,45 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.4.2 - 2026-09-15
+
+The release where a program can hold a world.
+
+Both of these surfaced the same way: by writing cart code against the
+gtx-16 spec, which is the first time the language was asked to hold
+state and draw it sixty times a second rather than compute something
+and print it. Two gaps showed up on the first screenful.
+
+`let ball: Ball = Ball { x: 160, y: 120 }` type-checked and then
+failed to lower, though `lang.md` §4.4 has always said a top-level
+initializer runs at program start like any other. Scalars worked;
+structs, tuples and arrays did not. The startup path stored each
+initializer through the accumulator, which holds exactly one value.
+This is the line a program with state reaches for first — the world,
+the player, the level — and it failed.
+
+The second is that every argument had to be written at every call
+site, so a function with one interesting parameter and four settings
+made every caller restate the settings. A trailing parameter can now
+declare the value a call may leave out. The default is emitted at the
+call site, so `rect(10, 20)` compiles to exactly what
+`rect(10, 20, 8, 8, 7)` compiles to — no runtime cost, and the golden
+corpus matches byte for byte. Methods take defaults on the same terms,
+`@static` ones included; because the default is written into the call
+site, it comes from the static type of the receiver while the body
+still comes from the vtable, and `super.m()` takes the ancestor's
+rather than the override's.
+
+### Added
+
+- A trailing parameter can declare the value a call may leave out (§4.6.3).
+- `E_SYNTAX_PARAM_DEFAULT` — a default on a variadic parameter, or ahead of one without.
+
+### Fixed
+
+- A module-level `let` can hold a struct, tuple or array.
+- A diagnostic about a `use` line points at the word that is wrong.
+
 ## v0.4.1 - 2026-09-15
 
 A submodule-pointer fix, so a clone does not depend on a dangling ref.
