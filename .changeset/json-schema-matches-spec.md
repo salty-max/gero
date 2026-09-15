@@ -1,5 +1,5 @@
 ---
-bump: minor
+bump: major
 ---
 
 `gero check --format=json` emits its documented schema.

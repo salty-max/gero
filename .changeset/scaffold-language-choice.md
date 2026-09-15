@@ -1,5 +1,5 @@
 ---
-bump: minor
+bump: major
 ---
 
 `gero new` and `gero init` scaffold either language.

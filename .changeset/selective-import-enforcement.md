@@ -1,5 +1,5 @@
 ---
-bump: minor
+bump: major
 ---
 
 A selective `use` from a project file binds only the names it lists.
