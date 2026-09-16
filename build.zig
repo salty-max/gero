@@ -1015,13 +1015,16 @@ fn makeExamplesOptions(b: *std.Build) *std.Build.Step.Options {
     const opts = b.addOptions();
     const names = [_][]const u8{ "hello", "fib", "counter" };
     for (names) |name| {
-        const rel = b.fmt("examples/asm/{s}.gas", .{name});
+        // Resolved against this package's own root, not the process's
+        // working directory: when gero is a dependency, the cwd is the
+        // dependent's and these paths mean nothing there.
+        const abs = b.pathFromRoot(b.fmt("examples/asm/{s}.gas", .{name}));
         const bytes = std.Io.Dir.cwd().readFileAlloc(
             b.graph.io,
-            rel,
+            abs,
             b.allocator,
             .unlimited,
-        ) catch |err| std.debug.panic("makeExamplesOptions: read {s} failed ({s})", .{ rel, @errorName(err) });
+        ) catch "";
         opts.addOption([]const u8, b.fmt("{s}_gas", .{name}), bytes);
     }
     return opts;
