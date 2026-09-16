@@ -5,6 +5,40 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.5.2 - 2026-09-16
+
+The release where gero can be depended on.
+
+It never could. `build.zig` reads three example programs into build
+options, and did so through the **process's working directory** —
+which is gero's own root when gero is what you are building, and the
+dependent's root when it is not. `examples/` is outside the package's
+`.paths` besides, so the files are not in the tarball at all. Anything
+declaring gero as a dependency got this during resolution, before
+compiling a line of its own code:
+
+```
+thread panic: makeExamplesOptions: read examples/asm/hello.gas failed (FileNotFound)
+```
+
+Paths now resolve against this package's own root, and a missing
+example yields an empty option rather than aborting. Adding
+`examples/` to `.paths` would have worked too, and would have shipped
+test fixtures to every dependent in order to satisfy a build step no
+dependent runs.
+
+Nothing about building gero itself changes: its build root has the
+files, so its example gates read them exactly as before.
+
+**This was invisible from inside the repo.** `zig build ci` is green
+on v0.5.1 and on this release, because nothing in gero exercises the
+package *as a package*. It surfaced the first time anything tried to
+depend on gero — which, up to now, nothing had.
+
+### Fixed
+
+- The published package can be used as a dependency. Example fixtures resolve against the package root rather than the caller's working directory.
+
 ## v0.5.1 - 2026-09-16
 
 A release for whoever embeds gero rather than writes it.
