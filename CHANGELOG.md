@@ -5,6 +5,59 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.5.1 - 2026-09-16
+
+A release for whoever embeds gero rather than writes it.
+
+A host can now name stdlib modules whose members are in scope
+unqualified, so the program it compiles calls `min(a, b)` having
+written no `use` line:
+
+```zig
+const ambient = [_][]const u8{ "math", "mem" };
+var checked = try gero.lang.typecheckAmbient(
+    alloc, src, &tree.program, null, null, &ambient);
+var compiled = try gero.lang.compile(
+    alloc, src, &checked, .{ .ambient_modules = &ambient });
+```
+
+Off by default, and a build naming no ambient modules behaves exactly
+as it did — every stdlib name still reached through `use` or a module
+qualifier. Nothing that compiled against 0.5.0 compiles differently.
+
+**An ambient name is shadowed silently**, which is the whole
+difference from an import. After `use min from math`, declaring `min`
+is `E_TYPE_REDEFINED` — correctly, since the author wrote both and one
+is a mistake. An ambient `min` was never asked for, so a declaration
+of that name simply wins:
+
+```gero
+def min(a: i16, b: i16) -> i16     -- no error; this `min` wins
+  return a
+end
+
+def main()
+  print min(3, 9)        -- 3, the program's own
+  print math.min(3, 9)   -- 3, still reachable qualified
+end
+```
+
+The rule holds at any depth, for locals, parameters and captures,
+because resolution finds what is in scope first and falls back to the
+ambient set only when it finds nothing.
+
+The case it exists for is a host supplying an *environment* rather
+than a library — a console handing a program the arithmetic it will
+obviously need, where an import at the top of every file is ceremony
+its author did not choose and cannot see a reason for. The five
+always-in-scope builtins stay reserved: shadowing `assert` or `panic`
+is still `E_BUILTIN_SHADOW`, because the language guarantees what
+those mean.
+
+### Added
+
+- `gero.lang.typecheckAmbient` and `CompileOptions.ambient_modules` — stdlib modules in scope without an import, shadowable by any declaration (`lang.md` §5.3.5).
+
 ## v0.5.0 - 2026-09-16
 
 The release where a program can point at something.
