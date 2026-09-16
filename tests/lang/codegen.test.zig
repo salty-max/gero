@@ -10458,3 +10458,108 @@ test "defaults: an aggregate default is built at the call site" {
         \\
     , "8\n21\n");
 }
+
+// ---------- ambient stdlib modules (§5.3.4) ----------
+
+/// Compile with `math` ambient — the shape a host uses when it hands a
+/// program an environment rather than making it import one.
+fn runAmbientAndExpect(source: []const u8, expected: []const u8) !void {
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    try std.testing.expectEqual(@as(usize, 0), tree.errors.len);
+
+    const ambient = [_][]const u8{"math"};
+    var checked = try gero.lang.typecheckAmbient(alloc, source, &tree.program, null, null, &ambient);
+    defer checked.deinit();
+    if (checked.diagnostics.len > 0) {
+        for (checked.diagnostics) |d| std.debug.print("  - {s}: {s}\n", .{ d.code, d.message });
+    }
+    try std.testing.expectEqual(@as(usize, 0), checked.diagnostics.len);
+
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{ .ambient_modules = &ambient });
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings(expected, writer.written());
+}
+
+test "ambient: a member is callable with no `use` line" {
+    try runAmbientAndExpect(
+        \\def main()
+        \\  print min(3, 9)
+        \\  print abs(0 - 4)
+        \\end
+        \\
+    , "3\n4\n");
+}
+
+test "ambient: a program's own def shadows one, silently" {
+    // No E_TYPE_REDEFINED: the program never asked for `min`, so its
+    // own declaration has the better claim and nothing is reported.
+    try runAmbientAndExpect(
+        \\def min(a: i16, b: i16) -> i16
+        \\  return a
+        \\end
+        \\def main()
+        \\  print min(3, 9)
+        \\end
+        \\
+    , "3\n");
+}
+
+test "ambient: a local binding shadows one" {
+    try runAmbientAndExpect(
+        \\def main()
+        \\  let abs: i16 = 7
+        \\  print abs
+        \\  print min(3, 9)
+        \\end
+        \\
+    , "7\n3\n");
+}
+
+test "ambient: the qualified form still works alongside" {
+    try runAmbientAndExpect(
+        \\def min(a: i16, b: i16) -> i16
+        \\  return a
+        \\end
+        \\def main()
+        \\  print min(3, 9)
+        \\  print math.min(3, 9)
+        \\end
+        \\
+    , "3\n3\n");
+}
+
+test "ambient: nothing is in scope when no module is named" {
+    // The default build has no ambient modules, so a bare `min` is
+    // undefined exactly as it was before the option existed.
+    var stream = try gero.lang.tokenize(alloc,
+        \\def main()
+        \\  print min(3, 9)
+        \\end
+    );
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc,
+        \\def main()
+        \\  print min(3, 9)
+        \\end
+    , stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc,
+        \\def main()
+        \\  print min(3, 9)
+        \\end
+    , &tree.program);
+    defer checked.deinit();
+    try std.testing.expect(checked.diagnostics.len > 0);
+}

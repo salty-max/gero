@@ -30,6 +30,7 @@ const inline_asm = @import("codegen/inline_asm.zig");
 const object = @import("codegen/object.zig");
 const fixed = @import("codegen/fixed.zig");
 const stdlib = @import("codegen/stdlib.zig");
+const stdlib_exports = @import("typecheck/stdlib_exports.zig");
 
 /// The asm assembler, re-exported here (one level up from
 /// `codegen/`) so `codegen/inline_asm.zig` can lower an
@@ -244,6 +245,13 @@ pub const Options = struct {
     /// build. Lets same-named defs in different modules get distinct
     /// symbols (§5).
     graph: ?typecheck_mod.ModuleGraph = null,
+    /// Stdlib modules whose members are in scope unqualified, without
+    /// the program importing them (§5.3.5). For a host that supplies
+    /// its own environment — a console handing a cart `min` and `sin`
+    /// with no `use` line. Any declaration of the same name shadows
+    /// one silently. Empty for an ordinary build, where every stdlib
+    /// name is reached through `use` or a module qualifier.
+    ambient_modules: []const []const u8 = &.{},
 };
 
 /// A stdlib function pulled into scope by a selective `use` —
@@ -350,6 +358,8 @@ pub fn compile(
         .graph = opts.graph,
         .duplicated_defs = .{},
         .selective_stdlib = .{},
+        .ambient_stdlib = .{},
+        .declared_defs = .{},
         .class_layouts = .{},
         .current_class_name = null,
         .current_variadic = null,
@@ -372,6 +382,15 @@ pub fn compile(
         .global_destructures = .empty,
         .bake_defs = .{},
     };
+
+    // Ambient stdlib members, mirroring what the typechecker resolved
+    // (§5.3.5). Shadowing is decided at each call site, so this is a
+    // flat set rather than anything scope-aware.
+    for (opts.ambient_modules) |module| {
+        for (stdlib_exports.memberNames(module)) |member| {
+            try emitter.ambient_stdlib.put(emitter.arena, member, .{ .module = module, .name = member });
+        }
+    }
     defer emitter.code.deinit(allocator);
     defer emitter.call_patches.deinit(allocator);
     defer emitter.relocations.deinit(allocator);
@@ -870,6 +889,12 @@ pub const Emitter = struct {
     /// Selectively-imported stdlib functions (`use rng from math`):
     /// local name → `(module, real_name)`. Built in the pre-pass.
     selective_stdlib: std.StringHashMapUnmanaged(StdlibImport),
+    /// Stdlib members in scope because the host put them there, not
+    /// because the program asked (§5.3.5).
+    ambient_stdlib: std.StringHashMapUnmanaged(StdlibImport),
+    /// Every top-level `def` this program declares, by name. Read when
+    /// deciding whether a program's own name shadows an ambient one.
+    declared_defs: std.StringHashMapUnmanaged(void),
     /// Per-class layout: instance size, field offsets, vtable
     /// slots, vtable address (set by `class.emitVtables`).
     class_layouts: std.StringHashMapUnmanaged(class.ClassLayout),
@@ -2029,6 +2054,7 @@ pub const Emitter = struct {
                     const w = self.scalarOptionalWidth(inner);
                     if (w > self.global_sret_scratch) self.global_sret_scratch = w;
                 };
+                try self.declared_defs.put(self.arena, dup, {});
                 if (noreturn_marked) try self.noreturn_defs.put(self.arena, dup, {});
                 if (inline_marked) try self.inline_defs.put(self.arena, dup, dd);
                 if (variadic.isVariadicDef(dd.*)) try self.variadic_decls.put(self.arena, dup, dd);

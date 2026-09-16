@@ -2783,6 +2783,50 @@ Used in `@test` functions (§3.7.5).
 Host-specific modules (`input`, `display`, `audio` for gtx-16) live
 outside the gero stdlib — gtx-16 ships its own header modules.
 
+#### 5.3.5 Ambient modules
+
+A host embedding gero may start a program with stdlib modules already
+in scope, so it calls `min(a, b)` having written no `use` line. This
+is off by default: an ordinary build has no ambient modules, and every
+stdlib name is reached through `use` or a module qualifier.
+
+```zig
+const ambient = [_][]const u8{ "math", "mem" };
+var checked = try gero.lang.typecheckAmbient(
+    alloc, src, &tree.program, null, null, &ambient);
+var compiled = try gero.lang.compile(
+    alloc, src, &checked, .{ .ambient_modules = &ambient });
+```
+
+**An ambient name is shadowed silently.** Declaring `min` is not
+`E_TYPE_REDEFINED`, the way it would be after `use min from math` —
+the program never asked for the ambient one, so its own declaration
+has the better claim and nothing is reported:
+
+```gero
+def min(a: i16, b: i16) -> i16     -- no error; this `min` wins
+  return a
+end
+
+def main()
+  print min(3, 9)        -- 3, the program's own
+  print math.min(3, 9)   -- 3, still reachable qualified
+end
+```
+
+That is the whole of the rule, and it holds at any depth: a local
+binding, a parameter or a capture shadows an ambient name inside the
+scope that declares it, because resolution finds what is in scope
+first and only falls back to the ambient set.
+
+The case this exists for is a host that supplies an environment
+rather than a library — a console handing a cart the arithmetic it
+will obviously need, where a `use` line at the top of every cart is
+ceremony the cart author did not choose and cannot see the reason
+for. The five always-in-scope builtins (§5.3) stay reserved: shadowing
+those is still `E_BUILTIN_SHADOW`, because the language guarantees
+what they mean.
+
 ---
 
 ### 5.4 Memory lifetime
