@@ -5,6 +5,67 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.5.0 - 2026-09-16
+
+The release where a program can point at something.
+
+`math` carried `fixed_sin` and no cosine, and no `atan2` at all — so
+the arithmetic every game needs first, aiming one thing at another,
+was the arithmetic the language could not do. It now has `sin`,
+`cos`, `atan2`, `flr`, `ceil`, `sgn`, and a `sqrt` that works on
+integers as well as fixed-point.
+
+**Angles are turns.** One full turn is `1.0`, so a quarter is `0.25`.
+On a fixed-point machine that is not a matter of taste: a turn is
+exactly the whole part of a Q16.16 value, so the fraction *is* the
+angle. Wrapping costs a bit mask where degrees cost a `mod 360` on
+every call, and the quarter turns come out exact rather than
+depending on 360 dividing evenly.
+
+```gero
+math.sin(0.25)         -- 1.0, exactly
+math.sin(2.25)         -- also 1.0; wrapping is free
+math.sin(0.0 - 0.75)   -- and negative angles need no fixing up
+```
+
+**Two names lose a qualifier they never needed.** `fixed_sin` said
+"the fixed-point one", but there is no integer sine to distinguish it
+from — a sine returning an integer is meaningless without a scale.
+`sqrt_fixed` becomes `sqrt` and dispatches on type, as `abs`, `min`
+and `clamp` already did. The module was inconsistent with itself
+besides, carrying the qualifier as a prefix on one name and a suffix
+on the other.
+
+### Migrating
+
+| Was | Now |
+|---|---|
+| `math.fixed_sin(d)` | `math.sin(d / 360.0)` |
+| `math.sqrt_fixed(x)` | `math.sqrt(x)` |
+
+The rename is caught by the compiler. **The unit change is not** — and
+it is the one to watch. `math.sin(90)` still compiles after a
+search-and-replace, and now means ninety whole turns rather than
+ninety degrees. Anything reading an angle from a variable needs the
+`/ 360.0` as well as the new name.
+
+### Breaking
+
+- `math.fixed_sin(deg)` is `math.sin(turns)` — renamed **and** re-united. A full turn is `1.0`.
+- `math.sqrt_fixed(x)` is `math.sqrt(x)`, now polymorphic over `i16` / `u16` / `fixed`.
+
+### Added
+
+- `math.cos(t)` — the cosine that was missing.
+- `math.atan2(y, x)` — direction as turns, counter-clockwise from `+X`. C's argument order, not PICO-8's reversed one, and no screen-space inversion. Within 0.45°, exact on all eight compass directions.
+- `math.flr(x)` / `math.ceil(x)` — round down / up. Not `as i16`, which truncates toward zero; they disagree on every negative value with a fraction.
+- `math.sgn(x)` — `-1`, `0` or `1` in the operand's own type.
+- `math.sqrt(x)` on integers, exact.
+
+### Fixed
+
+- The stdlib member-suggestion pool was a hand-sized `[16]` and `math` now declares eighteen; it is sized from the tables, so adding a builtin cannot overrun it again.
+
 ## v0.4.2 - 2026-09-15
 
 The release where a program can hold a world.
