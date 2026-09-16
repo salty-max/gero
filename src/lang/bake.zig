@@ -1103,14 +1103,25 @@ const Evaluator = struct {
             if (std.mem.eql(u8, name, "sat_add")) break :b bakeSat(raw[0], raw[1], kind, .add);
             if (std.mem.eql(u8, name, "sat_sub")) break :b bakeSat(raw[0], raw[1], kind, .sub);
             if (std.mem.eql(u8, name, "sat_mul")) break :b bakeSat(raw[0], raw[1], kind, .mul);
-            if (std.mem.eql(u8, name, "fixed_sin")) {
-                is_fixed = true;
-                break :b bakeFixedSin(@truncate(raw[0]));
+            if (std.mem.eql(u8, name, "sgn")) break :b bakeSgn(raw[0], kind);
+            if (std.mem.eql(u8, name, "sqrt")) {
+                is_fixed = kind == .fixed;
+                break :b if (kind == .fixed) bakeSqrtFixed(raw[0]) else bakeSqrtInt(raw[0], kind);
             }
-            if (std.mem.eql(u8, name, "sqrt_fixed")) {
+            if (std.mem.eql(u8, name, "sin")) {
                 is_fixed = true;
-                break :b bakeSqrtFixed(raw[0]);
+                break :b bakeSin(raw[0]);
             }
+            if (std.mem.eql(u8, name, "cos")) {
+                is_fixed = true;
+                break :b bakeSin(raw[0] +% 0x4000);
+            }
+            if (std.mem.eql(u8, name, "atan2")) {
+                is_fixed = true;
+                break :b bakeAtan2(@truncate(raw[0]), @truncate(raw[1]));
+            }
+            if (std.mem.eql(u8, name, "flr")) break :b bakeFlr(raw[0]);
+            if (std.mem.eql(u8, name, "ceil")) break :b bakeCeil(raw[0]);
             try self.diagFmt(span, "E_BAKE_UNSUPPORTED", "bake: `math.{s}` is not evaluable at compile time", .{name});
             return error.Fault;
         };
@@ -1208,25 +1219,126 @@ fn bakeSat(a: u32, b: u32, kind: BakeKind, op: BakeSatOp) u32 {
 }
 
 /// Bhaskara I sine, identical to the runtime lowering (§5.3).
-fn bakeFixedSin(deg_raw: u16) u32 {
-    const deg: i32 = sI16(deg_raw);
-    var x: i32 = @mod(deg, 360);
-    var negate = false;
-    if (x >= 180) {
-        negate = true;
-        x -= 180;
-    }
-    const prod: i32 = x * (180 - x);
-    const den: i32 = @divFloor(40500 - prod, 2);
+fn bakeSin(t_raw: u32) u32 {
+    // The turn fraction is the low word: a full turn is 1.0 = 0x10000,
+    // so wrapping any angle into [0, 1) is taking those 16 bits, with
+    // no modulo and no range reduction. Negative angles land correctly
+    // because two's complement keeps the fraction intact.
+    const u: u32 = t_raw & 0xFFFF;
+    const negate = u >= 0x8000;
+    // X ∈ [0, 32768) is the position within a half turn, Q15.
+    const x: i32 = @intCast(u & 0x7FFF);
+    // Bhaskara I over a half turn: sin(πz) ≈ 16z(1-z) / (5 - 4z(1-z)).
+    // With P = z(1-z) in Q15, that is 4P / (40960 - P) — the form whose
+    // intermediates all stay inside 32 bits.
+    const prod: i32 = x * (32768 - x);
+    const p: i32 = prod >> 15;
+    // Halved, because the divisor is signed: 40960 exceeds i16's
+    // positive range and would divide as a negative number.
+    const den_half: i32 = (40960 - p) >> 1;
     // Quarter-scale, exactly as the runtime lowering computes it, so a
     // baked constant equals what the same call produces at run time.
-    var quarter: i32 = @divTrunc(32768 * prod, den);
+    var quarter: i32 = @divTrunc(32768 * p, den_half);
     if (negate) quarter = -quarter;
     // |quarter| ≤ 16384, so scaling by four stays inside i32.
     const scaled: i32 = quarter * 4;
     // safety: signed → unsigned reinterpret preserves the bits.
     const bits: u32 = @bitCast(scaled);
     return bits;
+}
+
+/// `atan(z)` for `z ∈ [0, 1]` in Q15, returning turns in Q16.16.
+///
+/// `atan(z) ≈ z / (1 + 0.2734375·z²)`, which is within 0.02% over the
+/// octant — the constant is `35/128`, chosen because it makes `atan(1)`
+/// land on π/4 rather than the 0.6% low that the more commonly quoted
+/// `0.28125` gives. Dividing by 2π converts radians to turns, folded
+/// into the numerator as `65536/(2π) = 10430`.
+fn bakeAtanOctant(z: i32) u32 {
+    // Q14, not Q15: a ratio of exactly 1 would be 32768, which is
+    // negative as an i16 and would divide as such.
+    const sq: i32 = z * z;
+    const den: i32 = 16384 + (sq >> 21) * 35;
+    return @intCast(@divTrunc(10430 * z, den));
+}
+
+fn bakeAtan2(y_raw: u16, x_raw: u16) u32 {
+    const y: i32 = sI16(y_raw);
+    const x: i32 = sI16(x_raw);
+    if (x == 0 and y == 0) return 0;
+    const ax: i32 = if (x < 0) -x else x;
+    const ay: i32 = if (y < 0) -y else y;
+    // The octant with the smaller ratio, so z never exceeds 1.
+    const base: u32 = if (ay <= ax) b: {
+        break :b bakeAtanOctant(@divTrunc(ay << 14, ax));
+    } else b: {
+        break :b 16384 - bakeAtanOctant(@divTrunc(ax << 14, ay));
+    };
+    // Counter-clockwise from +X, in turns: 0.25 is 16384, a full turn
+    // 65536. No screen-space inversion — that belongs to whoever has a
+    // screen.
+    if (x >= 0 and y >= 0) return base;
+    if (x < 0 and y >= 0) return 32768 - base;
+    if (x < 0) return 32768 + base;
+    return 65536 - base;
+}
+
+fn bakeFlr(x_raw: u32) u32 {
+    // safety: arithmetic shift of the reinterpreted pair is floor.
+    const signed: i32 = @bitCast(x_raw);
+    const f: i32 = signed >> 16;
+    return narrowToWord(f);
+}
+
+fn bakeCeil(x_raw: u32) u32 {
+    // safety: arithmetic shift of the reinterpreted pair is floor.
+    const signed: i32 = @bitCast(x_raw);
+    var f: i32 = signed >> 16;
+    if (x_raw & 0xFFFF != 0) f += 1;
+    return narrowToWord(f);
+}
+
+/// An `i16`-ranged result as the low word holds it — the shape the
+/// runtime leaves in `acu`, so a baked value and a live call agree.
+fn narrowToWord(v: i32) u32 {
+    const n: i16 = @truncate(v);
+    // safety: signed → unsigned reinterpret preserves the bits.
+    const bits: u16 = @bitCast(n);
+    return bits;
+}
+
+fn bakeSgn(v: u32, kind: BakeKind) u32 {
+    return switch (kind) {
+        .unsigned => if (v == 0) 0 else 1,
+        .signed => b: {
+            const n = sI16(@truncate(v));
+            // @as: -1 as a 16-bit pattern, which is how the low word holds it.
+            break :b if (n == 0) 0 else if (n < 0) @as(u32, 0xFFFF) else 1;
+        },
+        // safety: signed reinterpret to read the sign of the pair.
+        .fixed => b: {
+            // safety: signed reinterpret to read the sign of the pair.
+            const n: i32 = @bitCast(v);
+            break :b if (n == 0) 0 else if (n < 0) 0xFFFF0000 else 0x00010000;
+        },
+    };
+}
+
+/// Integer square root of a 16-bit value, by the same bit-by-bit
+/// method the fixed version uses so the two agree on perfect squares.
+fn bakeSqrtInt(v: u32, kind: BakeKind) u32 {
+    const n: u32 = if (kind == .signed) b: {
+        const i = sI16(@truncate(v));
+        // @as: widening a value already proven non-negative.
+        break :b if (i < 0) 0 else @as(u32, @intCast(i));
+    } else v & 0xFFFF;
+    var r: u32 = 0;
+    var bit: u32 = 0x80;
+    while (bit != 0) : (bit >>= 1) {
+        const cand = r | bit;
+        if (cand * cand <= n) r = cand;
+    }
+    return r;
 }
 
 /// Bit-by-bit Q16.16 square root, identical to the runtime lowering:

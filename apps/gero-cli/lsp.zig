@@ -1767,7 +1767,7 @@ test "handleMessage: completion offers what is in scope and nothing else" {
 /// A prefix matching a stdlib export nothing has imported.
 const autoimport_src =
     "def main()\n" ++
-    "  let x: fixed = fixed_s\n" ++
+    "  let x: fixed = si\n" ++
     "end\n";
 
 test "handleMessage: an unimported stdlib name completes with the `use` it needs" {
@@ -1779,17 +1779,17 @@ test "handleMessage: an unimported stdlib name completes with the `use` it needs
 
     try openDoc(&s, arena, autoimport_src);
     const before = s.written().len;
-    // Just past `fixed_s` on line 1.
-    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":1,\"character\":24}}}");
+    // Just past `si` on line 1.
+    _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":1,\"character\":19}}}");
     const reply = s.written()[before..];
 
-    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"fixed_sin\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"sin\"") != null);
     try testing.expect(std.mem.indexOf(u8, reply, "\"detail\":\"from math\"") != null);
     // Accepting it inserts the import alongside the word.
-    try testing.expect(std.mem.indexOf(u8, reply, "\"newText\":\"use fixed_sin from math\\n\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"newText\":\"use sin from math\\n\"") != null);
     // An in-scope name sorts ahead of one that has to be imported.
     try testing.expect(std.mem.indexOf(u8, reply, "\"sortText\":\"0main\"") != null);
-    try testing.expect(std.mem.indexOf(u8, reply, "\"sortText\":\"1fixed_sin\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"sortText\":\"1sin\"") != null);
     // The set depends on the prefix, so the client must ask again.
     try testing.expect(std.mem.indexOf(u8, reply, "\"isIncomplete\":true") != null);
 }
@@ -1837,8 +1837,8 @@ test "handleMessage: a stdlib module completes its own functions after a dot" {
     _ = try s.send(arena, "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"file:///h.gr\"},\"position\":{\"line\":2,\"character\":22}}}");
     const reply = s.written()[before..];
 
-    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"fixed_sin\"") != null);
-    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"sqrt_fixed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"sin\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"label\":\"sqrt\"") != null);
     // A receiver's members are a fixed set — nothing typed next adds
     // to it, and nothing outside the module belongs in the list.
     try testing.expect(std.mem.indexOf(u8, reply, "\"isIncomplete\":false") != null);

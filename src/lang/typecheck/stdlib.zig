@@ -43,8 +43,13 @@ const math_sigs = [_]Sig{
     .{ .name = "sat_add", .shape = .{ .numeric_int = 2 } },
     .{ .name = "sat_sub", .shape = .{ .numeric_int = 2 } },
     .{ .name = "sat_mul", .shape = .{ .numeric_int = 2 } },
-    .{ .name = "fixed_sin", .shape = .{ .mono = .{ .params = &.{.i16}, .ret = .fixed } } },
-    .{ .name = "sqrt_fixed", .shape = .{ .mono = .{ .params = &.{.fixed}, .ret = .fixed } } },
+    .{ .name = "sgn", .shape = .{ .numeric = 1 } },
+    .{ .name = "sqrt", .shape = .{ .numeric = 1 } },
+    .{ .name = "sin", .shape = .{ .mono = .{ .params = &.{.fixed}, .ret = .fixed } } },
+    .{ .name = "cos", .shape = .{ .mono = .{ .params = &.{.fixed}, .ret = .fixed } } },
+    .{ .name = "atan2", .shape = .{ .mono = .{ .params = &.{ .i16, .i16 }, .ret = .fixed } } },
+    .{ .name = "flr", .shape = .{ .mono = .{ .params = &.{.fixed}, .ret = .i16 } } },
+    .{ .name = "ceil", .shape = .{ .mono = .{ .params = &.{.fixed}, .ret = .i16 } } },
     .{ .name = "rng", .shape = .{ .mono = .{ .params = &.{}, .ret = .u16 } } },
 };
 
@@ -108,9 +113,13 @@ pub fn isMember(recv: []const u8, name: []const u8) bool {
     return lookup(recv, name) != null;
 }
 
+/// Sized from the tables rather than by hand, so adding a builtin
+/// cannot silently overrun the scratch pool.
+const max_members = @max(math_sigs.len, @max(bank_sigs.len, test_sigs.len));
+
 fn suggest(recv: []const u8, name: []const u8) ?[]const u8 {
     const sigs = sigsFor(recv);
-    var pool: [16][]const u8 = undefined;
+    var pool: [max_members][]const u8 = undefined;
     for (sigs, 0..) |s, i| pool[i] = s.name;
     return suggestions.bestMatch(name, pool[0..sigs.len]);
 }

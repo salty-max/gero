@@ -54,8 +54,13 @@ pub fn emitMathCall(self: *Emitter, name: []const u8, c: ast.CallExpr) !void {
     if (std.mem.eql(u8, name, "sat_add")) return emitSat(self, c, .add);
     if (std.mem.eql(u8, name, "sat_sub")) return emitSat(self, c, .sub);
     if (std.mem.eql(u8, name, "sat_mul")) return emitSat(self, c, .mul);
-    if (std.mem.eql(u8, name, "fixed_sin")) return emitFixedSin(self, c);
-    if (std.mem.eql(u8, name, "sqrt_fixed")) return emitSqrtFixed(self, c);
+    if (std.mem.eql(u8, name, "sgn")) return emitSgn(self, c);
+    if (std.mem.eql(u8, name, "sqrt")) return emitSqrt(self, c);
+    if (std.mem.eql(u8, name, "sin")) return emitSin(self, c, 0);
+    if (std.mem.eql(u8, name, "cos")) return emitSin(self, c, 0x4000);
+    if (std.mem.eql(u8, name, "atan2")) return emitAtan2(self, c);
+    if (std.mem.eql(u8, name, "flr")) return emitFloorCeil(self, c, .floor);
+    if (std.mem.eql(u8, name, "ceil")) return emitFloorCeil(self, c, .ceil);
     if (std.mem.eql(u8, name, "rng")) return emitRng(self, c);
     try self.diagFatal(c.span, "E_CODEGEN_UNSUPPORTED", "codegen: unknown `math` builtin");
 }
@@ -84,7 +89,7 @@ fn emitRng(self: *Emitter, c: ast.CallExpr) !void {
     try isa.movRegToAddr(self, Reg.acu, rng_state_addr); // persist; acu is the result
 }
 
-/// `sqrt_fixed(x: fixed) -> fixed` — Q16.16 square root.
+/// `sqrt(x: fixed) -> fixed` — Q16.16 square root.
 ///
 /// `√(raw/65536)·65536 = √raw · 256`, so the raw value is its own
 /// radicand and the integer root is scaled by 256 afterwards — which
@@ -147,65 +152,277 @@ fn emitSqrtFixed(self: *Emitter, c: ast.CallExpr) !void {
     try isa.patchJumpTo(self, done, try self.currentOffset());
 }
 
-/// `fixed_sin(deg: i16) -> fixed` — sine of an angle in degrees, Q16.16.
-/// Reduces `deg` mod 360 into `[0, 360)`, folds `[180, 360)` to a
-/// negated `[0, 180)`, then Bhaskara I on `[0, 180]`:
-///   sin(x°) ≈ 4x(180-x) / (40500 - x(180-x))
-/// The rational approximation is evaluated with integer intermediates and
-/// scaled into Q16.16 at the end. The denominator exceeds i16 before the
-/// final halving, so the rearranged form keeps signed `divs` valid.
-/// Accurate to about 1%.
-fn emitFixedSin(self: *Emitter, c: ast.CallExpr) !void {
-    try self.emitExpr(c.args[0]); // acu = deg
-    // deg mod 360 → remainder in acu (sign of deg). Sign-extend deg into
-    // the high half for the 32/16 signed divide.
-    try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = deg (low / quotient dst)
-    try isa.asrRegImm(self, Reg.acu, 15); // acu = sign extension
-    try isa.movImmToReg(self, 360, Reg.r2);
-    try isa.divsRegReg(self, Reg.r2, Reg.r1); // r1 = deg/360, acu = deg mod 360
-    // Fold the remainder into [0, 360).
-    try isa.cmpRegImm(self, Reg.acu, 0);
-    const nonneg = try isa.emitJumpPlaceholder(self, Op.jge_addr);
-    try isa.addImmToReg(self, 360, Reg.acu);
-    try isa.patchJumpTo(self, nonneg, try self.currentOffset());
-    // Fold [180, 360) to a negated [0, 180): r6 = negate flag.
-    try isa.movImmToReg(self, 0, Reg.r6);
-    try isa.cmpRegImm(self, Reg.acu, 180);
-    const lo_half = try isa.emitJumpPlaceholder(self, Op.jlt_addr);
-    try isa.movImmToReg(self, 1, Reg.r6);
-    try isa.subImmFromReg(self, 180, Reg.acu);
-    try isa.patchJumpTo(self, lo_half, try self.currentOffset());
-    // prod = x(180-x). acu = x ∈ [0, 180).
+/// `sin(t: fixed) -> fixed` / `cos(t: fixed) -> fixed` — angle in
+/// **turns**, Q16.16. `quarter_turn` is added first, which is the only
+/// difference between the two.
+///
+/// A full turn is `1.0`, so the turn fraction is the low word and
+/// wrapping is free — no `mod`, no range reduction, which is what
+/// degrees cost. Folds `[0.5, 1)` to a negated `[0, 0.5)`, then
+/// Bhaskara I over the half turn:
+///   sin(πz) ≈ 16z(1-z) / (5 - 4z(1-z)),  P = z(1-z) in Q15
+/// rearranged to `4P / (40960 - P)`, the form whose intermediates stay
+/// inside 32 bits. Accurate to 0.17%, and exact at every quarter turn.
+fn emitSin(self: *Emitter, c: ast.CallExpr, quarter_turn: u16) !void {
+    try self.emitExpr(c.args[0]); // acu:fixed_hi = t_raw
+    if (quarter_turn != 0) {
+        // cos(t) = sin(t + ¼). Only the low word is read below, so the
+        // carry into the high half is deliberately not propagated.
+        try isa.movImmToReg(self, quarter_turn, Reg.r1);
+        try isa.addRegToReg(self, Reg.r1, Reg.acu);
+    }
+    // negate = bit 15 of the fraction; x = the remaining 15 bits.
+    try isa.movRegToReg(self, Reg.acu, Reg.r6);
+    try isa.movImmToReg(self, 0x8000, Reg.r1);
+    try isa.andRegReg(self, Reg.r6, Reg.r1); // r6 = 0 or 0x8000
+    try isa.movImmToReg(self, 0x7FFF, Reg.r1);
+    try isa.andRegReg(self, Reg.acu, Reg.r1); // acu = x ∈ [0, 32768)
+    // prod = x(32768 - x) → acu:r2, then P = prod >> 15.
     try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = x
-    try isa.movImmToReg(self, 180, Reg.acu);
-    try isa.subRegFromAcu(self, Reg.r1); // acu = 180 - x
-    try isa.movRegToReg(self, Reg.acu, Reg.r2); // r2 = 180 - x
-    try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = prod (≤ 8100, high half 0)
-    try isa.movRegToReg(self, Reg.r2, Reg.r1); // r1 = prod
-    // den_half = (40500 - prod) >> 1 → r4 (uses acu, so before building num).
-    try isa.movImmToReg(self, 40500, Reg.acu);
-    try isa.subRegFromAcu(self, Reg.r1); // acu = 40500 - prod
-    try isa.shrRegImm(self, Reg.acu, 1); // (40500 - prod) / 2 ≤ 20250
+    try isa.movImmToReg(self, 0x7FFF, Reg.acu);
+    try isa.subRegFromAcu(self, Reg.r1);
+    try isa.addImmToReg(self, 1, Reg.acu); // acu = 32768 - x, without overflowing i16
+    try isa.movRegToReg(self, Reg.acu, Reg.r2);
+    try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low, acu = high
+    try isa.shlRegImm(self, Reg.acu, 1); // high << 1
+    try isa.shrRegImm(self, Reg.r2, 15); // low >> 15 (logical)
+    try isa.orRegReg(self, Reg.acu, Reg.r2); // acu = P ≤ 8192
+    try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = P
+    // den_half = (40960 − P) >> 1 ∈ [16384, 20480]. Halved because the
+    // divide is signed and 40960 is negative as an i16.
+    try isa.movImmToReg(self, 40960, Reg.acu);
+    try isa.subRegFromAcu(self, Reg.r1);
+    try isa.shrRegImm(self, Reg.acu, 1);
     try isa.movRegToReg(self, Reg.acu, Reg.r4); // r4 = den_half
-    // num32 = 32768 * prod → acu:r2 (32-bit dividend). Dividing that by
-    // `den_half` yields `65536·prod / (40500-prod)` — a quarter of the
-    // Q16.16 result, which is the largest scale whose quotient still
-    // fits the 16 bits `divs` produces (|sin| ≤ 1 ⇒ quotient ≤ 16384).
-    try isa.movImmToReg(self, 32768, Reg.r2);
-    try isa.mulRegReg(self, Reg.r1, Reg.r2); // r2 = low(32768·prod), acu = high
-    try isa.divsRegReg(self, Reg.r4, Reg.r2); // r2 = quarter-scale result
+    // num32 = 32768·P: P >> 1 in the high half, P << 15 in the low.
+    try isa.movRegToReg(self, Reg.r1, Reg.r2);
+    try isa.shlRegImm(self, Reg.r2, 15); // r2 = low
+    try isa.movRegToReg(self, Reg.r1, Reg.acu);
+    try isa.shrRegImm(self, Reg.acu, 1); // acu = high
+    try isa.divsRegReg(self, Reg.r4, Reg.r2); // r2 = quarter ≤ 16384
     try isa.movRegToReg(self, Reg.r2, Reg.acu);
-    // Negate for the [180, 360) half, while the value is still one word.
     try isa.cmpRegImm(self, Reg.r6, 0);
     const positive = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
     try isa.negReg(self, Reg.acu);
     try isa.patchJumpTo(self, positive, try self.currentOffset());
-    // Widen the quarter-scale word to the Q16.16 pair: `<< 2` spans a
-    // 17-bit range, so the high half carries the top bits and the sign.
+    // Widen the quarter-scale word to the Q16.16 pair.
     try isa.movRegToReg(self, Reg.acu, Reg.r1);
     try isa.asrRegImm(self, Reg.r1, 14);
     try isa.shlRegImm(self, Reg.acu, 2);
     try isa.movRegToReg(self, Reg.r1, Emitter.fixed_hi);
+}
+
+/// `atan(z)` for `z ∈ [0,1]` in **Q14** → turns in Q16.16, left in `acu`.
+///
+/// `atan(z) ≈ z / (1 + 0.2734375·z²)`, within 0.02% across the octant.
+/// `35/128` is the constant that puts `atan(1)` on π/4; the widely
+/// quoted `0.28125` misses it by 0.6%. Converting radians to turns is
+/// folded into the numerator as `65536/(2π) = 10430`.
+///
+/// Q14 rather than Q15 because a ratio of exactly 1 is 32768, which is
+/// negative as an i16 and would divide as such.
+/// Expects `z` in `r3`; clobbers `r1`, `r2`, `r4`. It must not touch
+/// `r5` or `r6`, which carry the signs the quadrant test still needs.
+fn emitAtanOctant(self: *Emitter) !void {
+    try isa.movRegToReg(self, Reg.r3, Reg.r1);
+    try isa.mulRegReg(self, Reg.r3, Reg.r1); // r1 = low(z²), acu = high
+    // z² ≤ 2^28, so z²>>21 is the high half >> 5 and never exceeds 128.
+    try isa.shrRegImm(self, Reg.acu, 5);
+    try isa.movImmToReg(self, 35, Reg.r2);
+    try isa.mulRegReg(self, Reg.acu, Reg.r2); // r2 = 35·(z²>>21) ≤ 4480
+    try isa.movImmToReg(self, 16384, Reg.r4);
+    try isa.addRegToReg(self, Reg.r2, Reg.r4); // r4 = den ≤ 20864
+    // 10430·z → acu:r2, a 32-bit dividend.
+    try isa.movImmToReg(self, 10430, Reg.r2);
+    try isa.mulRegReg(self, Reg.r3, Reg.r2);
+    try isa.divsRegReg(self, Reg.r4, Reg.r2);
+    try isa.movRegToReg(self, Reg.r2, Reg.acu); // acu = turns ≤ 8192
+}
+
+/// Divide `num << 14` by `den`, both `u16`, leaving the Q14 ratio in
+/// `r3`. The shifted numerator spans 32 bits, so it is assembled as a
+/// high/low pair rather than shifted in place.
+fn emitRatioQ14(self: *Emitter, num: u8, den: u8) !void {
+    try isa.movRegToReg(self, num, Reg.r3);
+    try isa.shlRegImm(self, Reg.r3, 14); // low half
+    try isa.movRegToReg(self, num, Reg.acu);
+    try isa.shrRegImm(self, Reg.acu, 2); // high half
+    try isa.divsRegReg(self, den, Reg.r3); // r3 = z ≤ 16384
+}
+
+/// `atan2(y: i16, x: i16) -> fixed` — the direction of `(x, y)` as
+/// turns in `[0, 1)`, counter-clockwise from `+X`.
+///
+/// Deltas are integers because that is what a caller has: the vector
+/// between two positions. No screen-space inversion — a caller whose Y
+/// axis points down passes a down-positive `y` and gets the angle it
+/// means, which is the only sense in which one function can be right
+/// for both conventions.
+fn emitAtan2(self: *Emitter, c: ast.CallExpr) !void {
+    try self.emitExpr(c.args[0]); // y
+    try isa.pushReg(self, Reg.acu);
+    try self.emitExpr(c.args[1]); // x
+    try isa.movRegToReg(self, Reg.acu, Reg.r6); // r6 = x
+    try isa.popReg(self, Reg.r5); // r5 = y
+    // r1 = |x|, r2 = |y|.
+    try isa.movRegToReg(self, Reg.r6, Reg.r1);
+    try isa.cmpRegImm(self, Reg.r1, 0);
+    const x_pos = try isa.emitJumpPlaceholder(self, Op.jge_addr);
+    try isa.negReg(self, Reg.r1);
+    try isa.patchJumpTo(self, x_pos, try self.currentOffset());
+    try isa.movRegToReg(self, Reg.r5, Reg.r2);
+    try isa.cmpRegImm(self, Reg.r2, 0);
+    const y_pos = try isa.emitJumpPlaceholder(self, Op.jge_addr);
+    try isa.negReg(self, Reg.r2);
+    try isa.patchJumpTo(self, y_pos, try self.currentOffset());
+    // The zero vector has no direction; report 0 rather than dividing.
+    try isa.movRegToReg(self, Reg.r1, Reg.acu);
+    try isa.orRegReg(self, Reg.acu, Reg.r2);
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const nonzero = try isa.emitJumpPlaceholder(self, Op.jne_addr);
+    try isa.movImmToReg(self, 0, Reg.r3);
+    const zero_done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, nonzero, try self.currentOffset());
+    // Take the octant whose ratio cannot exceed 1.
+    try isa.cmpRegReg(self, Reg.r2, Reg.r1); // |y| - |x|
+    const steep = try isa.emitJumpPlaceholder(self, Op.jgt_addr);
+    try emitRatioQ14(self, Reg.r2, Reg.r1); // z = |y|/|x|
+    try emitAtanOctant(self);
+    try isa.movRegToReg(self, Reg.acu, Reg.r3); // r3 = base
+    const shallow_done = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, steep, try self.currentOffset());
+    try emitRatioQ14(self, Reg.r1, Reg.r2); // z = |x|/|y|
+    try emitAtanOctant(self);
+    try isa.movRegToReg(self, Reg.acu, Reg.r3);
+    try isa.movImmToReg(self, 16384, Reg.acu); // a quarter turn
+    try isa.subRegFromAcu(self, Reg.r3);
+    try isa.movRegToReg(self, Reg.acu, Reg.r3); // r3 = ¼ − atan(z)
+    try isa.patchJumpTo(self, shallow_done, try self.currentOffset());
+    try isa.patchJumpTo(self, zero_done, try self.currentOffset());
+    // Quadrant, from the signs kept in r6 (x) and r5 (y).
+    try isa.cmpRegImm(self, Reg.r6, 0);
+    const x_neg = try isa.emitJumpPlaceholder(self, Op.jlt_addr);
+    try isa.cmpRegImm(self, Reg.r5, 0);
+    const q4 = try isa.emitJumpPlaceholder(self, Op.jlt_addr);
+    try isa.movRegToReg(self, Reg.r3, Reg.acu); // x≥0, y≥0 → base
+    const done_q1 = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, q4, try self.currentOffset());
+    // x≥0, y<0 → 1 − base. A full turn is 0x10000, so subtracting from
+    // zero leaves exactly the low word wanted.
+    try isa.movImmToReg(self, 0, Reg.acu);
+    try isa.subRegFromAcu(self, Reg.r3);
+    const done_q4 = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, x_neg, try self.currentOffset());
+    try isa.cmpRegImm(self, Reg.r5, 0);
+    const q3 = try isa.emitJumpPlaceholder(self, Op.jlt_addr);
+    try isa.movImmToReg(self, 32768, Reg.acu); // x<0, y≥0 → ½ − base
+    try isa.subRegFromAcu(self, Reg.r3);
+    const done_q2 = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+    try isa.patchJumpTo(self, q3, try self.currentOffset());
+    try isa.movImmToReg(self, 32768, Reg.acu); // x<0, y<0 → ½ + base
+    try isa.addRegToReg(self, Reg.r3, Reg.acu);
+    const end = try self.currentOffset();
+    try isa.patchJumpTo(self, done_q1, end);
+    try isa.patchJumpTo(self, done_q4, end);
+    try isa.patchJumpTo(self, done_q2, end);
+    // Always below a full turn, so the high half is zero.
+    try isa.movImmToReg(self, 0, Emitter.fixed_hi);
+}
+
+const Rounding = enum { floor, ceil };
+
+/// `flr(x: fixed) -> i16` / `ceil(x: fixed) -> i16`.
+///
+/// The high half of a Q16.16 pair *is* the arithmetic shift by 16, so
+/// floor is a register move — which is exactly why `as i16` is not a
+/// substitute: that truncates toward zero, and the two disagree on
+/// every negative value with a fraction.
+fn emitFloorCeil(self: *Emitter, c: ast.CallExpr, mode: Rounding) !void {
+    try self.emitExpr(c.args[0]); // acu = low, fixed_hi = high
+    if (mode == .ceil) {
+        try isa.cmpRegImm(self, Reg.acu, 0);
+        const exact = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+        try isa.addImmToReg(self, 1, Emitter.fixed_hi);
+        try isa.patchJumpTo(self, exact, try self.currentOffset());
+    }
+    try isa.movRegToReg(self, Emitter.fixed_hi, Reg.acu);
+}
+
+/// `sgn(x) -> T` — `-1`, `0` or `1` in the operand's own type.
+fn emitSgn(self: *Emitter, c: ast.CallExpr) !void {
+    const kind = argKind(self, c.args[0]);
+    try self.emitExpr(c.args[0]);
+    if (kind == .fixed) {
+        try isa.orRegReg(self, Reg.acu, Emitter.fixed_hi); // zero iff both halves are
+        try isa.cmpRegImm(self, Reg.acu, 0);
+        const is_zero = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+        try isa.cmpRegImm(self, Emitter.fixed_hi, 0);
+        const is_neg = try isa.emitJumpPlaceholder(self, Op.jlt_addr);
+        try isa.movImmToReg(self, 0, Reg.acu); // +1.0
+        try isa.movImmToReg(self, 1, Emitter.fixed_hi);
+        const done_pos = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+        try isa.patchJumpTo(self, is_neg, try self.currentOffset());
+        try isa.movImmToReg(self, 0, Reg.acu); // -1.0
+        try isa.movImmToReg(self, 0xFFFF, Emitter.fixed_hi);
+        const done_neg = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+        try isa.patchJumpTo(self, is_zero, try self.currentOffset());
+        try isa.movImmToReg(self, 0, Reg.acu);
+        try isa.movImmToReg(self, 0, Emitter.fixed_hi);
+        const end = try self.currentOffset();
+        try isa.patchJumpTo(self, done_pos, end);
+        try isa.patchJumpTo(self, done_neg, end);
+        return;
+    }
+    try isa.cmpRegImm(self, Reg.acu, 0);
+    const zero = try isa.emitJumpPlaceholder(self, Op.jeq_addr);
+    if (kind == .signed) {
+        const neg = try isa.emitJumpPlaceholder(self, Op.jlt_addr);
+        try isa.movImmToReg(self, 1, Reg.acu);
+        const done_p = try isa.emitJumpPlaceholder(self, Op.jmp_addr);
+        try isa.patchJumpTo(self, neg, try self.currentOffset());
+        try isa.movImmToReg(self, 0xFFFF, Reg.acu);
+        try isa.patchJumpTo(self, done_p, try self.currentOffset());
+    } else {
+        try isa.movImmToReg(self, 1, Reg.acu);
+    }
+    try isa.patchJumpTo(self, zero, try self.currentOffset());
+}
+
+/// `sqrt(x)` — Q16.16 for `fixed`, integer otherwise.
+fn emitSqrt(self: *Emitter, c: ast.CallExpr) !void {
+    if (argKind(self, c.args[0]) == .fixed) return emitSqrtFixed(self, c);
+    return emitSqrtInt(self, c);
+}
+
+/// Integer square root, by the same bit-by-bit method the fixed version
+/// uses so both agree exactly on perfect squares. A negative signed
+/// input has no root and returns 0.
+fn emitSqrtInt(self: *Emitter, c: ast.CallExpr) !void {
+    const kind = argKind(self, c.args[0]);
+    try self.emitExpr(c.args[0]);
+    if (kind == .signed) {
+        try isa.cmpRegImm(self, Reg.acu, 0);
+        const nonneg = try isa.emitJumpPlaceholder(self, Op.jge_addr);
+        try isa.movImmToReg(self, 0, Reg.acu);
+        try isa.patchJumpTo(self, nonneg, try self.currentOffset());
+    }
+    try isa.movRegToReg(self, Reg.acu, Reg.r1); // r1 = N
+    try isa.movImmToReg(self, 0, Reg.r3); // result
+    try isa.movImmToReg(self, 0x80, Reg.r4); // bit = 2^7 (root < 2^8)
+    const loop_start = try self.currentOffset();
+    try isa.movRegToReg(self, Reg.r3, Reg.r5);
+    try isa.orRegReg(self, Reg.r5, Reg.r4); // r5 = candidate
+    try isa.movRegToReg(self, Reg.r5, Reg.r6);
+    try isa.mulRegReg(self, Reg.r5, Reg.r6); // r6 = candidate² (fits 16 bits)
+    try isa.cmpRegReg(self, Reg.r1, Reg.r6); // N - cand²
+    const reject = try isa.emitJumpPlaceholder(self, Op.jcs_addr); // borrow → cand² > N
+    try isa.movRegToReg(self, Reg.r5, Reg.r3);
+    try isa.patchJumpTo(self, reject, try self.currentOffset());
+    try isa.shrRegImm(self, Reg.r4, 1);
+    try isa.cmpRegImm(self, Reg.r4, 0);
+    const back = try isa.emitJumpPlaceholder(self, Op.jne_addr);
+    try isa.patchJumpTo(self, back, loop_start);
+    try isa.movRegToReg(self, Reg.r3, Reg.acu);
 }
 
 /// Emit `jge` (signed) / `jcc` (unsigned ≥, i.e. no borrow) after a
