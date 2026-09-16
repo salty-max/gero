@@ -1208,7 +1208,7 @@ use math
 bake def make_sin_table() -> [fixed; 256]
   let t: [fixed; 256] = [0.0; 256]
   for i in 0..256
-    t[i] = math.fixed_sin(i * 360 / 256)
+    t[i] = math.sin(i / 256.0)
   end
   return t
 end
@@ -1217,7 +1217,7 @@ const SIN_TABLE = make_sin_table()
 -- 512 bytes of static data; no runtime cost
 ```
 
-(`math.fixed_sin` — §5.3. A bake body may equally inline its own
+(`math.sin` — §5.3. A bake body may equally inline its own
 approximation or build a simpler table such as `make_squares_table`.)
 
 `bake do` is the same idea inline, without a named function:
@@ -2632,7 +2632,7 @@ solves one concrete need:
 
 | Module | What |
 |--------|------|
-| `math` | `abs`, `min`, `max`, `clamp`, `sqrt_fixed`, fixed-point helpers, `rng()` |
+| `math` | `abs`, `min`, `max`, `clamp`, `sgn`, `sqrt`, `sin`, `cos`, `atan2`, `flr`, `ceil`, overflow helpers, `rng()` |
 | `mem`  | typed peek / poke / memcpy / memset / `addr_of` — see §5.3.1 |
 | `str`  | `format(fmt, args)` (allocates), `format_into(dst, fmt, args)` (does not — §5.4). `len` / `at` / `cmp` are methods on a `str` **value** (§3.2.1), not functions of this module. |
 | `bank` | `switch_to(N)`, `current()` — bank manipulation |
@@ -2750,12 +2750,15 @@ fixed-point multiply scaling.
 | `math.clamp(x: T, lo: T, hi: T) -> T` | `min(max(x, lo), hi)`. |
 | `math.wrap_add` / `wrap_sub` / `wrap_mul`, all `(a: T, b: T) -> T` | Wrap on overflow (skip the debug trap). `T ∈ {i16, u16, fixed}`; `fixed` mul is Q16.16. |
 | `math.sat_add` / `sat_sub` / `sat_mul`, all `(a: T, b: T) -> T` | Clamp to `T`'s bounds on overflow. `T ∈ {i16, u16}` (saturation targets a type's range, which `fixed` doesn't share). |
-| `math.sqrt_fixed(x: fixed) -> fixed` | Q16.16 square root; `x < 0` returns `0`. Exact for perfect squares, within ~0.3% mid-range. |
-| `math.fixed_sin(deg: i16) -> fixed` | Sine of an angle in degrees, Q16.16 in `[-1.0, 1.0]`. Bhaskara I approximation (~1% error); range-reduces any `i16` angle. |
+| `math.sgn(x: T) -> T` | `-1`, `0` or `1` in `x`'s own type. `T ∈ {i16, u16, fixed}`; unsigned never returns `-1`. |
+| `math.sqrt(x: T) -> T` | `T ∈ {i16, u16, fixed}`. Negative returns `0`. `fixed` is Q16.16, exact for perfect squares and within ~0.3% mid-range; the integer forms are exact. |
+| `math.sin(t: fixed) -> fixed` / `math.cos(t: fixed) -> fixed` | Angle in **turns** — one full turn is `1.0`, so `0.25` is a quarter. Q16.16 in `[-1.0, 1.0]`, within 0.17%, and exact at every quarter turn. |
+| `math.atan2(y: i16, x: i16) -> fixed` | The direction of `(x, y)` as turns in `[0, 1)`, counter-clockwise from `+X`. Within 0.45°, and exact on all eight compass directions. `atan2(0, 0)` is `0`. |
+| `math.flr(x: fixed) -> i16` / `math.ceil(x: fixed) -> i16` | Round down / up. Not the same as `as i16`, which truncates toward zero — the two disagree on every negative value with a fraction. |
 | `math.rng() -> u16` | Next value of a deterministic 16-bit Galois LFSR (maximal period; lazily seeded). |
 
 All `math.*` functions are usable inside `bake` bodies (§3.8) — the
-canonical way to precompute tables (e.g. `fixed_sin` sine LUTs). The
+canonical way to precompute tables (e.g. `sin` lookup tables). The
 compile-time result matches the runtime bit-for-bit.
 
 #### 5.3.3 `bank` stdlib

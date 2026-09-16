@@ -5561,51 +5561,139 @@ test "codegen/math: sat_* clamp to u16 bounds (unsigned)" {
     , "65535\n0\n65535\n");
 }
 
-test "math: fixed_sin over the circle" {
-    // Bhaskara's approximation, exact at the cardinal angles and within
-    // about a percent between them.
+test "math: sin over the circle" {
+    // Turns, not degrees: a quarter turn is 0.25, and those quarters
+    // are exact where the approximation between them is not.
     try runAndExpect(
         \\def main()
-        \\  print math.fixed_sin(0)
-        \\  print math.fixed_sin(90)
-        \\  print math.fixed_sin(30)
-        \\  print math.fixed_sin(270)
-        \\  print math.fixed_sin(180)
+        \\  print math.sin(0.0)
+        \\  print math.sin(0.25)
+        \\  print math.sin(0.5)
+        \\  print math.sin(0.75)
+        \\  print math.sin(0.125)
         \\end
         \\
-    , "0.000\n1.000\n0.500\n-1.000\n0.000\n");
+    , "0.000\n1.000\n0.000\n-1.000\n0.705\n");
 }
 
-test "math: sqrt_fixed over perfect and imperfect squares" {
+test "math: sin wraps without a range reduction" {
+    // The turn fraction is the low word, so angles past a full turn and
+    // negative ones land on the same value as their principal angle.
     try runAndExpect(
         \\def main()
-        \\  print math.sqrt_fixed(0.0)
-        \\  print math.sqrt_fixed(4.0)
-        \\  print math.sqrt_fixed(100.0)
-        \\  print math.sqrt_fixed(2.0)
+        \\  print math.sin(2.25)
+        \\  print math.sin(0.0 - 0.75)
         \\end
         \\
-    , "0.000\n2.000\n10.000\n1.414\n");
+    , "1.000\n1.000\n");
 }
 
-test "math: sqrt_fixed of a negative is zero" {
+test "math: cos leads sin by a quarter turn" {
     try runAndExpect(
         \\def main()
-        \\  print math.sqrt_fixed(0.0 - 9.0)
+        \\  print math.cos(0.0)
+        \\  print math.cos(0.25)
+        \\  print math.cos(0.5)
+        \\end
+        \\
+    , "1.000\n0.000\n-1.000\n");
+}
+
+test "math: atan2 on the eight compass directions" {
+    try runAndExpect(
+        \\def main()
+        \\  print math.atan2(0, 10)
+        \\  print math.atan2(10, 0)
+        \\  print math.atan2(0, 0 - 10)
+        \\  print math.atan2(0 - 10, 0)
+        \\  print math.atan2(0 - 10, 10)
+        \\end
+        \\
+    , "0.000\n0.250\n0.500\n0.750\n0.875\n");
+}
+
+test "math: atan2 of the zero vector is zero" {
+    // No direction to report, and nothing to divide by.
+    try runAndExpect(
+        \\def main()
+        \\  print math.atan2(0, 0)
         \\end
         \\
     , "0.000\n");
 }
 
-test "math: fixed_sin range-reduces a large angle" {
-    // 30000 mod 360 = 120, so the two calls must agree.
+test "math: flr and ceil disagree with truncation on negatives" {
+    // `as i16` truncates toward zero; these do not, which is the whole
+    // reason they exist.
     try runAndExpect(
         \\def main()
-        \\  print math.fixed_sin(30000)
-        \\  print math.fixed_sin(120)
+        \\  print math.flr(2.75)
+        \\  print math.ceil(2.25)
+        \\  print math.flr(0.0 - 2.25)
+        \\  print math.ceil(0.0 - 2.25)
         \\end
         \\
-    , "0.864\n0.864\n");
+    , "2\n3\n-3\n-2\n");
+}
+
+test "math: sgn carries the operand's type" {
+    try runAndExpect(
+        \\def main()
+        \\  print math.sgn(0 - 9)
+        \\  print math.sgn(0)
+        \\  print math.sgn(9)
+        \\  print math.sgn(0.0 - 0.5)
+        \\end
+        \\
+    , "-1\n0\n1\n-1.000\n");
+}
+
+test "math: sqrt over perfect and imperfect squares" {
+    try runAndExpect(
+        \\def main()
+        \\  print math.sqrt(0.0)
+        \\  print math.sqrt(4.0)
+        \\  print math.sqrt(100.0)
+        \\  print math.sqrt(2.0)
+        \\end
+        \\
+    , "0.000\n2.000\n10.000\n1.414\n");
+}
+
+test "math: sqrt of an integer is exact" {
+    try runAndExpect(
+        \\def main()
+        \\  print math.sqrt(169)
+        \\  print math.sqrt(170)
+        \\  print math.sqrt(0)
+        \\end
+        \\
+    , "13\n13\n0\n");
+}
+
+test "math: a baked trig constant equals the runtime call" {
+    // The compile-time evaluator and the lowering must agree bit for
+    // bit, or a table baked at build time drifts from a live call.
+    try runAndExpect(
+        \\const S: fixed = bake do math.sin(0.4) end
+        \\const A: fixed = bake do math.atan2(7, 3) end
+        \\def main()
+        \\  print S
+        \\  print math.sin(0.4)
+        \\  print A
+        \\  print math.atan2(7, 3)
+        \\end
+        \\
+    , "0.587\n0.587\n0.184\n0.184\n");
+}
+
+test "math: sqrt of a negative is zero" {
+    try runAndExpect(
+        \\def main()
+        \\  print math.sqrt(0.0 - 9.0)
+        \\end
+        \\
+    , "0.000\n");
 }
 
 test "codegen/math: rng — deterministic Galois LFSR sequence" {
@@ -5649,22 +5737,22 @@ test "codegen/bake: math.* evaluated at compile time (int + unsigned threading)"
     , "3\n10\n7\n-30536\n5\n");
 }
 
-test "bake: fixed_sin / sqrt_fixed match the runtime at compile time" {
+test "bake: sin / sqrt match the runtime at compile time" {
     // The property that matters is agreement, not a particular raw
     // encoding: a value folded at compile time must print exactly as the
     // same call does at run time.
     try runAndExpect(
         \\const S90: fixed = bake do
-        \\  math.fixed_sin(90)
+        \\  math.sin(0.25)
         \\end
         \\const SQ4: fixed = bake do
-        \\  math.sqrt_fixed(4.0)
+        \\  math.sqrt(4.0)
         \\end
         \\def main()
         \\  print S90
-        \\  print math.fixed_sin(90)
+        \\  print math.sin(0.25)
         \\  print SQ4
-        \\  print math.sqrt_fixed(4.0)
+        \\  print math.sqrt(4.0)
         \\end
         \\
     , "1.000\n1.000\n2.000\n2.000\n");
@@ -8952,8 +9040,8 @@ test "stdlib: every documented call lowers" {
         \\  print math.sat_add(1, 2)
         \\  print math.sat_sub(2, 1)
         \\  print math.sat_mul(2, 3)
-        \\  print math.sqrt_fixed(4.0)
-        \\  print math.fixed_sin(90)
+        \\  print math.sqrt(4.0)
+        \\  print math.sin(0.25)
         \\
         \\  -- §5.3.1 mem
         \\  let cell: i16 = 1
