@@ -232,6 +232,13 @@ pub const typecheckModule = typecheck_mod.typecheckModule;
 /// different files get their own namespaces (§5).
 pub const typecheckGraph = typecheck_mod.typecheckGraph;
 
+/// Type-check with **ambient modules**: stdlib modules whose members
+/// a host has put in scope unqualified, so a program calls `min(a, b)`
+/// having written no `use` line. Any declaration of the same name
+/// shadows one silently — the program never asked for it, so its own
+/// names win. Pair with `CompileOptions.ambient_modules`.
+pub const typecheckAmbient = typecheck_mod.typecheckAmbient;
+
 /// Which module each declaration belongs to and what each can see.
 pub const ModuleGraph = typecheck_mod.ModuleGraph;
 

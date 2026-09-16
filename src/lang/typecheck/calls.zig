@@ -64,6 +64,15 @@ pub fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) Walk
                 return try stdlib.checkCallName(self, si.module, si.name, c.callee.ident.span, c.args, c.span);
             }
         }
+        // An ambient stdlib member (§5.3.5) — in scope because a host
+        // put it there, and only while the program has nothing of that
+        // name. The scope test is the whole of the shadowing rule:
+        // anything declared, at any depth, is found first and wins.
+        if (self.ambient_stdlib.count() > 0 and self.current_scope.lookup(callee_name) == null) {
+            if (self.ambient_stdlib.get(callee_name)) |si| {
+                return try stdlib.checkCallName(self, si.module, si.name, c.callee.ident.span, c.args, c.span);
+            }
+        }
     }
     // Abstract-class instantiation: `ClassName(args)` where
     // `ClassName` is abstract is rejected.

@@ -1167,6 +1167,22 @@ pub fn emitCall(self: *Emitter, call: ast.CallExpr) !void {
             try stdlib.emitCallName(self, si.module, si.name, c);
             return;
         }
+        // An ambient stdlib member (§5.3.5) — checked after the
+        // program's own names, not before them like the import above,
+        // because the program never asked for this one and anything it
+        // declared has the better claim to the name.
+        if (self.ambient_stdlib.get(callee_name)) |si| {
+            const shadowed = self.locals.contains(callee_name) or
+                self.params.contains(callee_name) or
+                self.captures.contains(callee_name) or
+                self.globals.contains(callee_name) or
+                self.declared_defs.contains(callee_name) or
+                class.isClassName(self, callee_name);
+            if (!shadowed) {
+                try stdlib.emitCallName(self, si.module, si.name, c);
+                return;
+            }
+        }
         // A quoted-path import alias resolves to its real exported name.
         const resolved = self.resolveImportAlias(callee_name);
         if (class.isClassName(self, resolved)) {

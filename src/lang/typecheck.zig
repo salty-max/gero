@@ -223,6 +223,26 @@ pub fn typecheckModule(
     return typecheckGraph(allocator, source, program, import_aliases, null);
 }
 
+/// `typecheckGraph` with **ambient modules** — stdlib modules whose
+/// members a host has put in scope unqualified, so the program can
+/// call `min(a, b)` having written no `use` line (§5.3.5).
+///
+/// An ambient name is shadowed by any declaration of the same name,
+/// silently: the program did not ask for it, so its own names win and
+/// nothing is reported. This is what separates it from a selective
+/// `use`, where declaring the same name is `E_TYPE_REDEFINED` because
+/// the author wrote both.
+pub fn typecheckAmbient(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    program: *const ast.Program,
+    import_aliases: ?*const std.StringHashMapUnmanaged([]const u8),
+    graph: ?ModuleGraph,
+    ambient_modules: []const []const u8,
+) !CheckedProgram {
+    return typecheckInner(allocator, source, program, import_aliases, graph, ambient_modules);
+}
+
 /// `typecheckModule` with the module graph supplied, so declarations
 /// from different files land in different namespaces (§5).
 pub fn typecheckGraph(
@@ -231,6 +251,17 @@ pub fn typecheckGraph(
     program: *const ast.Program,
     import_aliases: ?*const std.StringHashMapUnmanaged([]const u8),
     graph: ?ModuleGraph,
+) !CheckedProgram {
+    return typecheckInner(allocator, source, program, import_aliases, graph, &.{});
+}
+
+fn typecheckInner(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    program: *const ast.Program,
+    import_aliases: ?*const std.StringHashMapUnmanaged([]const u8),
+    graph: ?ModuleGraph,
+    ambient_modules: []const []const u8,
 ) !CheckedProgram {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
@@ -295,8 +326,18 @@ pub fn typecheckGraph(
         .expr_types = &expr_types,
         .import_aliases = import_aliases,
         .selective_stdlib = .{},
+        .ambient_stdlib = .{},
         .import_modules = .{},
     };
+
+    // Ambient members are recorded once, up front: a scope lookup at
+    // each call site decides whether one is visible, so nothing here
+    // needs to know what the program will go on to declare.
+    for (ambient_modules) |module| {
+        for (stdlib_exports.memberNames(module)) |member| {
+            try c.ambient_stdlib.put(a, member, .{ .module = module, .name = member });
+        }
+    }
 
     // Pre-pass: index enum / struct / class / def decls and the
     // MMIO name set (any `let` annotated `@addr`).
@@ -416,6 +457,7 @@ pub fn typecheckGraph(
 
 const mem_builtin = @import("typecheck/mem_builtin.zig");
 const stdlib = @import("typecheck/stdlib.zig");
+const stdlib_exports = @import("typecheck/stdlib_exports.zig");
 const match = @import("typecheck/match.zig");
 const imports = @import("typecheck/imports.zig");
 const vec_builtin = @import("typecheck/vec_builtin.zig");
@@ -631,6 +673,10 @@ pub const Checker = struct {
     /// the local name (alias or original) → its `(module, real_name)`.
     /// Lets a bare call lower to the stdlib signature.
     selective_stdlib: std.StringHashMapUnmanaged(StdlibImport),
+    /// Stdlib members a host put in scope without the program asking
+    /// (§5.3.5). Consulted only when nothing of that name is in scope,
+    /// which is what makes them shadowable.
+    ambient_stdlib: std.StringHashMapUnmanaged(StdlibImport),
     /// Module each selectively-imported name came from, for every
     /// `use x from m` rather than only the stdlib ones. Read by
     /// `recordBinding` so a cross-file reference says where the name
