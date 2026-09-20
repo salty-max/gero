@@ -5,6 +5,45 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.5.4 - 2026-09-20
+
+The release where a host can drive a program's functions itself.
+
+`run` executes from the entry point until halt, which is the whole of
+what an embedder could do. It is not enough for a host that owns the
+frame: a console calling a cart's `_init` once and its `_update` and
+`_draw` every frame needs three functions out of one image, sharing
+one memory. Compiling a separate image per function — what `gero test`
+does — gives three programs that share nothing.
+
+`VM.call` enters the way `call Addr` does and hands control back when
+the callee returns. It restores `sp` and `fp` whatever happened
+inside, reports halting and faulting rather than passing them off as
+a return, and takes an instruction budget, because a host calling
+into a program it did not write should report a runaway instead of
+hanging on one.
+
+Doing this outside the VM means copying a calling convention only
+this repo owns, and getting it wrong is quiet: pushing the return
+address alone leaves `ret` popping whatever was underneath.
+
+Which is how the second half of this release was found. The handler
+documenting `ret` said `0x82`; the dispatch table binds `0xA2`. So
+did sixty-one others — every jump, every bitwise operation, `swap`,
+`nop`, the flag ops, half of `mov` — left behind by an opcode-map
+renumbering. A reader learning the ISA from the source got the wrong
+byte more often than the right one. They are corrected, and `gero
+lint` now checks each one against the table so they cannot part
+again.
+
+### Added
+
+- `VM.call` runs a function in a loaded program and hands control back when it returns, for a host driving a program's functions itself — a console calling a cart's per-frame entry points, a debugger evaluating a call. It enters the way `call Addr` does, restores `sp` and `fp` on every path, and takes an instruction budget, because a host calling into a program it did not write should report a runaway rather than hang on one. `disasm.Symbols.addressOf` is the reverse of `lookup`, for finding that function by name.
+
+### Fixed
+
+- Sixty-two VM handlers documented an opcode the dispatch table does not bind them to — every jump, every bitwise op, every subroutine instruction and more, left behind by an opcode-map renumbering. A reader learning the ISA from the source got the wrong byte more often than the right one. `gero lint` now checks each handler's `/// 0xNN` against `dispatch.zig`, so the two cannot drift again.
+
 ## v0.5.3 - 2026-09-20
 
 The release where a host can hand a program its own environment.
