@@ -17,14 +17,14 @@ fn enter(vm: *VM, target: u16, ip_after: u16) StepResult {
     return .branched;
 }
 
-/// `0x80` — `call Addr`.
+/// `0xA0` — `call Addr`.
 pub fn callAddr(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const target = vm.readWord(ip +% 1);
     return enter(vm, target, ip +% 3);
 }
 
-/// `0x81` — `call Reg` → `ip ← reg`.
+/// `0xA1` — `call Reg` → `ip ← reg`.
 pub fn callReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -32,7 +32,7 @@ pub fn callReg(vm: *VM) StepResult {
     return enter(vm, target, ip +% 2);
 }
 
-/// `0x82` — `ret` → unwind activation record and resume the caller.
+/// `0xA2` — `ret` → unwind activation record and resume the caller.
 pub fn ret(vm: *VM) StepResult {
     vm.regs.write(.sp, vm.regs.read(.fp));
     const ret_ip = dispatch.popWord(vm);

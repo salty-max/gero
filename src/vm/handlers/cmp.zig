@@ -30,7 +30,7 @@ fn setAndFlags(vm: *VM, a: u16, b: u16) void {
     vm.regs.setFlag(.overflow, false);
 }
 
-/// `0x60` — `cmp Reg, Imm16` → set flags from `reg - imm`,
+/// `0x80` — `cmp Reg, Imm16` → set flags from `reg - imm`,
 /// discard the result.
 pub fn cmpRegImm16(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
@@ -41,7 +41,7 @@ pub fn cmpRegImm16(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x61` — `cmp Reg, Reg` → set flags from `dst - src`.
+/// `0x81` — `cmp Reg, Reg` → set flags from `dst - src`.
 pub fn cmpRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const dst = vm.readByte(ip +% 1);
@@ -52,7 +52,7 @@ pub fn cmpRegReg(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x62` — `tst Reg, Imm16` → set Z/N from `reg & imm`, clear C/V.
+/// `0x82` — `tst Reg, Imm16` → set Z/N from `reg & imm`, clear C/V.
 pub fn tstRegImm16(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -62,7 +62,7 @@ pub fn tstRegImm16(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x63` — `tst Reg, Reg` → set Z/N from `dst & src`, clear C/V.
+/// `0x83` — `tst Reg, Reg` → set Z/N from `dst & src`, clear C/V.
 pub fn tstRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const dst = vm.readByte(ip +% 1);
@@ -105,7 +105,7 @@ pub fn bclrRegImm8(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x6A` — `btest Reg, Imm8` → `flg.Z ← !(reg & (1 << imm))`.
+/// `0x67` — `btest Reg, Imm8` → `flg.Z ← !(reg & (1 << imm))`.
 /// Tests bit `imm` of `reg` without modifying it; sets Z (bit
 /// clear), N (bit value), clears C/V. Companion to `bset`/`bclr`
 /// for flag-bit checking without clobbering a register.

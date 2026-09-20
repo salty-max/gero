@@ -185,7 +185,7 @@ pub fn mov8PtrReg(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x29` — `mov8 [Addr + Reg], Reg` → byte-level indexed load:
+/// `0x25` — `mov8 [Addr + Reg], Reg` → byte-level indexed load:
 /// `dst.lo ← mem[addr + idx]; dst.hi ← 0`. Use for stepping
 /// through `data8` byte arrays (the word-sized `0x17` overlaps
 /// adjacent bytes on each iteration).
@@ -200,7 +200,7 @@ pub fn mov8Indexed(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x25` — `movh Reg, Addr` → `mem[addr] ← reg.hi`.
+/// `0x26` — `movh Reg, Addr` → `mem[addr] ← reg.hi`.
 pub fn movhRegAddr(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -211,7 +211,7 @@ pub fn movhRegAddr(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x26` — `movl Reg, Addr` → `mem[addr] ← reg.lo`.
+/// `0x27` — `movl Reg, Addr` → `mem[addr] ← reg.lo`.
 pub fn movlRegAddr(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -228,7 +228,7 @@ pub fn movlRegAddr(vm: *VM) StepResult {
 // 0x26) but reading a 1-byte address operand. Peephole-picked when
 // an `&XX` literal fits in `0..0xFF`.
 
-/// `0x2A` — `mov8 Imm8, ZP` → `mem[zp] ← imm` (zero-page byte store).
+/// `0x28` — `mov8 Imm8, ZP` → `mem[zp] ← imm` (zero-page byte store).
 pub fn mov8Imm8Zp(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const imm = vm.readByte(ip +% 1);
@@ -237,7 +237,7 @@ pub fn mov8Imm8Zp(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x2B` — `mov8 ZP, Reg` → `reg.lo ← mem[zp]; reg.hi ← 0`.
+/// `0x29` — `mov8 ZP, Reg` → `reg.lo ← mem[zp]; reg.hi ← 0`.
 pub fn mov8ZpReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const addr: u16 = vm.readByte(ip +% 1);
@@ -247,7 +247,7 @@ pub fn mov8ZpReg(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x2C` — `movh Reg, ZP` → `mem[zp] ← reg.hi` (zero-page hi-byte store).
+/// `0x2A` — `movh Reg, ZP` → `mem[zp] ← reg.hi` (zero-page hi-byte store).
 pub fn movhRegZp(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -258,7 +258,7 @@ pub fn movhRegZp(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x2D` — `movl Reg, ZP` → `mem[zp] ← reg.lo` (zero-page lo-byte store).
+/// `0x2B` — `movl Reg, ZP` → `mem[zp] ← reg.lo` (zero-page lo-byte store).
 pub fn movlRegZp(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -269,7 +269,7 @@ pub fn movlRegZp(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x27` — `bcpy Reg, Reg, Reg` → block copy.
+/// `0x2C` — `bcpy Reg, Reg, Reg` → block copy.
 /// `mem[dst..dst+len] ← mem[src..src+len]`, byte-by-byte from
 /// low to high (so overlapping ranges with `dst > src` will see
 /// corrupted bytes — callers should split or use disjoint
@@ -292,7 +292,7 @@ pub fn bcpyRegRegReg(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x28` — `bfill Reg, Reg, Reg` → block byte-fill (memset).
+/// `0x2D` — `bfill Reg, Reg, Reg` → block byte-fill (memset).
 /// `mem[addr..addr+len] ← val.lo` for each byte. Reads three
 /// register indices: dst-addr, length (u16), value (low byte
 /// used; high byte ignored). Address arithmetic wraps at the
@@ -356,7 +356,7 @@ pub fn movRegRegOffset(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x2E` — `sext Reg` → sign-extend `reg.lo` into `reg.hi`.
+/// `0x4F` — `sext Reg` → sign-extend `reg.lo` into `reg.hi`.
 /// If the low byte's bit 7 is set, `reg.hi` becomes `0xFF`;
 /// otherwise `reg.hi` becomes `0x00`. The companion to the
 /// `mov8` family (which always zero-extends) for signed-integer

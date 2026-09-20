@@ -24,7 +24,7 @@ fn writeLogical(vm: *VM, dst: u8, result: u16) StepResult {
 
 // ---------- and / or / xor / not ----------
 
-/// `0x50` — `and Imm16, Reg` → `reg ← reg & imm` (asm: `and src, dst`).
+/// `0x60` — `and Imm16, Reg` → `reg ← reg & imm` (asm: `and src, dst`).
 pub fn andRegImm16(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const imm = vm.readWord(ip +% 1);
@@ -33,7 +33,7 @@ pub fn andRegImm16(vm: *VM) StepResult {
     return writeLogical(vm, reg, a & imm);
 }
 
-/// `0x51` — `and Reg, Reg` → `dst ← dst & src` (asm: `and src, dst`).
+/// `0x61` — `and Reg, Reg` → `dst ← dst & src` (asm: `and src, dst`).
 pub fn andRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const src = vm.readByte(ip +% 1);
@@ -43,7 +43,7 @@ pub fn andRegReg(vm: *VM) StepResult {
     return writeLogical(vm, dst, a & b);
 }
 
-/// `0x52` — `or Imm16, Reg` → `reg ← reg | imm` (asm: `or src, dst`).
+/// `0x62` — `or Imm16, Reg` → `reg ← reg | imm` (asm: `or src, dst`).
 pub fn orRegImm16(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const imm = vm.readWord(ip +% 1);
@@ -52,7 +52,7 @@ pub fn orRegImm16(vm: *VM) StepResult {
     return writeLogical(vm, reg, a | imm);
 }
 
-/// `0x53` — `or Reg, Reg` → `dst ← dst | src` (asm: `or src, dst`).
+/// `0x63` — `or Reg, Reg` → `dst ← dst | src` (asm: `or src, dst`).
 pub fn orRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const src = vm.readByte(ip +% 1);
@@ -62,7 +62,7 @@ pub fn orRegReg(vm: *VM) StepResult {
     return writeLogical(vm, dst, a | b);
 }
 
-/// `0x54` — `xor Imm16, Reg` → `reg ← reg ^ imm` (asm: `xor src, dst`).
+/// `0x64` — `xor Imm16, Reg` → `reg ← reg ^ imm` (asm: `xor src, dst`).
 pub fn xorRegImm16(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const imm = vm.readWord(ip +% 1);
@@ -71,7 +71,7 @@ pub fn xorRegImm16(vm: *VM) StepResult {
     return writeLogical(vm, reg, a ^ imm);
 }
 
-/// `0x55` — `xor Reg, Reg` → `dst ← dst ^ src` (asm: `xor src, dst`).
+/// `0x65` — `xor Reg, Reg` → `dst ← dst ^ src` (asm: `xor src, dst`).
 pub fn xorRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const src = vm.readByte(ip +% 1);
@@ -81,7 +81,7 @@ pub fn xorRegReg(vm: *VM) StepResult {
     return writeLogical(vm, dst, a ^ b);
 }
 
-/// `0x56` — `not Reg` → `reg ← ~reg`.
+/// `0x66` — `not Reg` → `reg ← ~reg`.
 pub fn notReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -128,7 +128,7 @@ fn writeShift(vm: *VM, dst: u8, count: u16, eff: ShiftEffect) StepResult {
     return ok;
 }
 
-/// `0x58` — `shl Reg, Imm8` → `reg ← reg << imm`.
+/// `0x70` — `shl Reg, Imm8` → `reg ← reg << imm`.
 pub fn shlRegImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -137,7 +137,7 @@ pub fn shlRegImm8(vm: *VM) StepResult {
     return writeShift(vm, reg, count, doShl(a, count));
 }
 
-/// `0x59` — `shl Reg, Reg` → `dst ← dst << src` (count taken from src).
+/// `0x71` — `shl Reg, Reg` → `dst ← dst << src` (count taken from src).
 pub fn shlRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const dst = vm.readByte(ip +% 1);
@@ -147,7 +147,7 @@ pub fn shlRegReg(vm: *VM) StepResult {
     return writeShift(vm, dst, count, doShl(a, count));
 }
 
-/// `0x5A` — `shr Reg, Imm8` → `reg ← reg >> imm` (logical, zero-fill).
+/// `0x72` — `shr Reg, Imm8` → `reg ← reg >> imm` (logical, zero-fill).
 pub fn shrRegImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -156,7 +156,7 @@ pub fn shrRegImm8(vm: *VM) StepResult {
     return writeShift(vm, reg, count, doShr(a, count));
 }
 
-/// `0x5B` — `shr Reg, Reg`.
+/// `0x73` — `shr Reg, Reg`.
 pub fn shrRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const dst = vm.readByte(ip +% 1);
@@ -186,7 +186,7 @@ fn doAsr(initial: u16, count: u16) ShiftEffect {
     return .{ .result = v, .last_out = c };
 }
 
-/// `0x6B` — `asr Reg, Imm8` → arithmetic shift right (preserves
+/// `0x74` — `asr Reg, Imm8` → arithmetic shift right (preserves
 /// sign bit). Unlike `shr` (logical, zero-fill), `asr` replicates
 /// the high bit on every step so signed-integer / 2 stays signed.
 pub fn asrRegImm8(vm: *VM) StepResult {
@@ -197,7 +197,7 @@ pub fn asrRegImm8(vm: *VM) StepResult {
     return writeShift(vm, reg, count, doAsr(a, count));
 }
 
-/// `0x6C` — `asr Reg, Reg`.
+/// `0x75` — `asr Reg, Reg`.
 pub fn asrRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const dst = vm.readByte(ip +% 1);
@@ -247,7 +247,7 @@ fn writeRotate(vm: *VM, dst: u8, count: u16, eff: ShiftEffect) StepResult {
     return ok;
 }
 
-/// `0x5C` — `rol Reg, Imm8` → rotate left through carry.
+/// `0x76` — `rol Reg, Imm8` → rotate left through carry.
 pub fn rolRegImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -257,7 +257,7 @@ pub fn rolRegImm8(vm: *VM) StepResult {
     return writeRotate(vm, reg, count, doRol(a, count, c_in));
 }
 
-/// `0x5D` — `rol Reg, Reg` (count from src register).
+/// `0x77` — `rol Reg, Reg` (count from src register).
 pub fn rolRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const dst = vm.readByte(ip +% 1);
@@ -268,7 +268,7 @@ pub fn rolRegReg(vm: *VM) StepResult {
     return writeRotate(vm, dst, count, doRol(a, count, c_in));
 }
 
-/// `0x5E` — `ror Reg, Imm8` → rotate right through carry.
+/// `0x78` — `ror Reg, Imm8` → rotate right through carry.
 pub fn rorRegImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -278,7 +278,7 @@ pub fn rorRegImm8(vm: *VM) StepResult {
     return writeRotate(vm, reg, count, doRor(a, count, c_in));
 }
 
-/// `0x5F` — `ror Reg, Reg`.
+/// `0x79` — `ror Reg, Reg`.
 pub fn rorRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const dst = vm.readByte(ip +% 1);
