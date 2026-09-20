@@ -300,6 +300,93 @@ pub const VM = struct {
         }
     }
 
+    /// How a host-initiated `call` ended.
+    pub const CallResult = enum {
+        /// The callee returned. The normal outcome.
+        returned,
+        /// The callee reached `hlt`. The VM is halted; a host that
+        /// resumes it is resuming a program that asked to stop.
+        halted,
+        /// A fault fired with no handler installed for its vector.
+        /// `last_fault` names it.
+        faulted,
+        /// The callee hit `brk`. `ip` is past the breakpoint.
+        breakpoint,
+        /// The callee retired `budget` instructions without
+        /// returning — a runaway, reported rather than hung on.
+        budget_exhausted,
+    };
+
+    /// The return address a host-initiated call pushes.
+    ///
+    /// `0xFFFF` is the last byte of the address space and the top of
+    /// the host IO page (ISA §3.1), so it is not somewhere a program
+    /// has a function to return to. The loop watches for it before
+    /// executing, so nothing is ever fetched from there.
+    pub const call_sentinel: u16 = 0xFFFF;
+
+    /// Call the function at `target` and return when it does.
+    ///
+    /// Enters the same way `call Addr` does — push `fp`, push the
+    /// return address, `fp` ← `sp` — so the callee's `ret` unwinds
+    /// into the host rather than into whatever was underneath. For an
+    /// embedder driving a program's functions itself: a console
+    /// calling a cart's per-frame entry points, a debugger evaluating
+    /// a call, a test harness exercising one function of many.
+    ///
+    /// State the callee leaves behind is its own; `sp` and `fp` are
+    /// restored on every path, so a callee that faults cannot strand
+    /// a frame on the host's stack.
+    ///
+    /// `budget` is the instructions the call may retire. A host
+    /// calling into a loaded program is calling into code it did not
+    /// write, and a caller that hangs is worse than one that reports
+    /// a runaway.
+    ///
+    /// ```
+    /// switch (vm.call(draw_addr, 1_000_000)) {
+    ///     .returned => {},
+    ///     else => |bad| reportBadFrame(bad),
+    /// }
+    /// ```
+    pub fn call(self: *VM, target: u16, budget: u64) CallResult {
+        const saved_fp = self.regs.read(.fp);
+        const saved_sp = self.regs.read(.sp);
+
+        dispatch_mod.pushWord(self, saved_fp);
+        dispatch_mod.pushWord(self, call_sentinel);
+        self.regs.write(.fp, self.regs.read(.sp));
+        self.regs.write(.ip, target);
+
+        var outcome = CallResult.budget_exhausted;
+        var spent: u64 = 0;
+        while (spent < budget) : (spent += 1) {
+            if (self.regs.read(.ip) == call_sentinel) {
+                outcome = .returned;
+                break;
+            }
+            switch (dispatch_mod.step(self)) {
+                .cont, .branched => {},
+                .halted => {
+                    outcome = .halted;
+                    break;
+                },
+                .halted_on_fault => {
+                    outcome = .faulted;
+                    break;
+                },
+                .breakpoint => {
+                    outcome = .breakpoint;
+                    break;
+                },
+            }
+        }
+
+        self.regs.write(.fp, saved_fp);
+        self.regs.write(.sp, saved_sp);
+        return outcome;
+    }
+
     /// Bank-aware byte read. Falls through to plain RAM outside the
     /// bank window or when no pool is installed.
     pub fn readByte(self: *const VM, addr: u16) u8 {

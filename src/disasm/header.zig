@@ -35,6 +35,18 @@ pub const Symbols = struct {
         return null;
     }
 
+    /// The address `name` is bound to, or `null`.
+    ///
+    /// The reverse of `lookup`, for a host that knows what it wants
+    /// to reach rather than what it is looking at — calling a
+    /// program's function by name, setting a breakpoint on one.
+    pub fn addressOf(self: Symbols, name: []const u8) ?u16 {
+        for (self.entries) |e| {
+            if (std.mem.eql(u8, e.name, name)) return e.address;
+        }
+        return null;
+    }
+
     /// Release the entries slice. The borrowed name bytes
     /// inside each entry are NOT freed — they remain valid as
     /// long as the caller's source buffer does.

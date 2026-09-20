@@ -363,3 +363,118 @@ test "VM: stepping one instance from inside another's host callback is safe" {
     try std.testing.expectEqual(@as(u64, 1), inner.cycles);
     try std.testing.expectEqual(@as(u64, 0), outer.cycles); // `handle` is not `step`
 }
+
+// ---------- host-initiated calls (ISA §5.6) ----------
+
+/// Opcodes the call tests hand-assemble, named so a reader does not
+/// have to decode them.
+const op_mov_imm_addr: u8 = 0x14;
+const op_mov8_imm_addr: u8 = 0x20;
+const op_ret: u8 = 0xA2;
+const op_hlt: u8 = 0xFF;
+const op_brk: u8 = 0xFE;
+
+/// `mov8 $value, &dst` then `ret`, at `at`.
+fn writeStoreAndReturn(vm: *VM, at: u16, dst: u16, value: u8) void {
+    vm.mmap.writeByte(at, op_mov8_imm_addr);
+    vm.mmap.writeByte(at + 1, value);
+    vm.mmap.writeWord(at + 2, dst);
+    vm.mmap.writeByte(at + 4, op_ret);
+}
+
+test "VM.call: a callee's ret lands back in the host" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    writeStoreAndReturn(&vm, 0x2000, 0x3000, 0x5A);
+
+    try std.testing.expectEqual(VM.CallResult.returned, vm.call(0x2000, 1000));
+    try std.testing.expectEqual(@as(u8, 0x5A), vm.mmap.readByte(0x3000));
+}
+
+test "VM.call: sp and fp come back as they went in" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    writeStoreAndReturn(&vm, 0x2000, 0x3000, 1);
+
+    const sp = vm.regs.read(.sp);
+    const fp = vm.regs.read(.fp);
+    _ = vm.call(0x2000, 1000);
+    try std.testing.expectEqual(sp, vm.regs.read(.sp));
+    try std.testing.expectEqual(fp, vm.regs.read(.fp));
+}
+
+test "VM.call: a callee that faults strands nothing" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    // An opcode the table does not define, with no ISR installed.
+    vm.mmap.writeByte(0x2000, 0xCD);
+
+    const sp = vm.regs.read(.sp);
+    const fp = vm.regs.read(.fp);
+    try std.testing.expectEqual(VM.CallResult.faulted, vm.call(0x2000, 1000));
+    try std.testing.expectEqual(sp, vm.regs.read(.sp));
+    try std.testing.expectEqual(fp, vm.regs.read(.fp));
+}
+
+test "VM.call: halting is reported, not mistaken for a return" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.mmap.writeByte(0x2000, op_hlt);
+
+    try std.testing.expectEqual(VM.CallResult.halted, vm.call(0x2000, 1000));
+}
+
+test "VM.call: a breakpoint is reported" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    vm.mmap.writeByte(0x2000, op_brk);
+
+    try std.testing.expectEqual(VM.CallResult.breakpoint, vm.call(0x2000, 1000));
+}
+
+test "VM.call: a runaway is reported rather than hung on" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    // `jmp $2000` — a tight loop that never returns.
+    vm.mmap.writeByte(0x2000, 0x90);
+    vm.mmap.writeWord(0x2001, 0x2000);
+
+    try std.testing.expectEqual(VM.CallResult.budget_exhausted, vm.call(0x2000, 64));
+}
+
+test "VM.call: repeated calls see each other's effects" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    // `mov $0001, &4000` is an increment only if the callee reads —
+    // so instead count by letting the host observe two distinct
+    // writes from two functions sharing one image.
+    writeStoreAndReturn(&vm, 0x2000, 0x4000, 1);
+    writeStoreAndReturn(&vm, 0x2100, 0x4001, 2);
+
+    try std.testing.expectEqual(VM.CallResult.returned, vm.call(0x2000, 1000));
+    try std.testing.expectEqual(VM.CallResult.returned, vm.call(0x2100, 1000));
+
+    // One image, one memory: the first call's write is still there.
+    try std.testing.expectEqual(@as(u8, 1), vm.mmap.readByte(0x4000));
+    try std.testing.expectEqual(@as(u8, 2), vm.mmap.readByte(0x4001));
+}
+
+test "VM.call: the sentinel is never fetched from" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    writeStoreAndReturn(&vm, 0x2000, 0x3000, 7);
+
+    // A byte at the sentinel that would fault if it were executed.
+    vm.mmap.writeByte(VM.call_sentinel, 0xCD);
+    try std.testing.expectEqual(VM.CallResult.returned, vm.call(0x2000, 1000));
+}
+
+test "VM.call: a zero budget does nothing at all" {
+    var vm = VM.init(std.testing.allocator);
+    defer vm.deinit();
+    writeStoreAndReturn(&vm, 0x2000, 0x3000, 0x5A);
+
+    try std.testing.expectEqual(VM.CallResult.budget_exhausted, vm.call(0x2000, 0));
+    try std.testing.expectEqual(@as(u8, 0), vm.mmap.readByte(0x3000));
+}
