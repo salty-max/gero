@@ -10464,21 +10464,31 @@ test "defaults: an aggregate default is built at the call site" {
 /// Compile with `math` ambient — the shape a host uses when it hands a
 /// program an environment rather than making it import one.
 fn runAmbientAndExpect(source: []const u8, expected: []const u8) !void {
+    try runAmbientModulesAndExpect(&.{"math"}, source, expected);
+}
+
+/// `runAmbientAndExpect` over an arbitrary ambient set. Every module
+/// a host may name has to work here, not only the one with a table in
+/// `typecheck/stdlib.zig`.
+fn runAmbientModulesAndExpect(
+    ambient: []const []const u8,
+    source: []const u8,
+    expected: []const u8,
+) !void {
     var stream = try gero.lang.tokenize(alloc, source);
     defer stream.deinit();
     var tree = try gero.lang.parse(alloc, source, stream);
     defer tree.deinit();
     try std.testing.expectEqual(@as(usize, 0), tree.errors.len);
 
-    const ambient = [_][]const u8{"math"};
-    var checked = try gero.lang.typecheckAmbient(alloc, source, &tree.program, null, null, &ambient);
+    var checked = try gero.lang.typecheckAmbient(alloc, source, &tree.program, null, null, ambient);
     defer checked.deinit();
     if (checked.diagnostics.len > 0) {
         for (checked.diagnostics) |d| std.debug.print("  - {s}: {s}\n", .{ d.code, d.message });
     }
     try std.testing.expectEqual(@as(usize, 0), checked.diagnostics.len);
 
-    var compiled = try gero.lang.compile(alloc, source, &checked, .{ .ambient_modules = &ambient });
+    var compiled = try gero.lang.compile(alloc, source, &checked, .{ .ambient_modules = ambient });
     defer compiled.deinit();
     try std.testing.expect(!compiled.hasErrors());
 
@@ -10562,4 +10572,76 @@ test "ambient: nothing is in scope when no module is named" {
     , &tree.program);
     defer checked.deinit();
     try std.testing.expect(checked.diagnostics.len > 0);
+}
+
+test "ambient: a `mem` member is callable with no `use` line" {
+    // `mem` keeps its signatures in its own table rather than the one
+    // `math` uses, and a bare member has to reach it just the same.
+    try runAmbientModulesAndExpect(
+        &.{"mem"},
+        \\def main()
+        \\  poke(4096, 42)
+        \\  print peek(4096)
+        \\end
+        \\
+    ,
+        "42\n",
+    );
+}
+
+test "ambient: every `mem` accessor width works unqualified" {
+    try runAmbientModulesAndExpect(
+        &.{"mem"},
+        \\def main()
+        \\  write_u8(4096, 7)
+        \\  write_u16(4098, 1000)
+        \\  print read_u8(4096)
+        \\  print read_u16(4098)
+        \\end
+        \\
+    ,
+        "7\n1000\n",
+    );
+}
+
+test "ambient: `mem` and `math` together" {
+    try runAmbientModulesAndExpect(
+        &.{ "math", "mem" },
+        \\def main()
+        \\  write_u16(4096, abs(0 - 9))
+        \\  print min(read_u16(4096), 5)
+        \\end
+        \\
+    ,
+        "5\n",
+    );
+}
+
+test "ambient: a program's own def shadows a `mem` member, silently" {
+    try runAmbientModulesAndExpect(
+        &.{"mem"},
+        \\def peek(a: u16) -> u16
+        \\  return 1
+        \\end
+        \\def main()
+        \\  poke(4096, 42)
+        \\  print peek(4096)
+        \\end
+        \\
+    ,
+        "1\n",
+    );
+}
+
+test "ambient: the qualified `mem` form still works alongside" {
+    try runAmbientModulesAndExpect(
+        &.{"mem"},
+        \\def main()
+        \\  poke(4096, 42)
+        \\  print mem.peek(4096)
+        \\end
+        \\
+    ,
+        "42\n",
+    );
 }

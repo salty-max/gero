@@ -10,6 +10,7 @@ const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const typecheck = @import("../typecheck.zig");
 const suggestions = @import("suggestions.zig");
+const mem_builtin = @import("mem_builtin.zig");
 
 const Checker = typecheck.Checker;
 const Primitive = types.Primitive;
@@ -95,10 +96,38 @@ pub fn isModule(name: []const u8) bool {
         std.mem.eql(u8, name, "test");
 }
 
+/// Modules whose members `checkCallName` resolves, which is the path
+/// a bare member takes — selectively imported, or ambient.
+const bare_routed = [_][]const u8{ "math", "bank", "test", "mem" };
+
+/// Exported as a module, but its members do not work called bare.
+///
+/// `str.format` and `str.format_into` render none of their arguments
+/// even in the qualified form, so routing them here would turn a
+/// clean "not a member" into silently wrong output. Move `str` into
+/// `bare_routed` once they lower correctly.
+const bare_broken = [_][]const u8{"str"};
+
+comptime {
+    // The module list and the routing table have to agree. A module
+    // that exports names but is routed nowhere resolves to nothing
+    // while reporting a module that plainly has the member — so a new
+    // one has to be placed in one of the two lists above deliberately.
+    for (@import("stdlib_exports.zig").module_names) |module| {
+        var known = false;
+        for (bare_routed ++ bare_broken) |m| {
+            if (std.mem.eql(u8, module, m)) known = true;
+        }
+        if (!known) @compileError("stdlib module is neither bare-routed nor listed as broken: " ++ module);
+    }
+}
+
 fn sigsFor(recv: []const u8) []const Sig {
     if (std.mem.eql(u8, recv, "math")) return &math_sigs;
     if (std.mem.eql(u8, recv, "bank")) return &bank_sigs;
-    return &test_sigs; // isModule gated the caller to math/bank/test
+    // `mem` never arrives: `checkCallName` routes it to its own table
+    // before reaching this.
+    return &test_sigs;
 }
 
 fn lookup(recv: []const u8, name: []const u8) ?Sig {
@@ -173,6 +202,13 @@ pub fn checkCallName(
     args: []const *ast.Expr,
     call_span: ast.Span,
 ) WalkError!?*const types.Type {
+    // `mem` is a recognized module whose members live in their own
+    // table, not in `sigsFor`. The qualified path routes it; so must
+    // this one, or a bare member resolves to nothing while reporting
+    // a module that plainly has it.
+    if (std.mem.eql(u8, recv, "mem")) {
+        return mem_builtin.checkMemCallName(self, name, diag_span, args, call_span);
+    }
     const sig = lookup(recv, name) orelse {
         const msg = try std.fmt.allocPrint(self.arena, "stdlib module `{s}` has no member `{s}`", .{ recv, name });
         try self.emitSpanWithSuggestion("E_TYPE_UNDEFINED_METHOD", diag_span, msg, suggest(recv, name));
