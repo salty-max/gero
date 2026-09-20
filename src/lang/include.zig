@@ -715,6 +715,14 @@ fn processSource(
             seg_file_start,
         );
     }
+
+    // A file that does not end in a newline would otherwise run into
+    // whatever is appended next, joining its last line to another
+    // file's first. The separator is outside every mapped region, so
+    // it belongs to no file and no diagnostic can land on it.
+    if (ctx.fused.items.len > 0 and ctx.fused.items[ctx.fused.items.len - 1] != '\n') {
+        try ctx.fused.append(ctx.allocator, '\n');
+    }
 }
 
 fn recordError(

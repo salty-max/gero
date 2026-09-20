@@ -368,3 +368,43 @@ test "resolveUseImports: the spelling the file actually has still resolves" {
 
     try std.testing.expectEqual(@as(usize, 0), fused.errors.len);
 }
+
+test "resolveUseImports: a module with no trailing newline keeps its last line" {
+    // Without a separator the module's last line runs into the
+    // importer's first, and the syntax error that produces is reported
+    // against the importing file — which does not contain it.
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend");
+    try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend\n");
+
+    const path = try fx.pathOf("main.gr");
+    defer alloc.free(path);
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, path);
+    defer fused.deinit();
+    try std.testing.expectEqual(@as(usize, 0), fused.errors.len);
+
+    var stream = try gero.lang.tokenize(alloc, fused.source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, fused.source, stream);
+    defer tree.deinit();
+    try std.testing.expectEqual(@as(usize, 0), tree.errors.len);
+}
+
+test "resolveUseImports: neither does the entry itself" {
+    var fx = Fixture.init();
+    defer fx.deinit();
+    try fx.write("lib.gr", "def helper() -> i16\n  return 1\nend\n");
+    try fx.write("main.gr", "use \"./lib\"\ndef main()\n  print helper()\nend");
+
+    const path = try fx.pathOf("main.gr");
+    defer alloc.free(path);
+    var fused = try gero.lang.resolveUseImports(std.testing.io, alloc, path);
+    defer fused.deinit();
+
+    var stream = try gero.lang.tokenize(alloc, fused.source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, fused.source, stream);
+    defer tree.deinit();
+    try std.testing.expectEqual(@as(usize, 0), tree.errors.len);
+}
