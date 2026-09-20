@@ -10645,3 +10645,196 @@ test "ambient: the qualified `mem` form still works alongside" {
         "42\n",
     );
 }
+
+// ---------- host-supplied ambient modules (§5.3.5) ----------
+
+/// Compile `main.gr` with `gtx.gr` imported without a `use` line —
+/// the shape a console uses to hand a cart an environment.
+fn runHostAmbientAndExpect(api: []const u8, cart: []const u8, expected: []const u8) !void {
+    var files: gero.lang.Overlay = .{};
+    defer files.deinit(alloc);
+    try files.put(alloc, "gtx.gr", api);
+    try files.put(alloc, "main.gr", cart);
+
+    var fused = try gero.lang.resolveUseImportsVirtualAmbient(alloc, "main.gr", &files, &.{"gtx.gr"});
+    defer fused.deinit();
+    try std.testing.expectEqual(@as(usize, 0), fused.errors.len);
+
+    var stream = try gero.lang.tokenize(alloc, fused.source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, fused.source, stream);
+    defer tree.deinit();
+    try std.testing.expectEqual(@as(usize, 0), tree.errors.len);
+
+    const graph = gero.lang.ModuleGraph{ .source_map = &fused.source_map, .imports = fused.imports };
+    var checked = try gero.lang.typecheckGraph(alloc, fused.source, &tree.program, &fused.import_aliases, graph);
+    defer checked.deinit();
+    if (checked.diagnostics.len > 0) {
+        for (checked.diagnostics) |d| std.debug.print("  - {s}: {s}\n", .{ d.code, d.message });
+    }
+    try std.testing.expectEqual(@as(usize, 0), checked.diagnostics.len);
+
+    var compiled = try gero.lang.compile(alloc, fused.source, &checked, .{
+        .import_aliases = &fused.import_aliases,
+        .graph = graph,
+    });
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings(expected, writer.written());
+}
+
+test "host ambient: a module's defs are in scope with no `use` line" {
+    try runHostAmbientAndExpect(
+        \\def cls(c: u16) -> u16
+        \\  return 100 + c
+        \\end
+        \\def spr(n: u16) -> u16
+        \\  return n * 2
+        \\end
+    ,
+        \\def main()
+        \\  print cls(3)
+        \\  print spr(4)
+        \\end
+    ,
+        "103\n8\n",
+    );
+}
+
+test "host ambient: the program's own def shadows one, silently" {
+    // No diagnostic: the helper asserts a clean check, so a collision
+    // or an ambiguity warning would fail here rather than pass quietly.
+    try runHostAmbientAndExpect(
+        \\def cls(c: u16) -> u16
+        \\  return 100 + c
+        \\end
+    ,
+        \\def cls(c: u16) -> u16
+        \\  return 7
+        \\end
+        \\def main()
+        \\  print cls(3)
+        \\end
+    ,
+        "7\n",
+    );
+}
+
+test "host ambient: shadowing one name leaves the rest reachable" {
+    try runHostAmbientAndExpect(
+        \\def cls(c: u16) -> u16
+        \\  return 100 + c
+        \\end
+        \\def spr(n: u16) -> u16
+        \\  return n * 2
+        \\end
+    ,
+        \\def cls(c: u16) -> u16
+        \\  return 7
+        \\end
+        \\def main()
+        \\  print cls(3)
+        \\  print spr(4)
+        \\end
+    ,
+        "7\n8\n",
+    );
+}
+
+test "host ambient: an `@inline` def costs no call" {
+    // The body is spliced at the call site, which is what lets a host
+    // present a register write as a function.
+    try runHostAmbientAndExpect(
+        \\@inline
+        \\def poke_pen(c: u16) -> u16
+        \\  return c + 1
+        \\end
+    ,
+        \\def main()
+        \\  print poke_pen(41)
+        \\end
+    ,
+        "42\n",
+    );
+}
+
+test "host ambient: a default parameter works through the edge" {
+    try runHostAmbientAndExpect(
+        \\def cls(c: u16 = 5) -> u16
+        \\  return c
+        \\end
+    ,
+        \\def main()
+        \\  print cls()
+        \\  print cls(9)
+        \\end
+    ,
+        "5\n9\n",
+    );
+}
+
+test "host ambient: a `local` def in the host module stays private" {
+    // §5.1 — the host's own helpers are not part of what it hands out.
+    var files: gero.lang.Overlay = .{};
+    defer files.deinit(alloc);
+    try files.put(alloc, "gtx.gr",
+        \\local def secret() -> u16
+        \\  return 1
+        \\end
+        \\def cls() -> u16
+        \\  return secret()
+        \\end
+    );
+    try files.put(alloc, "main.gr",
+        \\def main()
+        \\  print secret()
+        \\end
+    );
+
+    var fused = try gero.lang.resolveUseImportsVirtualAmbient(alloc, "main.gr", &files, &.{"gtx.gr"});
+    defer fused.deinit();
+    var stream = try gero.lang.tokenize(alloc, fused.source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, fused.source, stream);
+    defer tree.deinit();
+
+    const graph = gero.lang.ModuleGraph{ .source_map = &fused.source_map, .imports = fused.imports };
+    var checked = try gero.lang.typecheckGraph(alloc, fused.source, &tree.program, &fused.import_aliases, graph);
+    defer checked.deinit();
+    try std.testing.expect(checked.diagnostics.len > 0);
+}
+
+test "host ambient: no module named means nothing extra in scope" {
+    var files: gero.lang.Overlay = .{};
+    defer files.deinit(alloc);
+    try files.put(alloc, "gtx.gr",
+        \\def cls() -> u16
+        \\  return 1
+        \\end
+    );
+    try files.put(alloc, "main.gr",
+        \\def main()
+        \\  print cls()
+        \\end
+    );
+
+    var fused = try gero.lang.resolveUseImportsVirtualAmbient(alloc, "main.gr", &files, &.{});
+    defer fused.deinit();
+    var stream = try gero.lang.tokenize(alloc, fused.source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, fused.source, stream);
+    defer tree.deinit();
+
+    const graph = gero.lang.ModuleGraph{ .source_map = &fused.source_map, .imports = fused.imports };
+    var checked = try gero.lang.typecheckGraph(alloc, fused.source, &tree.program, &fused.import_aliases, graph);
+    defer checked.deinit();
+    try std.testing.expect(checked.diagnostics.len > 0);
+}

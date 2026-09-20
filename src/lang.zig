@@ -195,6 +195,17 @@ pub const Overlay = include_mod.Overlay;
 /// defer fused.deinit();
 /// ```
 pub const resolveUseImportsVirtual = include_mod.resolveUseImportsVirtual;
+
+/// `resolveUseImportsVirtual` with modules the entry imports without
+/// saying so — a host environment on an import edge rather than in a
+/// prelude the entry would collide with.
+pub const resolveUseImportsVirtualAmbient = include_mod.resolveUseImportsVirtualAmbient;
+
+/// `resolveUseImportsFrom` with modules the entry imports without
+/// saying so. The general form of `resolveUseImportsVirtualAmbient`,
+/// for a host resolving against disk.
+pub const resolveUseImportsFromAmbient = include_mod.resolveUseImportsFromAmbient;
+
 /// Where a resolver finds files: the host filesystem, or a set.
 pub const IncludeSource = include_mod.Source;
 
