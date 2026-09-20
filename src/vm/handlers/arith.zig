@@ -372,7 +372,7 @@ fn carryIn(vm: *const VM) u1 {
     return if (vm.regs.flagSet(.carry)) 1 else 0;
 }
 
-/// `0x64` — `adc Imm16, Reg` → `reg ← reg + imm + C`.
+/// `0x50` — `adc Imm16, Reg` → `reg ← reg + imm + C`.
 pub fn adcImm16Reg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const imm = vm.readWord(ip +% 1);
@@ -381,7 +381,7 @@ pub fn adcImm16Reg(vm: *VM) StepResult {
     return writeAddSub(vm, reg, addWithCarry(a, imm, carryIn(vm)));
 }
 
-/// `0x65` — `adc Reg, Reg` → `dst ← dst + src + C` (asm: `adc src, dst`).
+/// `0x51` — `adc Reg, Reg` → `dst ← dst + src + C` (asm: `adc src, dst`).
 pub fn adcRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const src = vm.readByte(ip +% 1);
@@ -391,7 +391,7 @@ pub fn adcRegReg(vm: *VM) StepResult {
     return writeAddSub(vm, dst, addWithCarry(a, b, carryIn(vm)));
 }
 
-/// `0x66` — `sbc Imm16, Reg` → `reg ← reg - imm - C`.
+/// `0x52` — `sbc Imm16, Reg` → `reg ← reg - imm - C`.
 pub fn sbcImm16Reg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const imm = vm.readWord(ip +% 1);
@@ -400,7 +400,7 @@ pub fn sbcImm16Reg(vm: *VM) StepResult {
     return writeAddSub(vm, reg, subWithBorrow(a, imm, carryIn(vm)));
 }
 
-/// `0x67` — `sbc Reg, Reg` → `dst ← dst - src - C` (asm: `sbc src, dst`).
+/// `0x53` — `sbc Reg, Reg` → `dst ← dst - src - C` (asm: `sbc src, dst`).
 pub fn sbcRegReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const src = vm.readByte(ip +% 1);

@@ -23,6 +23,7 @@ const Rule = enum {
     mirror,
     unregistered_tests,
     testing_allocator,
+    opcode_docs,
 
     /// Short name the bash scripts use in their reports.
     pub fn label(self: Rule) []const u8 {
@@ -35,6 +36,7 @@ const Rule = enum {
             .mirror => "mirror",
             .unregistered_tests => "unregistered-tests",
             .testing_allocator => "testing-allocator",
+            .opcode_docs => "opcode-docs",
         };
     }
 };
@@ -105,6 +107,7 @@ pub fn main(init: std.process.Init) !u8 {
         try checkUnused(alloc, files.items, &violations);
         try checkMirror(alloc, files.items, &violations);
         try checkUnregisteredTests(alloc, files.items, &violations);
+        try checkOpcodeDocs(alloc, files.items, &violations);
     }
 
     // Print rule-by-rule so callers can `| grep [strict]` etc., and so
@@ -755,11 +758,15 @@ fn isMirrorExempt(path: []const u8) bool {
 // ---------- output ----------
 
 /// Print the bash-script-compatible footers for each rule that fired,
-/// in source order: strict → naming → imports → docs → testing-
-/// allocator → unused → mirror. Returns the exit code (1 on any
+/// in the order `Rule` declares them. Returns the exit code (1 on any
 /// violation).
+///
+/// The order comes from the enum rather than a list beside it: a rule
+/// missing from such a list still collects its violations and then
+/// never prints them, which is a linter that passes while holding the
+/// thing it found.
 fn emitReport(out: *std.Io.Writer, violations: []const Violation) !u8 {
-    const rule_order = [_]Rule{ .strict, .naming, .imports, .docs, .testing_allocator, .unused, .mirror, .unregistered_tests };
+    const rule_order = std.enums.values(Rule);
     var any: bool = false;
     for (rule_order) |rule| {
         var count: u32 = 0;
@@ -794,6 +801,10 @@ fn emitFooter(out: *std.Io.Writer, rule: Rule, count: u32) !void {
             "❌ {d} public declaration(s) lack a /// doc comment.\n   Add a one-line /// description directly above the declaration,\n   or allowlist with '// allow-strict: <reason>' if the symbol is\n   not part of the consumer-facing API.\n   See CLAUDE.md \"Doc Comments\".\n\n",
             .{count},
         ),
+        .opcode_docs => try out.print(
+            "❌ {d} handler(s) document an opcode dispatch.zig does not bind them to.\n   The comment is the only place a handler and its opcode are stated\n   together, so a wrong one is the wrong answer to the question it\n   exists to answer. Correct the '/// `0xNN`' line.\n\n",
+            .{count},
+        ),
         .unregistered_tests => try out.print(
             "❌ {d} module(s) whose inline tests never run.\n   A CLI module keeps its tests inline, so it must be registered as a\n   test root in build.zig — otherwise the tests compile and are never\n   executed.\n   See CLAUDE.md \"Tests\".\n\n",
             .{count},
@@ -811,4 +822,93 @@ fn emitFooter(out: *std.Io.Writer, rule: Rule, count: u32) !void {
             .{count},
         ),
     }
+}
+
+
+/// Every VM handler's `/// `0xNN`` doc against the opcode
+/// `dispatch.zig` actually binds it to.
+///
+/// These drifted apart once: an opcode-map renumbering moved the
+/// table and left sixty-two comments behind, so more than half of
+/// them named the wrong byte and a reader learning the ISA from the
+/// source got the wrong answer more often than the right one. The
+/// comments are the only place the handler and its opcode are stated
+/// together, which is exactly why they have to be checked.
+fn checkOpcodeDocs(
+    alloc: std.mem.Allocator,
+    files: []const File,
+    violations: *std.ArrayList(Violation),
+) !void {
+    const dispatch = blk: {
+        for (files) |f| {
+            if (std.mem.endsWith(u8, f.path, "src/vm/dispatch.zig")) break :blk f.content;
+        }
+        return;
+    };
+
+    for (files) |f| {
+        if (!std.mem.containsAtLeast(u8, f.path, 1, "src/vm/handlers/")) continue;
+
+        var line_no: u32 = 0;
+        var claimed: ?u8 = null;
+        var claimed_line: u32 = 0;
+        var it = std.mem.splitScalar(u8, f.content, '\n');
+        while (it.next()) |raw| {
+            line_no += 1;
+            const line = std.mem.trim(u8, raw, " \t\r");
+
+            if (std.mem.startsWith(u8, line, "///")) {
+                const body = std.mem.trim(u8, line[3..], " ");
+                if (std.mem.startsWith(u8, body, "`0x") and body.len >= 6) {
+                    if (std.fmt.parseInt(u8, body[3..5], 16)) |v| {
+                        claimed = v;
+                        claimed_line = line_no;
+                    } else |_| {}
+                }
+                continue;
+            }
+
+            if (std.mem.startsWith(u8, line, "pub fn ")) {
+                defer claimed = null;
+                const want = claimed orelse continue;
+                const after = line["pub fn ".len..];
+                const paren = std.mem.indexOfScalar(u8, after, '(') orelse continue;
+                const name = after[0..paren];
+                const real = dispatchedAt(dispatch, name) orelse continue;
+                if (real == want) continue;
+
+                try violations.append(alloc, .{
+                    .file = f.path,
+                    .line = claimed_line,
+                    .message = try std.fmt.allocPrint(
+                        alloc,
+                        "{s}:{d}: `{s}` documents opcode 0x{X:0>2} but dispatch.zig binds it to 0x{X:0>2}",
+                        .{ f.path, claimed_line, name, want, real },
+                    ),
+                    .rule = .opcode_docs,
+                });
+                continue;
+            }
+
+            // Anything that is not a doc line or the declaration it
+            // documents ends the block.
+            if (line.len > 0) claimed = null;
+        }
+    }
+}
+
+/// The opcode `t[0xNN] = <module>.<name>;` binds `name` to.
+fn dispatchedAt(dispatch: []const u8, name: []const u8) ?u8 {
+    var it = std.mem.splitScalar(u8, dispatch, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (!std.mem.startsWith(u8, line, "t[0x")) continue;
+        const close = std.mem.indexOfScalar(u8, line, ']') orelse continue;
+        const dot = std.mem.indexOfScalar(u8, line, '.') orelse continue;
+        const semi = std.mem.indexOfScalar(u8, line, ';') orelse continue;
+        if (dot < close or semi < dot) continue;
+        if (!std.mem.eql(u8, line[dot + 1 .. semi], name)) continue;
+        return std.fmt.parseInt(u8, line[4..close], 16) catch null;
+    }
+    return null;
 }

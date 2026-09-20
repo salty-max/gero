@@ -11,7 +11,7 @@ fn fault(vm: *VM, vector: dispatch.Vector) StepResult {
 
 // ---------- misc ----------
 
-/// `0x90` — `swap Reg, Reg` → atomic swap.
+/// `0xC0` — `swap Reg, Reg` → atomic swap.
 pub fn swap(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const a_idx = vm.readByte(ip +% 1);
@@ -23,7 +23,7 @@ pub fn swap(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x91` — `nop`.
+/// `0xC1` — `nop`.
 pub fn nop(vm: *VM) StepResult {
     _ = vm;
     return ok;
@@ -31,31 +31,31 @@ pub fn nop(vm: *VM) StepResult {
 
 // ---------- flag manipulation ----------
 
-/// `0xA0` — `clc` → `flg.C ← 0`.
+/// `0xB0` — `clc` → `flg.C ← 0`.
 pub fn clc(vm: *VM) StepResult {
     vm.regs.setFlag(.carry, false);
     return ok;
 }
 
-/// `0xA1` — `sec` → `flg.C ← 1`.
+/// `0xB1` — `sec` → `flg.C ← 1`.
 pub fn sec(vm: *VM) StepResult {
     vm.regs.setFlag(.carry, true);
     return ok;
 }
 
-/// `0xA2` — `cli` → `flg.I ← 0` (enable interrupts globally).
+/// `0xB2` — `cli` → `flg.I ← 0` (enable interrupts globally).
 pub fn cli(vm: *VM) StepResult {
     vm.regs.setFlag(.interrupt_disable, false);
     return ok;
 }
 
-/// `0xA3` — `sei` → `flg.I ← 1` (block interrupts globally).
+/// `0xB3` — `sei` → `flg.I ← 1` (block interrupts globally).
 pub fn sei(vm: *VM) StepResult {
     vm.regs.setFlag(.interrupt_disable, true);
     return ok;
 }
 
-/// `0xA4` — `clv` → `flg.V ← 0`.
+/// `0xB4` — `clv` → `flg.V ← 0`.
 pub fn clv(vm: *VM) StepResult {
     vm.regs.setFlag(.overflow, false);
     return ok;

@@ -20,12 +20,12 @@ fn taken(vm: *VM, target: u16) StepResult {
 
 // ---------- unconditional ----------
 
-/// `0x70` — `jmp Addr`.
+/// `0x90` — `jmp Addr`.
 pub fn jmpAddr(vm: *VM) StepResult {
     return taken(vm, readAddr(vm));
 }
 
-/// `0x71` — `jmp Reg` → `ip ← reg`.
+/// `0x91` — `jmp Reg` → `ip ← reg`.
 pub fn jmpReg(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
     const reg = vm.readByte(ip +% 1);
@@ -35,26 +35,26 @@ pub fn jmpReg(vm: *VM) StepResult {
 
 // ---------- conditional (Addr operand) ----------
 
-/// `0x72` — `jeq Addr` → branch when `Z = 1`.
+/// `0x92` — `jeq Addr` → branch when `Z = 1`.
 pub fn jeqAddr(vm: *VM) StepResult {
     if (vm.regs.flagSet(.zero)) return taken(vm, readAddr(vm));
     return ok;
 }
 
-/// `0x73` — `jne Addr` → branch when `Z = 0`.
+/// `0x93` — `jne Addr` → branch when `Z = 0`.
 pub fn jneAddr(vm: *VM) StepResult {
     if (!vm.regs.flagSet(.zero)) return taken(vm, readAddr(vm));
     return ok;
 }
 
-/// `0x74` — `jlt Addr` → signed less: `N ≠ V`.
+/// `0x94` — `jlt Addr` → signed less: `N ≠ V`.
 pub fn jltAddr(vm: *VM) StepResult {
     if (vm.regs.flagSet(.negative) != vm.regs.flagSet(.overflow))
         return taken(vm, readAddr(vm));
     return ok;
 }
 
-/// `0x75` — `jle Addr` → signed less-or-equal: `Z = 1 ∨ N ≠ V`.
+/// `0x95` — `jle Addr` → signed less-or-equal: `Z = 1 ∨ N ≠ V`.
 pub fn jleAddr(vm: *VM) StepResult {
     const z = vm.regs.flagSet(.zero);
     const lt = vm.regs.flagSet(.negative) != vm.regs.flagSet(.overflow);
@@ -62,7 +62,7 @@ pub fn jleAddr(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x76` — `jgt Addr` → signed greater: `Z = 0 ∧ N = V`.
+/// `0x96` — `jgt Addr` → signed greater: `Z = 0 ∧ N = V`.
 pub fn jgtAddr(vm: *VM) StepResult {
     const not_z = !vm.regs.flagSet(.zero);
     const ge = vm.regs.flagSet(.negative) == vm.regs.flagSet(.overflow);
@@ -70,50 +70,50 @@ pub fn jgtAddr(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x77` — `jge Addr` → signed greater-or-equal: `N = V`.
+/// `0x97` — `jge Addr` → signed greater-or-equal: `N = V`.
 pub fn jgeAddr(vm: *VM) StepResult {
     if (vm.regs.flagSet(.negative) == vm.regs.flagSet(.overflow))
         return taken(vm, readAddr(vm));
     return ok;
 }
 
-/// `0x78` — `jcc Addr` → unsigned less / no carry: `C = 0`.
+/// `0x98` — `jcc Addr` → unsigned less / no carry: `C = 0`.
 pub fn jccAddr(vm: *VM) StepResult {
     if (!vm.regs.flagSet(.carry)) return taken(vm, readAddr(vm));
     return ok;
 }
 
-/// `0x79` — `jcs Addr` → unsigned greater-or-equal: `C = 1`.
+/// `0x99` — `jcs Addr` → unsigned greater-or-equal: `C = 1`.
 pub fn jcsAddr(vm: *VM) StepResult {
     if (vm.regs.flagSet(.carry)) return taken(vm, readAddr(vm));
     return ok;
 }
 
-/// `0x7A` — `jvc Addr` → `V = 0`.
+/// `0x9A` — `jvc Addr` → `V = 0`.
 pub fn jvcAddr(vm: *VM) StepResult {
     if (!vm.regs.flagSet(.overflow)) return taken(vm, readAddr(vm));
     return ok;
 }
 
-/// `0x7B` — `jvs Addr` → `V = 1`.
+/// `0x9B` — `jvs Addr` → `V = 1`.
 pub fn jvsAddr(vm: *VM) StepResult {
     if (vm.regs.flagSet(.overflow)) return taken(vm, readAddr(vm));
     return ok;
 }
 
-/// `0x7C` — `jz Addr` → alias for `jeq` (`Z = 1`).
+/// `0x9C` — `jz Addr` → alias for `jeq` (`Z = 1`).
 pub fn jzAddr(vm: *VM) StepResult {
     return jeqAddr(vm);
 }
 
-/// `0x7D` — `jnz Addr` → alias for `jne` (`Z = 0`).
+/// `0x9D` — `jnz Addr` → alias for `jne` (`Z = 0`).
 pub fn jnzAddr(vm: *VM) StepResult {
     return jneAddr(vm);
 }
 
 // ---------- djnz / jr ----------
 
-/// `0x7E` — `djnz Reg, Addr` → `reg -= 1`; branch when `reg ≠ 0`.
+/// `0x9E` — `djnz Reg, Addr` → `reg -= 1`; branch when `reg ≠ 0`.
 /// Decrement is flag-neutral so the loop primitive doesn't
 /// disturb a surrounding `cmp` / `tst` chain.
 pub fn djnzRegAddr(vm: *VM) StepResult {
@@ -127,7 +127,7 @@ pub fn djnzRegAddr(vm: *VM) StepResult {
     return ok;
 }
 
-/// `0x7F` — `jr Imm8` → relative jump `ip ← (ip + 2) + signed(imm)`.
+/// `0x9F` — `jr Imm8` → relative jump `ip ← (ip + 2) + signed(imm)`.
 /// Offset is post-instruction (the assembler emits `target - (here + 2)`).
 pub fn jrImm8(vm: *VM) StepResult {
     const ip = vm.regs.read(.ip);
