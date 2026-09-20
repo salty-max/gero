@@ -337,6 +337,33 @@ pub fn resolveUseImportsVirtual(
     return resolveUseImportsFrom(allocator, root_name, .{ .virtual = files });
 }
 
+/// `resolveUseImportsVirtual` with modules the entry imports without
+/// saying so — what a host uses to hand a program an environment.
+///
+/// Each `ambient` name is resolved like any other module and given a
+/// whole-module import edge into the entry, so its exports are in
+/// scope unqualified. A name the entry declares itself wins, silently:
+/// that is what an import edge already means, and it is the reason a
+/// host environment belongs on one rather than in a prelude the entry
+/// would collide with.
+///
+/// ```
+/// var files: Overlay = .{};
+/// try files.put(allocator, "main.gr", cart_src);
+/// try files.put(allocator, "gtx.gr", api_src);
+/// var fused = try resolveUseImportsVirtualAmbient(
+///     allocator, "main.gr", &files, &.{"gtx.gr"},
+/// );
+/// ```
+pub fn resolveUseImportsVirtualAmbient(
+    allocator: std.mem.Allocator,
+    root_name: []const u8,
+    files: *const Overlay,
+    ambient: []const []const u8,
+) ResolveError!FusedSource {
+    return resolveUseImportsFromAmbient(allocator, root_name, .{ .virtual = files }, ambient);
+}
+
 /// The resolver both entry points share. `source` decides where files
 /// come from; everything else — cycles, include-once, the source map,
 /// alias collection — is identical either way.
@@ -344,6 +371,17 @@ pub fn resolveUseImportsFrom(
     allocator: std.mem.Allocator,
     root_path: []const u8,
     source: Source,
+) ResolveError!FusedSource {
+    return resolveUseImportsFromAmbient(allocator, root_path, source, &.{});
+}
+
+/// `resolveUseImportsFrom` with modules the entry imports without
+/// saying so. See `resolveUseImportsVirtualAmbient`.
+pub fn resolveUseImportsFromAmbient(
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    source: Source,
+    ambient: []const []const u8,
 ) ResolveError!FusedSource {
     var fused: std.ArrayList(u8) = .empty;
     errdefer fused.deinit(allocator);
@@ -385,7 +423,26 @@ pub fn resolveUseImportsFrom(
         .imports = &imports,
     };
 
+    // Ambient modules resolve before the entry so their declarations
+    // precede it in the fused buffer, the way an explicit `use` would
+    // have placed them.
+    var ambient_ids: std.ArrayList(u16) = .empty;
+    defer ambient_ids.deinit(allocator);
+    for (ambient) |name| {
+        if (try resolveOne(&ctx, name, null, 0, 0)) |id| try ambient_ids.append(allocator, id);
+    }
+
     const root_id = try resolveOne(&ctx, root_path, null, 0, 0);
+
+    // The edge the entry never wrote. Whole-module, so every export is
+    // in scope unqualified and anything the entry declares itself
+    // keeps its name.
+    if (root_id) |from| {
+        for (ambient_ids.items) |to| {
+            if (to == from) continue;
+            try imports.append(allocator, .{ .from = from, .to = to });
+        }
+    }
 
     return .{
         .source = try fused.toOwnedSlice(allocator),
