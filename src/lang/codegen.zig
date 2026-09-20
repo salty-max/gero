@@ -1808,7 +1808,7 @@ pub const Emitter = struct {
             .use_decl => |d| {
                 if (d.items.len == 0) continue;
                 const module = self.source[d.module.start..d.module.end];
-                if (!stdlib.isModule(module)) continue;
+                if (!stdlib.isRoutable(module)) continue;
                 const mod_dup = try self.arena.dupe(u8, module);
                 for (d.items) |it| {
                     const orig = self.source[it.name.start..it.name.end];

@@ -17,7 +17,13 @@ const MemWriteKind = enum { byte, word };
 /// the codegen check repeats the arity guard as a defensive
 /// safeguard against frontend changes.
 pub fn emitMemCall(self: *Emitter, fe: ast.FieldExpr, c: ast.CallExpr) !void {
-    const fn_name = self.source[fe.field.start..fe.field.end];
+    return emitMemCallName(self, self.source[fe.field.start..fe.field.end], c);
+}
+
+/// `emitMemCall` resolved by an explicit function `name` — used when
+/// a `mem` member is called bare, either selectively imported or
+/// ambient (§5.3.5).
+pub fn emitMemCallName(self: *Emitter, fn_name: []const u8, c: ast.CallExpr) !void {
     if (std.mem.eql(u8, fn_name, "read_u8") or std.mem.eql(u8, fn_name, "peek")) {
         try emitMemRead1Arg(self, c, .byte_zext);
     } else if (std.mem.eql(u8, fn_name, "read_u16") or std.mem.eql(u8, fn_name, "read_i16")) {

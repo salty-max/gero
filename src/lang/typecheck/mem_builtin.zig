@@ -68,7 +68,23 @@ fn suggestMemBuiltin(name: []const u8) ?[]const u8 {
 /// argument so it skips per-arg checking — codegen rejects
 /// non-addressable targets later.
 pub fn checkMemMethodCall(self: *Checker, m: ast.MethodCallExpr) WalkError!?*const types.Type {
-    const fn_name = self.lexeme(m.method);
+    return checkMemCallName(self, self.lexeme(m.method), m.method, m.args, m.span);
+}
+
+/// `checkMemMethodCall` resolved by an explicit function `name` —
+/// used when a `mem` member is called bare, either selectively
+/// imported or ambient (§5.3.5). The qualified form is this with the
+/// name taken from the method span.
+pub fn checkMemCallName(
+    self: *Checker,
+    fn_name: []const u8,
+    name_span: ast.Span,
+    args: []const *ast.Expr,
+    call_span: ast.Span,
+) WalkError!?*const types.Type {
+    // The checks below read a method call's three fields; a bare call
+    // has the same three under different names.
+    const m = .{ .method = name_span, .args = args, .span = call_span };
     const sig: ?MemBuiltinSig = lookupMemBuiltin(fn_name);
     if (sig == null) {
         const msg = try std.fmt.allocPrint(
