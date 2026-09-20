@@ -176,3 +176,28 @@ test "header: banked cart exposes bank slice + isBanked flag" {
     try std.testing.expectEqual(bank_size, h.banks.len);
     try std.testing.expectEqual(@as(u8, 1), h.bank_count);
 }
+
+test "Symbols: addressOf is the reverse of lookup" {
+    const alloc = std.testing.allocator;
+    const source =
+        \\main:
+        \\  hlt
+        \\helper:
+        \\  hlt
+        \\
+    ;
+    var pt = try gero.asm_.parse(alloc, source);
+    defer pt.deinit();
+    var cg = try gero.asm_.assemble(alloc, source, pt, .{});
+    defer cg.deinit();
+
+    const h = try gero.disasm.parseHeader(cg.image);
+    const syms = try gero.disasm.parseSymbols(alloc, h.debug);
+    defer syms.deinit(alloc);
+
+    // A host reaching a function by name needs the direction `lookup`
+    // does not go.
+    const at = syms.addressOf("helper") orelse return error.SymbolMissing;
+    try std.testing.expectEqualStrings("helper", syms.lookup(at).?);
+    try std.testing.expect(syms.addressOf("nothing_here") == null);
+}
