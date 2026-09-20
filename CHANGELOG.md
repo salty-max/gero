@@ -5,6 +5,46 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.5.3 - 2026-09-20
+
+The release where a host can hand a program its own environment.
+
+Ambient modules already let an embedding host put names in scope
+without the program importing them, but only gero's own stdlib
+modules. A host with an API of its own — a console handing a cart
+seventy-odd functions it never wrote a `use` line for — had no route.
+
+It has one now, and it is an import edge the entry never wrote.
+Everything that follows is machinery a `use` already drives: the
+module's exports land in the entry's scope, same-named defs in two
+modules get distinct symbols, `@inline` splices a body at the call
+site, and a diagnostic in host source is attributed to the host
+module.
+
+The shadowing is the part that decided the design. Linking an import
+leaves a name the importer declared itself alone, so a program that
+defines `cls` keeps its own `cls` and loses nothing else. A prelude of
+top-level defs collides instead, which would make the program an error
+rather than a program that meant what it said.
+
+Two fixes were in the way and are worth their own mention. `mem`
+members did not resolve when called bare — the module's signatures
+live in their own table, and only the qualified `mem.peek(a)` form
+consulted it, so `poke(a, v)` after `use poke from mem` was told that
+`mem` has no member `poke`. And a module whose file lacked a final
+newline ran into the file fused after it, joining its last line to
+another's first; the syntax error that produced was reported against
+the importing file, which does not contain it.
+
+### Added
+
+- `resolveUseImportsVirtualAmbient` and `resolveUseImportsFromAmbient` resolve a module the entry imports without saying so, for a host that hands a program an environment rather than making it import one. The module's exports are in scope unqualified, and a name the entry declares itself wins silently — which a prelude of top-level `def`s cannot do, since it collides instead.
+
+### Fixed
+
+- `mem` members now resolve when called bare — ambient (§5.3.5) or selectively imported. The module's signatures live in their own table rather than the stdlib one, and only the qualified `mem.peek(a)` form consulted it, so `poke(a, v)` after `use poke from mem` reported that `mem` has no member `poke`.
+- A module whose file does not end in a newline no longer runs into the file fused after it. Its last line joined the next module's first, and the syntax error that produced was reported against the importing file, which did not contain it.
+
 ## v0.5.2 - 2026-09-16
 
 The release where gero can be depended on.
