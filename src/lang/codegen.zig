@@ -1532,7 +1532,17 @@ pub const Emitter = struct {
     fn inlineExpansionBytes(self: *const Emitter, callee: *const ast.DefDecl, args: []const *ast.Expr, depth: u8) usize {
         if (depth >= inline_max_depth) return 0;
         var n: usize = 0;
-        for (args) |arg| {
+        // One slot per bound parameter, not per written argument: a call
+        // that leaves a trailing default out still has it filled in
+        // before expansion, and the expander reserves a slot for it.
+        // A variadic call runs past the parameter list, so walk whichever
+        // list is longer; a parameter with neither an argument nor a
+        // default only occurs in a call the typechecker already rejected.
+        for (0..@max(args.len, callee.params.len)) |i| {
+            const arg = if (i < args.len)
+                args[i]
+            else
+                callee.params[i].default orelse continue;
             if (self.argStructName(arg)) |sname|
                 n += self.structSlotWidth(sname)
             else if (self.tupleElemsOf(arg)) |elems|
