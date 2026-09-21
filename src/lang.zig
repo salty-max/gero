@@ -359,7 +359,8 @@ pub const codegen = struct {
     pub const ivt_base = codegen_mod.ivt_base;
     /// First byte of code emission.
     pub const code_base = codegen_mod.code_base;
-    /// First byte of static-data emission.
+    /// Lowest address the static-data region may start at; it sits just
+    /// above the code when the code extends past this.
     pub const data_base = codegen_mod.data_base;
 };
 

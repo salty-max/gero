@@ -76,6 +76,15 @@ pub const StringRef = struct {
     bytes: []const u8,
 };
 
+/// A data-global address slot, rebased to its fragment. Carries the
+/// provisional address — the one counted from `data_base` — rather than
+/// the placed one, so a later build re-shifts it by its own code size
+/// instead of inheriting this build's.
+pub const DataRef = struct {
+    patch_offset: usize,
+    addr: u16,
+};
+
 /// A symbol defined inside the fragment — the fragment's own label,
 /// plus any lambda body emitted alongside it. Restoring these on
 /// splice is what lets references from elsewhere resolve into it.
@@ -101,6 +110,7 @@ pub const Fragment = struct {
     relocs: []const Reloc,
     refs: []const SymbolRef,
     strings: []const StringRef,
+    data: []const DataRef,
     defines: []const Definition,
     lines: []const LineSpan,
 };
@@ -131,9 +141,24 @@ pub fn extract(arena: std.mem.Allocator, emitter: *const Emitter) ![]const Fragm
             .relocs = try collectRelocs(arena, emitter, s),
             .refs = try collectRefs(arena, emitter, s),
             .strings = try collectStrings(arena, emitter, s),
+            .data = try collectData(arena, emitter, s, buf),
             .lines = try collectLines(arena, emitter, s),
             .defines = try collectDefines(arena, emitter, s),
         });
+    }
+    return out.toOwnedSlice(arena);
+}
+
+/// The data-global slots inside `s`, each carrying the provisional
+/// address its bytes hold once this build's shift is taken back off.
+fn collectData(arena: std.mem.Allocator, emitter: *const Emitter, s: Span, buf: []const u8) ![]const DataRef {
+    var out: std.ArrayList(DataRef) = .empty;
+    for (emitter.data_patches.items) |p| {
+        if (!sameBank(p.bank, s.bank) or !within(p.code_offset, s)) continue;
+        const placed = std.mem.readInt(u16, buf[p.code_offset..][0..2], .little);
+        // @as: `placed` was shifted by exactly this amount, so it cannot underflow.
+        const provisional: u16 = @intCast(@as(usize, placed) - emitter.data_shift);
+        try out.append(arena, .{ .patch_offset = p.code_offset - s.start, .addr = provisional });
     }
     return out.toOwnedSlice(arena);
 }
@@ -281,6 +306,7 @@ pub fn splice(emitter: *Emitter, f: Fragment) !void {
     try spliceRelocs(emitter, f, base);
     try spliceRefs(emitter, f, base);
     try spliceStrings(emitter, f, base);
+    try spliceData(emitter, f, base);
     try spliceLines(emitter, f, base);
 
     try emitter.noteFragment(f.symbol, f.module, f.bank, base, base + f.bytes.len);
@@ -361,6 +387,23 @@ fn spliceStrings(emitter: *Emitter, f: Fragment, base: usize) !void {
             .bank = f.bank,
             .code_offset = base + sr.patch_offset,
             .string_id = id,
+        });
+    }
+}
+
+/// Restore each data slot to its provisional address and re-record it,
+/// so this build's link step shifts it by this build's code size. The
+/// cached bytes carry the address the build that wrote them placed.
+fn spliceData(emitter: *Emitter, f: Fragment, base: usize) !void {
+    const buf: []u8 = if (f.bank) |b|
+        if (emitter.banks.getPtr(b)) |bl| bl.items else return
+    else
+        emitter.code.items;
+    for (f.data) |dr| {
+        std.mem.writeInt(u16, buf[base + dr.patch_offset ..][0..2], dr.addr, .little);
+        try emitter.data_patches.append(emitter.allocator, .{
+            .bank = f.bank,
+            .code_offset = base + dr.patch_offset,
         });
     }
 }

@@ -205,6 +205,83 @@ fn compileTwice(src: []const u8) !struct { full: gero.lang.Compiled, cached: ger
     return .{ .full = full, .cached = cached };
 }
 
+/// Build the large-program source, optionally with one extra def that
+/// makes the code longer — and so moves the data region somewhere else.
+fn largeDataSource(extra: bool) !std.ArrayList(u8) {
+    var source: std.ArrayList(u8) = .empty;
+    errdefer source.deinit(alloc);
+    try source.appendSlice(alloc,
+        \\let mark: u16 = 0
+        \\def peek() -> i16
+        \\  return mark as i16
+        \\end
+        \\
+    );
+    try util.appendFillerDefs(alloc, &source, util.filler_past_data_base);
+    if (extra) try source.appendSlice(alloc,
+        \\def spacer(a: u16) -> u16
+        \\  mem.write_u16($0310, a)
+        \\  mem.write_u16($0312, a)
+        \\  return a
+        \\end
+        \\
+    );
+    try source.appendSlice(alloc, "def main()\n");
+    try util.appendFillerCalls(alloc, &source, util.filler_past_data_base);
+    if (extra) try source.appendSlice(alloc, "  mem.write_u16($0314, spacer(7))\n");
+    try source.appendSlice(alloc, "  mark = $BEEF\n  print peek()\nend\n");
+    return source;
+}
+
+fn compileWith(src: []const u8, cached: []const gero.lang.Fragment) !gero.lang.Compiled {
+    var stream = try gero.lang.tokenize(alloc, src);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, src, stream);
+    defer tree.deinit();
+    var checked = try gero.lang.typecheck(alloc, src, &tree.program);
+    defer checked.deinit();
+    return gero.lang.compile(alloc, src, &checked, .{ .emit_fragments = true, .cached_fragments = cached });
+}
+
+test "splice: a cached fragment's data-global load re-resolves against the new layout" {
+    // A data global's address is only final once the code length is
+    // known. A fragment cached from a build whose code was a different
+    // length carries a different placement, so splicing has to restore
+    // the provisional address and let this build shift it.
+    var small = try largeDataSource(false);
+    defer small.deinit(alloc);
+    var large = try largeDataSource(true);
+    defer large.deinit(alloc);
+
+    var donor = try compileWith(small.items, &.{});
+    defer donor.deinit();
+    try std.testing.expect(!donor.hasErrors());
+
+    // Only the unchanged helpers come from cache: `main` differs between
+    // the two sources, so a real incremental build would re-lower it.
+    var reusable: std.ArrayList(gero.lang.Fragment) = .empty;
+    defer reusable.deinit(alloc);
+    for (donor.fragments) |f| {
+        if (std.mem.eql(u8, f.symbol, "main")) continue;
+        try reusable.append(alloc, f);
+    }
+
+    var cold = try compileWith(large.items, &.{});
+    defer cold.deinit();
+    var warm = try compileWith(large.items, reusable.items);
+    defer warm.deinit();
+    try std.testing.expect(!cold.hasErrors());
+    try std.testing.expect(!warm.hasErrors());
+
+    // The premise: the two programs place the data region differently.
+    const donor_gx = try gero.vm.parseGx(donor.image);
+    const cold_gx = try gero.vm.parseGx(cold.image);
+    try std.testing.expect(cold_gx.header.heap_base > gero.lang.codegen.data_base);
+    try std.testing.expect(donor_gx.header.heap_base != cold_gx.header.heap_base);
+
+    try std.testing.expectEqualSlices(u8, cold.image, warm.image);
+}
+
 test "splice: a build from cached fragments matches one that lowered them" {
     var r = try compileTwice(
         \\def add(a: i16, b: i16) -> i16

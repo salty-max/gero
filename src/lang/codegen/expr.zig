@@ -19,6 +19,7 @@ const variadic = @import("variadic.zig");
 const strings = @import("strings.zig");
 const lambda = @import("lambda.zig");
 const overflow = @import("overflow.zig");
+const globals = @import("globals.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -110,7 +111,7 @@ pub fn emitExpr(self: *Emitter, e: *const ast.Expr) EmitError!void {
             // name, since a same-named local shadows the alias.
             if (self.globals.get(self.resolveImportAlias(name))) |g| {
                 try self.emitGlobalLoad(g);
-                try fixed.loadHighFromAddr(self, e, g.address);
+                if (try fixed.loadHighFromAddr(self, e, g.address)) |hi| try globals.noteDataRef(self, g, hi);
                 return;
             }
             try self.unsupported(i.span, "ident not in current frame");
