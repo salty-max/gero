@@ -91,6 +91,10 @@ fn registerGlobalConst(self: *Emitter, d: *const ast.ConstDecl) !void {
     if (baked) |v| {
         const g = self.globals.get(name) orelse return;
         const bytes = try self.arena.alloc(u8, bake_mod.widthOf(v));
+        // The bytes and any string slot inside them share one home, so
+        // they move with the data region together or not at all.
+        const relocatable = g.placement == .data;
+
         // Any `str` inside the value serializes as a zeroed pointer
         // slot and reports its position; the pool has no addresses
         // yet this early. Interning here reserves the bytes, and
@@ -105,9 +109,14 @@ fn registerGlobalConst(self: *Emitter, d: *const ast.ConstDecl) !void {
             try self.bake_str_patches.append(self.allocator, .{
                 .image_offset = g.address + slot.offset,
                 .string_id = id,
+                .relocatable = relocatable,
             });
         }
-        try self.bake_inits.put(self.allocator, g.address, bytes);
+        try self.bake_inits.append(self.allocator, .{
+            .addr = g.address,
+            .relocatable = relocatable,
+            .bytes = bytes,
+        });
         return;
     }
     // A non-`bake` initializer is evaluated + stored at startup, like a
@@ -132,7 +141,7 @@ fn emitAggregateGlobal(
     const src = Reg.r1;
     const dest = Reg.r2;
     try value_struct.frameAddrToReg(self, slot, src);
-    try isa.movImmToReg(self, g.address, dest);
+    try emitGlobalAddrToReg(self, g, dest);
     try value_struct.copyBytes(self, src, dest, width);
 }
 
@@ -245,7 +254,7 @@ pub fn emitGlobalInits(self: *Emitter) !void {
         }
         try self.emitExpr(gi.init);
         try emitGlobalStore(self, Reg.acu, g);
-        try fixed.storeHighToAddr(self, gi.init, g.address);
+        if (try fixed.storeHighToAddr(self, gi.init, g.address)) |hi| try noteDataRef(self, g, hi);
     }
 }
 
@@ -399,16 +408,38 @@ fn widthOfConstDecl(self: *const Emitter, d: *const ast.ConstDecl) u16 {
     return 2;
 }
 
+/// Record the 2-byte address slot at `slot` as naming `g`, so the link
+/// step shifts it when the data region sits above the code. The slot
+/// already holds the provisional address, whatever the emitting
+/// instruction put there.
+///
+/// A `@addr`-pinned or zero-page global names an address the program
+/// chose, which never moves, so it is never recorded.
+pub fn noteDataRef(self: *Emitter, g: Global, slot: usize) !void {
+    if (g.placement != .data) return;
+    try self.data_patches.append(self.allocator, .{
+        .bank = self.current_bank,
+        .code_offset = slot,
+    });
+}
+
+/// Load `g`'s address into `dest` — `addr_of`, and the destination of
+/// an aggregate global's seed copy.
+pub fn emitGlobalAddrToReg(self: *Emitter, g: Global, dest: u8) !void {
+    const slot = try isa.movImmToRegSlot(self, g.address, dest);
+    try noteDataRef(self, g, slot);
+}
+
 /// Load `g`'s value into `acu`. The instruction shape depends on the
 /// placement family + byte width.
 pub fn emitGlobalLoad(self: *Emitter, g: Global) !void {
     switch (g.placement) {
         .addr, .data => {
-            if (g.width == 1) {
-                try isa.mov8AddrToReg(self, g.address, Reg.acu);
-            } else {
+            const slot = if (g.width == 1)
+                try isa.mov8AddrToReg(self, g.address, Reg.acu)
+            else
                 try isa.movAddrToReg(self, g.address, Reg.acu);
-            }
+            try noteDataRef(self, g, slot);
         },
         .zero_page => {
             // @as: placement.zero_page guarantees address ≤ 0xFF.
@@ -431,11 +462,11 @@ pub fn emitGlobalLoad(self: *Emitter, g: Global) !void {
 pub fn emitGlobalStore(self: *Emitter, src: u8, g: Global) !void {
     switch (g.placement) {
         .addr, .data => {
-            if (g.width == 1) {
-                try isa.movlRegToAddr(self, src, g.address);
-            } else {
+            const slot = if (g.width == 1)
+                try isa.movlRegToAddr(self, src, g.address)
+            else
                 try isa.movRegToAddr(self, src, g.address);
-            }
+            try noteDataRef(self, g, slot);
         },
         .zero_page => {
             // @as: placement.zero_page guarantees address ≤ 0xFF.

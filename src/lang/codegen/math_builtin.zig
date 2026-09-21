@@ -70,7 +70,7 @@ pub fn emitMathCall(self: *Emitter, name: []const u8, c: ast.CallExpr) !void {
 /// identical programs produce identical sequences.
 fn emitRng(self: *Emitter, c: ast.CallExpr) !void {
     _ = c; // no arguments
-    try isa.movAddrToReg(self, rng_state_addr, Reg.acu); // acu = state
+    _ = try isa.movAddrToReg(self, rng_state_addr, Reg.acu); // acu = state
     // Lazy seed: state 0 → seed (also keeps a 0 cell from sticking at 0).
     try isa.cmpRegImm(self, Reg.acu, 0);
     const seeded = try isa.emitJumpPlaceholder(self, Op.jne_addr);
@@ -86,7 +86,7 @@ fn emitRng(self: *Emitter, c: ast.CallExpr) !void {
     try isa.movImmToReg(self, rng_taps, Reg.r2);
     try isa.xorRegReg(self, Reg.acu, Reg.r2); // state ^= taps
     try isa.patchJumpTo(self, no_xor, try self.currentOffset());
-    try isa.movRegToAddr(self, Reg.acu, rng_state_addr); // persist; acu is the result
+    _ = try isa.movRegToAddr(self, Reg.acu, rng_state_addr); // persist; acu is the result
 }
 
 /// `sqrt(x: fixed) -> fixed` — Q16.16 square root.

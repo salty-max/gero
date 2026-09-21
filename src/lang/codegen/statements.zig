@@ -16,6 +16,7 @@ const destructure = @import("destructure.zig");
 const vec_builtin = @import("vec_builtin.zig");
 const lambda = @import("lambda.zig");
 const strings = @import("strings.zig");
+const globals = @import("globals.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -267,7 +268,7 @@ pub fn emitAssign(self: *Emitter, a_in: ast.AssignStmt) !void {
     if (self.globals.get(name)) |g| {
         try self.emitExpr(a.value);
         try self.emitGlobalStore(Reg.acu, g);
-        try fixed.storeHighToAddr(self, a.target, g.address);
+        if (try fixed.storeHighToAddr(self, a.target, g.address)) |hi| try globals.noteDataRef(self, g, hi);
         return;
     }
     try self.unsupported(a.target.span(), "assignment target not in scope");

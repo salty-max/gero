@@ -52,7 +52,10 @@ const Sys = opcodes.Sys;
 pub const ivt_base: u16 = 0x1000;
 /// First byte of code emission.
 pub const code_base: u16 = 0x1200;
-/// First byte of static-data emission.
+/// Lowest address the static-data region may start at. Data sits here
+/// when the code fits below it, and word-aligned just above the code
+/// otherwise — the entry prologue seeds globals at run time, so an
+/// overlapping data region would overwrite the code it runs from.
 pub const data_base: u16 = 0x2000;
 /// Upper bound (exclusive) of the static-data region — and of the whole
 /// program image. Code, the interned string pool, and data globals all
@@ -130,6 +133,20 @@ pub const Relocation = struct {
     target_offset: usize,
 };
 
+/// A 2-byte address slot naming a data global, recorded so the link
+/// step can shift it when the data region sits above the code.
+///
+/// Emission assigns every data global a provisional address from
+/// `data_base`; `compile` resolves the real origin once the code length
+/// is known and adds the difference here. A program whose code fits
+/// below `data_base` shifts by zero, leaving these slots untouched.
+pub const DataPatch = struct {
+    /// Bank holding the patch site, or `null` for the base image.
+    bank: ?u8,
+    /// Byte offset of the 2-byte address slot within that buffer.
+    code_offset: usize,
+};
+
 /// One symbol's relocatable code, sliced out of the emitted buffers.
 pub const Fragment = object.Fragment;
 
@@ -171,12 +188,27 @@ const PendingLine = struct {
     span_start: u32,
 };
 
-/// One string pointer inside a baked global: the absolute image
-/// offset of its 2-byte slot, and the interned string whose resolved
-/// address goes there.
+/// One string pointer inside a baked global: the image offset of its
+/// 2-byte slot, and the interned string whose resolved address goes
+/// there.
 const BakeStrPatch = struct {
     image_offset: usize,
     string_id: usize,
+    /// `true` when the slot sits in the static-data region, so it moves
+    /// with that region. An `@addr`-pinned global names an address the
+    /// program chose, which never moves.
+    relocatable: bool,
+};
+
+/// A `bake`-initialized global's serialized bytes and where they land
+/// in the image.
+const BakeInit = struct {
+    /// Provisional image address, before the data region is placed.
+    addr: u16,
+    /// `true` when the global sits in the static-data region; see
+    /// `BakeStrPatch.relocatable`.
+    relocatable: bool,
+    bytes: []const u8,
 };
 
 /// Element type and length of a def's fixed-array return type.
@@ -350,6 +382,8 @@ pub fn compile(
         .current_bank = null,
         .strings = .empty,
         .string_patches = .empty,
+        .data_patches = .empty,
+        .data_shift = 0,
         .checked = checked,
         .enum_decls = .{},
         .struct_decls = .{},
@@ -376,7 +410,7 @@ pub fn compile(
         .loop_stack = .empty,
         .diagnostics = &diagnostics,
         .optimize = opts.optimize,
-        .bake_inits = .{},
+        .bake_inits = .empty,
         .bake_str_patches = .empty,
         .global_inits = .empty,
         .global_destructures = .empty,
@@ -405,6 +439,7 @@ pub fn compile(
     defer emitter.lambda_patches.deinit(allocator);
     defer emitter.strings.deinit(allocator);
     defer emitter.string_patches.deinit(allocator);
+    defer emitter.data_patches.deinit(allocator);
     defer emitter.block_stack.deinit(allocator);
     defer emitter.loop_stack.deinit(allocator);
     defer emitter.interrupt_defs.deinit(allocator);
@@ -416,14 +451,29 @@ pub fn compile(
 
     try emitter.emitProgram(checked.program, opts.entry_name);
 
+    // Place the static-data region. Emission assigned every data global
+    // a provisional address counting up from `data_base`; the code buffer
+    // (code + interned string pool) counts up from `code_base` and its
+    // length isn't known until here. Code that reaches past `data_base`
+    // pushes the data region above it — without this the entry prologue's
+    // global stores would overwrite the code they run from. A program
+    // whose code fits below `data_base` shifts by zero and keeps the
+    // layout `isa.md` §3.1 describes.
+    // @as: widen the u16 code base to usize for the byte-length math.
+    const code_top: usize = @as(usize, code_base) + emitter.code.items.len;
+    // Word-align so a 16-bit global never straddles the boundary.
+    // @as: widen the u16 data base for the byte-length math.
+    const data_origin: usize = @max(@as(usize, data_base), std.mem.alignForward(usize, code_top, 2));
+    const data_shift: usize = data_origin - data_base;
+
     // Reject an image that overruns the addressable ceiling before
     // assembling it — the address narrowing during emission clamped
-    // (never panicked), so the size is meaningful here. The code buffer
-    // (code + interned string pool) and the data globals both grow toward
-    // `data_region_end`; past it nothing downstream (heap, IO page) has
-    // room.
-    // @as: widen the u16 bases to usize for the byte-length math.
-    const image_top: usize = @max(@as(usize, code_base) + emitter.code.items.len, @as(usize, emitter.data_cursor));
+    // (never panicked), so the size is meaningful here. Both regions grow
+    // toward `data_region_end`; past it nothing downstream (heap, IO
+    // page) has room. This is the only bound that sees the final code
+    // length, so it is what keeps the two regions from overlapping.
+    // @as: widen the u16 cursor so the shifted top can exceed 64 KiB and still be compared.
+    const image_top: usize = @max(code_top, @as(usize, emitter.data_cursor) + data_shift);
     // A `@bank` def's code lives in a separate 16 KiB window buffer; the
     // archive would silently truncate one that overran it (and the
     // address clamp above hides the spilled jump targets), so reject it.
@@ -446,16 +496,19 @@ pub fn compile(
         };
     }
 
+    // Safe to narrow the shifted addresses now that the ceiling gate
+    // above has bounded them.
+    if (data_shift > 0) try emitter.shiftDataRegion(data_shift);
+
     // Build base image: zeros from 0x0000 up to `code_base`, then
     // the emitted code. The static-data region gets folded in only
     // when at least one global carries `bake`-init bytes — without
     // bake initializers the runtime sees zero-filled RAM at boot
     // for free, so we keep images small for plain programs.
-    // @as: widen u16 code_base / data_cursor to usize for the byte-length math (image stays ≤ 64 KiB by ISA).
-    const code_end: usize = @as(usize, code_base) + emitter.code.items.len;
-    const has_bake_inits = emitter.bake_inits.count() > 0;
-    const data_end: usize = if (has_bake_inits) emitter.data_cursor else 0;
-    const total_image_bytes: usize = @max(code_end, data_end);
+    const has_bake_inits = emitter.bake_inits.items.len > 0;
+    // @as: same widening as `image_top` above.
+    const data_end: usize = if (has_bake_inits) @as(usize, emitter.data_cursor) + data_shift else 0;
+    const total_image_bytes: usize = @max(code_top, data_end);
     var base_image = try allocator.alloc(u8, total_image_bytes);
     errdefer allocator.free(base_image);
     @memset(base_image, 0);
@@ -463,19 +516,19 @@ pub fn compile(
     // Write each `bake` global's serialized bytes into the image
     // at its allocated address. Globals without a bake initializer
     // leave the data region at zero (their existing behavior).
-    var bake_it = emitter.bake_inits.iterator();
-    while (bake_it.next()) |entry| {
-        const addr: usize = entry.key_ptr.*;
-        const bytes = entry.value_ptr.*;
-        @memcpy(base_image[addr..][0..bytes.len], bytes);
+    for (emitter.bake_inits.items) |init| {
+        // @as: widen the u16 address to index the image buffer.
+        const addr: usize = @as(usize, init.addr) + if (init.relocatable) data_shift else 0;
+        @memcpy(base_image[addr..][0..init.bytes.len], init.bytes);
     }
     // The string pool laid out during `emitProgram`, so a baked
     // `str`'s pointer slot can now take its real address.
     for (emitter.bake_str_patches.items) |p| {
         const addr = emitter.strings.items[p.string_id].ref.addr();
+        const at = p.image_offset + if (p.relocatable) data_shift else 0;
         // safety: u16 → 2 LE bytes; byte-mask casts.
-        base_image[p.image_offset] = @intCast(addr & 0xFF);
-        base_image[p.image_offset + 1] = @intCast(addr >> 8);
+        base_image[at] = @intCast(addr & 0xFF);
+        base_image[at + 1] = @intCast(addr >> 8);
     }
 
     const debug_blob: ?[]u8 = if (opts.debug_symbols)
@@ -488,8 +541,8 @@ pub fn compile(
     // `data_cursor`) AND past the data-global region. Pinning it at
     // `data_cursor` alone let `alloc` hand out addresses inside the live
     // string literals, so a concat's copy aliased its own source.
-    // @as: code_end / data_cursor are both ≤ 64 KiB by ISA; the max fits u16.
-    const heap_base: u16 = @intCast(@max(code_end, @as(usize, emitter.data_cursor)));
+    // @as: both are ≤ 64 KiB by the `image_top` gate above; the max fits u16.
+    const heap_base: u16 = @intCast(@max(code_top, @as(usize, emitter.data_cursor) + data_shift));
     const image = try buildArchive(allocator, base_image, code_base, heap_base, &emitter.banks, debug_blob);
     allocator.free(base_image);
 
@@ -864,6 +917,12 @@ pub const Emitter = struct {
     /// Interned string pool + patches resolved at end-of-codegen.
     strings: std.ArrayList(InternedString),
     string_patches: std.ArrayList(StringPatch),
+    /// Address slots naming data globals, shifted by the link step.
+    data_patches: std.ArrayList(DataPatch),
+    /// Bytes the data region moved above `data_base`, once the link step
+    /// has placed it. Fragment extraction subtracts it to recover the
+    /// provisional addresses a later build re-shifts by its own amount.
+    data_shift: usize,
     /// Read-only view into the typechecker's per-expr type map.
     /// Drives type-aware lowering.
     checked: *const CheckedProgram,
@@ -930,13 +989,14 @@ pub const Emitter = struct {
     /// Active build mode. Drives `debug_assert` elision and
     /// overflow trap insertion.
     optimize: Optimize,
-    /// Per-global init bytes from the `bake` evaluator, keyed by
-    /// data-region address. Written into the base image at
-    /// `compile()` so the runtime sees baked values at boot.
-    bake_inits: std.AutoHashMapUnmanaged(u16, []const u8),
+    /// Per-global init bytes from the `bake` evaluator. Written into
+    /// the base image at `compile()`, once the data region is placed,
+    /// so the runtime sees baked values at boot.
+    bake_inits: std.ArrayList(BakeInit),
     /// String pointers inside baked values, resolved after the pool
-    /// lays out. Each entry names an absolute image offset and the
-    /// interned string whose address belongs there.
+    /// lays out. Each entry names an image offset — provisional while
+    /// the global sits in the data region — and the interned string
+    /// whose address belongs there.
     bake_str_patches: std.ArrayList(BakeStrPatch),
     /// Non-`bake` top-level initializers, emitted as stores at entry
     /// startup (declaration order). See `GlobalInit`.
@@ -1930,6 +1990,33 @@ pub const Emitter = struct {
         };
     }
 
+    /// Move every static-data global up by `shift` bytes, once the code
+    /// length is known. Rewrites both the address slots recorded during
+    /// emission and the addresses the debug section reports, so the two
+    /// agree on the region's final home.
+    fn shiftDataRegion(self: *Emitter, shift: usize) !void {
+        self.data_shift = shift;
+        for (self.data_patches.items) |p| {
+            const buf: []u8 = if (p.bank) |b|
+                if (self.banks.getPtr(b)) |bl| bl.items else continue
+            else
+                self.code.items;
+            // The slot's own bytes are the provisional address, so the
+            // shift needs no second copy of it for the recording site to
+            // keep in step with.
+            const slot = buf[p.code_offset..][0..2];
+            // @as: widen for the addition; `image_top` bounded the sum to u16.
+            const moved = @as(usize, std.mem.readInt(u16, slot, .little)) + shift;
+            std.mem.writeInt(u16, slot, @intCast(moved), .little);
+        }
+        var it = self.globals.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.placement != .data) continue;
+            // @as: same bound as above.
+            entry.value_ptr.address = @intCast(@as(usize, entry.value_ptr.address) + shift);
+        }
+    }
+
     /// Module id owning a fused-source offset, or `0` without a graph.
     /// Record the byte range `label`'s emission occupied, so the
     /// build cache can reuse it without re-emitting the body.
@@ -2186,11 +2273,11 @@ pub const Emitter = struct {
         try isa.movRegToReg(self, Reg.r5, Reg.r2); // preserve a fixed return's high word
         try isa.movRegToReg(self, Reg.flg, Reg.r6); // save flg (incl. I bit)
         try isa.sei(self);
-        try isa.movAddrToReg(self, bank_save_ptr, Reg.r4);
+        _ = try isa.movAddrToReg(self, bank_save_ptr, Reg.r4);
         try isa.movRegOffsetToReg(self, Reg.r4, bank_save_mb_ofs, Reg.r5); // saved mb
         try isa.movRegOffsetToReg(self, Reg.r4, bank_save_ret_ofs, Reg.r3); // caller return-ip
         try isa.addImmToReg(self, bank_save_slot_bytes, Reg.r4);
-        try isa.movRegToAddr(self, Reg.r4, bank_save_ptr);
+        _ = try isa.movRegToAddr(self, Reg.r4, bank_save_ptr);
         try isa.movRegToReg(self, Reg.r5, Reg.mb); // restore caller bank
         try isa.movRegToReg(self, Reg.r2, Reg.r5); // restore the return high word
         // `rti` pops flg, then fp, then return-ip — push them reversed
@@ -2220,12 +2307,12 @@ pub const Emitter = struct {
         try isa.popReg(self, Reg.r1); // target address
         try isa.popReg(self, Reg.r2); // target bank; sp now at arg0
         // Park (caller mb, caller return-ip) on the save-stack.
-        try isa.movAddrToReg(self, bank_save_ptr, Reg.r4);
+        _ = try isa.movAddrToReg(self, bank_save_ptr, Reg.r4);
         try isa.subImmFromReg(self, bank_save_slot_bytes, Reg.r4);
         try isa.movRegToReg(self, Reg.mb, Reg.r5);
         try isa.movRegToRegOffset(self, Reg.r5, Reg.r4, bank_save_mb_ofs);
         try isa.movRegToRegOffset(self, Reg.r3, Reg.r4, bank_save_ret_ofs);
-        try isa.movRegToAddr(self, Reg.r4, bank_save_ptr);
+        _ = try isa.movRegToAddr(self, Reg.r4, bank_save_ptr);
         try isa.movRegToReg(self, Reg.r2, Reg.mb); // switch to target bank
         // Rebuild the callee's frame directly below arg0: (caller fp,
         // __bank_return) become its (old_fp, return-ip), so its `ret`

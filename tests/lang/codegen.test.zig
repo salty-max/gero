@@ -2597,6 +2597,100 @@ test "codegen: zero-page overflow emits E_CODEGEN_ZP_OVERFLOW" {
     try std.testing.expect(found);
 }
 
+fn compileLarge(source: []const u8) !gero.lang.Compiled {
+    var stream = try gero.lang.tokenize(alloc, source);
+    defer stream.deinit();
+    var tree = try gero.lang.parse(alloc, source, stream);
+    defer tree.deinit();
+    try std.testing.expectEqual(@as(usize, 0), tree.errors.len);
+    var checked = try gero.lang.typecheck(alloc, source, &tree.program);
+    defer checked.deinit();
+    try std.testing.expectEqual(@as(usize, 0), checked.diagnostics.len);
+    return gero.lang.compile(alloc, source, &checked, .{});
+}
+
+test "codegen: a data global survives code emitted past `data_base`" {
+    // Globals are seeded by stores in the entry prologue, so a data
+    // region left at `data_base` while the code runs past it has the
+    // program overwrite its own instructions at startup.
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(alloc);
+    try source.appendSlice(alloc, "let mark: u16 = 0\n");
+    try util.appendFillerDefs(alloc, &source, util.filler_past_data_base);
+    try source.appendSlice(alloc, "def main()\n");
+    try util.appendFillerCalls(alloc, &source, util.filler_past_data_base);
+    try source.appendSlice(alloc, "  mark = $BEEF\n  let seen: u16 = mark\nend\n");
+
+    var compiled = try compileLarge(source.items);
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    const loaded = try gero.vm.parseGx(compiled.image);
+    // The premise of the test: this program's code really does run past
+    // where the data region would otherwise sit.
+    try std.testing.expect(loaded.header.heap_base > gero.lang.codegen.data_base);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    // `seen` is main's first local: the global read back after the write.
+    try std.testing.expectEqual(@as(u16, 0xBEEF), vm.mmap.readWord(frameSlot(1)));
+}
+
+test "codegen: a banked def reaches a data global that moved above the code" {
+    // A `@bank` def's global loads sit in its own window buffer, so the
+    // shift has to reach those address slots too, not just the base
+    // image's.
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(alloc);
+    try source.appendSlice(alloc,
+        \\let mark: u16 = 0
+        \\@bank 2
+        \\def show() -> i16
+        \\  return mark as i16
+        \\end
+        \\
+    );
+    try util.appendFillerDefs(alloc, &source, util.filler_past_data_base);
+    try source.appendSlice(alloc, "def main()\n");
+    try util.appendFillerCalls(alloc, &source, util.filler_past_data_base);
+    try source.appendSlice(alloc, "  mark = 3054\n  print show()\nend\n");
+
+    var compiled = try compileLarge(source.items);
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try std.testing.expect(loaded.header.heap_base > gero.lang.codegen.data_base);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings("3054\n", writer.written());
+}
+
+test "codegen: code short of `data_base` leaves the data region where it was" {
+    // The shift is conditional, so a program that fits keeps the layout
+    // `isa.md` §3.1 describes — one u16 global at `data_base`.
+    var compiled = try compileSource(
+        \\let mark: u16 = 0
+        \\def main()
+        \\  mark = $BEEF
+        \\end
+    );
+    defer compiled.deinit();
+    const loaded = try gero.vm.parseGx(compiled.image);
+    try std.testing.expectEqual(@as(u16, gero.lang.codegen.data_base + 2), loaded.header.heap_base);
+}
+
 test "codegen: an over-large image emits E_CODEGEN_IMAGE_OVERFLOW (no panic)" {
     // ~5000 `print`s of distinct strings push the code buffer + string
     // pool past the addressable ceiling (0xFE40); the address narrowing

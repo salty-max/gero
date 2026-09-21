@@ -497,10 +497,12 @@ pub fn loadHighFromFrame(self: *Emitter, e: *const ast.Expr, ofs: i8) !void {
     try isa.movRegOffsetToReg(self, Reg.fp, ofs +| 2, Emitter.fixed_hi);
 }
 
-/// Same for an absolute address — globals and statics.
-pub fn loadHighFromAddr(self: *Emitter, e: *const ast.Expr, addr: u16) !void {
-    if (!isFixed(self, e)) return;
-    try isa.movAddrToReg(self, addr +% 2, Emitter.fixed_hi);
+/// Same for an absolute address — globals and statics. Returns the
+/// offset of the emitted address slot, or `null` when `e` is not a
+/// `fixed` and nothing was emitted.
+pub fn loadHighFromAddr(self: *Emitter, e: *const ast.Expr, addr: u16) !?usize {
+    if (!isFixed(self, e)) return null;
+    return try isa.movAddrToReg(self, addr +% 2, Emitter.fixed_hi);
 }
 
 /// Complete a frame-relative store of `e`: the scalar path has already
@@ -578,8 +580,9 @@ pub fn isFixedCompare(self: *const Emitter, b: ast.BinaryExpr) bool {
 
 /// Complete an absolute store of `e`: the scalar path has already
 /// written the low word from `acu`, so write the high word when the
-/// value is a `fixed`.
-pub fn storeHighToAddr(self: *Emitter, e: *const ast.Expr, addr: u16) !void {
-    if (!isFixed(self, e)) return;
-    try isa.movRegToAddr(self, Emitter.fixed_hi, addr +% 2);
+/// value is a `fixed`. Returns the offset of the emitted address slot,
+/// or `null` when nothing was emitted.
+pub fn storeHighToAddr(self: *Emitter, e: *const ast.Expr, addr: u16) !?usize {
+    if (!isFixed(self, e)) return null;
+    return try isa.movRegToAddr(self, Emitter.fixed_hi, addr +% 2);
 }

@@ -4,6 +4,7 @@ const codegen = @import("../codegen.zig");
 const opcodes = @import("opcodes.zig");
 const isa = @import("isa.zig");
 const lambda = @import("lambda.zig");
+const globals = @import("globals.zig");
 
 const Emitter = codegen.Emitter;
 const Op = opcodes.Op;
@@ -200,7 +201,7 @@ pub fn emitAddrOf(self: *Emitter, e: *const ast.Expr) !void {
         return;
     }
     if (self.globals.get(name)) |g| {
-        try isa.movImmToReg(self, g.address, Reg.acu);
+        try globals.emitGlobalAddrToReg(self, g, Reg.acu);
         return;
     }
     try self.unsupported(e.span(), "`addr_of` target not in scope");

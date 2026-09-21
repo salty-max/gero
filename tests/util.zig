@@ -13,6 +13,39 @@ pub fn stackSlot(n: u16) u16 {
     return gero.vm.sp_boot -% (2 * n);
 }
 
+/// Append `count` no-op defs to `source`, each writing to low RAM so
+/// nothing in the static-data region is touched. Calling them all from
+/// `main` is how a spec pushes the code buffer past a chosen size.
+pub fn appendFillerDefs(allocator: std.mem.Allocator, source: *std.ArrayList(u8), count: usize) !void {
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const def = try std.fmt.allocPrint(allocator,
+            \\def f{d}(a: u16, b: u16, c: u16)
+            \\  mem.write_u16($0300, a + b + c)
+            \\  mem.write_u16($0302, a)
+            \\  mem.write_u16($0304, b)
+            \\end
+            \\
+        , .{i});
+        defer allocator.free(def);
+        try source.appendSlice(allocator, def);
+    }
+}
+
+/// Append one call per def `appendFillerDefs` wrote.
+pub fn appendFillerCalls(allocator: std.mem.Allocator, source: *std.ArrayList(u8), count: usize) !void {
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const call = try std.fmt.allocPrint(allocator, "  f{d}(1, 2, 3)\n", .{i});
+        defer allocator.free(call);
+        try source.appendSlice(allocator, call);
+    }
+}
+
+/// Enough filler defs to carry the code buffer past `data_base`, so the
+/// static-data region has to move above it.
+pub const filler_past_data_base = 60;
+
 /// The path a fixture's file will canonicalize to.
 ///
 /// This mirrors the resolver's own rule, and has to: an overlay is

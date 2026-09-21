@@ -7,9 +7,19 @@ const Op = opcodes.Op;
 
 /// `mov imm16, reg` (0x10) — `reg ← imm`.
 pub fn movImmToReg(self: *Emitter, imm: u16, reg: u8) !void {
+    _ = try movImmToRegSlot(self, imm, reg);
+}
+
+/// `mov imm16, reg` (0x10), returning the offset of the emitted 2-byte
+/// immediate slot. Callers loading a data global's address use this so
+/// the link step can back-patch the slot when the data region moves
+/// above the code.
+pub fn movImmToRegSlot(self: *Emitter, imm: u16, reg: u8) !usize {
     try self.emitByte(Op.mov_imm16_reg);
+    const slot = try self.currentOffset();
     try self.emitU16Le(imm);
     try self.emitByte(reg);
+    return slot;
 }
 
 /// `mov src, dst` (0x11) — `dst ← src`.
@@ -38,17 +48,25 @@ pub fn movRegToRegOffset(self: *Emitter, src: u8, base: u8, ofs: i8) !void {
 }
 
 /// `mov [addr], reg` (0x13) — load 16-bit word from addr.
-pub fn movAddrToReg(self: *Emitter, addr: u16, dst: u8) !void {
+/// Returns the offset of the emitted 2-byte address slot, which the
+/// link step back-patches when the data region moves above the code.
+pub fn movAddrToReg(self: *Emitter, addr: u16, dst: u8) !usize {
     try self.emitByte(Op.mov_addr_to_reg);
+    const slot = try self.currentOffset();
     try self.emitU16Le(addr);
     try self.emitByte(dst);
+    return slot;
 }
 
 /// `mov src, [addr]` (0x12) — store 16-bit word to addr.
-pub fn movRegToAddr(self: *Emitter, src: u8, addr: u16) !void {
+/// Returns the offset of the emitted 2-byte address slot, which the
+/// link step back-patches when the data region moves above the code.
+pub fn movRegToAddr(self: *Emitter, src: u8, addr: u16) !usize {
     try self.emitByte(Op.mov_reg_to_addr);
     try self.emitByte(src);
+    const slot = try self.currentOffset();
     try self.emitU16Le(addr);
+    return slot;
 }
 
 /// `mov imm16, [addr]` (0x14) — store a 16-bit immediate to addr.
@@ -79,10 +97,14 @@ pub fn movRegToZp(self: *Emitter, src: u8, zp: u8) !void {
 
 /// `mov8 [addr], reg` (0x22) — load 1-byte from addr (zero-
 /// extend into the 16-bit dst).
-pub fn mov8AddrToReg(self: *Emitter, addr: u16, dst: u8) !void {
+/// Returns the offset of the emitted 2-byte address slot, which the
+/// link step back-patches when the data region moves above the code.
+pub fn mov8AddrToReg(self: *Emitter, addr: u16, dst: u8) !usize {
     try self.emitByte(Op.mov8_addr_to_reg);
+    const slot = try self.currentOffset();
     try self.emitU16Le(addr);
     try self.emitByte(dst);
+    return slot;
 }
 
 /// `mov8 [zp], reg` (0x29) — load 1-byte from zp slot.
@@ -95,10 +117,14 @@ pub fn mov8ZpToReg(self: *Emitter, zp: u8, dst: u8) !void {
 /// `movl reg, [addr]` (0x27) — store reg's low byte to addr.
 /// Used for 1-byte global stores so neighboring bytes stay
 /// untouched (critical for MMIO).
-pub fn movlRegToAddr(self: *Emitter, src: u8, addr: u16) !void {
+/// Returns the offset of the emitted 2-byte address slot, which the
+/// link step back-patches when the data region moves above the code.
+pub fn movlRegToAddr(self: *Emitter, src: u8, addr: u16) !usize {
     try self.emitByte(Op.movl_reg_to_addr);
     try self.emitByte(src);
+    const slot = try self.currentOffset();
     try self.emitU16Le(addr);
+    return slot;
 }
 
 /// `movl reg, [zp]` (0x2B) — store reg's low byte to zp slot.
