@@ -5,6 +5,36 @@ All notable changes to gero are documented here. The format follows
 project will adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward.
 
+## v0.5.5 - 2026-09-21
+
+The release where a program stops overwriting itself.
+
+Two bugs of the same shape: the compiler set aside a region, something
+else grew into it, and nothing said so. Code and static data grow
+toward each other from `0x1200` and `0x2000`, and nothing checked they
+stayed apart. An `@inline` expansion's argument slots come out of a
+frame the caller reserves up front, and that reservation counted the
+wrong things. Either way the program's first act was to write over
+memory that was already live, and either way what came back was a
+plausible number rather than a crash.
+
+What made them expensive is that neither holds still. The code/data
+overlap lands on whatever instruction sits at the boundary, so adding a
+function anywhere moves the symptom or hides it — one observed form was
+a call-site cleanup `add $000E, sp` executing as `add $000E, ip`, the
+register operand replaced by the low byte of a `$8000` constant. The
+inline one is correct at a single call site and only goes wrong from the
+second expansion on. Both surfaced through a console's API, which is
+large enough to cross `0x2000` and inlines most of what it exports.
+
+Neither fix changes what a program that already fit compiles to.
+
+### Fixed
+
+- A program whose code ran past `0x2000` overwrote itself at startup. Globals are seeded by stores in the entry prologue rather than baked into the image, so crossing `0x2000` meant writing the global initializers over the instructions they ran from — with no diagnostic at any stage. Static data now sits word-aligned above the code when the code reaches past `0x2000`, back-patched at link the way the interned string pool already is, and the bound that rejects an over-large image is the one that sees the final code length, so the two regions cannot overlap undetected. A program whose code fits below `0x2000` compiles to exactly the same bytes as before. Because a global's address now depends on the code length, a cached fragment carries the provisional address and is re-resolved by the build that splices it: `Fragment` gained a `data` field and the fragment-file format version moved to 4, so entries written by an earlier build are discarded rather than reused.
+- Calling an `@inline` def that has a default parameter more than once produced the wrong value at the second call site, silently and as a plausible-looking number. The caller's prologue reserves the frame every expansion splices into, and the expander binds one slot per parameter — a call that leaves a trailing default out still has it filled in first. The reservation counted the arguments the call wrote, so a short call reserved nothing for the default and the next expansion's slots landed on live stack. The count now follows the parameter list, and a variadic call that runs past it still counts every argument.
+- `lang.md` numbered two §4.6 subsections `4.6.1` and two `4.6.3`. Recursion, variadics, defaults and method chaining each shift up one, so variadics are now §4.6.3 and default parameters §4.6.4.
+
 ## v0.5.4 - 2026-09-20
 
 The release where a host can drive a program's functions itself.
