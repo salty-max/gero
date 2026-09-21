@@ -774,7 +774,7 @@ pub const Param = struct {
     /// `E_TYPE_PARAM_UNANNOTATED` — there is no call-site inference
     /// (§3.5).
     type_ann: ?*TypeAnn,
-    /// `true` for the variadic last parameter (`name: ...`, §4.6.2).
+    /// `true` for the variadic last parameter (`name: ...`, §4.6.3).
     /// Only the last param of a list may be variadic; the parser
     /// enforces that.
     variadic: bool = false,

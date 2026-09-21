@@ -303,7 +303,7 @@ pub fn checkMethodCall(
         }
     }
     // A variadic method pivots to the homogeneous-args / arity rules
-    // (§4.6.2) — it's statically dispatched to its owner, so route here
+    // (§4.6.3) — it's statically dispatched to its owner, so route here
     // before the fixed-arity check below.
     if (class_check.isVariadicDef(method.*)) {
         return try calls.checkVariadicMethodCall(self, m, method, self.lexeme(hit.owner.name));

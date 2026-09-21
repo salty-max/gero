@@ -196,7 +196,7 @@ pub const Token = struct {
         dot_dot,
         /// `..=` — inclusive range.
         dot_dot_eq,
-        /// `...` — variadic-parameter marker (§4.6.2).
+        /// `...` — variadic-parameter marker (§4.6.3).
         dot_dot_dot,
 
         // -- end of stream -----------------------------------

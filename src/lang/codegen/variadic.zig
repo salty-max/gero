@@ -1,4 +1,4 @@
-// Variadic `def` monomorphization (§4.6.2). A variadic def has no
+// Variadic `def` monomorphization (§4.6.3). A variadic def has no
 // concrete arity at its declaration — each call site fixes one. The
 // trailing `args` slot is a tuple of the supplied values; there is no
 // runtime length field. So codegen emits one specialization per distinct
@@ -26,7 +26,7 @@ const Reg = opcodes.Reg;
 pub const Active = struct {
     /// Name of the trailing variadic parameter (its `args` slot).
     param: []const u8,
-    /// Element type `T` — every vararg shares it (§4.6.2). `null` only
+    /// Element type `T` — every vararg shares it (§4.6.3). `null` only
     /// for an arity-0 specialization, where no vararg pins a type.
     elem: ?*const Type,
     /// This specialization's vararg count.

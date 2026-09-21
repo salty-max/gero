@@ -328,7 +328,7 @@ pub fn emitFieldExpr(self: *Emitter, f: ast.FieldExpr, e: *const ast.Expr) !void
 fn emitTupleIndexExpr(self: *Emitter, ti: ast.TupleIndexExpr) !void {
     // `args.N` inside a variadic body reads a word-strided block (each
     // vararg was pushed as a full word), not the byte-packed tuple
-    // layout — intercept before the generic path (§4.6.2).
+    // layout — intercept before the generic path (§4.6.3).
     if (variadic.isArgsForward(self, ti.receiver)) {
         try variadic.emitArgsIndex(self, ti.receiver, ti.index);
         return;
@@ -978,7 +978,7 @@ pub fn emitShortCircuitBool(self: *Emitter, b: ast.BinaryExpr) !void {
 /// stdlib `mem.X(...)` shape dispatches through the builtin lookup.
 pub fn emitMethodCall(self: *Emitter, call: ast.MethodCallExpr, e: *const ast.Expr) !void {
     // Each class-method path below fills in the arguments the call left
-    // out, so the emitters downstream see one per parameter (§4.6.3).
+    // out, so the emitters downstream see one per parameter (§4.6.4).
     var m = call;
     // `super.method(args)` — direct call to parent's method,
     // bypassing the vtable.
@@ -986,7 +986,7 @@ pub fn emitMethodCall(self: *Emitter, call: ast.MethodCallExpr, e: *const ast.Ex
         if (self.current_class_name) |cname| {
             const mname = self.source[m.method.start..m.method.end];
             // A variadic ancestor method is non-virtual — static-dispatch
-            // to its `Owner.method$N` (§4.6.2). `resolveMethodOwner` skips
+            // to its `Owner.method$N` (§4.6.3). `resolveMethodOwner` skips
             // `cname` (which can't redeclare a variadic method) to the
             // ancestor that owns it, matching `super` semantics.
             if (class.resolveMethodOwner(self, cname, mname)) |res| {
@@ -1008,7 +1008,7 @@ pub fn emitMethodCall(self: *Emitter, call: ast.MethodCallExpr, e: *const ast.Ex
         try self.unsupported(m.span, "`super.method` used outside a method body");
         return;
     }
-    // Class-typed receiver. A variadic method is non-virtual (§4.6.2):
+    // Class-typed receiver. A variadic method is non-virtual (§4.6.3):
     // resolve its owner + this site's arity and static-dispatch to the
     // `Owner.method$N` specialization. Everything else is vtable dispatch.
     if (self.classNameOf(m.receiver)) |cname| {
@@ -1133,7 +1133,7 @@ pub fn emitMethodCall(self: *Emitter, call: ast.MethodCallExpr, e: *const ast.Ex
 pub fn emitCall(self: *Emitter, call: ast.CallExpr) !void {
     // Fill in any trailing argument the call left out, so every path
     // below — pushing, cleanup, arity — sees one argument per
-    // parameter and none of them has to know defaults exist (§4.6.3).
+    // parameter and none of them has to know defaults exist (§4.6.4).
     var c = call;
     c.args = try argsWithDefaults(self, call);
 
@@ -1231,7 +1231,7 @@ pub fn emitCall(self: *Emitter, call: ast.CallExpr) !void {
     const callee_name = self.resolveImportAlias(self.source[c.callee.ident.span.start..c.callee.ident.span.end]);
     // A variadic call targets the `name$N` specialization for this
     // site's arity; metadata (bank, return shape) stays keyed by the
-    // bare name, shared across specializations (§4.6.2).
+    // bare name, shared across specializations (§4.6.3).
     const dup = if (self.variadic_decls.get(callee_name)) |decl| blk: {
         // @as: arity = total args − fixed params; non-negative (the
         // typechecker enforces the fixed-arg minimum) and frame-bounded.
@@ -1387,7 +1387,7 @@ fn argsWithDefaults(self: *Emitter, c: ast.CallExpr) ![]*ast.Expr {
 /// skipping the leading `self` those carry and the args do not.
 ///
 /// Resolution is static — an override's own defaults never apply to a
-/// call written against the parent's type (§4.6.3).
+/// call written against the parent's type (§4.6.4).
 fn methodArgsWithDefaults(self: *Emitter, method: *const ast.DefDecl, args: []*ast.Expr) ![]*ast.Expr {
     const has_self = method.params.len > 0 and
         std.mem.eql(u8, self.source[method.params[0].name.start..method.params[0].name.end], "self");

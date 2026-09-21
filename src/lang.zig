@@ -403,7 +403,7 @@ pub const internal = struct {
         pub const fields = tc_fields;
         /// Operator type rules (§4.2.1) + `as T` cast checking.
         pub const operators = tc_operators;
-        /// Call type-checking: regular, assert builtins, variadic (§4.6.2), bake (§3.8).
+        /// Call type-checking: regular, assert builtins, variadic (§4.6.3), bake (§3.8).
         pub const calls = tc_calls;
         /// Diagnostic emission + symbol-suggestion helpers.
         pub const diagnostics = tc_diagnostics;

@@ -9744,7 +9744,7 @@ test "spec: every documented language feature compiles" {
         \\end
         \\
         },
-        .{ .name = "4.6.2 variadics", .src =
+        .{ .name = "4.6.3 variadics", .src =
         \\def first(args: ...) -> i16
         \\  return args.0
         \\end
@@ -9753,7 +9753,7 @@ test "spec: every documented language feature compiles" {
         \\end
         \\
         },
-        .{ .name = "4.6.3 method chaining", .src =
+        .{ .name = "4.6.5 method chaining", .src =
         \\class C
         \\  let v: i16
         \\  def init(self)

@@ -82,7 +82,7 @@ the statements in `(do … end)` still go on separate lines.
 
 The one exception lives outside the bracket families: a `.` at the
 start of the next line continues the postfix chain on the previous
-expression (§4.6.3).
+expression (§4.6.4).
 
 A statement also ends against the keyword that closes the block it
 sits in — `end`, `else`, `elif`, `until`, `case` — so a short block
@@ -795,7 +795,7 @@ Rules:
   is `E_TYPE_RETURN_FROM_VOID`.
 - **`self` needs no annotation.** Its type is the class the method is
   declared in — known from context, not from a call site.
-- **A variadic parameter** (`name: ...`, §4.6.2) carries its form
+- **A variadic parameter** (`name: ...`, §4.6.3) carries its form
   rather than a type.
 
 **Why parameters are not inferred from call sites.** It would make a
@@ -1930,7 +1930,7 @@ Only the postfix forms are affected. Keyword-introduced parentheses —
 A detached bracket is a syntax error rather than a silent reinterpretation
 in every position where a call was plainly intended.
 
-#### 4.6.1 Recursion
+#### 4.6.2 Recursion
 
 Every call pushes a frame, including `return f(args)` in tail
 position. There is no tail-call reuse. Deep recursion will overflow
@@ -1947,7 +1947,7 @@ def count_down(n: i16)
 end
 ```
 
-#### 4.6.2 Variadic parameters
+#### 4.6.3 Variadic parameters
 
 The last parameter of a `def` may be variadic, spelled `args: ...`:
 
@@ -1991,7 +1991,7 @@ Restrictions:
 - A variadic **method** is non-virtual: not `@override` / `@abstract`,
   and not overridable.
 
-#### 4.6.3 Default parameters
+#### 4.6.4 Default parameters
 
 A trailing parameter may declare the value a call can leave out:
 
@@ -2015,7 +2015,7 @@ Rules:
   site**, as if the argument had been typed there.
 - It therefore cannot read the function's own parameters: they do not
   exist yet. `def f(a: i16, b: i16 = a)` is an error.
-- A variadic parameter takes no default (§4.6.2); it already accepts
+- A variadic parameter takes no default (§4.6.3); it already accepts
   zero arguments.
 
 Methods take defaults on the same terms, `@static` ones included.
@@ -2062,7 +2062,7 @@ Defaults cost nothing at runtime. The compiler emits the declared
 expression at each call that omits it, so `rect(10, 20)` compiles to
 exactly what `rect(10, 20, 8, 8, 7)` compiles to.
 
-#### 4.6.3 Method calls and chaining
+#### 4.6.5 Method calls and chaining
 
 Methods on classes (and stdlib helpers spelled as methods) call with
 dot notation:

@@ -22,7 +22,7 @@ const WalkError = error{OutOfMemory};
 /// return type, and the body in a fresh scope.
 ///
 /// A variadic `def` has no concrete element type at its declaration —
-/// `T` is pinned by call sites (§4.6.2). Its body walk is deferred to
+/// `T` is pinned by call sites (§4.6.3). Its body walk is deferred to
 /// `resolveDeferredVariadics`, run after the whole program is seen, so
 /// `args` binds to the unified `(T, …, T)` tuple rather than an
 /// untyped slot.
@@ -166,7 +166,7 @@ pub fn walkDefBody(
     try self.walkStatementSequence(d.body);
 }
 
-/// Pass 3: type-check deferred variadic bodies (§4.6.2). Each body
+/// Pass 3: type-check deferred variadic bodies (§4.6.3). Each body
 /// binds its trailing `args` to the whole-program `(T, …, T)` tuple
 /// pinned by call sites. A variadic body may itself call another
 /// variadic def, so discover those calls with diagnostics muted until
@@ -402,7 +402,7 @@ fn checkMethodAnnotations(
     }
 
     // A variadic method is non-virtual — it monomorphizes per call-site
-    // arity (§4.6.2) and a single vtable slot can't hold its N
+    // arity (§4.6.3) and a single vtable slot can't hold its N
     // specializations. So it can't be `@override`/`@abstract`, and it
     // can't share a name with an ancestor method (which would override).
     const is_variadic = isVariadicDef(m);
@@ -432,7 +432,7 @@ fn checkMethodAnnotations(
         if (is_variadic or isVariadicDef(pm.*)) {
             const msg = try std.fmt.allocPrint(
                 self.arena,
-                "method `{s}` collides with an ancestor method, but a variadic method is non-virtual and can't participate in overriding (§4.6.2)",
+                "method `{s}` collides with an ancestor method, but a variadic method is non-virtual and can't participate in overriding (§4.6.3)",
                 .{m_name},
             );
             try self.emitSpan("E_VAR_OVERRIDE", m.name, msg);

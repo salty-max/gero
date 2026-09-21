@@ -151,7 +151,7 @@ fn computeLayout(self: *Emitter, class_name: []const u8) !void {
 
     // Own methods — overrides reuse the parent's slot (same name
     // already in `method_slots`); brand-new methods append. A variadic
-    // method is non-virtual (§4.6.2): it monomorphizes per arity and
+    // method is non-virtual (§4.6.3): it monomorphizes per arity and
     // gets no vtable slot — it's reached only by static `Class.method$N`
     // dispatch, never through the vtable.
     const dup_class = try self.arena.dupe(u8, class_name);
@@ -220,7 +220,7 @@ pub fn emitClassMethods(self: *Emitter, program: *const ast.Program) !void {
 }
 
 /// Emit a variadic method's per-arity specializations under
-/// `Class.method$N` (§4.6.2) — the method analog of
+/// `Class.method$N` (§4.6.3) — the method analog of
 /// `variadic.emitSpecializations`, routed through `emitMethodAsDef` so
 /// each specialization keeps its class context (`self`, `super`).
 /// `base` is the `Class.method` label; the whole-program facts are keyed
@@ -726,7 +726,7 @@ pub fn variadicMethodArity(self: *Emitter, method: *const ast.DefDecl, n_args: u
 }
 
 /// Static-dispatch a variadic method call to `Owner.method$arity`
-/// (§4.6.2). A variadic method is non-virtual, so there's no vtable
+/// (§4.6.3). A variadic method is non-virtual, so there's no vtable
 /// slot — this mirrors the instance dispatch (spill receiver, push
 /// sret + args, reload + push self) but ends in a direct call to the
 /// arity specialization rather than a vtable-indexed `call_reg`.
@@ -823,7 +823,7 @@ pub fn emitSuperMethodCall(
     try isa.addImmToReg(self, 2 + arg_bytes, Reg.sp);
 }
 
-/// Static-dispatch `super.method(args)` for a variadic method (§4.6.2)
+/// Static-dispatch `super.method(args)` for a variadic method (§4.6.3)
 /// to `Owner.method$arity`. Mirrors `emitSuperMethodCall` (self is the
 /// stable `fp+4` param, no spill) but targets the arity specialization.
 pub fn emitSuperVariadicMethodCall(
