@@ -117,7 +117,7 @@ pub fn checkCall(self: *Checker, c: ast.CallExpr, hint: ?*const types.Type) Walk
         return try checkVariadicCall(self, c, decl, f);
     }
 
-    // A trailing parameter with a default may be left out (§4.6.3),
+    // A trailing parameter with a default may be left out (§4.6.4),
     // so the floor is the count that has none.
     const required = requiredArity(self, c.callee) orelse f.params.len;
     if (c.args.len < required or c.args.len > f.params.len) {
@@ -261,10 +261,10 @@ pub fn checkVariadicPosition(self: *Checker, d: ast.DefDecl) WalkError!void {
             return;
         }
     }
-    // A variadic def specializes per call-site arity (§4.6.2); `@inline`
+    // A variadic def specializes per call-site arity (§4.6.3); `@inline`
     // splices one shared body, which can't express a per-arity layout.
     if (is_variadic and annotations.hasAnnotation(self, d.annotations, "inline")) {
-        try self.emitSpan("E_VAR_INLINE", d.name, "a variadic function cannot be `@inline` — it already specializes per call-site arity (§4.6.2)");
+        try self.emitSpan("E_VAR_INLINE", d.name, "a variadic function cannot be `@inline` — it already specializes per call-site arity (§4.6.3)");
     }
 }
 
@@ -301,7 +301,7 @@ pub fn checkVariadicCall(
     // Variadic slot: all trailing args must share a type.
     const pivot = try checkVariadicSlot(self, c.args[fixed_count..]);
     // Fold this call's element type + arity into the callee's
-    // whole-program variadic facts (§4.6.2) so the body can be
+    // whole-program variadic facts (§4.6.3) so the body can be
     // type-checked once against `args: (T, …, T)` of the max arity.
     if (directCalleeName(self, c.callee)) |name| {
         const arity: u32 = @intCast(c.args.len - fixed_count);
@@ -310,7 +310,7 @@ pub fn checkVariadicCall(
     return f.ret;
 }
 
-/// Type-check the trailing variadic args for homogeneity (§4.6.2):
+/// Type-check the trailing variadic args for homogeneity (§4.6.3):
 /// every arg must share the first inferred element type. Returns that
 /// pivot type (`null` when no arg pins one). A divergent arg is
 /// `E_VAR_HETEROGENEOUS`.
@@ -337,7 +337,7 @@ fn checkVariadicSlot(self: *Checker, varargs: []const *ast.Expr) WalkError!?*con
     // Varargs are word-strided (each pushed as a full word); an inline
     // aggregate element doesn't fit that ABI. Reject it — the spec's
     // remedy for aggregate data is an explicit tuple / struct / `Vec`
-    // parameter, not a variadic element (§4.6.2).
+    // parameter, not a variadic element (§4.6.3).
     if (pivot) |p| {
         if (varargs.len > 0 and isAggregateElem(self, p)) {
             const s = try types.render(self.arena, p.*);
@@ -380,7 +380,7 @@ pub fn methodKey(self: *Checker, owner_name: []const u8, method_name: []const u8
     return std.fmt.allocPrint(self.arena, "{s}.{s}", .{ owner_name, method_name });
 }
 
-/// Type-check a variadic METHOD call `recv.m(args)` (§4.6.2). Mirrors
+/// Type-check a variadic METHOD call `recv.m(args)` (§4.6.3). Mirrors
 /// `checkVariadicCall` but skips the implicit `self` param when matching
 /// fixed args, and records facts under the owner-qualified key so the
 /// body + codegen monomorphize per arity. A variadic method is
@@ -434,7 +434,7 @@ fn methodReturnType(self: *Checker, method: *const ast.DefDecl) WalkError!?*cons
 }
 
 /// Fold one call site's `(elem, arity)` into the callee's whole-program
-/// variadic facts (§4.6.2). The element type unifies across call sites;
+/// variadic facts (§4.6.3). The element type unifies across call sites;
 /// a divergent type is reported through `E_VAR_INCONSISTENT_TYPE`.
 fn recordVariadic(
     self: *Checker,
@@ -520,7 +520,7 @@ fn directCalleeName(c: *const Checker, callee: *const ast.Expr) ?[]const u8 {
 }
 
 /// How many of `params` a call must supply: the count before the
-/// first one carrying a default (§4.6.3). Equal to `params.len` when
+/// first one carrying a default (§4.6.4). Equal to `params.len` when
 /// none does.
 pub fn requiredCount(params: []const ast.Param) usize {
     var n: usize = 0;

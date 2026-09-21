@@ -175,7 +175,7 @@ fn emitFormatCommon(
 /// elements contiguously, then run `format_runtime` over them.
 fn emitFormatForward(self: *Emitter, fmt: *const ast.Expr, tuple: *const ast.Expr, elems: []const *const types.Type) error{OutOfMemory}!void {
     const args_forward = variadic.isArgsForward(self, tuple);
-    // The forwarded count is this specialization's arity (§4.6.2), not
+    // The forwarded count is this specialization's arity (§4.6.3), not
     // the body's `args` type — that type is the whole-program *minimum*
     // arity, pinned for sound `args.N` indexing, which may be smaller.
     // A plain tuple value uses its own element count.

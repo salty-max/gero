@@ -2314,7 +2314,7 @@ test "typecheck: bake def calling another bake fn accepts" {
     );
 }
 
-// ---------- slice 7: variadic call validation (§4.6.2) ----------
+// ---------- slice 7: variadic call validation (§4.6.3) ----------
 
 test "typecheck: variadic call with homogeneous args accepts" {
     try expectClean(
@@ -4204,7 +4204,7 @@ test "typecheck: a cross-module reference names the declaration, not the import"
     try std.testing.expectEqual(@as(u32, @intCast(decl_at)), b.decl_span.start);
 }
 
-// ---------- default parameters (§4.6.3) ----------
+// ---------- default parameters (§4.6.4) ----------
 
 test "defaults: a default cannot read a sibling parameter" {
     try expectCode(

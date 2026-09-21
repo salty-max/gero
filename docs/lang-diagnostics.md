@@ -273,7 +273,7 @@ Errors raised during tokenization or recursive-descent parsing.
 | `E_SYNTAX_MALFORMED_LITERAL` | Bad escape, bad hex digit, bad fixed-point form. |
 | `E_SYNTAX_HEX_PREFIX` | `0x...` rejected — use `$...`. |
 | `E_SYNTAX_ANNOTATION_PLACEMENT` | Annotation doesn't attach to a following decl. |
-| `E_SYNTAX_PARAM_DEFAULT` | A parameter default sits where it cannot hold — on a variadic parameter, or ahead of a parameter that has none (§4.6.3). |
+| `E_SYNTAX_PARAM_DEFAULT` | A parameter default sits where it cannot hold — on a variadic parameter, or ahead of a parameter that has none (§4.6.4). |
 
 **Mockup — missing closing keyword:**
 
@@ -675,17 +675,17 @@ help: simplify the computation, or precompute the table with a
 
 ### 5.8 Variadic (E_VAR_*)
 
-`name: ...` parameter family. Per spec §4.6.2.
+`name: ...` parameter family. Per spec §4.6.3.
 
 | Code | Meaning |
 |------|---------|
 | `E_VAR_NOT_LAST` | Variadic parameter isn't the last in the list (parse-time). |
 | `E_VAR_HETEROGENEOUS` | Call site mixes types in the variadic slot. |
-| `E_VAR_INCONSISTENT_TYPE` | Two call sites pass different element types — a variadic function has one element type `T` across the whole program (§4.6.2). |
-| `E_VAR_AGGREGATE` | A variadic argument is an inline aggregate (struct / tuple / array / `Vec`). Varargs are word-strided scalars; pass aggregate data through an explicit parameter or by reference (§4.6.2). |
-| `E_VAR_INLINE` | A variadic `def` is marked `@inline` — it already specializes per call-site arity, so the two are mutually exclusive (§4.6.2). |
-| `E_VAR_VIRTUAL` | A variadic method is `@override` or `@abstract` — variadic methods are non-virtual (statically dispatched per arity), so they can't be virtual (§4.6.2). |
-| `E_VAR_OVERRIDE` | A method collides with an ancestor method where one side is variadic — a variadic method can't participate in overriding (§4.6.2). |
+| `E_VAR_INCONSISTENT_TYPE` | Two call sites pass different element types — a variadic function has one element type `T` across the whole program (§4.6.3). |
+| `E_VAR_AGGREGATE` | A variadic argument is an inline aggregate (struct / tuple / array / `Vec`). Varargs are word-strided scalars; pass aggregate data through an explicit parameter or by reference (§4.6.3). |
+| `E_VAR_INLINE` | A variadic `def` is marked `@inline` — it already specializes per call-site arity, so the two are mutually exclusive (§4.6.3). |
+| `E_VAR_VIRTUAL` | A variadic method is `@override` or `@abstract` — variadic methods are non-virtual (statically dispatched per arity), so they can't be virtual (§4.6.3). |
+| `E_VAR_OVERRIDE` | A method collides with an ancestor method where one side is variadic — a variadic method can't participate in overriding (§4.6.3). |
 
 **Mockup — heterogeneous call:**
 

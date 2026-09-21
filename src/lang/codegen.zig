@@ -855,7 +855,7 @@ pub const Emitter = struct {
     inline_defs: std.StringHashMapUnmanaged(*const ast.DefDecl),
     /// Variadic `def` names → their decl. `emitCall` reads the fixed-
     /// param count to route each call to the matching `name$N`
-    /// specialization (§4.6.2); emission walks the decls directly.
+    /// specialization (§4.6.3); emission walks the decls directly.
     variadic_decls: std.StringHashMapUnmanaged(*const ast.DefDecl),
     /// Defs with at least one defaulted parameter, so a call that
     /// leaves one out can emit the declared expression in its place.
@@ -964,7 +964,7 @@ pub const Emitter = struct {
     /// Carries the trailing `args` slot's name, element type `T`,
     /// this specialization's vararg count, and the fp-offset of the
     /// first vararg word — drives `args.N` word-strided loads and
-    /// `format(fmt, args)` forwarding inside the body (§4.6.2).
+    /// `format(fmt, args)` forwarding inside the body (§4.6.3).
     current_variadic: ?variadic.Active,
     /// Per-fn closure analysis. Populated by `lambda.analyzeFn`
     /// before each body emits. Reset between defs.
@@ -1712,7 +1712,7 @@ pub const Emitter = struct {
         // splices the body in place.
         // A variadic def never emits standalone — it has no single
         // arity. `emitSpecializations` emits one `name$N` per call-site
-        // arity below, sharing the body (§4.6.2).
+        // arity below, sharing the body (§4.6.3).
         for (program.statements) |*stmt| switch (stmt.*) {
             .def_decl => |*dd| if ((entry == null or dd != entry.?) and !defHasFlagAnnotation(self.source, dd, "cold") and !defHasFlagAnnotation(self.source, dd, "inline") and !variadic.isVariadicDef(dd.*))
                 try self.emitDef(dd, .regular),

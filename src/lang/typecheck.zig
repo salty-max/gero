@@ -85,7 +85,7 @@ pub const CheckedProgram = struct {
     /// Inferred type for every walked expression. `null` lookups
     /// mean the type couldn't be inferred.
     expr_types: std.AutoHashMapUnmanaged(*const ast.Expr, *const types.Type),
-    /// Whole-program variadic facts keyed by `def` name (§4.6.2):
+    /// Whole-program variadic facts keyed by `def` name (§4.6.3):
     /// element type and smallest call-site arity. Backed by
     /// `type_arena`.
     variadics: std.StringHashMapUnmanaged(VariadicInfo),
@@ -433,7 +433,7 @@ fn typecheckInner(
     }
 
     // Pass 3: type-check variadic bodies against the whole-program
-    // `args: (T, …, T)` tuple their call sites pinned (§4.6.2).
+    // `args: (T, …, T)` tuple their call sites pinned (§4.6.3).
     try class_check.resolveDeferredVariadics(&c);
 
     // Pass 4: an import is only unused once every body that could have
@@ -498,7 +498,7 @@ pub const ModuleArities = struct {
     }
 };
 
-/// Whole-program variadic facts for one variadic `def` (§4.6.2): the
+/// Whole-program variadic facts for one variadic `def` (§4.6.3): the
 /// unified element type `T` across its call sites and the *smallest*
 /// arity seen. The body type-checks once against `args: (T, …, T)` of
 /// `min_arity` — an index valid only for a larger call is rejected,
@@ -511,7 +511,7 @@ pub const VariadicInfo = struct {
 };
 
 /// A variadic method whose body is deferred until call sites pin its
-/// `T` + arity (§4.6.2). Carries the declaring class so the deferred
+/// `T` + arity (§4.6.3). Carries the declaring class so the deferred
 /// walk can re-establish the method's scope (`self`, fields, `super`).
 pub const DeferredMethod = struct {
     class: *const ast.ClassDecl,
@@ -576,7 +576,7 @@ pub const Checker = struct {
     /// Variadic arities each module's own call sites asked for, keyed
     /// `"module\x00def"`. The program-wide `variadic_info` is the union
     /// of these, taken once every module is walked — the link step for
-    /// specialization (§4.6.2).
+    /// specialization (§4.6.3).
     module_variadic_arities: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)),
     /// Declaration views, indexed by file id: each holds the module's
     /// own declarations plus the non-`local` ones of the modules it
@@ -629,7 +629,7 @@ pub const Checker = struct {
     /// Top-level `def` name → decl pointer.
     def_registry: std.StringHashMapUnmanaged(*const ast.DefDecl),
     /// Variadic `def` name → its whole-program element type `T` + the max
-    /// arity seen across call sites (§4.6.2). Accumulated by
+    /// arity seen across call sites (§4.6.3). Accumulated by
     /// `checkVariadicCall` during the main walk; consumed by the deferred
     /// pass that type-checks each variadic body with `args: (T, …, T)`.
     variadic_info: std.StringHashMapUnmanaged(VariadicInfo),

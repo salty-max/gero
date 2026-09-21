@@ -200,7 +200,7 @@ pub fn parseParamList(p: *Parser) ParserError![]ast.Param {
         var variadic = false;
         var variadic_end: u32 = name_span.end;
         if (p.accept(.colon)) |_| {
-            // `name: ...` — variadic marker (§4.6.2). No type
+            // `name: ...` — variadic marker (§4.6.3). No type
             // annotation; the typechecker pins the element type from
             // call-site usage.
             if (p.accept(.dot_dot_dot)) |dots| {
