@@ -152,6 +152,22 @@ fn runWith(
     return vm;
 }
 
+/// Compile `source`, run it, and assert on what it printed.
+fn expectPrints(source: []const u8, expected: []const u8) !void {
+    var compiled = try compileSource(source);
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasErrors());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+    defer writer.deinit();
+    var vm = try runWith(compiled.image, &writer);
+    defer vm.deinit();
+
+    try std.testing.expectEqualStrings(expected, writer.written());
+}
+
 test "codegen: let with int-literal initializer stores into fp-relative slot" {
     var compiled = try compileSource(
         \\def main()
@@ -4833,6 +4849,85 @@ test "codegen/@inline: tiny body is spliced — no standalone def emitted" {
     try std.testing.expectEqualStrings("7\n", writer.written());
 }
 
+test "codegen/@inline: an omitted default still gets its frame slot" {
+    // The caller's prologue reserves one slot per bound parameter. A
+    // call that leaves a trailing default out binds it all the same, so
+    // counting written arguments under-reserves and the next expansion's
+    // slots land on live stack. One call site alone never showed it.
+    try expectPrints(
+        \\use write_u16, read_u16 from mem
+        \\const A: u16 = 4096
+        \\@inline
+        \\def one(x: i16 = 0)
+        \\  write_u16(A, x as u16)
+        \\end
+        \\def main()
+        \\  one()
+        \\  print read_u16(A)
+        \\  one(7)
+        \\  print read_u16(A)
+        \\end
+    , "0\n7\n");
+}
+
+test "codegen/@inline: a default is correct whichever call site omits it" {
+    try expectPrints(
+        \\use write_u16, read_u16 from mem
+        \\const A: u16 = 4096
+        \\@inline
+        \\def one(x: i16 = 0)
+        \\  write_u16(A, x as u16)
+        \\end
+        \\def main()
+        \\  one(7)
+        \\  print read_u16(A)
+        \\  one()
+        \\  print read_u16(A)
+        \\end
+    , "7\n0\n");
+}
+
+test "codegen/@inline: several defaults hold across a mix of arities" {
+    try expectPrints(
+        \\use write_u16, read_u16 from mem
+        \\const A: u16 = 4096
+        \\@inline
+        \\def three(a: i16, b: i16 = 20, c: i16 = 300)
+        \\  write_u16(A, (a + b + c) as u16)
+        \\end
+        \\def main()
+        \\  three(1)
+        \\  print read_u16(A)
+        \\  three(1, 2)
+        \\  print read_u16(A)
+        \\  three(1, 2, 3)
+        \\  print read_u16(A)
+        \\  three(1)
+        \\  print read_u16(A)
+        \\end
+    , "321\n303\n6\n321\n");
+}
+
+test "codegen/@inline: an expression argument binds like a literal one" {
+    try expectPrints(
+        \\use write_u16, read_u16 from mem
+        \\const A: u16 = 4096
+        \\@inline
+        \\def one(x: i16 = 0)
+        \\  write_u16(A, x as u16)
+        \\end
+        \\def main()
+        \\  let k: i16 = 5
+        \\  one(k * 2)
+        \\  print read_u16(A)
+        \\  one()
+        \\  print read_u16(A)
+        \\  one(k + 1)
+        \\  print read_u16(A)
+        \\end
+    , "10\n0\n6\n");
+}
+
 test "codegen/@inline: body declaring a lambda emits E_ANN_INLINE_LAMBDA_BODY" {
     const source =
         \\@inline
@@ -8361,22 +8456,6 @@ test "codegen/vec: scalar optional == nil / != nil tests the present tag" {
 }
 
 // ---------- lambda return-type inference (§4.7.1) ----------
-
-/// Compile `source`, run it, and assert on what it printed.
-fn expectPrints(source: []const u8, expected: []const u8) !void {
-    var compiled = try compileSource(source);
-    defer compiled.deinit();
-    try std.testing.expect(!compiled.hasErrors());
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    var writer = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-    defer writer.deinit();
-    var vm = try runWith(compiled.image, &writer);
-    defer vm.deinit();
-
-    try std.testing.expectEqualStrings(expected, writer.written());
-}
 
 test "codegen: an unannotated short lambda prints its string, not its pointer" {
     try expectPrints(
